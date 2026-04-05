@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""
+AppleBridge Host Server
+Mac connects TO this server (works through NAT)
+"""
+import socket
+import threading
+import sys
+
+HOST_PORT = 9000
+
+def get_local_ip():
+    """Get the local IP address that the Mac should connect to"""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = '127.0.0.1'
+    finally:
+        s.close()
+    return ip
+
+class AppleBridgeServer:
+    def __init__(self, port=HOST_PORT):
+        self.port = port
+        self.client_socket = None
+        self.server_socket = None
+        self.connected = False
+
+    def start(self):
+        """Start listening for Mac connection"""
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server_socket.bind(('0.0.0.0', self.port))
+        self.server_socket.listen(1)
+
+        local_ip = get_local_ip()
+        print(f"=== AppleBridge Host Server ===")
+        print(f"Listening on port {self.port}")
+        print(f"")
+        print(f"Configure Mac to connect to: {local_ip}:{self.port}")
+        print(f"Waiting for Mac to connect...")
+        print()
+
+        self.client_socket, addr = self.server_socket.accept()
+        self.connected = True
+        print(f"Mac connected from {addr}")
+        print()
+
+    def send_command(self, command):
+        """Send a command to the Mac and get response"""
+        if not self.connected:
+            return None
+
+        # Format: COMMAND:<length>\r<command> (Mac uses \r for line endings)
+        message = f"COMMAND:{len(command)}\r{command}"
+        self.client_socket.sendall(message.encode('mac_roman', errors='replace'))
+
+        # Receive response
+        response = b""
+        self.client_socket.settimeout(5.0)  # 5 second timeout
+        try:
+            while True:
+                chunk = self.client_socket.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+                # Check for end of response (double newline - Mac uses \r)
+                if b"\n\n" in response or b"\r\r" in response or b"\r\n\r\n" in response:
+                    break
+        except socket.timeout:
+            pass  # Timeout is OK, we have the data
+        finally:
+            self.client_socket.settimeout(None)
+
+        return response.decode('mac_roman', errors='replace')
+
+    def request_screenshot(self):
+        """Request a screenshot from the Mac"""
+        if not self.connected:
+            return None
+
+        self.client_socket.sendall("SCREENSHOT".encode('mac_roman'))
+
+        # Receive response with timeout
+        response = b""
+        self.client_socket.settimeout(10.0)
+        try:
+            while True:
+                chunk = self.client_socket.recv(65536)
+                if not chunk:
+                    break
+                response += chunk
+                # Check for error response or end marker
+                if b"STATUS:" in response and (b"\r\r" in response or b"\n\n" in response):
+                    break
+                # For IMAGE response, parse header to get size
+                if response.startswith(b"IMAGE:") and b"\r" in response:
+                    # Parse: IMAGE:<width>:<height>:BMP:<size>\r<data>
+                    header_end = response.find(b"\r")
+                    if header_end > 0:
+                        header = response[:header_end].decode('mac_roman')
+                        parts = header.split(":")
+                        if len(parts) >= 5:
+                            expected_size = int(parts[4])
+                            total_expected = header_end + 1 + expected_size
+                            if len(response) >= total_expected:
+                                break
+        except socket.timeout:
+            print("Screenshot timeout - partial data received")
+        finally:
+            self.client_socket.settimeout(None)
+
+        return response
+
+    def close(self):
+        """Close connections"""
+        if self.client_socket:
+            self.client_socket.close()
+        if self.server_socket:
+            self.server_socket.close()
+        self.connected = False
+
+
+def interactive_mode(server):
+    """Interactive command mode"""
+    print("Interactive mode. Type commands to send to Mac.")
+    print("Type 'quit' to exit, 'screenshot' for screenshot.")
+    print()
+
+    while True:
+        try:
+            cmd = input("Command> ").strip()
+            if not cmd:
+                continue
+            if cmd.lower() == 'quit':
+                break
+            if cmd.lower() == 'screenshot':
+                print("Requesting screenshot...")
+                response = server.request_screenshot()
+                print(f"Got {len(response)} bytes")
+                if response and len(response) > 20:
+                    # Parse header: IMAGE:<w>:<h>:BMP:<size>\r<data>
+                    try:
+                        header_end = response.find(b'\r')
+                        if header_end > 0:
+                            header = response[:header_end].decode('mac_roman')
+                            data = response[header_end+1:]
+                            parts = header.split(':')
+                            if len(parts) >= 5:
+                                width = int(parts[1])
+                                height = int(parts[2])
+                                size = int(parts[4])
+                                print(f"Screen: {width}x{height}, data: {size} bytes")
+                                # Save raw data
+                                with open('/Users/pitforster/Desktop/Share/screenshot.raw', 'wb') as f:
+                                    f.write(data[:size] if size > 0 else data)
+                                print("Saved to screenshot.raw")
+                    except Exception as e:
+                        print(f"Parse error: {e}")
+                        # Save anyway
+                        with open('/Users/pitforster/Desktop/Share/screenshot.raw', 'wb') as f:
+                            f.write(response)
+                        print("Saved raw response to screenshot.raw")
+                continue
+
+            print(f"Sending: {cmd}")
+            response = server.send_command(cmd)
+            print(f"Response:\n{response}")
+            print()
+
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            print(f"Error: {e}")
+
+
+def main():
+    server = AppleBridgeServer()
+
+    try:
+        server.start()
+        interactive_mode(server)
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+    finally:
+        server.close()
+
+
+if __name__ == "__main__":
+    main()

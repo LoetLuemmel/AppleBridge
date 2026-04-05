@@ -1,0 +1,78 @@
+# AppleBridge Mac Daemon Makefile - 68k Version
+# WORKING CONFIGURATION for Basilisk II
+
+# Compiler and tools
+CC = SC
+LINK = ILink
+
+# You must set LIBS before running make:
+# Set LIBS 'MeinMac:Development:MPW_fully_updated Folder:MPW-GM+PR+Final Updates:Interfaces&Libraries:'
+
+# Directories
+SRC_DIR = :src:
+INC_DIR = :include:
+OBJ_DIR = :obj:
+BIN_DIR = :bin:
+
+# Compiler flags
+CFLAGS = -i {INC_DIR}
+
+# Linker flags - IMPORTANT: -model far!
+LDFLAGS = -model far -o {BIN_DIR}AppleBridge
+
+# Libraries - Mac Toolbox only
+LIBS_LIST = ∂
+	"{LIBS}Libraries:OpenTransport.o" ∂
+	"{LIBS}Libraries:OpenTransportApp.o" ∂
+	"{LIBS}Libraries:OpenTptInet.o" ∂
+	"{LIBS}Libraries:Interface.o" ∂
+	"{LIBS}Libraries:MacRuntime.o"
+
+# Object files
+OBJS = ∂
+	{OBJ_DIR}main.c.o ∂
+	{OBJ_DIR}network.c.o ∂
+	{OBJ_DIR}protocol.c.o ∂
+	{OBJ_DIR}command.c.o ∂
+	{OBJ_DIR}screenshot.c.o ∂
+	{OBJ_DIR}utils.c.o ∂
+	{OBJ_DIR}mystring.c.o
+
+# Default target
+all ƒ {BIN_DIR}AppleBridge
+
+# Link
+{BIN_DIR}AppleBridge ƒ {OBJS}
+	{LINK} {LDFLAGS} {OBJS} {LIBS_LIST}
+
+# Compile rules
+{OBJ_DIR}main.c.o ƒ {SRC_DIR}main.c {INC_DIR}applebridge.h {INC_DIR}mystring.h
+	{CC} {CFLAGS} {SRC_DIR}main.c -o {OBJ_DIR}main.c.o
+
+{OBJ_DIR}network.c.o ƒ {SRC_DIR}network.c {INC_DIR}applebridge.h
+	{CC} {CFLAGS} {SRC_DIR}network.c -o {OBJ_DIR}network.c.o
+
+{OBJ_DIR}protocol.c.o ƒ {SRC_DIR}protocol.c {INC_DIR}applebridge.h {INC_DIR}mystring.h
+	{CC} {CFLAGS} {SRC_DIR}protocol.c -o {OBJ_DIR}protocol.c.o
+
+{OBJ_DIR}command.c.o ƒ {SRC_DIR}command.c {INC_DIR}applebridge.h {INC_DIR}mystring.h
+	{CC} {CFLAGS} {SRC_DIR}command.c -o {OBJ_DIR}command.c.o
+
+{OBJ_DIR}screenshot.c.o ƒ {SRC_DIR}screenshot.c {INC_DIR}applebridge.h
+	{CC} {CFLAGS} {SRC_DIR}screenshot.c -o {OBJ_DIR}screenshot.c.o
+
+{OBJ_DIR}utils.c.o ƒ {SRC_DIR}utils.c {INC_DIR}applebridge.h
+	{CC} {CFLAGS} {SRC_DIR}utils.c -o {OBJ_DIR}utils.c.o
+
+{OBJ_DIR}mystring.c.o ƒ {SRC_DIR}mystring.c {INC_DIR}mystring.h
+	{CC} {CFLAGS} {SRC_DIR}mystring.c -o {OBJ_DIR}mystring.c.o
+
+# Clean target
+clean ƒ
+	Delete -i {OBJ_DIR}≈.o
+	Delete -i {BIN_DIR}AppleBridge
+
+# Create directories
+dirs ƒ
+	NewFolder {OBJ_DIR}
+	NewFolder {BIN_DIR}

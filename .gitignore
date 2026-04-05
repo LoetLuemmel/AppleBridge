@@ -1,0 +1,19 @@
+# Mac build artifacts
+mac/bin/
+mac/output/
+*.o
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Screenshots
+*.raw
+*.png
+
+# Mac resource forks
+.finf/
+.rsrc/
+._*
+.DS_Store
