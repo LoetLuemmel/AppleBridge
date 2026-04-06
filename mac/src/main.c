@@ -1,49 +1,129 @@
 /*
- * AppleBridge - Main Daemon
- * TCP server that accepts connections and processes commands
+ * AppleBridge - Main Daemon (Client Mode)
+ * Connects OUT to host server
  */
 
-#include "applebridge.h"
-#include <stdio.h>
-#include <string.h>
-#include <console.h>
-#include <Menus.h>
-#include <Events.h>
-#include <Dialogs.h>
-#include <DiskInit.h>
-#include <Windows.h>
+#include <applebridge.h>
+#include <mystring.h>
+#include <Quickdraw.h>
 #include <Fonts.h>
-#include <QuickDraw.h>
+#include <Windows.h>
+#include <Events.h>
+#include <Menus.h>
+#include <TextEdit.h>
+#include <Dialogs.h>
+#include <Files.h>
+#include <ToolUtils.h>
 
-/* Menu resource IDs */
+QDGlobals qd;
+
+/* Menu IDs */
 #define APPLE_MENU_ID   128
 #define FILE_MENU_ID    129
 
-/* Menu item numbers */
+/* Menu items */
 #define ABOUT_ITEM      1
 #define QUIT_ITEM       1
 
 static Boolean gRunning = true;
+static WindowPtr gStatusWindow = NULL;
+static short gLineY = 20;
+static long gTickCounter = 0;
 static MenuHandle gAppleMenu;
 static MenuHandle gFileMenu;
 
 /*
- * Initialize menus
+ * HOST IP - Change this to your host's IP address!
+ * Or create a file "host_ip.txt" in the same folder with the IP
  */
-void InitMenuBar(void)
+#define DEFAULT_HOST_IP "192.168.1.100"
+
+/* Convert number to string */
+static void NumToStr(long num, char *str)
 {
-    /* Create Apple menu */
-    gAppleMenu = NewMenu(APPLE_MENU_ID, "\p\024");  /* Apple logo character */
-    AppendMenu(gAppleMenu, "\pAbout AppleBridge...;(-");
-    AppendResMenu(gAppleMenu, 'DRVR');  /* Add desk accessories */
-    InsertMenu(gAppleMenu, 0);
+    long i = 0;
+    long j;
+    char temp[32];
 
-    /* Create File menu */
-    gFileMenu = NewMenu(FILE_MENU_ID, "\pFile");
-    AppendMenu(gFileMenu, "\pQuit/Q");
-    InsertMenu(gFileMenu, 0);
+    if (num == 0) {
+        str[0] = '0';
+        str[1] = '\0';
+        return;
+    }
 
-    DrawMenuBar();
+    while (num > 0) {
+        temp[i++] = '0' + (num % 10);
+        num /= 10;
+    }
+
+    for (j = 0; j < i; j++) {
+        str[j] = temp[i - 1 - j];
+    }
+    str[i] = '\0';
+}
+
+/* Simple status display in window */
+void StatusMessage(const char *msg)
+{
+    Str255 pstr;
+    short i;
+
+    if (gStatusWindow == NULL) return;
+
+    SetPort(gStatusWindow);
+
+    /* Convert C string to Pascal string */
+    for (i = 0; msg[i] && i < 254; i++) {
+        pstr[i+1] = msg[i];
+    }
+    pstr[0] = i;
+
+    MoveTo(10, gLineY);
+    DrawString(pstr);
+    gLineY += 15;
+
+    /* Scroll if needed */
+    if (gLineY > 280) {
+        gLineY = 20;
+        EraseRect(&gStatusWindow->portRect);
+    }
+}
+
+/* Show alive indicator */
+void ShowAlive(void)
+{
+    Rect r;
+    char buf[32];
+    Str255 pstr;
+    short i;
+    long ticks;
+
+    if (gStatusWindow == NULL) return;
+
+    SetPort(gStatusWindow);
+
+    /* Update tick counter every ~60 ticks (1 second) */
+    ticks = TickCount();
+    if (ticks - gTickCounter < 30) return;
+    gTickCounter = ticks;
+
+    /* Draw alive indicator at bottom */
+    SetRect(&r, 10, 285, 390, 300);
+    EraseRect(&r);
+
+    /* Show tick count */
+    NumToStr(ticks / 60, buf);
+
+    pstr[0] = 0;
+    for (i = 0; buf[i] && i < 250; i++) {
+        pstr[i + 1] = buf[i];
+    }
+    pstr[0] = i;
+
+    MoveTo(10, 295);
+    DrawString("\pAlive: ");
+    DrawString(pstr);
+    DrawString("\p sec");
 }
 
 /*
@@ -53,17 +133,14 @@ void ShowAboutBox(void)
 {
     DialogPtr dialog;
     Rect bounds;
-    short itemHit;
 
-    /* Create a simple modal dialog */
     SetRect(&bounds, 100, 80, 420, 240);
-    dialog = NewDialog(nil, &bounds, "\p", true, dBoxProc,
-                       (WindowPtr)-1L, false, 0, nil);
+    dialog = NewDialog(NULL, &bounds, "\p", true, dBoxProc,
+                       (WindowPtr)-1L, false, 0, NULL);
 
-    if (dialog != nil) {
+    if (dialog != NULL) {
         SetPort(dialog);
 
-        /* Draw about text */
         MoveTo(20, 30);
         TextSize(14);
         TextFace(bold);
@@ -71,7 +148,7 @@ void ShowAboutBox(void)
 
         MoveTo(20, 55);
         TextSize(10);
-        TextFace(normal);
+        TextFace(0);
         DrawString("\pBuilt by Pit with Love");
 
         MoveTo(20, 75);
@@ -79,17 +156,16 @@ void ShowAboutBox(void)
 
         MoveTo(20, 100);
         TextFace(italic);
-        DrawString("\p\042Connecting classic Mac to the future\042");
+        DrawString("\p\"Connecting classic Mac to the future\"");
 
         MoveTo(20, 130);
-        TextFace(normal);
+        TextFace(0);
         DrawString("\pClick to close...");
 
-        /* Wait for click */
         while (!Button()) {
             SystemTask();
         }
-        while (Button()) {}  /* Wait for release */
+        while (Button()) {}
 
         DisposeDialog(dialog);
     }
@@ -101,7 +177,6 @@ void ShowAboutBox(void)
 void HandleMenuCommand(long menuResult)
 {
     short menuID, menuItem;
-    Str255 daName;
 
     menuID = HiWord(menuResult);
     menuItem = LoWord(menuResult);
@@ -110,53 +185,118 @@ void HandleMenuCommand(long menuResult)
         case APPLE_MENU_ID:
             if (menuItem == ABOUT_ITEM) {
                 ShowAboutBox();
-            } else {
-                /* Desk accessory */
-                GetMenuItemText(gAppleMenu, menuItem, daName);
-                OpenDeskAcc(daName);
             }
             break;
 
         case FILE_MENU_ID:
             if (menuItem == QUIT_ITEM) {
                 gRunning = false;
-                printf("\nQuit requested from menu\n");
             }
             break;
     }
 
-    HiliteMenu(0);  /* Unhighlight menu */
+    HiliteMenu(0);
 }
 
 /*
- * Process pending events (non-blocking)
- * Returns true if Quit was requested
+ * Initialize menus
  */
-Boolean ProcessEvents(void)
+void InitMenuBar(void)
+{
+    gAppleMenu = NewMenu(APPLE_MENU_ID, "\p\024");
+    AppendMenu(gAppleMenu, "\pAbout AppleBridge...;(-");
+    AppendResMenu(gAppleMenu, 'DRVR');
+    InsertMenu(gAppleMenu, 0);
+
+    gFileMenu = NewMenu(FILE_MENU_ID, "\pFile");
+    AppendMenu(gFileMenu, "\pQuit/Q");
+    InsertMenu(gFileMenu, 0);
+
+    DrawMenuBar();
+}
+
+/*
+ * Initialize Toolbox and create status window
+ */
+void InitApp(void)
+{
+    Rect bounds;
+
+    InitGraf(&qd.thePort);
+    InitFonts();
+    InitWindows();
+    InitMenus();
+    TEInit();
+    InitDialogs(NULL);
+    InitCursor();
+
+    /* Initialize menu bar */
+    InitMenuBar();
+
+    /* Create status window */
+    SetRect(&bounds, 50, 50, 450, 350);
+    gStatusWindow = NewWindow(NULL, &bounds, "\pAppleBridge Client",
+                              true, documentProc, (WindowPtr)-1L, true, 0);
+    if (gStatusWindow) {
+        SetPort(gStatusWindow);
+    }
+}
+
+/*
+ * Check for user interrupt and process events
+ */
+Boolean CheckUserAbort(void)
 {
     EventRecord event;
     WindowPtr window;
     short part;
 
-    /* Check for events with minimal wait */
-    if (WaitNextEvent(everyEvent, &event, 1, nil)) {
+    SystemTask();
+
+    if (GetNextEvent(everyEvent, &event)) {
         switch (event.what) {
             case mouseDown:
                 part = FindWindow(event.where, &window);
-                if (part == inMenuBar) {
-                    HandleMenuCommand(MenuSelect(event.where));
+                switch (part) {
+                    case inMenuBar:
+                        HandleMenuCommand(MenuSelect(event.where));
+                        break;
+                    case inDrag:
+                        if (window == gStatusWindow) {
+                            Rect dragRect;
+                            SetRect(&dragRect, 4, 24,
+                                    qd.screenBits.bounds.right - 4,
+                                    qd.screenBits.bounds.bottom - 4);
+                            DragWindow(window, event.where, &dragRect);
+                        }
+                        break;
+                    case inGoAway:
+                        if (window == gStatusWindow) {
+                            if (TrackGoAway(window, event.where)) {
+                                gRunning = false;
+                            }
+                        }
+                        break;
+                    case inContent:
+                        SelectWindow(window);
+                        break;
                 }
                 break;
 
             case keyDown:
             case autoKey:
                 if (event.modifiers & cmdKey) {
-                    HandleMenuCommand(MenuKey(event.message & charCodeMask));
+                    char key = event.message & charCodeMask;
+                    if (key == '.') {
+                        return true;
+                    }
+                    HandleMenuCommand(MenuKey(key));
                 }
                 break;
 
-            case kHighLevelEvent:
-                AEProcessAppleEvent(&event);
+            case updateEvt:
+                BeginUpdate((WindowPtr)event.message);
+                EndUpdate((WindowPtr)event.message);
                 break;
         }
     }
@@ -165,55 +305,49 @@ Boolean ProcessEvents(void)
 }
 
 /*
- * Handle a single client connection
+ * Process a request from the host
  */
-void HandleClient(EndpointRef clientEndpoint)
+void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
 {
-    char requestBuffer[MAX_COMMAND_LENGTH + 256];
     char responseBuffer[MAX_RESPONSE_LENGTH];
     char command[MAX_COMMAND_LENGTH];
-    long bytesReceived, commandLength, responseLength;
-    OSStatus err;
+    long commandLength, responseLength;
     BridgeResult result;
     CommandResult cmdResult;
+    OSStatus err;
 
-    LogMessage("Handling client connection");
-
-    /* Receive request */
-    err = ReceiveData(clientEndpoint, requestBuffer, sizeof(requestBuffer), &bytesReceived);
-    if (err != noErr || bytesReceived == 0) {
-        LogError("Failed to receive data", err);
-        return;
-    }
-
-    requestBuffer[bytesReceived] = '\0';
+    request[requestLen] = '\0';
 
     /* Check if it's a screenshot request */
-    if (strncmp(requestBuffer, PROTO_SCREENSHOT, strlen(PROTO_SCREENSHOT)) == 0) {
+    if (strncmp(request, PROTO_SCREENSHOT, strlen(PROTO_SCREENSHOT)) == 0) {
         ScreenshotData screenshot;
 
-        LogMessage("Screenshot requested");
+        StatusMessage("Screenshot requested");
 
         result = CaptureScreenshot(&screenshot);
         if (result == kBridgeNoErr) {
             FormatScreenshotResponse(&screenshot, responseBuffer, &responseLength);
-            SendData(clientEndpoint, responseBuffer, responseLength);
+            SendData(endpoint, responseBuffer, responseLength);
             CleanupScreenshot(&screenshot);
+            StatusMessage("Screenshot sent");
         } else {
             strcpy(responseBuffer, "STATUS:-1\nSTDOUT:0\n\nSTDERR:18\nScreenshot failed\n\n");
-            SendData(clientEndpoint, responseBuffer, strlen(responseBuffer));
+            SendData(endpoint, responseBuffer, strlen(responseBuffer));
         }
 
         return;
     }
 
     /* Parse command */
-    result = ParseCommand(requestBuffer, command, &commandLength);
+    result = ParseCommand(request, command, &commandLength);
     if (result != kBridgeNoErr) {
         strcpy(responseBuffer, "STATUS:-1\nSTDOUT:0\n\nSTDERR:21\nInvalid command format\n\n");
-        SendData(clientEndpoint, responseBuffer, strlen(responseBuffer));
+        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        StatusMessage("Invalid command format");
         return;
     }
+
+    StatusMessage("Executing command...");
 
     /* Execute command */
     result = ExecuteCommand(command, &cmdResult);
@@ -222,82 +356,115 @@ void HandleClient(EndpointRef clientEndpoint)
     FormatResponse(&cmdResult, responseBuffer, &responseLength);
 
     /* Send response */
-    err = SendData(clientEndpoint, responseBuffer, responseLength);
+    err = SendData(endpoint, responseBuffer, responseLength);
     if (err != noErr) {
-        LogError("Failed to send response", err);
+        StatusMessage("Failed to send response");
+    } else {
+        StatusMessage("Response sent");
     }
 
     CleanupCommandResult(&cmdResult);
-
-    LogMessage("Client request completed");
 }
 
 /*
- * Main server loop
+ * Main client loop
  */
-int main(int argc, char *argv[])
+int main(void)
 {
-    EndpointRef listenEndpoint, clientEndpoint;
+    EndpointRef endpoint;
     OSStatus err;
+    char requestBuffer[MAX_COMMAND_LENGTH + 256];
+    long bytesReceived;
+    unsigned long hostIP;
 
-    /* Initialize console for printf output */
-    argc = ccommand(&argv);
+    /*
+     * SET YOUR HOST IP HERE!
+     * This is the IP of your Mac host running host_server.py
+     */
+    char hostIPStr[] = "192.168.3.154";  /* Host Mac IP */
 
-    /* Initialize menu bar */
-    InitMenuBar();
+    /* Initialize Mac Toolbox */
+    InitApp();
 
-    printf("=== AppleBridge Mac Daemon ===\n");
-    printf("Version 0.2.0\n");
-    printf("Listening on port %d\n\n", BRIDGE_PORT);
+    StatusMessage("=== AppleBridge Client ===");
+    StatusMessage("Version 0.2.0 (Client Mode)");
+    StatusMessage("");
+    StatusMessage("Host IP:");
+    StatusMessage(hostIPStr);
+    StatusMessage("");
+    StatusMessage("Initializing network...");
+
+    SystemTask();
 
     /* Initialize network */
     err = InitializeNetwork();
     if (err != noErr) {
-        printf("Failed to initialize network\n");
+        StatusMessage("Network init failed!");
+        while (!Button()) { SystemTask(); ShowAlive(); }
         return 1;
     }
 
-    /* Create listening socket */
-    err = CreateListenSocket(&listenEndpoint, BRIDGE_PORT);
+    StatusMessage("Network OK");
+
+    /* Parse host IP */
+    hostIP = ParseIPAddress(hostIPStr);
+
+    StatusMessage("Connecting to host...");
+    SystemTask();
+
+    /* Connect to host */
+    err = ConnectToHost(&endpoint, hostIP, BRIDGE_PORT);
     if (err != noErr) {
-        printf("Failed to create listen socket\n");
+        StatusMessage("Connection failed!");
+        StatusMessage("Check host IP and server");
         ShutdownNetwork();
+        while (!Button()) { SystemTask(); ShowAlive(); }
         return 1;
     }
 
-    printf("Server ready. Waiting for connections...\n");
-    printf("Use File > Quit or Cmd-Q to stop\n\n");
+    StatusMessage("Connected!");
+    StatusMessage("Waiting for commands...");
 
-    /* Main server loop */
+    /* Main loop - receive and process requests */
     while (gRunning) {
-        /* Process any pending events (menus, etc.) */
-        if (ProcessEvents()) {
-            break;  /* Quit requested */
+        SystemTask();
+        ShowAlive();
+
+        if (CheckUserAbort()) {
+            StatusMessage("User quit");
+            break;
         }
 
-        /* Accept connection (with short timeout for responsiveness) */
-        err = AcceptConnection(listenEndpoint, &clientEndpoint);
-        if (err != noErr) {
-            /* Check if user interrupted or timeout */
-            if (err == kOTLookErr || err == kOTNoDataErr) {
-                continue;  /* No connection pending, loop again */
-            }
-            LogError("Failed to accept connection", err);
+        /* Try to receive data */
+        err = ReceiveData(endpoint, requestBuffer, sizeof(requestBuffer) - 1, &bytesReceived);
+
+        if (err == kOTNoDataErr) {
+            /* No data yet, keep waiting */
             continue;
         }
 
-        /* Handle client */
-        HandleClient(clientEndpoint);
+        if (err != noErr || bytesReceived == 0) {
+            StatusMessage("Connection closed");
+            break;
+        }
 
-        /* Close client connection */
-        OTCloseProvider(clientEndpoint);
+        StatusMessage("Request received");
+        ProcessRequest(endpoint, requestBuffer, bytesReceived);
+        StatusMessage("Waiting for commands...");
     }
 
     /* Cleanup */
-    OTCloseProvider(listenEndpoint);
+    OTCloseProvider(endpoint);
     ShutdownNetwork();
 
-    printf("\nServer stopped\n");
+    StatusMessage("Disconnected");
+    StatusMessage("Click to exit...");
+
+    while (!Button()) { SystemTask(); ShowAlive(); }
+
+    if (gStatusWindow) {
+        DisposeWindow(gStatusWindow);
+    }
 
     return 0;
 }
