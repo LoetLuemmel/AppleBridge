@@ -99,14 +99,15 @@ You: Create a new file called test.txt with "Hello World"
 [Claude executes: Echo "Hello World" > test.txt]
 ```
 
-### Compilation
+### Compilation (SC Compiler)
 
 ```
-You: Compile all C files in this directory
-[Claude executes: MrC *.c]
+You: Compile hello.c
+[Claude executes: SC hello.c -o hello.o]
 
-You: Link the object files
-[Claude executes: PPCLink *.o -o myprogram]
+You: Link to executable
+[Claude executes: Link -model far hello.o "{Libraries}Interface.o" "{Libraries}MacRuntime.o" -o hello]
+[Claude executes: SetFile -t APPL -c '????' hello]
 ```
 
 ### Navigation
@@ -182,6 +183,55 @@ except TimeoutError:
 finally:
     bridge.stop()
 ```
+
+### Compile/Link Error Capture
+
+**CRITICAL**: Do NOT use `2>&1` - it crashes MPW Shell!
+
+Use MPW's `≥` operator to redirect stderr to a file:
+
+```bash
+# Compile with stderr capture
+uv run python send_command.py 'SC file.c -o file.o ≥ compile.err'
+
+# Check if compile succeeded (file exists = success)
+uv run python send_command.py 'Exists file.o'
+# Success: Returns "path:to:file.o" with "Got:XX"
+# Failure: Returns "STDOUT:0" with "NoDir:-1701;Empty"
+
+# Read error/warning messages
+uv run python send_command.py 'Catenate compile.err'
+```
+
+**Response pattern reference:**
+
+| Scenario | STDOUT | Response Pattern |
+|----------|--------|-----------------|
+| File exists | Filename | `Got:XX` |
+| File missing | 0 | `NoDir:-1701;Empty` |
+
+**Example error output:**
+```
+SC C Compiler 8.9.0d3e1
+File "bad_code.c"; line 4 #Error: expression expected#
+File "bad_code.c"; line 5 #Error: missing ',' between declaration...#
+```
+
+**Note:** Successful compiles may still have warnings in compile.err - always check file existence to determine pass/fail.
+
+### Makefile Execution
+
+MPW Make only PRINTS commands, it doesn't execute them. Use this pattern:
+
+```bash
+# Generate build script, then execute it
+uv run python send_command.py 'Make > BuildIt; BuildIt'
+```
+
+**Makefile syntax notes:**
+- Use `ƒ` (option-f) for dependencies, NOT `::`
+- Use `{Libraries}` NOT `{LIBS}` for library paths
+- Example: `main.o ƒ main.c helpers.h`
 
 ## Claude Integration Patterns
 
