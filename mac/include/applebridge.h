@@ -38,8 +38,8 @@ typedef enum {
 /* Command execution result */
 typedef struct {
     short exitCode;
-    char outData[MAX_RESPONSE_LENGTH];
-    char errData[MAX_RESPONSE_LENGTH];
+    char stdout[MAX_RESPONSE_LENGTH];
+    char stderr[MAX_RESPONSE_LENGTH];
 } CommandResult;
 
 /* Screenshot data */
@@ -55,10 +55,10 @@ typedef struct {
 /* Network functions */
 OSStatus InitializeNetwork(void);
 void ShutdownNetwork(void);
-OSStatus ConnectToHost(EndpointRef *endpoint, unsigned long hostIP, InetPort port);
+OSStatus CreateListenSocket(EndpointRef *endpoint, InetPort port);
+OSStatus AcceptConnection(EndpointRef listenEndpoint, EndpointRef *clientEndpoint);
 OSStatus ReceiveData(EndpointRef endpoint, char *buffer, long bufferSize, long *bytesReceived);
 OSStatus SendData(EndpointRef endpoint, const char *data, long dataSize);
-unsigned long ParseIPAddress(const char *ipStr);
 
 /* Protocol functions */
 BridgeResult ParseCommand(const char *request, char *command, long *commandLength);

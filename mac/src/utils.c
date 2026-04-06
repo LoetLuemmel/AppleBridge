@@ -3,18 +3,25 @@
  * Logging and helper functions
  */
 
-#include <applebridge.h>
+#include "applebridge.h"
 #include <stdio.h>
-#include <Events.h>
+#include <stdarg.h>
+#include <time.h>
 
 /*
- * Log a message (simple version without timestamps)
- * Uses TickCount for basic timing
+ * Log a message to stdout
+ * In a real MPW tool, you might want to log to a file
  */
 void LogMessage(const char *message)
 {
-    /* For now, just a no-op since we use StatusMessage in main.c */
-    /* Could write to a log file if needed */
+    time_t now;
+    char timeStr[64];
+
+    time(&now);
+    strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", localtime(&now));
+
+    printf("[%s] %s\n", timeStr, message);
+    fflush(stdout);
 }
 
 /*
@@ -22,6 +29,8 @@ void LogMessage(const char *message)
  */
 void LogError(const char *message, OSStatus err)
 {
-    /* For now, just a no-op */
-    /* Could write to a log file if needed */
+    char buffer[512];
+
+    sprintf(buffer, "%s (error: %d)", message, (int)err);
+    LogMessage(buffer);
 }

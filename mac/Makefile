@@ -1,10 +1,9 @@
-# AppleBridge Mac Daemon Makefile - 68k Version
-# For use with MPW on Basilisk II (68k emulation)
-# Use this instead of the PowerPC Makefile
+# AppleBridge Mac Daemon Makefile
+# For use with MPW (Macintosh Programmer's Workshop)
 
-# Compiler and tools (68k versions)
-CC = SC
-LINK = Link
+# Compiler and tools
+CC = MrC
+LINK = PPCLink
 
 # Directories
 SRC_DIR = :src:
@@ -12,19 +11,19 @@ INC_DIR = :include:
 OBJ_DIR = :obj:
 BIN_DIR = :bin:
 
-# Compiler flags for 68k
-CFLAGS = -i {INC_DIR} -w on -mc68020 -model far
+# Compiler flags
+CFLAGS = -i {INC_DIR} -w on -opt speed
 
 # Linker flags
-LDFLAGS = -m ENTRYPOINT -o {BIN_DIR}AppleBridge -t 'APPL' -c '????'
+LDFLAGS = -o {BIN_DIR}AppleBridge
 
-# Libraries for 68k
+# Libraries
 LIBS = ∂
-    "{CLibraries}StdCLib.o" ∂
-    "{Libraries}InterfaceLib.o" ∂
-    "{Libraries}MathLib.o" ∂
-    "{Libraries}OpenTransportLib.o" ∂
-    "{Libraries}OpenTptInternetLib.o"
+    "{SharedLibraries}InterfaceLib" ∂
+    "{SharedLibraries}StdCLib" ∂
+    "{SharedLibraries}MathLib" ∂
+    "{SharedLibraries}OpenTransportLib" ∂
+    "{SharedLibraries}OpenTptInternetLib"
 
 # Source files
 SRCS = ∂

@@ -1,0 +1,5 @@
+# AppleBridge Host Requirements
+# Python dependencies for the host communicator
+
+anthropic>=0.39.0
+pillow>=10.0.0

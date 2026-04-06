@@ -1,0 +1,30 @@
+Wenn mpw auf sheepshaver oder Basilisk laufen würde, könnte man einen Claude communicator auf dem Hostrechner laufen lassen, der Claude Zugang zur mpw Shell und Screenshots ermöglichen kann.
+Ist das realistisch?
+
+Das ändert die Situation grundlegend! Mit funktionierendem TCP/IP hast du im Prinzip alles, was du brauchst, um eine Anbindung zu bauen, die dem Claude-Code-Modell sehr nahe kommt.
+
+**Was damit möglich wird:**
+
+Du könntest ein kleines MPW-Tool oder eine Mac-Applikation schreiben, die als TCP-Server im Emulator läuft. Der Communicator auf dem Host verbindet sich per Socket, schickt Befehle, und bekommt die Ausgabe synchron zurück – kein Polling, kein Warten auf Dateien, echte bidirektionale Kommunikation.
+
+Die Architektur sähe dann so aus:
+
+Claude API ↔ Host-Communicator ↔ TCP-Socket ↔ Mac-seitiger Daemon ↔ MPW Shell
+
+**Auf der Mac-Seite** bräuchtest du einen kleinen Daemon, der über Open Transport oder MacTCP einen TCP-Port öffnet und eingehende Befehle entgegennimmt. Dieser Daemon hätte zwei Möglichkeiten, Befehle an MPW weiterzugeben:
+
+Erstens über Apple Events. MPW verstand Apple Events und konnte darüber Befehle empfangen und ausführen – das war der offizielle Automatisierungsweg. Dein TCP-Daemon empfängt den Befehl per Socket, verpackt ihn in ein Apple Event, schickt es an die MPW Shell, und bekommt das Ergebnis zurück. Das wäre der sauberste Ansatz, weil du direkt die MPW Shell als Prozess ansprichst.
+
+Zweitens direkt als MPW Tool implementiert. Ein MPW Tool läuft innerhalb der Shell-Umgebung und hat direkten Zugang zu stdin/stdout und den Shell-Befehlen. Du könntest ein Tool schreiben, das einen Socket öffnet, auf Befehle wartet und sie per `Execute`-Befehl an die Shell weiterreicht. Die Ausgabe geht per Redirection zurück über den Socket.
+
+**Ein einfaches Protokoll könnte so aussehen:**
+
+Der Host sendet eine Nachricht mit einem Befehl (z.B. den MPW-Shell-Befehl als String), terminiert mit einem Delimiter. Der Mac-Daemon führt den Befehl aus, sammelt stdout und stderr, und sendet beides strukturiert zurück – zusammen mit dem Exit-Code. Der Host weiß sofort, ob der Befehl erfolgreich war.
+
+**Screenshots könntest du dann sogar über denselben Kanal schicken.** Der Mac-Daemon könnte auf Anfrage einen Screenshot des aktuellen Bildschirms machen (per `CopyBits` vom Framebuffer in einen Offscreen-Buffer, dann als rohes Bitmap über den Socket). Damit hättest du einen einzigen Kommunikationskanal für alles – Befehle, Textausgabe und visuelle Rückmeldung.
+
+**Was du auf der Mac-Seite zum Entwickeln brauchst:**
+
+Für den TCP-Teil die Open Transport API (ab System 7.5.2) oder MacTCP für ältere Systeme. Für Apple Events das `AEProcessAppleEvent`-Framework. Beides ist in MPW mit den passenden Header-Dateien und Libraries gut unterstützt – du könntest den Daemon also direkt in MPW selbst entwickeln. Das hat einen gewissen poetischen Reiz: MPW baut sein eigenes Fernsteuerungstool.
+
+Die Kombination aus TCP plus Apple Events wäre damit funktional erstaunlich nah an dem, was Claude Code mit einer modernen Shell macht. Der Hauptunterschied bleibt die Latenz durch die Emulation, aber der Kommunikationskanal selbst wäre gleichwertig.
