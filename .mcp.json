@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "applebridge": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "python", "-m", "mcp"],
+      "env": {}
+    }
+  }
+}
