@@ -53,9 +53,11 @@ class AppleBridgeServer:
         if not self.connected:
             return None
 
-        # Format: COMMAND:<length>\r<command> (Mac uses \r for line endings)
-        message = f"COMMAND:{len(command)}\r{command}"
-        self.client_socket.sendall(message.encode('mac_roman', errors='replace'))
+        # Encode command to MacRoman first to get accurate byte length
+        encoded_command = command.encode('mac_roman', errors='replace')
+        # Format: COMMAND:<length>\n<command> (protocol uses \n as separator)
+        header = f"COMMAND:{len(encoded_command)}\n".encode('ascii')
+        self.client_socket.sendall(header + encoded_command)
 
         # Receive response
         response = b""
