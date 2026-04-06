@@ -228,11 +228,30 @@ Echo 'int main() { return 0; }' > 'MeinMac:Temp:test.c'
 SC 'MeinMac:Temp:test.c'
 ```
 
+## ToolServer vs MPW Shell
+
+For automation, **use ToolServer** (`'MPSX'`) instead of MPW Shell (`'MPS '`):
+
+| Target | Creator | Output Behavior |
+|--------|---------|-----------------|
+| MPW Shell | `'MPS '` | Output to worksheet only, empty AE replies |
+| ToolServer | `'MPSX'` | **Output returned via Apple Events** ✓ |
+
+**ToolServer output capture verified:**
+| Command | Output Captured |
+|---------|-----------------|
+| `Directory` | ✓ Returns current path |
+| `Files`, `Files -l` | ✓ Returns file listings |
+| `Echo` | ✓ Returns text |
+| `SC` (compile) | Silent on success (check for .o file) |
+
+The daemon automatically prefers ToolServer if running.
+
 ## Known Limitations
 
-1. **MPW Shell output**: Goes to worksheet, not returned via Apple Events (use ToolServer for captured output)
-2. **Single connection**: Only one Mac client at a time
-3. Struct members named `outData`/`errData` (not stdout/stderr - reserved in MPW)
+1. **Single connection**: Only one Mac client at a time
+2. Struct members named `outData`/`errData` (not stdout/stderr - reserved in MPW)
+3. Some MPW tools write directly to worksheet (not captured even with ToolServer)
 
 ## Screenshot
 

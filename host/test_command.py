@@ -30,8 +30,8 @@ def main():
     client, addr = server.accept()
     print(f"Mac connected from {addr}")
 
-    # List Temp folder
-    command = "Files 'MeinMac:Temp:'"
+    # Verify Files still returns output
+    command = "Files -l 'MeinMac:Temp:'"
     encoded = command.encode('mac_roman')
     header = f"COMMAND:{len(encoded)}\n".encode('ascii')
 
