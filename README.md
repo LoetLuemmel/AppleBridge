@@ -62,7 +62,7 @@ Waiting for Mac to connect...
 Requirements:
 - System 7.6.1 with Open Transport
 - MPW Golden Master
-- 68k Compiler: SC, Linker: ILink with `-model far`
+- 68k Compiler: SC, Linker: **Link** (not ILink - crashes emulator) with `-model far`
 
 **IMPORTANT**: Convert files before copying to Mac:
 ```bash
@@ -218,24 +218,37 @@ if (WaitNextEvent(everyEvent, &event, 1, NULL)) {
 }
 ```
 
-### Shared Folder Write Limitation
+### Shared Folder Limitation
 
-Basilisk can READ from host Share folder but can't WRITE compilation output there.
+- **Host path**: `/Users/pitforster/Desktop/Share`
+- **Mac path**: `Unix:` (NOT "Share:")
+- **Read-only from Mac side** - can read files but can't compile from there
 
-**Solution:** Create files on Mac-local storage using MPW commands:
+**Solution:** Copy files to Mac local storage first:
 ```
-Echo 'int main() { return 0; }' > 'MeinMac:Temp:test.c'
-SC 'MeinMac:Temp:test.c'
+Duplicate Unix:source.c MeinMac:MPW:Project:source.c
+SC MeinMac:MPW:Project:source.c
+```
+
+### ILink vs Link
+
+- **ILink**: Modern linker but **crashes Basilisk II frequently**
+- **Link**: Older linker, **more stable on emulator - use this one**
+
+```
+Link -model far -o :bin:MyApp :obj:main.o "{LIBS}CLibraries:StdCLib.o" "{LIBS}Libraries:Interface.o" "{LIBS}Libraries:MacRuntime.o"
 ```
 
 ## ToolServer vs MPW Shell
 
-For automation, **use ToolServer** (`'MPSX'`) instead of MPW Shell (`'MPS '`):
+**CRITICAL**: Reading command output via AppleBridge **only works with ToolServer**.
 
-| Target | Creator | Output Behavior |
-|--------|---------|-----------------|
-| MPW Shell | `'MPS '` | Output to worksheet only, empty AE replies |
-| ToolServer | `'MPSX'` | **Output returned via Apple Events** ✓ |
+| Feature | MPW Shell ('MPS ') | ToolServer ('MPSX') |
+|---------|-------------------|---------------------|
+| Executes commands | ✓ | ✓ |
+| Output visible | Worksheet only | Via Apple Events |
+| AE reply Items | 0 (empty) | 3 (has data) |
+| Automation | Blind (no feedback) | **Full feedback** ✓ |
 
 **ToolServer output capture verified:**
 | Command | Output Captured |
@@ -245,7 +258,7 @@ For automation, **use ToolServer** (`'MPSX'`) instead of MPW Shell (`'MPS '`):
 | `Echo` | ✓ Returns text |
 | `SC` (compile) | Silent on success (check for .o file) |
 
-The daemon automatically prefers ToolServer if running.
+The daemon automatically prefers ToolServer if running. **Start ToolServer for automation!**
 
 ## Known Limitations
 
