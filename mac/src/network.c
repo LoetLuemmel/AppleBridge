@@ -100,14 +100,12 @@ OSStatus AcceptConnection(EndpointRef listenEndpoint, EndpointRef *clientEndpoin
     call.udata.buf = NULL;
     call.udata.maxlen = 0;
 
-    /* Listen for connection (blocking) */
-    do {
-        err = OTListen(listenEndpoint, &call);
-        if (err == kOTNoDataErr) {
-            /* No connection yet, wait a bit */
-            continue;
-        }
-    } while (err == kOTNoDataErr);
+    /* Check for connection (non-blocking) */
+    err = OTListen(listenEndpoint, &call);
+    if (err == kOTNoDataErr) {
+        /* No connection pending - return so event loop can run */
+        return kOTNoDataErr;
+    }
 
     if (err != noErr) {
         LogError("Listen failed", err);
