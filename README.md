@@ -2,11 +2,12 @@
 
 Connect Claude AI to classic Macintosh MPW shell running in Basilisk II emulator.
 
-## Current Status: IN PROGRESS
+## Current Status: WORKING
 
 - TCP bridge: **WORKING** - Mac daemon connects to host
+- Apple Events: **WORKING** - Commands execute in MPW Shell
+- Remote compilation: **WORKING** - SC compiler creates .o files
 - Encoding conversion: **WORKING** - UTF-8 ↔ MacRoman converter
-- Apple Events: **DEBUGGING** - Returns -903 error (Script Editor works, daemon doesn't)
 - Screenshot capture: **WORKING** (host-side, captures Basilisk II window)
 
 ## Architecture
@@ -168,7 +169,7 @@ Finds MPW Shell (`'MPS '`) or ToolServer (`'MPSX'`), sends `'misc'/'dosc'` event
 
 ### Protocol
 
-Request: `COMMAND:<length>\r<command>`
+Request: `COMMAND:<length>\n<command>` (note: uses `\n` as separator)
 
 Response:
 ```
@@ -182,11 +183,54 @@ STDERR:<length>
 
 Screenshot: `SCREENSHOT` -> `IMAGE:<w>:<h>:BMP:<size>\r<data>`
 
-## Known Issues
+## Key Fixes (2026-04-06)
 
-1. **Apple Events -903 error**: Daemon fails to send AE to MPW Shell, but Script Editor succeeds
-   - Problem likely in daemon's SIZE resource or AE addressing method
-   - Script Editor uses OSA/AppleScript which may have different code path
+### Apple Events -903 Error - FIXED
+
+The -903 (`noPortErr`) error was caused by two issues:
+
+**1. Missing SIZE resource flags:**
+
+Create `AppleBridge.r`:
+```c
+resource 'SIZE' (-1) {
+    /* ... other flags ... */
+    isHighLevelEventAware,      /* REQUIRED for Apple Events! */
+    localAndRemoteHLEvents,     /* Accept events from other apps */
+    512 * 1024,    /* preferred size */
+    256 * 1024     /* minimum size */
+};
+```
+
+Add to application after linking:
+```
+Rez AppleBridge.r -a -o :bin:AppleBridge
+```
+
+**2. Wrong event loop function:**
+
+Must use `WaitNextEvent` (not `GetNextEvent`) and handle high-level events:
+```c
+if (WaitNextEvent(everyEvent, &event, 1, NULL)) {
+    if (event.what == kHighLevelEvent) {
+        AEProcessAppleEvent(&event);
+    }
+}
+```
+
+### Shared Folder Write Limitation
+
+Basilisk can READ from host Share folder but can't WRITE compilation output there.
+
+**Solution:** Create files on Mac-local storage using MPW commands:
+```
+Echo 'int main() { return 0; }' > 'MeinMac:Temp:test.c'
+SC 'MeinMac:Temp:test.c'
+```
+
+## Known Limitations
+
+1. **MPW Shell output**: Goes to worksheet, not returned via Apple Events (use ToolServer for captured output)
 2. **Single connection**: Only one Mac client at a time
 3. Struct members named `outData`/`errData` (not stdout/stderr - reserved in MPW)
 
