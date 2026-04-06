@@ -8,6 +8,7 @@ import threading
 import sys
 
 HOST_PORT = 9000
+CONTROL_PORT = 9001  # Local control port for sending commands
 
 def get_local_ip():
     """Get the local IP address that the Mac should connect to"""
@@ -127,6 +128,45 @@ class AppleBridgeServer:
 
 def interactive_mode(server):
     """Interactive command mode"""
+    # Check if stdin is available (not background mode)
+    import select
+    import os
+
+    if not sys.stdin.isatty():
+        print("Running in non-interactive mode (no TTY).")
+        print(f"Listening for commands on localhost:{CONTROL_PORT}")
+        print("Use: uv run python send_command.py 'Directory'")
+        print("Keeping connection alive... (Ctrl+C to exit)")
+
+        # Start control socket server
+        control_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        control_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        control_socket.bind(('127.0.0.1', CONTROL_PORT))
+        control_socket.listen(5)
+        control_socket.settimeout(1.0)
+
+        try:
+            while server.connected:
+                try:
+                    ctrl_conn, addr = control_socket.accept()
+                    cmd = ctrl_conn.recv(4096).decode('utf-8').strip()
+                    if cmd:
+                        print(f"Control cmd: {cmd}")
+                        if cmd.lower() == 'screenshot':
+                            response = server.request_screenshot()
+                            ctrl_conn.sendall(f"Got {len(response)} bytes".encode('utf-8'))
+                        else:
+                            response = server.send_command(cmd)
+                            ctrl_conn.sendall((response or "No response").encode('utf-8'))
+                    ctrl_conn.close()
+                except socket.timeout:
+                    continue
+        except KeyboardInterrupt:
+            pass
+        finally:
+            control_socket.close()
+        return
+
     print("Interactive mode. Type commands to send to Mac.")
     print("Type 'quit' to exit, 'screenshot' for screenshot.")
     print()
