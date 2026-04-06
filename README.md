@@ -6,7 +6,7 @@ Connect Claude AI to classic Macintosh MPW shell running in Basilisk II emulator
 
 - TCP bridge: **Operational**
 - Command execution: **Operational** (via Apple Events to MPW Shell)
-- Screenshot capture: **Initiated** (data transfer works, image format needs work)
+- Screenshot capture: **Operational** (host-side, captures Basilisk II window)
 
 ## Architecture
 
@@ -115,7 +115,8 @@ STDERR:0
 | File | Description |
 |------|-------------|
 | `host_server.py` | TCP server with interactive mode |
-| `convert_screenshot.py` | Raw screenshot to PNG converter |
+| `screenshot.py` | Capture Basilisk II window (host-side, uses Quartz) |
+| `convert_screenshot.py` | Raw screenshot converter (legacy, Mac-side approach) |
 
 ## Technical Notes
 
@@ -153,9 +154,18 @@ Screenshot: `SCREENSHOT` -> `IMAGE:<w>:<h>:BMP:<size>\r<data>`
 
 ## Known Issues
 
-1. **Screenshot not operational**: Raw screenBits data transfers successfully (24KB), but PNG conversion doesn't produce meaningful images yet - format/dimensions need debugging
-2. Single connection only
-3. Struct members named `outData`/`errData` (not stdout/stderr - reserved)
+1. Single TCP connection only (one Mac client at a time)
+2. Struct members named `outData`/`errData` (not stdout/stderr - reserved in MPW)
+
+## Screenshot
+
+Screenshots are captured from the **host side** (not Mac side) - System 7.6.1 lacks screenshot capabilities.
+
+```bash
+/usr/bin/python3 host/screenshot.py [output.png]
+```
+
+Uses macOS Quartz to find Basilisk II window and capture via `screencapture -R`.
 
 ## Dependencies Avoided
 
