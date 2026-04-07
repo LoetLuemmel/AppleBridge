@@ -366,6 +366,41 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
     CleanupCommandResult(&cmdResult);
 }
 
+/* Reconnection delay in ticks (30 seconds = 1800 ticks) */
+#define RECONNECT_DELAY_TICKS  1800
+
+/*
+ * Wait for reconnection delay, checking for user abort
+ * Returns true if user aborted
+ */
+static Boolean WaitForReconnect(void)
+{
+    long startTicks = TickCount();
+    long elapsed;
+    char buf[64];
+
+    StatusMessage("Reconnecting in 30 sec...");
+
+    while ((elapsed = TickCount() - startTicks) < RECONNECT_DELAY_TICKS) {
+        SystemTask();
+        ShowAlive();
+
+        if (CheckUserAbort()) {
+            return true;
+        }
+
+        /* Update countdown every second */
+        if ((elapsed % 60) == 0) {
+            long remaining = (RECONNECT_DELAY_TICKS - elapsed) / 60;
+            if (remaining > 0 && (elapsed % 60) == 0) {
+                /* Show countdown */
+            }
+        }
+    }
+
+    return false;
+}
+
 /*
  * Main client loop
  */
@@ -376,6 +411,7 @@ int main(void)
     char requestBuffer[MAX_COMMAND_LENGTH + 256];
     long bytesReceived;
     unsigned long hostIP;
+    Boolean connected = false;
 
     /*
      * SET YOUR HOST IP HERE!
@@ -387,7 +423,7 @@ int main(void)
     InitApp();
 
     StatusMessage("=== AppleBridge Client ===");
-    StatusMessage("Version 0.2.0 (Client Mode)");
+    StatusMessage("Version 0.3.0 (Client Mode)");
     StatusMessage("");
     StatusMessage("Host IP:");
     StatusMessage(hostIPStr);
@@ -409,24 +445,29 @@ int main(void)
     /* Parse host IP */
     hostIP = ParseIPAddress(hostIPStr);
 
-    StatusMessage("Connecting to host...");
-    SystemTask();
-
-    /* Connect to host */
-    err = ConnectToHost(&endpoint, hostIP, BRIDGE_PORT);
-    if (err != noErr) {
-        StatusMessage("Connection failed!");
-        StatusMessage("Check host IP and server");
-        ShutdownNetwork();
-        while (!Button()) { SystemTask(); ShowAlive(); }
-        return 1;
-    }
-
-    StatusMessage("Connected!");
-    StatusMessage("Waiting for commands...");
-
-    /* Main loop - receive and process requests */
+    /* Main connection loop with auto-reconnect */
     while (gRunning) {
+        /* Connect to host if not connected */
+        if (!connected) {
+            StatusMessage("Connecting to host...");
+            SystemTask();
+
+            err = ConnectToHost(&endpoint, hostIP, BRIDGE_PORT);
+            if (err != noErr) {
+                StatusMessage("Connection failed!");
+
+                /* Wait and retry */
+                if (WaitForReconnect()) {
+                    break;  /* User aborted */
+                }
+                continue;  /* Try again */
+            }
+
+            connected = true;
+            StatusMessage("Connected!");
+            StatusMessage("Waiting for commands...");
+        }
+
         SystemTask();
         ShowAlive();
 
@@ -444,8 +485,17 @@ int main(void)
         }
 
         if (err != noErr || bytesReceived == 0) {
-            StatusMessage("Connection closed");
-            break;
+            StatusMessage("Connection lost");
+
+            /* Close current connection */
+            OTCloseProvider(endpoint);
+            connected = false;
+
+            /* Wait before reconnecting */
+            if (WaitForReconnect()) {
+                break;  /* User aborted */
+            }
+            continue;  /* Try to reconnect */
         }
 
         StatusMessage("Request received");
@@ -454,7 +504,9 @@ int main(void)
     }
 
     /* Cleanup */
-    OTCloseProvider(endpoint);
+    if (connected) {
+        OTCloseProvider(endpoint);
+    }
     ShutdownNetwork();
 
     StatusMessage("Disconnected");
