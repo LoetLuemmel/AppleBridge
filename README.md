@@ -12,32 +12,56 @@ Connect Claude AI to classic Macintosh MPW shell running in Basilisk II emulator
 
 ## Architecture
 
+```mermaid
+flowchart TB
+    subgraph Host["Host (macOS)"]
+        Claude["Claude AI"]
+        HostServer["host_server.py\n:9000"]
+        ControlPort["Control Port\n:9001"]
+    end
+
+    subgraph BAII["Basilisk II Emulator"]
+        subgraph Mac["Classic Mac (System 7.6.1)"]
+            AppleBridge["AppleBridge\nTCP Daemon"]
+            ToolServer["ToolServer\n'MPSX'"]
+            MPWShell["MPW Shell\n'MPS '"]
+        end
+    end
+
+    Claude -->|"send_command.py"| ControlPort
+    ControlPort -->|"forward"| HostServer
+    HostServer <-->|"TCP Socket\n(Mac connects OUT)"| AppleBridge
+    AppleBridge -->|"Apple Events\n'misc'/'dosc'"| ToolServer
+    AppleBridge -.->|"fallback"| MPWShell
+    ToolServer -->|"✓ Returns output\nvia AE reply"| AppleBridge
+    MPWShell -.->|"✗ Empty reply\noutput to worksheet"| AppleBridge
 ```
-┌─────────────────┐
-│   Claude AI     │
-└────────┬────────┘
-         │
-┌────────▼────────────────┐
-│  Host Server            │  (Python)
-│  host_server.py         │
-│  Listens on port 9000   │
-└────────▲────────────────┘
-         │ TCP Socket (Mac connects OUT)
-         │ Through NAT/MACNAT
-┌────────┴────────────────┐
-│  Mac TCP Daemon         │  (C/MPW 68k)
-│  AppleBridge            │
-│  Connects to host       │
-└────────┬────────────────┘
-         │ Apple Events ('misc'/'dosc')
-┌────────▼────────────────┐
-│    MPW Shell            │
-│  Creator: 'MPS '        │
-│  Execute commands       │
-└─────────────────────────┘
+
+### Communication Flow
+
+```mermaid
+sequenceDiagram
+    participant C as Claude
+    participant H as Host Server
+    participant A as AppleBridge
+    participant T as ToolServer
+
+    Note over A,H: Mac connects OUT (MACNAT)
+    A->>H: TCP Connect to :9000
+    H-->>A: Connection established
+
+    C->>H: Command via :9001
+    H->>A: COMMAND:len\n<cmd>
+    A->>T: Apple Event 'misc'/'dosc'
+    T->>T: Execute command
+    T-->>A: AE Reply (Items:3)
+    A-->>H: STATUS:0\nSTDOUT:len\n<output>
+    H-->>C: Response
 ```
 
 **Key Design**: Mac connects OUT to host (reversed client-server) because Basilisk II uses MACNAT - incoming connections are blocked, outgoing work.
+
+**Critical**: Use **ToolServer** for automation - MPW Shell returns empty AE replies!
 
 ## Quick Start
 
