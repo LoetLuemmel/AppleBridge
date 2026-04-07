@@ -55,10 +55,10 @@ typedef struct {
 /* Network functions */
 OSStatus InitializeNetwork(void);
 void ShutdownNetwork(void);
-OSStatus CreateListenSocket(EndpointRef *endpoint, InetPort port);
-OSStatus AcceptConnection(EndpointRef listenEndpoint, EndpointRef *clientEndpoint);
+OSStatus ConnectToHost(EndpointRef *endpoint, unsigned long hostIP, InetPort port);
 OSStatus ReceiveData(EndpointRef endpoint, char *buffer, long bufferSize, long *bytesReceived);
 OSStatus SendData(EndpointRef endpoint, const char *data, long dataSize);
+unsigned long ParseIPAddress(const char *ipStr);
 
 /* Protocol functions */
 BridgeResult ParseCommand(const char *request, char *command, long *commandLength);

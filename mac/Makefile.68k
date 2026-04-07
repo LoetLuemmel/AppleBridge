@@ -1,10 +1,13 @@
 # AppleBridge Mac Daemon Makefile - 68k Version
-# For use with MPW on Basilisk II (68k emulation)
-# Use this instead of the PowerPC Makefile
+# WORKING CONFIGURATION for Basilisk II
 
-# Compiler and tools (68k versions)
+# Compiler and tools
 CC = SC
 LINK = Link
+
+# You must set these variables before running make:
+# Set Libraries 'MeinMac:Interfaces&Libraries:Libraries:'
+# Set CLibraries 'MeinMac:Interfaces&Libraries:CLibraries:'
 
 # Directories
 SRC_DIR = :src:
@@ -12,70 +15,64 @@ INC_DIR = :include:
 OBJ_DIR = :obj:
 BIN_DIR = :bin:
 
-# Compiler flags for 68k
-CFLAGS = -i {INC_DIR} -w on -mc68020 -model far
+# Compiler flags
+CFLAGS = -i {INC_DIR}
 
 # Linker flags
-LDFLAGS = -m ENTRYPOINT -o {BIN_DIR}AppleBridge -t 'APPL' -c '????'
+LDFLAGS = -o {BIN_DIR}AppleBridge
 
-# Libraries for 68k
-LIBS = ∂
-    "{CLibraries}StdCLib.o" ∂
-    "{Libraries}InterfaceLib.o" ∂
-    "{Libraries}MathLib.o" ∂
-    "{Libraries}OpenTransportLib.o" ∂
-    "{Libraries}OpenTptInternetLib.o"
-
-# Source files
-SRCS = ∂
-    {SRC_DIR}main.c ∂
-    {SRC_DIR}network.c ∂
-    {SRC_DIR}protocol.c ∂
-    {SRC_DIR}command.c ∂
-    {SRC_DIR}screenshot.c ∂
-    {SRC_DIR}utils.c
+# Libraries - use {CLibraries} and {Libraries} variables
+# Set CLibraries 'MeinMac:Interfaces&Libraries:CLibraries:'
+# Set Libraries 'MeinMac:Interfaces&Libraries:Libraries:'
+LIBS_LIST = ∂
+	"{CLibraries}StdCLib.o" ∂
+	"{Libraries}OpenTransport.o" ∂
+	"{Libraries}OpenTransportApp.o" ∂
+	"{Libraries}OpenTptInet.o" ∂
+	"{Libraries}Interface.o" ∂
+	"{Libraries}MacRuntime.o"
 
 # Object files
 OBJS = ∂
-    {OBJ_DIR}main.c.o ∂
-    {OBJ_DIR}network.c.o ∂
-    {OBJ_DIR}protocol.c.o ∂
-    {OBJ_DIR}command.c.o ∂
-    {OBJ_DIR}screenshot.c.o ∂
-    {OBJ_DIR}utils.c.o
+	{OBJ_DIR}main.c.o ∂
+	{OBJ_DIR}network.c.o ∂
+	{OBJ_DIR}protocol.c.o ∂
+	{OBJ_DIR}command.c.o ∂
+	{OBJ_DIR}screenshot.c.o ∂
+	{OBJ_DIR}utils.c.o ∂
+	{OBJ_DIR}mystring.c.o
 
 # Default target
 all ƒ {BIN_DIR}AppleBridge
 
 # Link
 {BIN_DIR}AppleBridge ƒ {OBJS}
-    {LINK} {LDFLAGS} {OBJS} {LIBS}
+	{LINK} {LDFLAGS} {OBJS} {LIBS_LIST}
+	SetFile -t APPL -c '????' {BIN_DIR}AppleBridge
 
 # Compile rules
 {OBJ_DIR}main.c.o ƒ {SRC_DIR}main.c {INC_DIR}applebridge.h
-    {CC} {CFLAGS} {SRC_DIR}main.c -o {OBJ_DIR}main.c.o
+	{CC} {CFLAGS} {SRC_DIR}main.c -o {OBJ_DIR}main.c.o
 
 {OBJ_DIR}network.c.o ƒ {SRC_DIR}network.c {INC_DIR}applebridge.h
-    {CC} {CFLAGS} {SRC_DIR}network.c -o {OBJ_DIR}network.c.o
+	{CC} {CFLAGS} {SRC_DIR}network.c -o {OBJ_DIR}network.c.o
 
 {OBJ_DIR}protocol.c.o ƒ {SRC_DIR}protocol.c {INC_DIR}applebridge.h
-    {CC} {CFLAGS} {SRC_DIR}protocol.c -o {OBJ_DIR}protocol.c.o
+	{CC} {CFLAGS} {SRC_DIR}protocol.c -o {OBJ_DIR}protocol.c.o
 
 {OBJ_DIR}command.c.o ƒ {SRC_DIR}command.c {INC_DIR}applebridge.h
-    {CC} {CFLAGS} {SRC_DIR}command.c -o {OBJ_DIR}command.c.o
+	{CC} {CFLAGS} {SRC_DIR}command.c -o {OBJ_DIR}command.c.o
 
 {OBJ_DIR}screenshot.c.o ƒ {SRC_DIR}screenshot.c {INC_DIR}applebridge.h
-    {CC} {CFLAGS} {SRC_DIR}screenshot.c -o {OBJ_DIR}screenshot.c.o
+	{CC} {CFLAGS} {SRC_DIR}screenshot.c -o {OBJ_DIR}screenshot.c.o
 
 {OBJ_DIR}utils.c.o ƒ {SRC_DIR}utils.c {INC_DIR}applebridge.h
-    {CC} {CFLAGS} {SRC_DIR}utils.c -o {OBJ_DIR}utils.c.o
+	{CC} {CFLAGS} {SRC_DIR}utils.c -o {OBJ_DIR}utils.c.o
+
+{OBJ_DIR}mystring.c.o ƒ {SRC_DIR}mystring.c
+	{CC} {CFLAGS} {SRC_DIR}mystring.c -o {OBJ_DIR}mystring.c.o
 
 # Clean target
 clean ƒ
-    Delete -i {OBJ_DIR}*.o
-    Delete -i {BIN_DIR}AppleBridge
-
-# Create directories
-dirs ƒ
-    NewFolder {OBJ_DIR}
-    NewFolder {BIN_DIR}
+	Delete -i {OBJ_DIR}≈.o
+	Delete -i {BIN_DIR}AppleBridge

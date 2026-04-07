@@ -1,48 +1,35 @@
 #!/usr/bin/env python3
 """
 AppleBridge Host Server
-Mac connects TO this server (works through NAT)
+Mac connects TO this server on 192.168.3.154:9000
 """
 import socket
 import threading
 import sys
 
+HOST_INTERFACE = "192.168.3.154"  # Interface Mac connects to
 HOST_PORT = 9000
 CONTROL_PORT = 9001  # Local control port for sending commands
 
-def get_local_ip():
-    """Get the local IP address that the Mac should connect to"""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(('8.8.8.8', 80))
-        ip = s.getsockname()[0]
-    except Exception:
-        ip = '127.0.0.1'
-    finally:
-        s.close()
-    return ip
-
 class AppleBridgeServer:
-    def __init__(self, port=HOST_PORT):
+    def __init__(self, interface=HOST_INTERFACE, port=HOST_PORT):
+        self.interface = interface
         self.port = port
         self.client_socket = None
         self.server_socket = None
         self.connected = False
 
     def start(self):
-        """Start listening for Mac connection"""
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind(('0.0.0.0', self.port))
-        self.server_socket.listen(1)
-
-        local_ip = get_local_ip()
+        """Listen for Mac connection"""
         print(f"=== AppleBridge Host Server ===")
-        print(f"Listening on port {self.port}")
-        print(f"")
-        print(f"Configure Mac to connect to: {local_ip}:{self.port}")
+        print(f"Listening on {self.interface}:{self.port}")
         print(f"Waiting for Mac to connect...")
         print()
+
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server_socket.bind((self.interface, self.port))
+        self.server_socket.listen(1)
 
         self.client_socket, addr = self.server_socket.accept()
         self.connected = True

@@ -1,13 +1,16 @@
 /*
  * AppleBridge - Network Layer
  * TCP/IP communication using Open Transport
+ * CLIENT MODE - connects OUT to host server
  */
 
-#include "applebridge.h"
-#include <string.h>
-#include <stdio.h>
+#include <applebridge.h>
+#include <mystring.h>
 
 static Boolean gNetworkInitialized = false;
+
+/* External status function from main.c */
+extern void StatusMessage(const char *msg);
 
 /*
  * Initialize Open Transport network stack
@@ -22,12 +25,10 @@ OSStatus InitializeNetwork(void)
 
     err = InitOpenTransport();
     if (err != noErr) {
-        LogError("Failed to initialize Open Transport", err);
         return err;
     }
 
     gNetworkInitialized = true;
-    LogMessage("Open Transport initialized");
 
     return noErr;
 }
@@ -40,99 +41,71 @@ void ShutdownNetwork(void)
     if (gNetworkInitialized) {
         CloseOpenTransport();
         gNetworkInitialized = false;
-        LogMessage("Open Transport shutdown");
     }
 }
 
 /*
- * Create a listening TCP socket
+ * Connect to host server
  */
-OSStatus CreateListenSocket(EndpointRef *endpoint, InetPort port)
+OSStatus ConnectToHost(EndpointRef *endpoint, unsigned long hostIP, InetPort port)
 {
     OSStatus err;
-    TBind reqAddr, retAddr;
     InetAddress addr;
+    TCall sndCall;
+    TBind bindReq;
+    InetAddress localAddr;
+
+    StatusMessage("Opening TCP endpoint...");
 
     /* Create TCP endpoint */
     *endpoint = OTOpenEndpoint(OTCreateConfiguration(kTCPName), 0, NULL, &err);
     if (err != noErr) {
-        LogError("Failed to create endpoint", err);
+        StatusMessage("OTOpenEndpoint failed!");
         return err;
     }
+    StatusMessage("Endpoint opened OK");
 
-    /* Bind to port */
-    OTMemzero(&addr, sizeof(addr));
-    OTInitInetAddress(&addr, port, kOTAnyInetAddress);
+    /* Bind to any local port */
+    StatusMessage("Binding local port...");
+    OTMemzero(&localAddr, sizeof(localAddr));
+    OTInitInetAddress(&localAddr, 0, kOTAnyInetAddress);
 
-    reqAddr.addr.buf = (UInt8 *)&addr;
-    reqAddr.addr.len = sizeof(addr);
-    reqAddr.qlen = SOCKET_BACKLOG;
+    bindReq.addr.buf = (UInt8 *)&localAddr;
+    bindReq.addr.len = sizeof(localAddr);
+    bindReq.qlen = 0;
 
-    retAddr.addr.buf = NULL;
-    retAddr.addr.maxlen = 0;
-
-    err = OTBind(*endpoint, &reqAddr, &retAddr);
+    err = OTBind(*endpoint, &bindReq, NULL);
     if (err != noErr) {
-        LogError("Failed to bind socket", err);
+        StatusMessage("OTBind failed!");
+        OTCloseProvider(*endpoint);
+        return err;
+    }
+    StatusMessage("Bound OK");
+
+    /* Set up destination address */
+    StatusMessage("Connecting to host...");
+    OTMemzero(&addr, sizeof(addr));
+    OTInitInetAddress(&addr, port, hostIP);
+
+    OTMemzero(&sndCall, sizeof(sndCall));
+    sndCall.addr.buf = (UInt8 *)&addr;
+    sndCall.addr.len = sizeof(addr);
+
+    /* Connect to host */
+    err = OTConnect(*endpoint, &sndCall, NULL);
+    if (err != noErr) {
+        StatusMessage("OTConnect failed!");
         OTCloseProvider(*endpoint);
         return err;
     }
 
-    LogMessage("Socket bound and listening");
+    StatusMessage("Connected to host!");
+
     return noErr;
 }
 
 /*
- * Accept an incoming connection
- */
-OSStatus AcceptConnection(EndpointRef listenEndpoint, EndpointRef *clientEndpoint)
-{
-    OSStatus err;
-    TCall call;
-    OTResult result;
-
-    /* Wait for incoming connection */
-    OTMemzero(&call, sizeof(call));
-    call.addr.buf = NULL;
-    call.addr.maxlen = 0;
-    call.opt.buf = NULL;
-    call.opt.maxlen = 0;
-    call.udata.buf = NULL;
-    call.udata.maxlen = 0;
-
-    /* Check for connection (non-blocking) */
-    err = OTListen(listenEndpoint, &call);
-    if (err == kOTNoDataErr) {
-        /* No connection pending - return so event loop can run */
-        return kOTNoDataErr;
-    }
-
-    if (err != noErr) {
-        LogError("Listen failed", err);
-        return err;
-    }
-
-    /* Create endpoint for client */
-    *clientEndpoint = OTOpenEndpoint(OTCreateConfiguration(kTCPName), 0, NULL, &err);
-    if (err != noErr) {
-        LogError("Failed to create client endpoint", err);
-        return err;
-    }
-
-    /* Accept the connection */
-    err = OTAccept(listenEndpoint, *clientEndpoint, &call);
-    if (err != noErr) {
-        LogError("Accept failed", err);
-        OTCloseProvider(*clientEndpoint);
-        return err;
-    }
-
-    LogMessage("Connection accepted");
-    return noErr;
-}
-
-/*
- * Receive data from client
+ * Receive data from host
  */
 OSStatus ReceiveData(EndpointRef endpoint, char *buffer, long bufferSize, long *bytesReceived)
 {
@@ -145,7 +118,6 @@ OSStatus ReceiveData(EndpointRef endpoint, char *buffer, long bufferSize, long *
     result = OTRcv(endpoint, buffer, bufferSize, &flags);
 
     if (result < 0) {
-        LogError("Receive failed", result);
         return result;
     }
 
@@ -154,7 +126,7 @@ OSStatus ReceiveData(EndpointRef endpoint, char *buffer, long bufferSize, long *
 }
 
 /*
- * Send data to client
+ * Send data to host
  */
 OSStatus SendData(EndpointRef endpoint, const char *data, long dataSize)
 {
@@ -165,7 +137,6 @@ OSStatus SendData(EndpointRef endpoint, const char *data, long dataSize)
         result = OTSnd(endpoint, (void *)(data + totalSent), dataSize - totalSent, 0);
 
         if (result < 0) {
-            LogError("Send failed", result);
             return result;
         }
 
@@ -173,4 +144,26 @@ OSStatus SendData(EndpointRef endpoint, const char *data, long dataSize)
     }
 
     return noErr;
+}
+
+/*
+ * Parse IP string to unsigned long (e.g., "192.168.1.100")
+ */
+unsigned long ParseIPAddress(const char *ipStr)
+{
+    unsigned long ip = 0;
+    unsigned long octet = 0;
+    int i;
+
+    for (i = 0; ipStr[i]; i++) {
+        if (ipStr[i] >= '0' && ipStr[i] <= '9') {
+            octet = octet * 10 + (ipStr[i] - '0');
+        } else if (ipStr[i] == '.') {
+            ip = (ip << 8) | (octet & 0xFF);
+            octet = 0;
+        }
+    }
+    ip = (ip << 8) | (octet & 0xFF);
+
+    return ip;
 }
