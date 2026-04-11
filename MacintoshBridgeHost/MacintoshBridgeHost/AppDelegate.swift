@@ -11,6 +11,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var screenshotButton: NSButton!
 
     var tcpServer: TCPServer?
+    var controlServer: LocalControlServer?
     var screenCapture: ScreenCapture?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -24,8 +25,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Create main window
         setupWindow()
 
-        // Start TCP server
-        startServer()
+        // Start Mac daemon server (port 9000)
+        startMacDaemonServer()
+
+        // Start MCP control server (port 9001)
+        startControlServer()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -101,12 +105,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Server
 
-    private func startServer() {
+    private func startMacDaemonServer() {
         tcpServer = TCPServer(port: 9000)
         tcpServer?.delegate = self
         tcpServer?.start()
 
-        updateStatus("Listening on port 9000")
+        // Link CommandHandler with Mac daemon server
+        CommandHandler.shared.macDaemonServer = tcpServer
+
+        updateStatus("Mac daemon: Listening on port 9000")
+    }
+
+    private func startControlServer() {
+        controlServer = LocalControlServer(port: 9001)
+        controlServer?.delegate = self
+        controlServer?.macDaemonServer = tcpServer
+        controlServer?.start()
+
+        updateStatus("MCP control: Listening on port 9001")
     }
 
     // MARK: - Actions
@@ -178,24 +194,50 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension AppDelegate: TCPServerDelegate {
     func serverDidStart() {
-        updateStatus("Listening on port 9000")
+        updateStatus("Mac daemon: Listening on port 9000")
     }
 
     func serverDidAcceptConnection(from address: String) {
-        updateConnection(address)
-        updateStatus("Connected")
+        updateConnection("Mac: \(address)")
+        updateStatus("Mac daemon: Connected")
     }
 
     func serverDidDisconnect() {
-        updateConnection("None")
-        updateStatus("Listening on port 9000")
+        updateConnection("Mac: None")
+        updateStatus("Mac daemon: Listening on port 9000")
     }
 
     func serverDidReceiveCommand(_ command: String) {
-        updateLastCommand(command)
+        updateLastCommand("Mac: \(command)")
     }
 
     func serverDidEncounterError(_ error: Error) {
-        updateStatus("Error: \(error.localizedDescription)")
+        updateStatus("Mac daemon error: \(error.localizedDescription)")
+    }
+}
+
+// MARK: - LocalControlServerDelegate
+
+extension AppDelegate: LocalControlServerDelegate {
+    func controlServerDidStart() {
+        updateStatus("MCP control: Listening on port 9001")
+    }
+
+    func controlServerDidAcceptConnection(from address: String) {
+        updateConnection("MCP: \(address)")
+        updateStatus("MCP control: Connected")
+    }
+
+    func controlServerDidDisconnect() {
+        updateConnection("MCP: None")
+        updateStatus("MCP control: Listening on port 9001")
+    }
+
+    func controlServerDidReceiveCommand(_ command: String) {
+        updateLastCommand("MCP: \(command)")
+    }
+
+    func controlServerDidEncounterError(_ error: Error) {
+        updateStatus("MCP control error: \(error.localizedDescription)")
     }
 }

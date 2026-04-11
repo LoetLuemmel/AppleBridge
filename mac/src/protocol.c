@@ -17,10 +17,12 @@ BridgeResult ParseCommand(const char *request, char *command, long *commandLengt
     long length;
     char lengthStr[32];
     int i;
+    char debugMsg[256];
 
     /* Check for COMMAND: prefix */
     if (strncmp(request, PROTO_COMMAND, strlen(PROTO_COMMAND)) != 0) {
-        LogMessage("Invalid command format - missing COMMAND: prefix");
+        sprintf(debugMsg, "Invalid format - got: '%.100s'", request);
+        LogMessage(debugMsg);
         return kBridgeProtocolErr;
     }
 

@@ -53,8 +53,8 @@ class ScreenCapture {
 
             // Configure capture
             let config = SCStreamConfiguration()
-            config.width = Int(window.frame.width * 2)  // Retina
-            config.height = Int(window.frame.height * 2)
+            config.width = Int(window.frame.width)  // Match Mac resolution (1024x768)
+            config.height = Int(window.frame.height)
             config.scalesToFit = false
             config.showsCursor = false
 
@@ -94,7 +94,12 @@ class ScreenCapture {
             return false
         }
 
-        CGImageDestinationAddImage(destination, image, nil)
+        // Add compression for smaller file size
+        let properties: [String: Any] = [
+            kCGImagePropertyPNGCompressionLevel as String: 9
+        ]
+
+        CGImageDestinationAddImage(destination, image, properties as CFDictionary)
 
         if CGImageDestinationFinalize(destination) {
             print("Screenshot saved to: \(url.path)")
@@ -128,7 +133,12 @@ class ScreenCapture {
             return nil
         }
 
-        CGImageDestinationAddImage(destination, image, nil)
+        // Add compression for PNG (max compression level for small file size)
+        let properties: [String: Any] = [
+            kCGImagePropertyPNGCompressionLevel as String: 9
+        ]
+
+        CGImageDestinationAddImage(destination, image, properties as CFDictionary)
 
         if CGImageDestinationFinalize(destination) {
             return data as Data

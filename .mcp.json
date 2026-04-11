@@ -3,7 +3,7 @@
     "applebridge": {
       "type": "stdio",
       "command": "uv",
-      "args": ["run", "python", "-m", "mcp"],
+      "args": ["run", "python", "-m", "mcp.server"],
       "env": {}
     }
   }

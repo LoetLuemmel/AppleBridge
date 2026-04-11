@@ -5,99 +5,128 @@ class CommandHandler {
     static let shared = CommandHandler()
 
     private let screenCapture = ScreenCapture()
+    weak var macDaemonServer: TCPServer?  // Reference to Mac daemon connection
+
+    // Pending response handler
+    private var pendingResponseHandler: ((String) -> Void)?
+    private let responseQueue = DispatchQueue(label: "com.macintoshbridge.response")
 
     private init() {}
 
     // MARK: - Command Processing
 
-    func handle(command: String, server: TCPServer) {
+    // New completion-handler based API for both servers
+    func handle(command: String, completion: @escaping (String) -> Void) {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Check for special commands
         if trimmed.uppercased() == "SCREENSHOT" {
-            handleScreenshot(server: server)
+            handleScreenshot(completion: completion)
             return
         }
 
         if trimmed.uppercased() == "PING" {
-            sendResponse("PONG", to: server)
+            completion(formatResponse(status: 0, stdout: "PONG", stderr: ""))
             return
         }
 
-        // Forward command to ToolServer via AppleScript
-        forwardToToolServer(command: trimmed, server: server)
+        // Forward command to Mac daemon
+        forwardToMacDaemon(command: trimmed, completion: completion)
     }
 
-    // MARK: - Screenshot Handling
-
-    private func handleScreenshot(server: TCPServer) {
-        guard let image = screenCapture.captureBasiliskWindow() else {
-            sendResponse("ERROR:Could not capture Basilisk II window", to: server)
-            return
-        }
-
-        guard let imageData = screenCapture.getImageData(image, format: .png) else {
-            sendResponse("ERROR:Could not encode image", to: server)
-            return
-        }
-
-        // Send image with header: SCREENSHOT:<length>\r\n<data>
-        let header = "SCREENSHOT:\(imageData.count)\r\n"
-        guard let headerData = header.data(using: .utf8) else {
-            sendResponse("ERROR:Internal error", to: server)
-            return
-        }
-
-        var responseData = Data()
-        responseData.append(headerData)
-        responseData.append(imageData)
-
-        server.send(data: responseData) { error in
-            if let error = error {
-                print("Failed to send screenshot: \(error)")
-            } else {
-                print("Screenshot sent (\(imageData.count) bytes)")
+    // Legacy method for backward compatibility with TCPServer
+    func handle(command: String, server: TCPServer) {
+        handle(command: command) { response in
+            server.sendString(response) { error in
+                if let error = error {
+                    print("Failed to send response: \(error)")
+                }
             }
         }
     }
 
-    // MARK: - ToolServer Forwarding
+    // MARK: - Screenshot Handling
 
-    private func forwardToToolServer(command: String, server: TCPServer) {
-        // Use osascript to send Apple Event to ToolServer
-        let script = """
-        tell application "ToolServer"
-            do script "\(escapeForAppleScript(command))"
-        end tell
-        """
+    private func handleScreenshot(completion: @escaping (String) -> Void) {
+        guard let image = screenCapture.captureBasiliskWindow() else {
+            completion("ERROR:Could not capture Basilisk II window\n\n")
+            return
+        }
 
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        task.arguments = ["-e", script]
+        guard let imageData = screenCapture.getImageData(image, format: .png) else {
+            completion("ERROR:Could not encode image\n\n")
+            return
+        }
 
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        task.standardOutput = stdoutPipe
-        task.standardError = stderrPipe
+        // Encode as base64 for text transport
+        let base64 = imageData.base64EncodedString()
 
-        do {
-            try task.run()
-            task.waitUntilExit()
+        // Return in MCP format (STATUS/STDOUT/STDERR)
+        let response = formatResponse(status: 0, stdout: base64, stderr: "")
+        completion(response)
+    }
 
-            let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+    // MARK: - Mac Daemon Forwarding
 
-            let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
-            let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+    private func forwardToMacDaemon(command: String, completion: @escaping (String) -> Void) {
+        guard let macServer = macDaemonServer, macServer.connection != nil else {
+            completion("ERROR:Mac daemon not connected\n\n")
+            return
+        }
 
-            let status = task.terminationStatus
+        // Format command for Mac daemon protocol
+        guard let commandData = command.data(using: .macOSRoman) else {
+            completion("ERROR:Invalid command encoding\n\n")
+            return
+        }
 
-            // Format response similar to Python version
-            let response = formatResponse(status: Int(status), stdout: stdout, stderr: stderr)
-            sendResponse(response, to: server)
+        let header = "COMMAND:\(commandData.count)\n".data(using: .ascii)!
+        var packet = Data()
+        packet.append(header)
+        packet.append(commandData)
 
-        } catch {
-            sendResponse("ERROR:Failed to execute command - \(error.localizedDescription)", to: server)
+        // Store the completion handler for when response arrives
+        responseQueue.sync {
+            pendingResponseHandler = completion
+        }
+
+        // Send to Mac daemon
+        macServer.send(data: packet) { error in
+            if let error = error {
+                self.responseQueue.sync {
+                    self.pendingResponseHandler = nil
+                }
+                completion("ERROR:Failed to send to Mac: \(error.localizedDescription)\n\n")
+            } else {
+                print("Command forwarded to Mac daemon, waiting for response...")
+
+                // Set timeout for response (30 seconds)
+                DispatchQueue.global().asyncAfter(deadline: .now() + 30.0) {
+                    self.responseQueue.sync {
+                        if self.pendingResponseHandler != nil {
+                            print("Response timeout - no response from Mac daemon")
+                            self.pendingResponseHandler = nil
+                            completion("ERROR:Timeout waiting for Mac daemon response\n\n")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Response Handling
+
+    // Called by TCPServer when Mac daemon sends a response
+    func handleMacDaemonResponse(_ response: String) {
+        print("Received response from Mac daemon: \(response.prefix(100))...")
+
+        responseQueue.sync {
+            if let handler = pendingResponseHandler {
+                handler(response)
+                pendingResponseHandler = nil
+            } else {
+                print("Warning: Received response but no pending handler")
+            }
         }
     }
 
@@ -107,29 +136,14 @@ class CommandHandler {
         let stdoutTrimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         let stderrTrimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        var response = "STATUS:\(status)\r\n"
-        response += "STDOUT:\(stdoutTrimmed.count)\r\n"
+        var response = "STATUS:\(status)\n"
+        response += "STDOUT:\(stdoutTrimmed.count)\n"
         response += stdoutTrimmed
-        response += "\r\n"
-        response += "STDERR:\(stderrTrimmed.count)\r\n"
+        response += "\n"
+        response += "STDERR:\(stderrTrimmed.count)\n"
         response += stderrTrimmed
-        response += "\r\n\r\n"
+        response += "\n\n"
 
         return response
-    }
-
-    private func sendResponse(_ response: String, to server: TCPServer) {
-        server.sendString(response) { error in
-            if let error = error {
-                print("Failed to send response: \(error)")
-            }
-        }
-    }
-
-    private func escapeForAppleScript(_ string: String) -> String {
-        // Escape backslashes and quotes for AppleScript
-        return string
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 }

@@ -13,7 +13,7 @@ class TCPServer {
 
     private let port: UInt16
     private var listener: NWListener?
-    private var connection: NWConnection?
+    var connection: NWConnection?  // Made internal for CommandHandler access
     private let queue = DispatchQueue(label: "com.macintoshbridge.tcpserver")
 
     weak var delegate: TCPServerDelegate?
@@ -214,6 +214,14 @@ class TCPServer {
     }
 
     private func handleCommand(_ command: String) {
+        // Check if this is a response from Mac daemon (starts with STATUS:)
+        if command.hasPrefix("STATUS:") {
+            print("Received response from Mac daemon")
+            CommandHandler.shared.handleMacDaemonResponse(command)
+            return
+        }
+
+        // Otherwise, it's a command
         print("Received command: \(command)")
         DispatchQueue.main.async {
             self.delegate?.serverDidReceiveCommand(command)
