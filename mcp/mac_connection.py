@@ -1,144 +1,111 @@
 """
 AppleBridge Mac Connection
-Manages TCP connection from the Mac daemon (Mac connects OUT to us).
+Connects to MacintoshBridgeHost server on localhost.
 """
 
 import socket
 import subprocess
 import os
 import sys
-import threading
 from typing import Optional, Tuple
 
 # Default configuration
-DEFAULT_PORT = 9000
+DEFAULT_HOST = "localhost"
+DEFAULT_PORT = 9001
 SHARE_FOLDER = "/Users/pitforster/Desktop/Share"
 
 
 class MacConnection:
     """
-    Connection to classic Mac via AppleBridge.
+    Connection to MacintoshBridgeHost server.
 
-    The Mac daemon connects OUT to us (reversed architecture due to NAT).
-    We listen on a port and wait for the Mac to connect.
+    Connects TO MacintoshBridgeHost on localhost:9001 (control port).
+    MacintoshBridgeHost then forwards commands to the Mac daemon.
     """
 
-    def __init__(self, port: int = DEFAULT_PORT):
+    def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT):
+        self.host = host
         self.port = port
-        self.server_socket: Optional[socket.socket] = None
-        self.client_socket: Optional[socket.socket] = None
+        self.socket: Optional[socket.socket] = None
         self.connected = False
-        self._listen_thread: Optional[threading.Thread] = None
-
-    def start_server(self) -> bool:
-        """Start listening for Mac connection."""
-        try:
-            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.server_socket.bind(('0.0.0.0', self.port))
-            self.server_socket.listen(1)
-            print(f"AppleBridge: Listening on port {self.port}", file=sys.stderr)
-            return True
-        except Exception as e:
-            print(f"AppleBridge: Failed to start server: {e}", file=sys.stderr)
-            return False
-
-    def wait_for_connection(self, timeout: float = None) -> bool:
-        """Wait for Mac daemon to connect."""
-        if not self.server_socket:
-            if not self.start_server():
-                return False
-
-        try:
-            if timeout:
-                self.server_socket.settimeout(timeout)
-            self.client_socket, addr = self.server_socket.accept()
-            self.connected = True
-            print(f"AppleBridge: Mac connected from {addr}", file=sys.stderr)
-            return True
-        except socket.timeout:
-            print("AppleBridge: Timeout waiting for Mac connection", file=sys.stderr)
-            return False
-        except Exception as e:
-            print(f"AppleBridge: Connection error: {e}", file=sys.stderr)
-            return False
 
     def connect(self) -> bool:
-        """Start server and wait for Mac connection."""
-        if self.connected:
+        """Connect to MacintoshBridgeHost server."""
+        if self.connected and self.socket:
             return True
-        if not self.server_socket:
-            self.start_server()
-        # Short timeout - Mac should already be trying to connect
-        return self.wait_for_connection(timeout=10.0)
 
-    def start_background_listen(self):
-        """Start listening for Mac connection in background thread."""
-        if self._listen_thread and self._listen_thread.is_alive():
-            return
-
-        if not self.server_socket:
-            self.start_server()
-
-        def listen_thread():
-            self.wait_for_connection(timeout=None)  # Wait indefinitely
-
-        self._listen_thread = threading.Thread(target=listen_thread, daemon=True)
-        self._listen_thread.start()
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.connect((self.host, self.port))
+            self.connected = True
+            print(f"AppleBridge: Connected to MacintoshBridgeHost at {self.host}:{self.port}", file=sys.stderr)
+            return True
+        except Exception as e:
+            print(f"AppleBridge: Failed to connect to MacintoshBridgeHost: {e}", file=sys.stderr)
+            self.socket = None
+            self.connected = False
+            return False
 
     def is_connected(self) -> bool:
-        """Check if Mac is connected."""
-        return self.connected and self.client_socket is not None
+        """Check if connected to MacintoshBridgeHost."""
+        # Test actual connection since we use fresh sockets per command
+        try:
+            test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            test_sock.settimeout(1.0)
+            test_sock.connect((self.host, self.port))
+            test_sock.close()
+            return True
+        except:
+            return False
 
     def disconnect(self):
-        """Disconnect and stop server."""
-        if self.client_socket:
+        """Disconnect from MacintoshBridgeHost."""
+        if self.socket:
             try:
-                self.client_socket.close()
+                self.socket.close()
             except:
                 pass
-        if self.server_socket:
-            try:
-                self.server_socket.close()
-            except:
-                pass
-        self.client_socket = None
-        self.server_socket = None
+        self.socket = None
         self.connected = False
 
     def send_command(self, command: str, timeout: float = 30.0) -> Tuple[int, str, str]:
         """
-        Send a command to the Mac and get response.
+        Send a command to MacintoshBridgeHost and get response.
 
         Returns:
             Tuple of (status_code, stdout, stderr)
         """
-        if not self.connected or not self.client_socket:
-            raise ConnectionError("Mac not connected")
+        # Always create a fresh connection for each command
+        # This ensures we don't have stale data and the server can close cleanly
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
 
-        # Encode command to MacRoman
-        encoded_command = command.encode('mac_roman', errors='replace')
-
-        # Format: COMMAND:<length>\n<command>
-        header = f"COMMAND:{len(encoded_command)}\n".encode('ascii')
-        self.client_socket.sendall(header + encoded_command)
-
-        # Receive response with timeout
-        self.client_socket.settimeout(timeout)
-        response = b""
         try:
+            sock.connect((self.host, self.port))
+
+            # Send raw command - LocalControlServer will format it for Mac daemon
+            # IMPORTANT: Encode as MacRoman, not UTF-8!
+            message = f"{command}\n\n"
+            sock.sendall(message.encode('mac_roman'))
+
+            # Receive response until connection closes
+            response = b""
             while True:
-                chunk = self.client_socket.recv(4096)
-                if not chunk:
+                try:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        # Connection closed by server - this is normal
+                        break
+                    response += chunk
+                except socket.timeout:
+                    # Timeout - use what we have
                     break
-                response += chunk
-                # Check for end of response
-                if b"\r\r" in response or b"\n\n" in response:
-                    break
-        except socket.timeout:
-            pass
+
+        except Exception as e:
+            print(f"AppleBridge: Command error: {e}", file=sys.stderr)
+            raise
         finally:
-            self.client_socket.settimeout(None)
+            sock.close()
 
         return self._parse_response(response)
 
@@ -193,36 +160,6 @@ class MacConnection:
 
         return status, stdout.strip(), stderr.strip()
 
-    def take_screenshot(self, output_path: Optional[str] = None) -> Optional[str]:
-        """
-        Capture screenshot of Basilisk II window.
-
-        Args:
-            output_path: Path to save screenshot. If None, uses temp file.
-
-        Returns:
-            Path to screenshot file, or None on failure.
-        """
-        if output_path is None:
-            output_path = "/tmp/basilisk_screenshot.png"
-
-        screenshot_script = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
-            "host", "screenshot.py"
-        )
-
-        try:
-            result = subprocess.run(
-                ["/usr/bin/python3", screenshot_script, output_path],
-                capture_output=True,
-                text=True
-            )
-            if result.returncode == 0 and os.path.exists(output_path):
-                return output_path
-        except Exception:
-            pass
-
-        return None
 
 
 # Singleton connection instance

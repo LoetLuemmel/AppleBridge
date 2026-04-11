@@ -309,24 +309,30 @@ def mac_compile(source_path: str, output_path: Optional[str] = None,
 
 
 def mac_screenshot() -> Dict[str, Any]:
-    """Capture screenshot of Basilisk II window."""
+    """Capture screenshot via MacintoshBridgeHost."""
     try:
         conn = get_connection()
-        screenshot_path = conn.take_screenshot()
+        if not conn.is_connected():
+            if not conn.connect():
+                return {
+                    "success": False,
+                    "error": "MacintoshBridgeHost not available"
+                }
 
-        if screenshot_path and os.path.exists(screenshot_path):
-            with open(screenshot_path, 'rb') as f:
-                image_data = f.read()
+        # Send SCREENSHOT command
+        status, stdout, stderr = conn.send_command("SCREENSHOT", timeout=10.0)
 
+        if status == 0 and stdout:
+            # stdout already contains base64-encoded PNG
             return {
                 "success": True,
-                "image": base64.b64encode(image_data).decode('ascii'),
+                "image": stdout,  # Already base64 encoded
                 "format": "png"
             }
         else:
             return {
                 "success": False,
-                "error": "Failed to capture screenshot"
+                "error": stderr or "Screenshot failed"
             }
     except Exception as e:
         return {

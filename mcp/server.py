@@ -21,18 +21,10 @@ class MCPServer:
     """MCP Server for AppleBridge."""
 
     def __init__(self):
-        self.connection: Optional[MacConnection] = None
-        # Start listening for Mac connection immediately
-        self._start_mac_listener()
-
-    def _start_mac_listener(self):
-        """Start listening for Mac daemon connection in background."""
-        try:
-            self.connection = get_connection()
-            self.connection.start_background_listen()
-            print("AppleBridge MCP: Waiting for Mac to connect...", file=sys.stderr)
-        except Exception as e:
-            print(f"AppleBridge MCP: Failed to start listener: {e}", file=sys.stderr)
+        # Connection will be established on-demand when tools are called
+        print("AppleBridge MCP Server initialized", file=sys.stderr)
+        print("MacintoshBridgeHost should be running on localhost:9001", file=sys.stderr)
+        print("Mac daemon should connect to MacintoshBridgeHost on port 9000", file=sys.stderr)
 
     def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Handle a single MCP request."""
