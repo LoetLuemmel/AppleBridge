@@ -352,6 +352,8 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
     /* Execute command */
     result = ExecuteCommand(command, &cmdResult);
 
+    StatusMessage("Command executed");
+
     /* Format response */
     FormatResponse(&cmdResult, responseBuffer, &responseLength);
 
@@ -484,6 +486,14 @@ int main(void)
             continue;
         }
 
+        if (err != noErr) {
+            char errMsg[80];
+            strcpy(errMsg, "ReceiveData error: ");
+            /* Add error code - simplified */
+            StatusMessage(errMsg);
+            StatusMessage("Connection lost");
+        }
+
         if (err != noErr || bytesReceived == 0) {
             StatusMessage("Connection lost");
 
@@ -500,7 +510,6 @@ int main(void)
 
         StatusMessage("Request received");
         ProcessRequest(endpoint, requestBuffer, bytesReceived);
-        StatusMessage("Waiting for commands...");
     }
 
     /* Cleanup */

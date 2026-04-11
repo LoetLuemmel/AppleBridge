@@ -1,97 +1,175 @@
 /*
  * AppleBridge - Command Execution
- * Execute MPW shell commands and capture output
+ * Execute MPW shell commands via Apple Events
+ * Production version with minimal logging
  */
 
-#include "applebridge.h"
-#include <string.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <applebridge.h>
+#include <mystring.h>
+#include <AppleEvents.h>
+#include <Processes.h>
+#include <Memory.h>
+#include <Gestalt.h>
+
+/* MPW Shell signature */
+#define kMPWShellCreator 'MPS '
+
+/* ToolServer signature (preferred for automation) */
+#define kToolServerCreator 'MPSX'
+
+static Boolean gAEInitialized = false;
 
 /*
- * Execute an MPW shell command
- * This is a simplified version - in production, you'd use MPW's Execute() or Apple Events
+ * Initialize Apple Events
+ */
+static OSErr InitAppleEvents(void)
+{
+	OSErr err;
+	long response;
+
+	if (gAEInitialized) return noErr;
+
+	err = Gestalt(gestaltAppleEventsAttr, &response);
+	if (err != noErr) return err;
+
+	if (!(response & (1 << gestaltAppleEventsPresent))) {
+		return -1;
+	}
+
+	gAEInitialized = true;
+	return noErr;
+}
+
+/*
+ * Find running application by signature
+ */
+static OSErr FindAppBySignature(OSType signature, ProcessSerialNumber *psn)
+{
+	ProcessInfoRec info;
+	FSSpec appSpec;
+	Str255 name;
+	OSErr err;
+
+	psn->highLongOfPSN = 0;
+	psn->lowLongOfPSN = kNoProcess;
+
+	info.processInfoLength = sizeof(ProcessInfoRec);
+	info.processName = name;
+	info.processAppSpec = &appSpec;
+
+	while (GetNextProcess(psn) == noErr) {
+		err = GetProcessInformation(psn, &info);
+		if (err == noErr && info.processSignature == signature) {
+			return noErr;
+		}
+	}
+
+	return procNotFound;
+}
+
+/*
+ * Send DoScript event to target app
+ */
+static OSErr SendDoScript(ProcessSerialNumber *psn, const char *script,
+						  char *resultBuf, long resultBufSize, long *resultLen)
+{
+	OSErr err;
+	AppleEvent event, reply;
+	AEAddressDesc target;
+	DescType actualType;
+	Size actualSize;
+
+	*resultLen = 0;
+
+	/* Create target descriptor */
+	err = AECreateDesc(typeProcessSerialNumber, psn, sizeof(*psn), &target);
+	if (err != noErr) return err;
+
+	/* Create Apple Event */
+	err = AECreateAppleEvent('misc', 'dosc', &target,
+							 kAutoGenerateReturnID, kAnyTransactionID, &event);
+	AEDisposeDesc(&target);
+	if (err != noErr) return err;
+
+	/* Add script parameter */
+	err = AEPutParamPtr(&event, keyDirectObject, typeChar, script, strlen(script));
+	if (err != noErr) {
+		AEDisposeDesc(&event);
+		return err;
+	}
+
+	/* Send the event */
+	err = AESend(&event, &reply,
+				 kAEWaitReply | kAECanSwitchLayer,
+				 kAENormalPriority,
+				 kAEDefaultTimeout,
+				 NULL, NULL);
+	AEDisposeDesc(&event);
+	if (err != noErr) return err;
+
+	/* Try to get result as typeChar */
+	err = AEGetParamPtr(&reply, keyDirectObject, typeChar,
+						&actualType, resultBuf, resultBufSize - 1, &actualSize);
+
+	if (err == noErr && actualSize > 0) {
+		resultBuf[actualSize] = '\0';
+		*resultLen = actualSize;
+	} else {
+		/* Try alternate key */
+		err = AEGetParamPtr(&reply, '----', typeChar,
+							&actualType, resultBuf, resultBufSize - 1, &actualSize);
+		if (err == noErr && actualSize > 0) {
+			resultBuf[actualSize] = '\0';
+			*resultLen = actualSize;
+		}
+	}
+
+	AEDisposeDesc(&reply);
+	return noErr;
+}
+
+/*
+ * Execute command via Apple Events
  */
 BridgeResult ExecuteCommand(const char *command, CommandResult *result)
 {
-    FILE *fp;
-    char tempFile[256];
-    char fullCommand[MAX_COMMAND_LENGTH + 256];
-    int exitCode;
+	OSErr err;
+	ProcessSerialNumber psn;
+	long resultLen;
 
-    LogMessage("Executing command:");
-    LogMessage(command);
+	result->exitCode = 0;
+	result->outData[0] = '\0';
+	result->errData[0] = '\0';
 
-    /* Initialize result */
-    result->exitCode = 0;
-    result->stdout[0] = '\0';
-    result->stderr[0] = '\0';
+	err = InitAppleEvents();
+	if (err != noErr) {
+		strcpy(result->errData, "Apple Events not available");
+		result->exitCode = -1;
+		return kBridgeCommandErr;
+	}
 
-    /* Create temporary file for output */
-    sprintf(tempFile, "HD:temp:bridge_output_%ld.txt", TickCount());
+	/* Try ToolServer first, then MPW Shell */
+	err = FindAppBySignature(kToolServerCreator, &psn);
+	if (err != noErr) {
+		err = FindAppBySignature(kMPWShellCreator, &psn);
+		if (err != noErr) {
+			strcpy(result->errData, "ToolServer/MPW Shell not running");
+			result->exitCode = -1;
+			return kBridgeCommandErr;
+		}
+	}
 
-    /* Build command with output redirection
-     * NOTE: This is a simplified approach. In a real MPW tool, you would:
-     * 1. Use MPW's Execute() function for better integration
-     * 2. Or use Apple Events to communicate with MPW Shell
-     * 3. Or implement this as an MPW tool that runs within the shell
-     */
-    sprintf(fullCommand, "%s > \"%s\"", command, tempFile);
+	err = SendDoScript(&psn, command, result->outData, MAX_RESPONSE_LENGTH - 1, &resultLen);
 
-    /* Execute command using system()
-     * WARNING: This is a placeholder. MPW doesn't have a standard system() call.
-     * You would need to implement this using:
-     * - MPW's Execute() function
-     * - Apple Events to send commands to MPW Shell
-     * - Or run this as an MPW tool with direct shell access
-     */
-    exitCode = 0; /* Placeholder */
+	if (err != noErr) {
+		result->exitCode = err;
+		return kBridgeCommandErr;
+	}
 
-    /* Read output from temp file */
-    fp = fopen(tempFile, "r");
-    if (fp != NULL) {
-        size_t bytesRead = fread(result->stdout, 1, MAX_RESPONSE_LENGTH - 1, fp);
-        result->stdout[bytesRead] = '\0';
-        fclose(fp);
-
-        /* Clean up temp file */
-        remove(tempFile);
-    } else {
-        strcpy(result->stderr, "Failed to read command output");
-        result->exitCode = -1;
-        return kBridgeCommandErr;
-    }
-
-    result->exitCode = exitCode;
-
-    LogMessage("Command completed");
-
-    return kBridgeNoErr;
+	return kBridgeNoErr;
 }
 
-/*
- * Clean up command result resources
- */
 void CleanupCommandResult(CommandResult *result)
 {
-    /* Nothing to clean up in this simple implementation */
-    /* In a more complex version with dynamic allocation, you'd free resources here */
+	/* Nothing to cleanup */
 }
-
-/*
- * ALTERNATIVE IMPLEMENTATION NOTE:
- *
- * For a production MPW tool, you should use one of these approaches:
- *
- * 1. MPW Execute() function:
- *    #include <CursorCtl.h>
- *    OSErr Execute(StringPtr command, StringPtr *result);
- *
- * 2. Apple Events to MPW Shell:
- *    Send 'misc'/'dosc' event with command as parameter
- *    Receive result via reply event
- *
- * 3. Implement as MPW tool with stdin/stdout:
- *    Use standard I/O within MPW environment
- *    Tool runs continuously and processes commands from TCP socket
- */

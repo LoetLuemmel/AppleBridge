@@ -5,9 +5,9 @@
 
 #include <mystring.h>
 
-long mystrlen(const char *s)
+size_t mystrlen(const char *s)
 {
-    long len = 0;
+    size_t len = 0;
     while (*s++) len++;
     return len;
 }
@@ -19,7 +19,7 @@ char *mystrcpy(char *dest, const char *src)
     return dest;
 }
 
-char *mystrncpy(char *dest, const char *src, long n)
+char *mystrncpy(char *dest, const char *src, size_t n)
 {
     char *d = dest;
     while (n > 0 && *src) {
@@ -50,7 +50,7 @@ int mystrcmp(const char *s1, const char *s2)
     return (unsigned char)*s1 - (unsigned char)*s2;
 }
 
-int mystrncmp(const char *s1, const char *s2, long n)
+int mystrncmp(const char *s1, const char *s2, size_t n)
 {
     while (n > 0 && *s1 && *s1 == *s2) {
         s1++;

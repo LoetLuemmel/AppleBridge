@@ -5,12 +5,17 @@
 #ifndef MYSTRING_H
 #define MYSTRING_H
 
-long mystrlen(const char *s);
+#ifndef __SIZE_T__
+#define __SIZE_T__
+typedef unsigned int size_t;
+#endif
+
+size_t mystrlen(const char *s);
 char *mystrcpy(char *dest, const char *src);
-char *mystrncpy(char *dest, const char *src, long n);
+char *mystrncpy(char *dest, const char *src, size_t n);
 char *mystrcat(char *dest, const char *src);
 int mystrcmp(const char *s1, const char *s2);
-int mystrncmp(const char *s1, const char *s2, long n);
+int mystrncmp(const char *s1, const char *s2, size_t n);
 
 /* Macros to replace standard functions */
 #define strlen mystrlen
