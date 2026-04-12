@@ -14,60 +14,100 @@ Connect Claude AI to classic Macintosh MPW shell running in Basilisk II emulator
 
 ```mermaid
 flowchart TB
-    subgraph Host["Host (macOS)"]
-        Claude["Claude AI"]
-        HostServer["host_server.py\n:9000"]
-        ControlPort["Control Port\n:9001"]
+    subgraph Host["Host (macOS Sequoia)"]
+        Claude["Claude Code\n(AI/LLM)"]
+        MCPServer["MacintoshBridgeHost\n(Swift)"]
+        MCPPort["MCP Server\n:9001"]
+        TCPPort["TCP Server\n:9000"]
     end
 
     subgraph BAII["Basilisk II Emulator"]
         subgraph Mac["Classic Mac (System 7.6.1)"]
-            AppleBridge["AppleBridge\nTCP Daemon"]
+            AppleBridge["AppleBridge Daemon\n(C, 68k)"]
+            OT["OpenTransport\nTCP/IP Stack"]
             ToolServer["ToolServer\n'MPSX'"]
             MPWShell["MPW Shell\n'MPS '"]
         end
     end
 
-    Claude -->|"send_command.py"| ControlPort
-    ControlPort -->|"forward"| HostServer
-    HostServer <-->|"TCP Socket\n(Mac connects OUT)"| AppleBridge
+    Claude -->|"MCP Protocol\nTool calls"| MCPPort
+    MCPPort -->|"MCP tools:\nmpw_execute\nmac_write_file\nmac_screenshot"| MCPServer
+    MCPServer <-->|"Forward commands\nvia TCP"| TCPPort
+    TCPPort <-->|"TCP Socket\n(Mac connects OUT)"| OT
+    OT <-->|"Network layer"| AppleBridge
     AppleBridge -->|"Apple Events\n'misc'/'dosc'"| ToolServer
     AppleBridge -.->|"fallback"| MPWShell
     ToolServer -->|"✓ Returns output\nvia AE reply"| AppleBridge
     MPWShell -.->|"✗ Empty reply\noutput to worksheet"| AppleBridge
+
+    style Claude fill:#e1f5ff
+    style MCPServer fill:#fff4e1
+    style OT fill:#e1ffe1
+    style AppleBridge fill:#ffe1e1
 ```
 
-### Communication Flow
+### Communication Flow - Dual Connection Paradigm
 
 ```mermaid
 sequenceDiagram
-    participant C as Claude
-    participant H as Host Server
-    participant A as AppleBridge
-    participant T as ToolServer
+    participant CC as Claude Code
+    participant MH as MacintoshBridgeHost
+    participant OT as OpenTransport
+    participant AB as AppleBridge Daemon
+    participant TS as ToolServer
 
-    Note over A,H: Mac connects OUT (MACNAT)
-    A->>H: TCP Connect to :9000
-    H-->>A: Connection established
+    Note over AB,MH: Initial connection
+    AB->>OT: Initialize OpenTransport
+    OT->>MH: TCP Connect to :9000
+    MH-->>OT: Connection established
+    OT-->>AB: Connected
 
-    C->>H: Command via :9001
-    H->>A: COMMAND:len\n<cmd>
-    A->>T: Apple Event 'misc'/'dosc'
-    T->>T: Execute command
-    T-->>A: AE Reply (Items:3)
-    A-->>H: STATUS:0\nSTDOUT:len\n<output>
-    H-->>C: Response
+    Note over CC,MH: MCP Layer
+    CC->>MH: MCP tool call (port :9001)<br/>mpw_execute("Echo 'Hello'")
+
+    Note over MH,AB: TCP/OpenTransport Bridge
+    MH->>OT: Forward command via TCP
+    OT->>AB: COMMAND:len\n<cmd>
+
+    Note over AB,TS: Apple Events Layer
+    AB->>TS: Apple Event 'misc'/'dosc'
+    TS->>TS: Execute: Echo 'Hello'
+    TS-->>AB: AE Reply (Items:3)<br/>STDOUT, STDERR, STATUS
+
+    Note over AB,MH: Response path
+    AB->>OT: STATUS:0\nSTDOUT:len\n<data>
+    OT->>MH: TCP response
+    MH-->>CC: MCP tool result<br/>{success: true, output: "Hello"}
 ```
 
-**Key Design**: Mac connects OUT to host (reversed client-server) because Basilisk II uses MACNAT - incoming connections are blocked, outgoing work.
+**Key Design - Dual Connection Paradigm**:
+
+1. **MCP Layer (Port 9001)**: Claude Code → MacintoshBridgeHost via MCP protocol
+   - Standardized AI tool interface
+   - Tools: `mpw_execute`, `mac_write_file`, `mac_screenshot`, etc.
+
+2. **TCP/OpenTransport Layer (Port 9000)**: Mac daemon → MacintoshBridgeHost
+   - Mac connects OUT (reversed client-server)
+   - Solves Basilisk II MACNAT limitation (incoming connections blocked)
+   - OpenTransport provides TCP/IP on System 7.6.1
+
+3. **Apple Events Layer**: AppleBridge → ToolServer/MPW Shell
+   - Classic Mac IPC for command execution
 
 **Critical**: Use **ToolServer** for automation - MPW Shell returns empty AE replies!
 
 ## Quick Start
 
-### 1. Host Side
+### 1. Host Side (MacintoshBridgeHost)
 
-Start the server first:
+**Option A: Via MCP (Recommended - with Claude Code)**
+
+The MCP server runs automatically when configured in `.mcp.json`. MacintoshBridgeHost provides:
+- **Port 9001**: MCP server (receives commands from Claude Code)
+- **Port 9000**: TCP server (receives connection from Mac daemon)
+
+**Option B: Standalone (for testing)**
+
 ```bash
 cd host/
 python3 host_server.py
@@ -114,7 +154,17 @@ Make -f Makefile.68k
 
 ### 4. Test
 
-In host_server.py interactive mode:
+**With MCP (Claude Code):**
+```python
+# Claude automatically uses MCP tools:
+# mcp__applebridge__mpw_execute
+# mcp__applebridge__mac_write_file
+# mcp__applebridge__mac_read_file
+# mcp__applebridge__mac_screenshot
+# etc.
+```
+
+**Standalone (host_server.py interactive mode):**
 ```
 Command> Echo "Hello from Claude"
 Response:
@@ -123,6 +173,31 @@ STDOUT:17
 Hello from Claude
 STDERR:0
 ```
+
+## MCP Configuration
+
+To use AppleBridge with Claude Code, configure `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "applebridge": {
+      "command": "/path/to/MacintoshBridgeHost.app/Contents/MacOS/MacintoshBridgeHost",
+      "args": []
+    }
+  }
+}
+```
+
+**Available MCP Tools:**
+- `mpw_execute` - Execute MPW/ToolServer commands
+- `mac_write_file` - Write text files (MacRoman conversion)
+- `mac_read_file` - Read text files (UTF-8 conversion)
+- `mac_list_files` - Directory listings
+- `mac_compile` - SC compiler wrapper
+- `mac_screenshot` - Capture emulator window
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed explanation of the MCP + OpenTransport dual paradigm.
 
 ## Character Encoding
 
@@ -166,11 +241,28 @@ uv run python encoding_convert.py to-share Makefile.68k
 | `include/mystring.h` | String function prototypes |
 | `Makefile.68k` | MPW Makefile |
 
-### host/
+### MacintoshBridgeHost/ (MCP Server)
 
 | File | Description |
 |------|-------------|
-| `host_server.py` | TCP server with interactive mode |
+| `MacintoshBridgeHost/AppDelegate.swift` | Main MCP server app |
+| `MacintoshBridgeHost/LocalControlServer.swift` | TCP bridge (port 9001 MCP, port 9000 Mac) |
+| `MacintoshBridgeHost/TCPServer.swift` | TCP server implementation |
+| `MacintoshBridgeHost/CommandHandler.swift` | MCP command routing |
+
+### mcp/ (Python MCP Tools)
+
+| File | Description |
+|------|-------------|
+| `mcp/server.py` | MCP server implementation |
+| `mcp/tools.py` | MCP tool definitions (mpw_execute, etc.) |
+| `mcp/mac_connection.py` | TCP client to MacintoshBridgeHost |
+
+### host/ (Standalone Testing)
+
+| File | Description |
+|------|-------------|
+| `host_server.py` | TCP server with interactive mode (standalone testing) |
 | `encoding_convert.py` | UTF-8 ↔ MacRoman converter with line ending conversion |
 | `test_commands.py` | Automated test script for MPW commands |
 | `screenshot.py` | Capture Basilisk II window (host-side, uses Quartz) |
