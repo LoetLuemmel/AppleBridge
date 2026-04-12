@@ -157,13 +157,35 @@ To fix the Counter assembly app:
 4. **Link with MacRuntime.o and Interface.o**
 5. **Use proper segment names** with `-sn` if needed
 
+## Successful Test - 2026-04-11
+
+**✅ VERIFIED WORKING!**
+
+Built Apple's Count.a example successfully on System 7.6.1:
+
+```
+Set LIBS "MeinMac:Interfaces&Libraries:Libraries:"
+Make Count
+```
+
+**Result:** Count tool compiled and linked without errors!
+
+**Key Requirements Confirmed:**
+- Must set `LIBS` variable before running Make
+- `-model far` assembler and linker flags work
+- `MAIN` directive for entry point works
+- Runtime libraries (MacRuntime.o, Interface.o) link correctly
+
+**To quit MPW tools:** Press **⌘.** (Command-Period) to send SIGINT
+
 ## References
 
 - Working example: `/Users/pitforster/Desktop/Share/32BitAExamples copy/`
-- Count.a - Full MPW tool source
-- MakeFile - Build instructions
+- Count.a - Full MPW tool source (verified working)
+- MakeFile - Build instructions (verified working)
 - Instructions - Apple documentation
+- Copied to Mac: `MeinMac:MPW:CountExample:`
 
 ---
 
-**Note:** Saved for next session to properly implement OurTest2 assembly Counter app.
+**Next Session:** Adapt this proven pattern for OurTest2 CounterAsm APPL.
