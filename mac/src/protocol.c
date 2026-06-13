@@ -1,11 +1,52 @@
 /*
  * AppleBridge - Protocol Handler
  * Parse and format messages according to AppleBridge protocol
+ * SIMPLIFIED VERSION - no sprintf
  */
 
-#include "applebridge.h"
-#include <string.h>
-#include <stdio.h>
+#include <applebridge.h>
+#include <mystring.h>
+
+/* Simple number to string conversion */
+static void NumToString(long num, char *str)
+{
+    long i = 0;
+    long j;
+    char temp[32];
+    Boolean neg = false;
+
+    if (num < 0) {
+        neg = true;
+        num = -num;
+    }
+
+    if (num == 0) {
+        str[0] = '0';
+        str[1] = '\0';
+        return;
+    }
+
+    while (num > 0) {
+        temp[i++] = '0' + (num % 10);
+        num /= 10;
+    }
+
+    j = 0;
+    if (neg) str[j++] = '-';
+
+    while (i > 0) {
+        str[j++] = temp[--i];
+    }
+    str[j] = '\0';
+}
+
+/* Simple string length as long */
+static long StrLen(const char *s)
+{
+    long len = 0;
+    while (*s++) len++;
+    return len;
+}
 
 /*
  * Parse incoming command request
@@ -17,31 +58,33 @@ BridgeResult ParseCommand(const char *request, char *command, long *commandLengt
     long length;
     char lengthStr[32];
     int i;
-    char debugMsg[256];
 
     /* Check for COMMAND: prefix */
     if (strncmp(request, PROTO_COMMAND, strlen(PROTO_COMMAND)) != 0) {
-        sprintf(debugMsg, "Invalid format - got: '%.100s'", request);
-        LogMessage(debugMsg);
         return kBridgeProtocolErr;
     }
 
-    /* Parse length */
+    /* Parse length - accept both \n and \r as line ending */
     ptr = request + strlen(PROTO_COMMAND);
     i = 0;
-    while (*ptr != '\n' && *ptr != '\0' && i < sizeof(lengthStr) - 1) {
+    while (*ptr != '\n' && *ptr != '\r' && *ptr != '\0' && i < sizeof(lengthStr) - 1) {
         lengthStr[i++] = *ptr++;
     }
     lengthStr[i] = '\0';
 
-    if (*ptr != '\n') {
-        LogMessage("Invalid command format - no newline after length");
+    if (*ptr != '\n' && *ptr != '\r') {
         return kBridgeProtocolErr;
     }
 
-    length = atol(lengthStr);
+    /* Simple atol replacement */
+    length = 0;
+    for (i = 0; lengthStr[i]; i++) {
+        if (lengthStr[i] >= '0' && lengthStr[i] <= '9') {
+            length = length * 10 + (lengthStr[i] - '0');
+        }
+    }
+
     if (length <= 0 || length > MAX_COMMAND_LENGTH) {
-        LogMessage("Invalid command length");
         return kBridgeProtocolErr;
     }
 
@@ -58,33 +101,62 @@ BridgeResult ParseCommand(const char *request, char *command, long *commandLengt
  * Format command response
  * Format: STATUS:<exit_code>\nSTDOUT:<length>\n<output>\nSTDERR:<length>\n<errors>\n\n
  */
+/* Headroom reserved for STATUS/STDOUT/STDERR headers + terminators. */
+#define RESP_RESERVE 256
+
 void FormatResponse(const CommandResult *result, char *response, long *responseLength)
 {
     char *ptr = response;
-    long stdoutLen = strlen(result->stdout);
-    long stderrLen = strlen(result->stderr);
+    char numBuf[32];
+    long k;
+    long outLen = StrLen(result->outData);
+    long errLen = StrLen(result->errData);
+    long budget = MAX_RESPONSE_LENGTH - RESP_RESERVE;
+
+    /*
+     * Overflow guard: the response buffer is MAX_RESPONSE_LENGTH bytes. If
+     * stdout+stderr would not fit (e.g. a >64K DumpFile), CAP them so the
+     * total fits. The DECLARED length always matches what we actually send,
+     * so the host reads a valid (shortened) response instead of the daemon
+     * smashing its stack. Real fix for >64K is framing/chunking (later).
+     */
+    if (errLen > budget) errLen = budget;
+    if (outLen > budget - errLen) outLen = budget - errLen;
 
     /* STATUS line */
-    ptr += sprintf(ptr, "%s%d\n", PROTO_STATUS, result->exitCode);
+    strcpy(ptr, PROTO_STATUS);
+    ptr += strlen(PROTO_STATUS);
+    NumToString(result->exitCode, numBuf);
+    strcpy(ptr, numBuf);
+    ptr += strlen(numBuf);
+    *ptr++ = '\r';
 
-    /* STDOUT */
-    ptr += sprintf(ptr, "%s%ld\n", PROTO_STDOUT, stdoutLen);
-    if (stdoutLen > 0) {
-        strcpy(ptr, result->stdout);
-        ptr += stdoutLen;
-        *ptr++ = '\n';
+    /* STDOUT (copy exactly outLen bytes - may be capped) */
+    strcpy(ptr, PROTO_STDOUT);
+    ptr += strlen(PROTO_STDOUT);
+    NumToString(outLen, numBuf);
+    strcpy(ptr, numBuf);
+    ptr += strlen(numBuf);
+    *ptr++ = '\r';
+    if (outLen > 0) {
+        for (k = 0; k < outLen; k++) *ptr++ = result->outData[k];
+        *ptr++ = '\r';
     }
 
-    /* STDERR */
-    ptr += sprintf(ptr, "%s%ld\n", PROTO_STDERR, stderrLen);
-    if (stderrLen > 0) {
-        strcpy(ptr, result->stderr);
-        ptr += stderrLen;
-        *ptr++ = '\n';
+    /* STDERR (copy exactly errLen bytes - may be capped) */
+    strcpy(ptr, PROTO_STDERR);
+    ptr += strlen(PROTO_STDERR);
+    NumToString(errLen, numBuf);
+    strcpy(ptr, numBuf);
+    ptr += strlen(numBuf);
+    *ptr++ = '\r';
+    if (errLen > 0) {
+        for (k = 0; k < errLen; k++) *ptr++ = result->errData[k];
+        *ptr++ = '\r';
     }
 
     /* End marker */
-    *ptr++ = '\n';
+    *ptr++ = '\r';
     *ptr = '\0';
 
     *responseLength = ptr - response;
@@ -97,17 +169,39 @@ void FormatResponse(const CommandResult *result, char *response, long *responseL
 void FormatScreenshotResponse(const ScreenshotData *screenshot, char *response, long *responseLength)
 {
     char *ptr = response;
+    char numBuf[32];
+    long i;
 
-    /* Header */
-    ptr += sprintf(ptr, "%s%d:%d:BMP:%ld\n",
-                   PROTO_IMAGE,
-                   screenshot->width,
-                   screenshot->height,
-                   screenshot->dataSize);
+    /* Header: IMAGE: */
+    strcpy(ptr, PROTO_IMAGE);
+    ptr += strlen(PROTO_IMAGE);
 
-    /* Binary data */
-    BlockMoveData(screenshot->data, ptr, screenshot->dataSize);
-    ptr += screenshot->dataSize;
+    /* Width */
+    NumToString(screenshot->width, numBuf);
+    strcpy(ptr, numBuf);
+    ptr += strlen(numBuf);
+    *ptr++ = ':';
+
+    /* Height */
+    NumToString(screenshot->height, numBuf);
+    strcpy(ptr, numBuf);
+    ptr += strlen(numBuf);
+    *ptr++ = ':';
+
+    /* Format */
+    strcpy(ptr, "BMP:");
+    ptr += 4;
+
+    /* Data size */
+    NumToString(screenshot->dataSize, numBuf);
+    strcpy(ptr, numBuf);
+    ptr += strlen(numBuf);
+    *ptr++ = '\n';
+
+    /* Binary data - copy byte by byte */
+    for (i = 0; i < screenshot->dataSize; i++) {
+        *ptr++ = screenshot->data[i];
+    }
 
     *responseLength = ptr - response;
 }

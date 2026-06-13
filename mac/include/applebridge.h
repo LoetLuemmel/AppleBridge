@@ -38,8 +38,8 @@ typedef enum {
 /* Command execution result */
 typedef struct {
     short exitCode;
-    char stdout[MAX_RESPONSE_LENGTH];
-    char stderr[MAX_RESPONSE_LENGTH];
+    char outData[MAX_RESPONSE_LENGTH];
+    char errData[MAX_RESPONSE_LENGTH];
 } CommandResult;
 
 /* Screenshot data */

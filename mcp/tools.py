@@ -132,6 +132,26 @@ Useful for seeing the current state of the Mac desktop.""",
             "properties": {},
             "required": []
         }
+    },
+    {
+        "name": "launch_app",
+        "description": """Launch a GUI application on the classic Mac and bring it to the FOREGROUND.
+
+Uses the daemon's LAUNCH verb (Process Manager LaunchApplication). Unlike
+mpw_execute via ToolServer, this actually foregrounds a GUI app.
+
+Path uses : separator and points at the application file, e.g.
+"MeinMac:MPW:FortPoC:FortPoC".""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Mac path to the application (using : separator)"
+                }
+            },
+            "required": ["path"]
+        }
     }
 ]
 
@@ -341,6 +361,33 @@ def mac_screenshot() -> Dict[str, Any]:
         }
 
 
+def launch_app(path: str) -> Dict[str, Any]:
+    """Launch a GUI app on the Mac (foreground) via the daemon's LAUNCH verb."""
+    try:
+        conn = get_connection()
+        if not conn.is_connected():
+            return {
+                "success": False,
+                "path": path,
+                "error": "Mac not connected. Make sure the AppleBridge daemon is running and connected."
+            }
+        # The :9001 control server routes a raw 'LAUNCH:<path>' verb to the daemon.
+        status, stdout, stderr = conn.send_command("LAUNCH:" + path, timeout=15.0)
+        return {
+            "success": status == 0,
+            "status": status,
+            "path": path,
+            "message": stdout if stdout else None,
+            "error": stderr if stderr else None,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "path": path,
+            "error": str(e)
+        }
+
+
 # Tool dispatcher
 TOOL_HANDLERS = {
     "mpw_execute": mpw_execute,
@@ -348,7 +395,8 @@ TOOL_HANDLERS = {
     "mac_read_file": mac_read_file,
     "mac_list_files": mac_list_files,
     "mac_compile": mac_compile,
-    "mac_screenshot": mac_screenshot
+    "mac_screenshot": mac_screenshot,
+    "launch_app": launch_app
 }
 
 
