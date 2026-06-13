@@ -198,7 +198,7 @@ AppleBridge/
 │   └── tools.py
 └── host/                         # Utilities
     ├── encoding_convert.py       # UTF-8 ↔ MacRoman
-    ├── screenshot.py             # Capture Basilisk II window
+    ├── screenshot_decode.py      # Raw Mac pixmap → PNG (stdlib only)
     └── host_server.py            # Standalone TCP server (testing)
 ```
 
