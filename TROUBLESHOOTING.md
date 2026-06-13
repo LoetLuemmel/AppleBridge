@@ -431,17 +431,17 @@ struct Response {
 - Transfer large files in chunks
 - Restart AppleBridge periodically for long sessions
 
-### 5. Screenshot Limitations
+### 5. Screenshots
 
-**Mac side can't capture screenshots** - System 7.6.1 lacks built-in capability.
+The daemon captures the **emulated** screen itself (the main GDevice PixMap,
+incl. pixel depth + colour table) and streams the raw pixmap over the bridge;
+the host decodes it to PNG with `host/screenshot_decode.py` (pure stdlib, no
+Pillow). Trigger it via the `mac_screenshot` MCP tool or by sending the raw
+`SCREENSHOT` verb over the control port (`:9001`).
 
-**Solution:** Host-side capture of Basilisk II window:
-
-```bash
-python3 host/screenshot.py [output.png]
-```
-
-Uses macOS Quartz to find window and `screencapture -R` to capture region.
+> The old host-side approach (`screencapture -R` of the Basilisk window via
+> Quartz) was removed — it captured the wrong screen (the host desktop) and
+> couldn't see the emulated framebuffer.
 
 ---
 

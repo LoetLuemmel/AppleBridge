@@ -459,18 +459,20 @@ For common issues and solutions, see **[TROUBLESHOOTING.md](../TROUBLESHOOTING.m
 
 ## Advanced Configuration
 
-### Host-Side Screenshot Capture
+### Screenshot Capture
 
-System 7.6.1 can't capture screenshots natively. Use host-side script:
+System 7.6.1 has no native screenshot tool, so the **daemon** captures the
+emulated screen and streams it to the host, which decodes it to PNG.
 
 ```bash
-python3 /Users/pitforster/Documents/Dev/AppleBridge_Working/host/screenshot.py output.png
+# via the control port (:9001) — same path the mac_screenshot MCP tool uses
+printf 'screenshot\n\n' | nc localhost 9001    # returns a base64 PNG frame
 ```
 
 **How it works:**
-1. Uses macOS Quartz to find Basilisk II window
-2. Captures window bounds
-3. Executes `screencapture -R x y w h output.png`
+1. The daemon reads the main GDevice PixMap (pixels + depth + colour table).
+2. It streams `IMAGE:<w>:<h>:<depth>:<rowBytes>:<clutCount>:<dataSize>` + CLUT + pixels over the bridge.
+3. `host/screenshot_decode.py` (pure stdlib) decodes the raw pixmap to a PNG.
 
 ### Standalone TCP Server (Development)
 
