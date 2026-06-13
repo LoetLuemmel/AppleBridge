@@ -166,45 +166,44 @@ BridgeResult SendCommandResult(EndpointRef endpoint, const CommandResult *result
 }
 
 /*
- * Format screenshot response
- * Format: IMAGE:<width>:<height>:<format>:<length>\n<binary_data>
+ * Stream a screenshot to the host.
+ *
+ * Wire format:
+ *   IMAGE:<width>:<height>:<depth>:<rowBytes>:<clutCount>:<dataSize>\n
+ *   <clutCount*3 bytes CLUT>      (omitted when clutCount == 0)
+ *   <dataSize bytes raw pixels>
+ *
+ * Like SendCommandResult, the small header goes first, then the (possibly
+ * multi-hundred-KB) pixel payload is streamed straight from its buffer —
+ * SendData's OTSnd loop chunks it and rides out kOTFlowErr. The host reads
+ * each section by its declared length, so there is no size cap on this path.
  */
-void FormatScreenshotResponse(const ScreenshotData *screenshot, char *response, long *responseLength)
+BridgeResult SendScreenshot(EndpointRef endpoint, const ScreenshotData *s)
 {
-    char *ptr = response;
-    char numBuf[32];
-    long i;
+    char hdr[96];
+    char *p = hdr;
+    OSStatus err;
 
-    /* Header: IMAGE: */
-    strcpy(ptr, PROTO_IMAGE);
-    ptr += strlen(PROTO_IMAGE);
+    strcpy(p, PROTO_IMAGE);          p += strlen(PROTO_IMAGE);   /* "IMAGE:" */
+    NumToString(s->width, p);        while (*p) p++; *p++ = ':';
+    NumToString(s->height, p);       while (*p) p++; *p++ = ':';
+    NumToString(s->depth, p);        while (*p) p++; *p++ = ':';
+    NumToString(s->rowBytes, p);     while (*p) p++; *p++ = ':';
+    NumToString(s->clutCount, p);    while (*p) p++; *p++ = ':';
+    NumToString(s->dataSize, p);     while (*p) p++; *p++ = '\n';
 
-    /* Width */
-    NumToString(screenshot->width, numBuf);
-    strcpy(ptr, numBuf);
-    ptr += strlen(numBuf);
-    *ptr++ = ':';
+    err = SendData(endpoint, hdr, p - hdr);
+    if (err != noErr) return kBridgeCommandErr;
 
-    /* Height */
-    NumToString(screenshot->height, numBuf);
-    strcpy(ptr, numBuf);
-    ptr += strlen(numBuf);
-    *ptr++ = ':';
-
-    /* Format */
-    strcpy(ptr, "BMP:");
-    ptr += 4;
-
-    /* Data size */
-    NumToString(screenshot->dataSize, numBuf);
-    strcpy(ptr, numBuf);
-    ptr += strlen(numBuf);
-    *ptr++ = '\n';
-
-    /* Binary data - copy byte by byte */
-    for (i = 0; i < screenshot->dataSize; i++) {
-        *ptr++ = screenshot->data[i];
+    if (s->clutCount > 0) {
+        err = SendData(endpoint, (const char *)s->clut, (long)s->clutCount * 3);
+        if (err != noErr) return kBridgeCommandErr;
     }
 
-    *responseLength = ptr - response;
+    if (s->dataSize > 0 && s->data != NULL) {
+        err = SendData(endpoint, s->data, s->dataSize);
+        if (err != noErr) return kBridgeCommandErr;
+    }
+
+    return kBridgeNoErr;
 }

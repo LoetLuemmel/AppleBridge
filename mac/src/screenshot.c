@@ -11,57 +11,85 @@
 /* External status function from main.c */
 extern void StatusMessage(const char *msg);
 
+/* Refuse anything bigger than this (keeps us inside the app partition). */
+#define MAX_SHOT_BYTES (4L * 1024L * 1024L)
+
 /*
- * Capture screenshot of main screen
+ * Capture the main screen from its GDevice PixMap.
+ *
+ * Using the PixMap (not qd.screenBits, which is a depth-less BitMap) gives us
+ * the pixel depth and, for indexed depths, the colour table — everything the
+ * host needs to decode the raw pixels to PNG. The pixels are copied straight
+ * from the screen base address into a dynamically allocated buffer.
  */
 BridgeResult CaptureScreenshot(ScreenshotData *screenshot)
 {
-    /*
-     * Direct screenBits capture - no GWorld needed
-     */
-    BitMap *screen;
+    GDHandle gd;
+    PixMapHandle pm;
+    CTabHandle ct;
     Rect bounds;
-    short width, height;
+    short depth, i, n;
     long rowBytes, imageSize;
 
-    StatusMessage("Getting screenBits...");
+    screenshot->data = NULL;
+    screenshot->dataSize = 0;
+    screenshot->clutCount = 0;
 
-    /* Get screen bitmap directly */
-    screen = &qd.screenBits;
-    bounds = screen->bounds;
+    StatusMessage("Getting main device...");
+    gd = GetMainDevice();
+    if (gd == NULL) {
+        StatusMessage("No main GDevice");
+        return kBridgeCommandErr;
+    }
+    pm = (*gd)->gdPMap;
+    if (pm == NULL) {
+        StatusMessage("No PixMap");
+        return kBridgeCommandErr;
+    }
 
-    width = bounds.right - bounds.left;
-    height = bounds.bottom - bounds.top;
-    rowBytes = screen->rowBytes & 0x3FFF;
-    imageSize = (long)height * rowBytes;
+    bounds   = (*pm)->bounds;
+    depth    = (*pm)->pixelSize;
+    rowBytes = (*pm)->rowBytes & 0x3FFF;
 
-    StatusMessage("Allocating memory...");
+    screenshot->width    = bounds.right - bounds.left;
+    screenshot->height   = bounds.bottom - bounds.top;
+    screenshot->depth    = depth;
+    screenshot->rowBytes = rowBytes;
 
-    /* Allocate memory for copy */
+    imageSize = (long)screenshot->height * rowBytes;
+    if (imageSize <= 0 || imageSize > MAX_SHOT_BYTES) {
+        StatusMessage("Screen too large to capture");
+        return kBridgeCommandErr;
+    }
+
+    StatusMessage("Allocating screenshot buffer...");
     screenshot->data = NewPtr(imageSize);
     if (screenshot->data == NULL) {
-        StatusMessage("FAIL: NewPtr - trying smaller");
-        /* Try a smaller portion - just top 100 lines */
-        height = 100;
-        imageSize = (long)height * rowBytes;
-        screenshot->data = NewPtr(imageSize);
-        if (screenshot->data == NULL) {
-            StatusMessage("FAIL: Still no memory");
-            return kBridgeCommandErr;
+        StatusMessage("FAIL: NewPtr screenshot");
+        return kBridgeCommandErr;
+    }
+
+    StatusMessage("Copying screen pixels...");
+    BlockMoveData((*pm)->baseAddr, screenshot->data, imageSize);
+    screenshot->dataSize = imageSize;
+
+    /* Colour table for indexed depths (<= 8 bpp). */
+    if (depth <= 8) {
+        ct = (*pm)->pmTable;
+        if (ct != NULL && *ct != NULL) {
+            n = (*ct)->ctSize + 1;       /* ctSize holds (count - 1) */
+            if (n < 0) n = 0;
+            if (n > 256) n = 256;
+            for (i = 0; i < n; i++) {
+                screenshot->clut[i * 3 + 0] = (unsigned char)((*ct)->ctTable[i].rgb.red   >> 8);
+                screenshot->clut[i * 3 + 1] = (unsigned char)((*ct)->ctTable[i].rgb.green >> 8);
+                screenshot->clut[i * 3 + 2] = (unsigned char)((*ct)->ctTable[i].rgb.blue  >> 8);
+            }
+            screenshot->clutCount = n;
         }
     }
 
-    StatusMessage("Copying screen data...");
-
-    /* Copy directly from screen memory */
-    BlockMoveData(screen->baseAddr, screenshot->data, imageSize);
-
-    screenshot->width = width;
-    screenshot->height = height;
-    screenshot->dataSize = imageSize;
-
     StatusMessage("Screenshot captured!");
-
     return kBridgeNoErr;
 }
 
@@ -77,4 +105,5 @@ void CleanupScreenshot(ScreenshotData *screenshot)
     screenshot->width = 0;
     screenshot->height = 0;
     screenshot->dataSize = 0;
+    screenshot->clutCount = 0;
 }

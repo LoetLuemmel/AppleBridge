@@ -460,7 +460,7 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
 {
     char responseBuffer[MAX_RESPONSE_LENGTH];
     char command[MAX_COMMAND_LENGTH];
-    long commandLength, responseLength;
+    long commandLength;
     BridgeResult result;
     CommandResult cmdResult;
     OSStatus err;
@@ -480,19 +480,10 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
 
         result = CaptureScreenshot(&screenshot);
         if (result == kBridgeNoErr) {
-            /* Overflow guard: only format/send if the raw image fits the
-               response buffer; otherwise report an error instead of smashing
-               memory. (Large-image chunking needs the framed protocol = later.) */
-            if (screenshot.dataSize > 0 &&
-                screenshot.dataSize <= MAX_RESPONSE_LENGTH - 128) {
-                FormatScreenshotResponse(&screenshot, responseBuffer, &responseLength);
-                SendData(endpoint, responseBuffer, responseLength);
-                StatusMessage("Screenshot sent");
-            } else {
-                strcpy(responseBuffer, "STATUS:-1\nSTDOUT:0\n\nSTDERR:20\nScreenshot too large\n\n");
-                SendData(endpoint, responseBuffer, strlen(responseBuffer));
-                StatusMessage("Screenshot too large");
-            }
+            /* Stream the full pixmap (header + CLUT + pixels) — no size cap;
+               SendData chunks it over OTSnd. The host decodes it to PNG. */
+            SendScreenshot(endpoint, &screenshot);
+            StatusMessage("Screenshot sent");
             CleanupScreenshot(&screenshot);
         } else {
             strcpy(responseBuffer, "STATUS:-1\nSTDOUT:0\n\nSTDERR:18\nScreenshot failed\n\n");

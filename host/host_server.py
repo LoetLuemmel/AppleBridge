@@ -24,9 +24,12 @@ NOTE: the daemon hardcodes the host IP (192.168.3.154). Large responses
 allocated handle and read here by their declared STDOUT:<len> (length-framing,
 already content-agnostic) — no per-response size limit on this side.
 """
+import base64
 import socket
 import sys
 import time
+
+import screenshot_decode  # stdlib-only raw-pixmap -> PNG (runs under /usr/bin/python3)
 
 HOST_INTERFACE = "192.168.3.154"   # single source of truth; daemon connects here
 HOST_PORT = 9000                   # Mac daemon connects to this
@@ -40,7 +43,7 @@ LONG_CMDS = {
 }
 DEFAULT_TIMEOUT = 15.0
 LONG_TIMEOUT = 240.0   # multi-MB transfers (large DumpFile/Catenate) over OT
-SCREENSHOT_TIMEOUT = 15.0
+SCREENSHOT_TIMEOUT = 30.0   # full-screen pixmap transfer + decode
 
 _logf = open(LOG_PATH, "a", buffering=1)  # line-buffered
 
@@ -58,6 +61,15 @@ def timeout_for(command):
     parts = command.strip().split(None, 1)
     tok = parts[0].lower() if parts else ""
     return LONG_TIMEOUT if tok in LONG_CMDS else DEFAULT_TIMEOUT
+
+
+def screenshot_png(shot):
+    """Decode a request_screenshot() dict to PNG bytes (or None)."""
+    if not shot:
+        return None
+    return screenshot_decode.raw_to_png(
+        shot["width"], shot["height"], shot["depth"],
+        shot["row_bytes"], shot["clut"], shot["pixels"])
 
 
 class AppleBridgeServer:
@@ -274,7 +286,15 @@ class AppleBridgeServer:
         return response.decode("mac_roman", errors="replace") if response else None
 
     def request_screenshot(self):
-        """Request a screenshot; return raw bytes (or None)."""
+        """Request a screenshot. Returns a dict with the decoded pixmap parts:
+
+            {width, height, depth, row_bytes, clut: bytes, pixels: bytes}
+
+        or None on failure. The daemon streams:
+            IMAGE:<w>:<h>:<depth>:<rowBytes>:<clutCount>:<dataSize>\\n
+            <clutCount*3 CLUT bytes><dataSize pixel bytes>
+        Read length-framed — the same content-agnostic approach as commands.
+        """
         if not self.connected or not self.client_socket:
             return None
         if not self._drain():
@@ -286,37 +306,63 @@ class AppleBridgeServer:
             self._mark_disconnected(f"send failed: {e}")
             return None
 
-        response = b""
+        buf = bytearray()
+
+        def _fill():
+            chunk = self.client_socket.recv(65536)
+            if not chunk:
+                raise ConnectionError("peer closed during screenshot")
+            buf.extend(chunk)
+
+        def _read_line():
+            # The daemon terminates the header with CR (0x0D) — classic-Mac C
+            # maps '\n' to CR — so accept either CR or LF as the line end.
+            while True:
+                cr = buf.find(b"\r")
+                lf = buf.find(b"\n")
+                idx = min([x for x in (cr, lf) if x >= 0], default=-1)
+                if idx >= 0:
+                    line = bytes(buf[:idx])
+                    del buf[:idx + 1]
+                    return line
+                _fill()
+
+        def _read_exact(n):
+            while len(buf) < n:
+                _fill()
+            data = bytes(buf[:n])
+            del buf[:n]
+            return data
+
         try:
             self.client_socket.settimeout(SCREENSHOT_TIMEOUT)
-            while True:
-                chunk = self.client_socket.recv(65536)
-                if not chunk:
-                    self._mark_disconnected("recv 0 during screenshot")
-                    break
-                response += chunk
-                if b"STATUS:" in response and (b"\r\r" in response or b"\n\n" in response):
-                    break
-                if response.startswith(b"IMAGE:") and b"\r" in response:
-                    header_end = response.find(b"\r")
-                    if header_end > 0:
-                        header = response[:header_end].decode("mac_roman")
-                        parts = header.split(":")
-                        if len(parts) >= 5:
-                            expected = int(parts[4])
-                            if len(response) >= header_end + 1 + expected:
-                                break
-        except socket.timeout:
-            log("screenshot timeout - partial data received")
-        except OSError as e:
+            header = _read_line()
+            if not header.startswith(b"IMAGE:"):
+                # Daemon reported an error (e.g. capture failed) as a STATUS frame.
+                log(f"screenshot: non-IMAGE response {header[:48]!r}")
+                return None
+            parts = header.split(b":")
+            if len(parts) < 7:
+                log(f"screenshot: malformed header {header[:48]!r}")
+                return None
+            w, h, depth, rb, cc, ds = (int(parts[i]) for i in range(1, 7))
+            clut = _read_exact(cc * 3) if cc > 0 else b""
+            pixels = _read_exact(ds)
+            log(f"screenshot {w}x{h} depth={depth} rowBytes={rb} clut={cc} data={ds}B")
+            return {"width": w, "height": h, "depth": depth,
+                    "row_bytes": rb, "clut": clut, "pixels": pixels}
+        except (socket.timeout, ValueError) as e:
+            log(f"screenshot read error: {e}; got {len(buf)}B")
+            return None
+        except (OSError, ConnectionError) as e:
             self._mark_disconnected(f"recv error during screenshot: {e}")
+            return None
         finally:
             try:
                 if self.client_socket:
                     self.client_socket.settimeout(None)
             except OSError:
                 pass
-        return response or None
 
     def close(self):
         if self.client_socket:
@@ -379,8 +425,20 @@ def run_control_server(server):
                 cmd = _recv_control_command(ctrl_conn)
                 if cmd:
                     if cmd.lower() == "screenshot":
-                        resp = server.request_screenshot()
-                        out = f"Got {len(resp)} bytes" if resp else "No response"
+                        shot = server.request_screenshot()
+                        try:
+                            png = screenshot_png(shot)
+                        except Exception as e:
+                            png = None
+                            log(f"screenshot decode failed: {e}")
+                        if png:
+                            b64 = base64.b64encode(png).decode("ascii")
+                            # Framed STATUS/STDOUT so the MCP text parser extracts
+                            # the base64 PNG into stdout (base64 is ASCII-safe).
+                            out = f"STATUS:0\rSTDOUT:{len(b64)}\r{b64}\rSTDERR:0\r\r"
+                            log(f"screenshot -> {len(png)}B PNG ({len(b64)}B base64)")
+                        else:
+                            out = "STATUS:-1\rSTDOUT:0\rSTDERR:17\rScreenshot failed\r\r"
                     elif cmd == "PING" or cmd.startswith("LAUNCH:"):
                         log(f"verb: {cmd[:60]!r}")
                         resp = server.send_raw(cmd)   # raw, not COMMAND-wrapped
@@ -420,8 +478,16 @@ def interactive_mode(server):
             if cmd.lower() == "quit":
                 break
             if cmd.lower() == "screenshot":
-                resp = server.request_screenshot()
-                print(f"Got {len(resp) if resp else 0} bytes")
+                shot = server.request_screenshot()
+                png = screenshot_png(shot) if shot else None
+                if png:
+                    path = "/tmp/basilisk_shot.png"
+                    with open(path, "wb") as f:
+                        f.write(png)
+                    print(f"Saved {len(png)} bytes -> {path} "
+                          f"({shot['width']}x{shot['height']} depth {shot['depth']})")
+                else:
+                    print("Screenshot failed")
                 continue
             resp = server.send_command(cmd)
             print(f"Response:\n{resp}\n")

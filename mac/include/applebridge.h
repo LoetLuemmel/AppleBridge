@@ -50,12 +50,21 @@ typedef struct {
     char   errData[256];  /* diagnostics / error text — always small */
 } CommandResult;
 
-/* Screenshot data */
+/* Screenshot data.
+ *
+ * Captured from the main GDevice PixMap so we know the pixel depth and (for
+ * indexed depths <= 8) the colour table. The raw pixels are streamed to the
+ * host, which decodes them to PNG data-driven by these fields — no fixed
+ * format or size assumption. */
 typedef struct {
     short width;
     short height;
-    long dataSize;
-    Ptr data;
+    short depth;              /* pixelSize: 1/2/4/8/16/32 */
+    long  rowBytes;           /* bytes per scanline (may exceed width*depth/8) */
+    long  dataSize;           /* height * rowBytes */
+    Ptr   data;               /* raw pixels (dynamically allocated) */
+    short clutCount;          /* CLUT entries (0 for direct-colour 16/32-bit) */
+    unsigned char clut[768];  /* up to 256 * RGB (8-bit per channel) */
 } ScreenshotData;
 
 /* Function declarations */
@@ -71,7 +80,7 @@ unsigned long ParseIPAddress(const char *ipStr);
 /* Protocol functions */
 BridgeResult ParseCommand(const char *request, char *command, long *commandLength);
 BridgeResult SendCommandResult(EndpointRef endpoint, const CommandResult *result);
-void FormatScreenshotResponse(const ScreenshotData *screenshot, char *response, long *responseLength);
+BridgeResult SendScreenshot(EndpointRef endpoint, const ScreenshotData *screenshot);
 
 /* Command execution */
 BridgeResult ExecuteCommand(const char *command, CommandResult *result);
