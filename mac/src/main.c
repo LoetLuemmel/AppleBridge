@@ -30,6 +30,7 @@ static Boolean gRunning = true;
 static WindowPtr gStatusWindow = NULL;
 static short gLineY = 20;
 static long gTickCounter = 0;
+static long gStartTick = 0;   /* daemon launch tick (for Alive uptime) */
 static MenuHandle gAppleMenu;
 static MenuHandle gFileMenu;
 
@@ -39,8 +40,8 @@ static long gLastTX = 0;     /* Tick count of last transmit */
 static long gRXCount = 0;    /* Total commands received */
 static long gTXCount = 0;    /* Total responses sent */
 
-/* LED flash duration in ticks (~0.5 seconds) */
-#define LED_FLASH_DURATION  30
+/* LED flash duration in ticks (~0.66 seconds, long enough to be seen) */
+#define LED_FLASH_DURATION  40
 
 /*
  * HOST IP - Change this to your host's IP address!
@@ -77,61 +78,50 @@ static void NumToStr(long num, char *str)
 void DrawLEDs(void)
 {
     Rect rxLED, txLED, statusArea;
-    Pattern grayPat;
     long now = TickCount();
     Boolean rxActive, txActive;
     char buf[64];
     Str255 pstr;
     short i;
+    RGBColor rxOn  = { 0x3000, 0xFFFF, 0x3000 };  /* hellgruen */
+    RGBColor rxOff = { 0x0C00, 0x4000, 0x0C00 };  /* dunkelgruen */
+    RGBColor txOn  = { 0xFFFF, 0x3000, 0x3000 };  /* hellrot */
+    RGBColor txOff = { 0x4000, 0x0C00, 0x0C00 };  /* dunkelrot */
+    RGBColor cBlack = { 0, 0, 0 };
+    RGBColor cWhite = { 0xFFFF, 0xFFFF, 0xFFFF };
 
     if (gStatusWindow == NULL) return;
 
     SetPort(gStatusWindow);
+    PenNormal();
 
-    /* Clear status area at top */
+    /* Clear status area at top (white background) */
     SetRect(&statusArea, 0, 0, 400, 18);
+    RGBBackColor(&cWhite);
+    RGBForeColor(&cBlack);
     EraseRect(&statusArea);
-
-    /* Draw frame around status area */
     FrameRect(&statusArea);
 
-    /* RX LED - left side */
-    SetRect(&rxLED, 10, 4, 30, 14);
+    SetRect(&rxLED, 10, 4, 30, 14);   /* RX LED - left  */
+    SetRect(&txLED, 35, 4, 55, 14);   /* TX LED - right */
 
-    /* TX LED - next to RX */
-    SetRect(&txLED, 35, 4, 55, 14);
-
-    /* Check if LEDs should be active (flashed recently) */
     rxActive = (now - gLastRX) < LED_FLASH_DURATION;
     txActive = (now - gLastTX) < LED_FLASH_DURATION;
 
-    /* Draw RX LED */
-    if (rxActive) {
-        /* Green fill (on Mac this is black with pattern) */
-        PenPat((Pattern *)&qd.black);
-        PaintRect(&rxLED);
-    } else {
-        PenPat((Pattern *)&qd.gray);
-        PaintRect(&rxLED);
-    }
+    /* RX LED - green (bright when active, dim otherwise) */
+    RGBForeColor(rxActive ? &rxOn : &rxOff);
+    PaintRect(&rxLED);
+    RGBForeColor(&cBlack);
     FrameRect(&rxLED);
 
-    /* Draw TX LED */
-    if (txActive) {
-        /* Active - solid black */
-        PenPat((Pattern *)&qd.black);
-        PaintRect(&txLED);
-    } else {
-        /* Inactive - gray */
-        PenPat((Pattern *)&qd.gray);
-        PaintRect(&txLED);
-    }
+    /* TX LED - red */
+    RGBForeColor(txActive ? &txOn : &txOff);
+    PaintRect(&txLED);
+    RGBForeColor(&cBlack);
     FrameRect(&txLED);
 
-    /* Reset pen */
-    PenNormal();
-
-    /* Draw labels and counters */
+    /* Draw labels and counters (black) */
+    RGBForeColor(&cBlack);
     TextSize(9);
     MoveTo(60, 12);
 
@@ -194,9 +184,9 @@ void ShowAlive(void)
 
     SetPort(gStatusWindow);
 
-    /* Update tick counter every ~30 ticks (0.5 second) */
+    /* Refresh ~8x/sec so the LED flash is caught and reverts promptly */
     ticks = TickCount();
-    if (ticks - gTickCounter < 30) return;
+    if (ticks - gTickCounter < 8) return;
     gTickCounter = ticks;
 
     /* Draw LEDs at top */
@@ -206,8 +196,35 @@ void ShowAlive(void)
     SetRect(&r, 10, 285, 390, 300);
     EraseRect(&r);
 
-    /* Show tick count */
-    NumToStr(ticks / 60, buf);
+    /* Show DAEMON uptime broken into d / h / m / s */
+    {
+        long secs = (ticks - gStartTick) / 60;
+        long days, hours, mins;
+        char nb[16];
+        short p = 0, k;
+
+        days  = secs / 86400L; secs %= 86400L;
+        hours = secs / 3600L;  secs %= 3600L;
+        mins  = secs / 60L;    secs %= 60L;
+
+        if (days > 0) {
+            NumToStr(days, nb);
+            for (k = 0; nb[k]; k++) buf[p++] = nb[k];
+            buf[p++] = 'd'; buf[p++] = ' ';
+        }
+        if (days > 0 || hours > 0) {
+            NumToStr(hours, nb);
+            for (k = 0; nb[k]; k++) buf[p++] = nb[k];
+            buf[p++] = 'h'; buf[p++] = ' ';
+        }
+        NumToStr(mins, nb);
+        for (k = 0; nb[k]; k++) buf[p++] = nb[k];
+        buf[p++] = 'm'; buf[p++] = ' ';
+        NumToStr(secs, nb);
+        for (k = 0; nb[k]; k++) buf[p++] = nb[k];
+        buf[p++] = 's';
+        buf[p] = '\0';
+    }
 
     pstr[0] = 0;
     for (i = 0; buf[i] && i < 250; i++) {
@@ -218,7 +235,6 @@ void ShowAlive(void)
     MoveTo(10, 295);
     DrawString("\pAlive: ");
     DrawString(pstr);
-    DrawString("\p sec");
 }
 
 /*
@@ -334,8 +350,8 @@ void InitApp(void)
 
     /* Create status window */
     SetRect(&bounds, 50, 50, 450, 350);
-    gStatusWindow = NewWindow(NULL, &bounds, "\pAppleBridge v0.4.0 (Verbs)",
-                              true, documentProc, (WindowPtr)-1L, true, 0);
+    gStatusWindow = NewCWindow(NULL, &bounds, "\pAppleBridge v0.4.0 (Verbs)",
+                               true, documentProc, (WindowPtr)-1L, true, 0);
     if (gStatusWindow) {
         SetPort(gStatusWindow);
         /* Initial LED area needs space at top */
@@ -452,6 +468,7 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
     /* Mark RX activity */
     gLastRX = TickCount();
     gRXCount++;
+    DrawLEDs();   /* light RX immediately */
 
     request[requestLen] = '\0';
 
@@ -616,6 +633,7 @@ int main(void)
 
     /* Initialize Mac Toolbox */
     InitApp();
+    gStartTick = TickCount();   /* baseline for Alive uptime */
 
     StatusMessage("=== AppleBridge Client ===");
     StatusMessage("Version 0.4.0 + Verbs");
