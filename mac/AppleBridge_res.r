@@ -26,8 +26,9 @@ resource 'SIZE' (-1) {
     reserved,
     reserved,
     reserved,
-    512 * 1024,    /* preferred size: 512K */
-    256 * 1024     /* minimum size: 256K */
+    12 * 1024 * 1024,   /* preferred: 12 MB (headroom for 4 MB responses; AE
+                           extraction transiently double-buffers ~2x) */
+    8 * 1024 * 1024     /* minimum: 8 MB */
 };
 
 /* Also include SIZE 0 for compatibility */
@@ -48,6 +49,6 @@ resource 'SIZE' (0) {
     reserved,
     reserved,
     reserved,
-    512 * 1024,
-    256 * 1024
+    12 * 1024 * 1024,
+    8 * 1024 * 1024
 };

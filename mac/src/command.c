@@ -124,19 +124,29 @@ static OSErr FindAppBySignature(OSType signature, ProcessSerialNumber *psn)
 }
 
 /*
- * Send DoScript event to target app (instrumented)
+ * Send DoScript event to target app (instrumented).
+ *
+ * The reply data is extracted into a dynamically sized Handle (outH) instead
+ * of a fixed 64 KB buffer: AEGetParamDesc hands back a copy of the parameter
+ * data AS a Handle, and we STEAL that handle (no extra NewHandle/BlockMove) so
+ * it survives after the reply is disposed. Output larger than
+ * MAX_DYNAMIC_RESPONSE is shrunk in place and *capped is set. A genuine
+ * extraction failure (e.g. memFullErr on a huge reply) is surfaced as the
+ * return code; "no output parameter" is not an error (outLen stays 0).
  */
 static OSErr SendDoScript(ProcessSerialNumber *psn, const char *script,
-						  char *resultBuf, long resultBufSize, long *resultLen,
+						  Handle *outH, long *outLen, Boolean *capped,
 						  char *diag)
 {
 	OSErr err;
 	AppleEvent event, reply;
 	AEAddressDesc target;
-	DescType actualType;
-	Size actualSize;
+	AEDesc dataDesc;
+	long size;
 
-	*resultLen = 0;
+	*outH = NULL;
+	*outLen = 0;
+	*capped = false;
 
 	err = AECreateDesc(typeProcessSerialNumber, psn, sizeof(*psn), &target);
 	Trace(diag, "createDesc=", err);
@@ -164,24 +174,39 @@ static OSErr SendDoScript(ProcessSerialNumber *psn, const char *script,
 	AEDisposeDesc(&event);
 	if (err != noErr) return err;
 
-	err = AEGetParamPtr(&reply, keyDirectObject, typeChar,
-						&actualType, resultBuf, resultBufSize - 1, &actualSize);
-	Trace(diag, "getDirect=", err);
+	/* Grab the reply data as a coerced typeChar descriptor. Try keyDirectObject
+	 * first; only fall back to '----' if the parameter is genuinely absent. */
+	dataDesc.descriptorType = typeNull;
+	dataDesc.dataHandle = NULL;
+	err = AEGetParamDesc(&reply, keyDirectObject, typeChar, &dataDesc);
+	if (err == errAEDescNotFound) {
+		err = AEGetParamDesc(&reply, '----', typeChar, &dataDesc);
+	}
+	Trace(diag, "getDesc=", err);
 
-	if (err == noErr && actualSize > 0) {
-		resultBuf[actualSize] = '\0';
-		*resultLen = actualSize;
-	} else {
-		err = AEGetParamPtr(&reply, '----', typeChar,
-							&actualType, resultBuf, resultBufSize - 1, &actualSize);
-		Trace(diag, "getDashes=", err);
-		if (err == noErr && actualSize > 0) {
-			resultBuf[actualSize] = '\0';
-			*resultLen = actualSize;
+	if (err == noErr && dataDesc.dataHandle != NULL) {
+		size = GetHandleSize(dataDesc.dataHandle);
+		Trace(diag, "rsize=", size);
+		if (size > MAX_DYNAMIC_RESPONSE) {
+			SetHandleSize(dataDesc.dataHandle, MAX_DYNAMIC_RESPONSE);
+			size = MAX_DYNAMIC_RESPONSE;
+			*capped = true;
 		}
+		*outH = dataDesc.dataHandle;   /* steal: keep it past AEDisposeDesc */
+		*outLen = size;
+		dataDesc.dataHandle = NULL;    /* so AEDisposeDesc won't free it */
+		AEDisposeDesc(&dataDesc);      /* no-op now */
+	} else if (err == errAEDescNotFound) {
+		err = noErr;                   /* command ran but produced no output */
+	} else {
+		/* Real failure (e.g. memFullErr extracting a huge reply). Surface it. */
+		Trace(diag, "getDesc-fail=", err);
+		AEDisposeDesc(&dataDesc);
+		AEDisposeDesc(&reply);
+		return err;
 	}
 
-	Trace(diag, "len=", *resultLen);
+	Trace(diag, "len=", *outLen);
 	AEDisposeDesc(&reply);
 	return noErr;
 }
@@ -193,12 +218,15 @@ BridgeResult ExecuteCommand(const char *command, CommandResult *result)
 {
 	OSErr err;
 	ProcessSerialNumber psn;
-	long resultLen;
+	Handle cmdHandle;
+	long cmdLen;
+	Boolean capped;
 	char diag[256];
 	OSType found = 0;
 
 	result->exitCode = 0;
-	result->outData[0] = '\0';
+	result->outData = NULL;
+	result->outLen = 0;
 	result->errData[0] = '\0';
 	diag[0] = '\0';
 
@@ -233,8 +261,7 @@ BridgeResult ExecuteCommand(const char *command, CommandResult *result)
 		return kBridgeCommandErr;
 	}
 
-	err = SendDoScript(&psn, command, result->outData, MAX_RESPONSE_LENGTH - 1,
-					   &resultLen, diag);
+	err = SendDoScript(&psn, command, &cmdHandle, &cmdLen, &capped, diag);
 
 	if (err != noErr) {
 		/* Surface the full step trace to the host on failure. */
@@ -243,10 +270,21 @@ BridgeResult ExecuteCommand(const char *command, CommandResult *result)
 		return kBridgeCommandErr;
 	}
 
+	result->outData = cmdHandle;
+	result->outLen  = cmdLen;
+	if (capped) {
+		strcpy(result->errData,
+			   "output capped at 4194304 bytes (4 MB daemon limit)");
+	}
+
 	return kBridgeNoErr;
 }
 
 void CleanupCommandResult(CommandResult *result)
 {
-	/* Nothing to cleanup */
+	if (result->outData != NULL) {
+		DisposeHandle(result->outData);
+		result->outData = NULL;
+	}
+	result->outLen = 0;
 }

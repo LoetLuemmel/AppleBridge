@@ -6,6 +6,7 @@
 
 #include <applebridge.h>
 #include <mystring.h>
+#include <Memory.h>
 
 /* Simple number to string conversion */
 static void NumToString(long num, char *str)
@@ -98,68 +99,70 @@ BridgeResult ParseCommand(const char *request, char *command, long *commandLengt
 }
 
 /*
- * Format command response
- * Format: STATUS:<exit_code>\nSTDOUT:<length>\n<output>\nSTDERR:<length>\n<errors>\n\n
+ * Stream a command response to the host.
+ *
+ * Wire format (unchanged, so the host parser needs no changes):
+ *   STATUS:<code>\r STDOUT:<outLen>\r <outLen bytes>\r STDERR:<errLen>\r <err>\r \r
+ *
+ * Instead of assembling everything into one buffer (which capped output at
+ * 64 KB), we send the small header, then stream the stdout payload straight
+ * from its Handle. SendData already loops over OTSnd and rides out
+ * kOTFlowErr, so an arbitrarily large payload is chunked transparently on the
+ * wire. The declared STDOUT:<outLen> always matches the bytes actually sent,
+ * so the host's length-framed reader (_read_exact) stays in sync.
+ *
+ * Note: when outLen == 0 the data block AND its trailing \r are skipped (just
+ * "STDOUT:0\r"), exactly as the old FormatResponse did, so the host's
+ * _read_exact(0) + _read_until_terminator line up.
  */
-/* Headroom reserved for STATUS/STDOUT/STDERR headers + terminators. */
-#define RESP_RESERVE 256
-
-void FormatResponse(const CommandResult *result, char *response, long *responseLength)
+BridgeResult SendCommandResult(EndpointRef endpoint, const CommandResult *result)
 {
-    char *ptr = response;
-    char numBuf[32];
-    long k;
-    long outLen = StrLen(result->outData);
+    char hdr[64];
+    char *p;
+    OSStatus err;
     long errLen = StrLen(result->errData);
-    long budget = MAX_RESPONSE_LENGTH - RESP_RESERVE;
 
-    /*
-     * Overflow guard: the response buffer is MAX_RESPONSE_LENGTH bytes. If
-     * stdout+stderr would not fit (e.g. a >64K DumpFile), CAP them so the
-     * total fits. The DECLARED length always matches what we actually send,
-     * so the host reads a valid (shortened) response instead of the daemon
-     * smashing its stack. Real fix for >64K is framing/chunking (later).
-     */
-    if (errLen > budget) errLen = budget;
-    if (outLen > budget - errLen) outLen = budget - errLen;
+    /* STATUS:<code>\r STDOUT:<outLen>\r */
+    p = hdr;
+    strcpy(p, PROTO_STATUS);   p += strlen(PROTO_STATUS);
+    NumToString(result->exitCode, p);   while (*p) p++;
+    *p++ = '\r';
+    strcpy(p, PROTO_STDOUT);   p += strlen(PROTO_STDOUT);
+    NumToString(result->outLen, p);     while (*p) p++;
+    *p++ = '\r';
+    err = SendData(endpoint, hdr, p - hdr);
+    if (err != noErr) return kBridgeCommandErr;
 
-    /* STATUS line */
-    strcpy(ptr, PROTO_STATUS);
-    ptr += strlen(PROTO_STATUS);
-    NumToString(result->exitCode, numBuf);
-    strcpy(ptr, numBuf);
-    ptr += strlen(numBuf);
-    *ptr++ = '\r';
-
-    /* STDOUT (copy exactly outLen bytes - may be capped) */
-    strcpy(ptr, PROTO_STDOUT);
-    ptr += strlen(PROTO_STDOUT);
-    NumToString(outLen, numBuf);
-    strcpy(ptr, numBuf);
-    ptr += strlen(numBuf);
-    *ptr++ = '\r';
-    if (outLen > 0) {
-        for (k = 0; k < outLen; k++) *ptr++ = result->outData[k];
-        *ptr++ = '\r';
+    /* STDOUT payload, streamed from the handle (locked so it can't move). */
+    if (result->outLen > 0 && result->outData != NULL) {
+        SignedByte hstate = HGetState(result->outData);
+        HLock(result->outData);
+        err = SendData(endpoint, *result->outData, result->outLen);
+        HSetState(result->outData, hstate);
+        if (err != noErr) return kBridgeCommandErr;
+        err = SendData(endpoint, "\r", 1);
+        if (err != noErr) return kBridgeCommandErr;
     }
 
-    /* STDERR (copy exactly errLen bytes - may be capped) */
-    strcpy(ptr, PROTO_STDERR);
-    ptr += strlen(PROTO_STDERR);
-    NumToString(errLen, numBuf);
-    strcpy(ptr, numBuf);
-    ptr += strlen(numBuf);
-    *ptr++ = '\r';
+    /* STDERR:<errLen>\r <err>\r */
+    p = hdr;
+    strcpy(p, PROTO_STDERR);   p += strlen(PROTO_STDERR);
+    NumToString(errLen, p);    while (*p) p++;
+    *p++ = '\r';
+    err = SendData(endpoint, hdr, p - hdr);
+    if (err != noErr) return kBridgeCommandErr;
     if (errLen > 0) {
-        for (k = 0; k < errLen; k++) *ptr++ = result->errData[k];
-        *ptr++ = '\r';
+        err = SendData(endpoint, result->errData, errLen);
+        if (err != noErr) return kBridgeCommandErr;
+        err = SendData(endpoint, "\r", 1);
+        if (err != noErr) return kBridgeCommandErr;
     }
 
     /* End marker */
-    *ptr++ = '\r';
-    *ptr = '\0';
+    err = SendData(endpoint, "\r", 1);
+    if (err != noErr) return kBridgeCommandErr;
 
-    *responseLength = ptr - response;
+    return kBridgeNoErr;
 }
 
 /*
