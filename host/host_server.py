@@ -19,9 +19,10 @@ Hardening over the original (host-only, no 68k daemon changes):
   * Adaptive timeouts: long for Link/SC/Asm/Make/DumpFile, short otherwise.
   * Structured, unbuffered logging to stderr + /tmp/applebridge_server.log.
 
-NOTE: the daemon hardcodes the host IP (192.168.3.154) and the 65536-byte
-response buffer; large-output framing/overflow fixes need a 68k rebuild and
-are intentionally out of scope here.
+NOTE: the daemon hardcodes the host IP (192.168.3.154). Large responses
+(>64 KB, up to a 4 MB cap) are now streamed by the daemon from a dynamically
+allocated handle and read here by their declared STDOUT:<len> (length-framing,
+already content-agnostic) — no per-response size limit on this side.
 """
 import socket
 import sys
@@ -38,7 +39,7 @@ LONG_CMDS = {
     "dumpobj", "dumpfile", "rez", "derez", "lib", "duplicate",
 }
 DEFAULT_TIMEOUT = 15.0
-LONG_TIMEOUT = 120.0
+LONG_TIMEOUT = 240.0   # multi-MB transfers (large DumpFile/Catenate) over OT
 SCREENSHOT_TIMEOUT = 15.0
 
 _logf = open(LOG_PATH, "a", buffering=1)  # line-buffered
@@ -143,7 +144,7 @@ class AppleBridgeServer:
         buf = bytearray()
 
         # --- framed reader -------------------------------------------------
-        # The daemon's FormatResponse emits:
+        # The daemon's SendCommandResult streams:
         #   STATUS:<code>\r STDOUT:<olen>\r <olen bytes>\r STDERR:<elen>\r <elen bytes>\r \r
         # The old code stopped at the first \r\r / \n\n in the stream, which
         # TRUNCATED any output that itself contained a blank line (e.g. C source
@@ -152,7 +153,7 @@ class AppleBridgeServer:
         # (small) STDERR+terminator remainder the old way. Non-STATUS responses
         # (e.g. IMAGE screenshots) fall back to the legacy terminator read.
         def _fill():
-            chunk = self.client_socket.recv(4096)
+            chunk = self.client_socket.recv(65536)   # large reads for MB-scale stdout
             if not chunk:
                 raise ConnectionError("peer closed mid-response")
             buf.extend(chunk)

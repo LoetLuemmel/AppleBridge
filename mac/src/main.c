@@ -561,11 +561,8 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
 
     StatusMessage("Command executed");
 
-    /* Format response */
-    FormatResponse(&cmdResult, responseBuffer, &responseLength);
-
-    /* Send response */
-    err = SendData(endpoint, responseBuffer, responseLength);
+    /* Stream response straight from the (possibly multi-MB) result handle. */
+    err = SendCommandResult(endpoint, &cmdResult);
     if (err != noErr) {
         StatusMessage("Failed to send response");
     } else {
