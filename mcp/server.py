@@ -23,8 +23,8 @@ class MCPServer:
     def __init__(self):
         # Connection will be established on-demand when tools are called
         print("AppleBridge MCP Server initialized", file=sys.stderr)
-        print("MacintoshBridgeHost should be running on localhost:9001", file=sys.stderr)
-        print("Mac daemon should connect to MacintoshBridgeHost on port 9000", file=sys.stderr)
+        print("Control port (hardened host_server.py, or MacintoshBridgeHost) expected on localhost:9001", file=sys.stderr)
+        print("Mac daemon connects OUT to the host server on port 9000", file=sys.stderr)
 
     def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Handle a single MCP request."""
