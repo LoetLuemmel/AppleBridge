@@ -33,8 +33,17 @@ class CommandResponse:
 
     @classmethod
     def decode(cls, data: bytes) -> 'CommandResponse':
-        """Decode response from Mac"""
-        lines = data.decode('utf-8', errors='replace').split('\n')
+        """Decode response from Mac.
+
+        Wire format:
+            STATUS:<code>\\n STDOUT:<len>\\n <data>\\n STDERR:<len>\\n <data>\\n\\n
+
+        STDOUT/STDERR are read by their declared byte length so MULTI-LINE
+        output is captured. (The original implementation kept only the first
+        line, truncating any multi-line command output.)
+        """
+        text = data.decode('utf-8', errors='replace').replace('\r', '\n')
+        lines = text.split('\n')
 
         exit_code = 0
         stdout = ""
@@ -45,21 +54,35 @@ class CommandResponse:
             line = lines[i]
 
             if line.startswith("STATUS:"):
-                exit_code = int(line.split(':', 1)[1])
-
-            elif line.startswith("STDOUT:"):
-                length = int(line.split(':', 1)[1])
+                try:
+                    exit_code = int(line[7:])
+                except ValueError:
+                    pass
                 i += 1
-                stdout = '\n'.join(lines[i:i+1]) if i < len(lines) else ""
 
-            elif line.startswith("STDERR:"):
-                length = int(line.split(':', 1)[1])
+            elif line.startswith("STDOUT:") or line.startswith("STDERR:"):
+                is_out = line.startswith("STDOUT:")
+                try:
+                    length = int(line[7:])
+                except ValueError:
+                    length = 0
                 i += 1
-                stderr = '\n'.join(lines[i:i+1]) if i < len(lines) else ""
+                collected = []
+                chars = 0
+                while i < len(lines) and chars < length:
+                    collected.append(lines[i])
+                    chars += len(lines[i]) + 1  # +1 for the stripped newline
+                    i += 1
+                value = '\n'.join(collected)
+                if is_out:
+                    stdout = value
+                else:
+                    stderr = value
 
-            i += 1
+            else:
+                i += 1
 
-        return cls(exit_code=exit_code, stdout=stdout, stderr=stderr)
+        return cls(exit_code=exit_code, stdout=stdout.strip(), stderr=stderr.strip())
 
 
 @dataclass

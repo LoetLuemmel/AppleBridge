@@ -17,10 +17,12 @@ SHARE_FOLDER = "/Users/pitforster/Desktop/Share"
 
 class MacConnection:
     """
-    Connection to MacintoshBridgeHost server.
+    Connection to the AppleBridge control port (localhost:9001).
 
-    Connects TO MacintoshBridgeHost on localhost:9001 (control port).
-    MacintoshBridgeHost then forwards commands to the Mac daemon.
+    The control port is served by the hardened host_server.py (the proven
+    path) or, in the native setup, by the Swift MacintoshBridgeHost. It
+    forwards each command to the Mac daemon and returns STATUS/STDOUT/STDERR.
+    A fresh socket is opened per command.
     """
 
     def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT):
@@ -83,10 +85,12 @@ class MacConnection:
         try:
             sock.connect((self.host, self.port))
 
-            # Send raw command - LocalControlServer will format it for Mac daemon
-            # IMPORTANT: Encode as MacRoman, not UTF-8!
+            # Send raw command terminated by \n\n. The :9001 control server
+            # (hardened host_server.py, or the Swift MacintoshBridgeHost)
+            # forwards it to the Mac daemon, which re-encodes to MacRoman.
+            # Use UTF-8 to match the control-port decoder (utf-8).
             message = f"{command}\n\n"
-            sock.sendall(message.encode('mac_roman'))
+            sock.sendall(message.encode('utf-8'))
 
             # Receive response until connection closes
             response = b""
@@ -111,7 +115,8 @@ class MacConnection:
 
     def _parse_response(self, response: bytes) -> Tuple[int, str, str]:
         """Parse AppleBridge response format."""
-        text = response.decode('mac_roman', errors='replace')
+        # The :9001 control server returns the response as UTF-8.
+        text = response.decode('utf-8', errors='replace')
 
         status = 0
         stdout = ""
