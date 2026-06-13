@@ -140,21 +140,85 @@ class AppleBridgeServer:
             return None
 
         to = timeout_for(command)
-        response = b""
+        buf = bytearray()
+
+        # --- framed reader -------------------------------------------------
+        # The daemon's FormatResponse emits:
+        #   STATUS:<code>\r STDOUT:<olen>\r <olen bytes>\r STDERR:<elen>\r <elen bytes>\r \r
+        # The old code stopped at the first \r\r / \n\n in the stream, which
+        # TRUNCATED any output that itself contained a blank line (e.g. C source
+        # via Catenate). Measured root cause: daemon sent the full data, host
+        # quit early. Fix: read STDOUT by its DECLARED length, then read the
+        # (small) STDERR+terminator remainder the old way. Non-STATUS responses
+        # (e.g. IMAGE screenshots) fall back to the legacy terminator read.
+        def _fill():
+            chunk = self.client_socket.recv(4096)
+            if not chunk:
+                raise ConnectionError("peer closed mid-response")
+            buf.extend(chunk)
+
+        def _read_line():
+            pos = 0
+            while True:
+                while pos < len(buf):
+                    if buf[pos] in (13, 10):        # \r or \n
+                        line = bytes(buf[:pos])
+                        term = buf[pos]
+                        del buf[:pos + 1]
+                        if buf and ((term == 13 and buf[0] == 10) or
+                                    (term == 10 and buf[0] == 13)):
+                            del buf[:1]             # swallow paired EOL
+                        return line
+                    pos += 1
+                _fill()
+
+        def _read_exact(n):
+            while len(buf) < n:
+                _fill()
+            data = bytes(buf[:n])
+            del buf[:n]
+            return data
+
+        def _read_until_terminator():
+            while True:
+                b = bytes(buf)
+                if b"\n\n" in b or b"\r\r" in b or b"\r\n\r\n" in b:
+                    data = bytes(buf)
+                    buf.clear()
+                    return data
+                _fill()
+
+        raw = None
+        outcome = "framed"
         try:
             self.client_socket.settimeout(to)
-            while True:
-                chunk = self.client_socket.recv(4096)
-                if not chunk:
-                    self._mark_disconnected("recv 0 (peer closed mid-response)")
-                    break
-                response += chunk
-                if b"\n\n" in response or b"\r\r" in response or b"\r\n\r\n" in response:
-                    break
+            while len(buf) < 7:                      # enough to recognise "STATUS:"
+                _fill()
+            if bytes(buf[:7]) == b"STATUS:":
+                status_line = _read_line()           # b"STATUS:<code>"
+                out_hdr = _read_line()               # b"STDOUT:<olen>"
+                try:
+                    olen = int(out_hdr.split(b":", 1)[1].strip() or b"0")
+                except (ValueError, IndexError):
+                    olen = -1
+                if olen >= 0:
+                    stdout = _read_exact(olen)       # exact — no false early stop
+                    rest = _read_until_terminator()  # \r + STDERR hdr + data + end (small)
+                    raw = status_line + b"\r" + out_hdr + b"\r" + stdout + rest
+                else:
+                    rest = _read_until_terminator()
+                    raw = status_line + b"\r" + out_hdr + b"\r" + rest
+            else:
+                outcome = "terminator"               # non-STATUS (IMAGE etc.): legacy read
+                raw = _read_until_terminator()
         except socket.timeout:
+            outcome = "timeout"
             log(f"command timeout after {to:.0f}s: {command[:48]!r}")
-        except OSError as e:
+            raw = bytes(buf) if buf else None
+        except (OSError, ConnectionError) as e:
+            outcome = "closed"
             self._mark_disconnected(f"recv error: {e}")
+            raw = bytes(buf) if buf else None
         finally:
             try:
                 if self.client_socket:
@@ -162,9 +226,11 @@ class AppleBridgeServer:
             except OSError:
                 pass
 
-        if not response:
+        if raw is None:
             return None
-        return response.decode("mac_roman", errors="replace")
+        if len(raw) > 1000 or outcome != "framed":
+            log(f"recv {len(raw)}B outcome={outcome} cmd={command[:32]!r}")
+        return bytes(raw).decode("mac_roman", errors="replace")
 
     def send_raw(self, data):
         """Send a RAW verb (PING / LAUNCH:<path>) — no COMMAND: wrapper.
