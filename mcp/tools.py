@@ -339,8 +339,8 @@ def mac_screenshot() -> Dict[str, Any]:
                     "error": "MacintoshBridgeHost not available"
                 }
 
-        # Send SCREENSHOT command
-        status, stdout, stderr = conn.send_command("SCREENSHOT", timeout=10.0)
+        # Send SCREENSHOT command (full-screen pixmap transfer + host PNG decode)
+        status, stdout, stderr = conn.send_command("SCREENSHOT", timeout=30.0)
 
         if status == 0 and stdout:
             # stdout already contains base64-encoded PNG
