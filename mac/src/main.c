@@ -518,12 +518,51 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         }
         launchPath[n] = '\0';
 
-        StatusMessage("Launch requested");
+        {
+            char m[80]; short k;
+            strcpy(m, "Launch: ");
+            for (k = 0; launchPath[k] && k < 60; k++) m[8 + k] = launchPath[k];
+            m[8 + k] = '\0';
+            StatusMessage(m);
+        }
         lerr = LaunchAppAtPath(launchPath);
         if (lerr == noErr) {
             strcpy(responseBuffer, "STATUS:0\rSTDOUT:8\rLaunched\rSTDERR:0\r\r");
+            StatusMessage("Launched OK");
         } else {
             strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:13\rLaunch failed\r\r");
+            StatusMessage("Launch failed");
+        }
+        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        gLastTX = TickCount();
+        gTXCount++;
+        return;
+    }
+
+    /* QUIT:<4-char creator> verb: send a quit Apple Event to a running app so
+     * the host can stop a launched build over the bridge (no manual quit). */
+    if (strncmp(request, "QUIT:", 5) == 0) {
+        OSType sig = 0;
+        OSErr qerr;
+        short i;
+        char m[40];
+        for (i = 0; i < 4 && request[5 + i] &&
+                    request[5 + i] != '\r' && request[5 + i] != '\n'; i++) {
+            sig = (sig << 8) | (unsigned char)request[5 + i];
+        }
+        while (i < 4) { sig = (sig << 8) | ' '; i++; }
+        strcpy(m, "Quit: ");
+        m[6] = (char)((sig >> 24) & 0xFF); m[7] = (char)((sig >> 16) & 0xFF);
+        m[8] = (char)((sig >> 8) & 0xFF);  m[9] = (char)(sig & 0xFF);
+        m[10] = '\0';
+        StatusMessage(m);
+        qerr = QuitAppBySignature(sig);
+        if (qerr == noErr) {
+            strcpy(responseBuffer, "STATUS:0\rSTDOUT:7\rQuit OK\rSTDERR:0\r\r");
+            StatusMessage("Quit sent");
+        } else {
+            strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:11\rQuit failed\r\r");
+            StatusMessage("Quit: no such app");
         }
         SendData(endpoint, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();
@@ -545,12 +584,18 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         return;
     }
 
-    StatusMessage("Executing command...");
+    {
+        char m[80]; short k;
+        strcpy(m, "Exec: ");
+        for (k = 0; command[k] && k < 64; k++) m[6 + k] = command[k];
+        m[6 + k] = '\0';
+        StatusMessage(m);   /* show the actual command being run */
+    }
 
     /* Execute command */
     result = ExecuteCommand(command, &cmdResult);
 
-    StatusMessage("Command executed");
+    StatusMessage("Command done");
 
     /* Stream response straight from the (possibly multi-MB) result handle. */
     err = SendCommandResult(endpoint, &cmdResult);

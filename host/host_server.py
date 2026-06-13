@@ -439,7 +439,7 @@ def run_control_server(server):
                             log(f"screenshot -> {len(png)}B PNG ({len(b64)}B base64)")
                         else:
                             out = "STATUS:-1\rSTDOUT:0\rSTDERR:17\rScreenshot failed\r\r"
-                    elif cmd == "PING" or cmd.startswith("LAUNCH:"):
+                    elif cmd == "PING" or cmd.startswith("LAUNCH:") or cmd.startswith("QUIT:"):
                         log(f"verb: {cmd[:60]!r}")
                         resp = server.send_raw(cmd)   # raw, not COMMAND-wrapped
                         out = resp if resp is not None else "No response"
