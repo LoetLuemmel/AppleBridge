@@ -1,0 +1,1 @@
+ILink -model far -o :bin:AppleBridge :obj:main.c.o :obj:network.c.o :obj:protocol.c.o :obj:command.c.o :obj:screenshot.c.o :obj:utils.c.o :obj:mystring.c.o "{LIBS}StdCLib.o" "{LIBS}OpenTransport.o" "{LIBS}OpenTransportApp.o" "{LIBS}OpenTptInet.o" "{LIBS}Interface.o" "{LIBS}MacRuntime.o"

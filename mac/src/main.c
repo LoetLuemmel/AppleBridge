@@ -1,5 +1,5 @@
 /*
- * AppleBridge - Main Daemon (Client Mode)
+ * AppleBridge - Main Daemon (Client Mode) with RX/TX LEDs
  * Connects OUT to host server
  */
 
@@ -13,6 +13,7 @@
 #include <TextEdit.h>
 #include <Dialogs.h>
 #include <Files.h>
+#include <Processes.h>
 #include <ToolUtils.h>
 
 QDGlobals qd;
@@ -32,9 +33,17 @@ static long gTickCounter = 0;
 static MenuHandle gAppleMenu;
 static MenuHandle gFileMenu;
 
+/* RX/TX Activity tracking */
+static long gLastRX = 0;     /* Tick count of last receive */
+static long gLastTX = 0;     /* Tick count of last transmit */
+static long gRXCount = 0;    /* Total commands received */
+static long gTXCount = 0;    /* Total responses sent */
+
+/* LED flash duration in ticks (~0.5 seconds) */
+#define LED_FLASH_DURATION  30
+
 /*
  * HOST IP - Change this to your host's IP address!
- * Or create a file "host_ip.txt" in the same folder with the IP
  */
 #define DEFAULT_HOST_IP "192.168.1.100"
 
@@ -62,6 +71,87 @@ static void NumToStr(long num, char *str)
     str[i] = '\0';
 }
 
+/*
+ * Draw RX/TX LED indicators
+ */
+void DrawLEDs(void)
+{
+    Rect rxLED, txLED, statusArea;
+    Pattern grayPat;
+    long now = TickCount();
+    Boolean rxActive, txActive;
+    char buf[64];
+    Str255 pstr;
+    short i;
+
+    if (gStatusWindow == NULL) return;
+
+    SetPort(gStatusWindow);
+
+    /* Clear status area at top */
+    SetRect(&statusArea, 0, 0, 400, 18);
+    EraseRect(&statusArea);
+
+    /* Draw frame around status area */
+    FrameRect(&statusArea);
+
+    /* RX LED - left side */
+    SetRect(&rxLED, 10, 4, 30, 14);
+
+    /* TX LED - next to RX */
+    SetRect(&txLED, 35, 4, 55, 14);
+
+    /* Check if LEDs should be active (flashed recently) */
+    rxActive = (now - gLastRX) < LED_FLASH_DURATION;
+    txActive = (now - gLastTX) < LED_FLASH_DURATION;
+
+    /* Draw RX LED */
+    if (rxActive) {
+        /* Green fill (on Mac this is black with pattern) */
+        PenPat((Pattern *)&qd.black);
+        PaintRect(&rxLED);
+    } else {
+        PenPat((Pattern *)&qd.gray);
+        PaintRect(&rxLED);
+    }
+    FrameRect(&rxLED);
+
+    /* Draw TX LED */
+    if (txActive) {
+        /* Active - solid black */
+        PenPat((Pattern *)&qd.black);
+        PaintRect(&txLED);
+    } else {
+        /* Inactive - gray */
+        PenPat((Pattern *)&qd.gray);
+        PaintRect(&txLED);
+    }
+    FrameRect(&txLED);
+
+    /* Reset pen */
+    PenNormal();
+
+    /* Draw labels and counters */
+    TextSize(9);
+    MoveTo(60, 12);
+
+    /* Build string manually: "RX:n TX:n" */
+    buf[0] = 'R'; buf[1] = 'X'; buf[2] = ':';
+    NumToStr(gRXCount, buf + 3);
+    i = strlen(buf);
+    buf[i++] = ' '; buf[i++] = 'T'; buf[i++] = 'X'; buf[i++] = ':';
+    NumToStr(gTXCount, buf + i);
+
+    /* Convert to Pascal string */
+    for (i = 0; buf[i] && i < 250; i++) {
+        pstr[i + 1] = buf[i];
+    }
+    pstr[0] = i;
+    DrawString(pstr);
+
+    TextSize(12);
+}
+
 /* Simple status display in window */
 void StatusMessage(const char *msg)
 {
@@ -82,14 +172,16 @@ void StatusMessage(const char *msg)
     DrawString(pstr);
     gLineY += 15;
 
-    /* Scroll if needed */
+    /* Scroll if needed - leave room for LED area */
     if (gLineY > 280) {
+        Rect contentArea;
         gLineY = 20;
-        EraseRect(&gStatusWindow->portRect);
+        SetRect(&contentArea, 0, 18, 400, 300);
+        EraseRect(&contentArea);
     }
 }
 
-/* Show alive indicator */
+/* Show alive indicator with LEDs */
 void ShowAlive(void)
 {
     Rect r;
@@ -102,10 +194,13 @@ void ShowAlive(void)
 
     SetPort(gStatusWindow);
 
-    /* Update tick counter every ~60 ticks (1 second) */
+    /* Update tick counter every ~30 ticks (0.5 second) */
     ticks = TickCount();
     if (ticks - gTickCounter < 30) return;
     gTickCounter = ticks;
+
+    /* Draw LEDs at top */
+    DrawLEDs();
 
     /* Draw alive indicator at bottom */
     SetRect(&r, 10, 285, 390, 300);
@@ -144,7 +239,7 @@ void ShowAboutBox(void)
         MoveTo(20, 30);
         TextSize(14);
         TextFace(bold);
-        DrawString("\pAppleBridge v0.2.0");
+        DrawString("\pAppleBridge v0.4.0");
 
         MoveTo(20, 55);
         TextSize(10);
@@ -158,7 +253,11 @@ void ShowAboutBox(void)
         TextFace(italic);
         DrawString("\p\"Connecting classic Mac to the future\"");
 
-        MoveTo(20, 130);
+        MoveTo(20, 120);
+        TextFace(bold);
+        DrawString("\pRX/TX Health Monitor Edition");
+
+        MoveTo(20, 140);
         TextFace(0);
         DrawString("\pClick to close...");
 
@@ -235,10 +334,12 @@ void InitApp(void)
 
     /* Create status window */
     SetRect(&bounds, 50, 50, 450, 350);
-    gStatusWindow = NewWindow(NULL, &bounds, "\pAppleBridge Client",
+    gStatusWindow = NewWindow(NULL, &bounds, "\pAppleBridge v0.4.0 (Verbs)",
                               true, documentProc, (WindowPtr)-1L, true, 0);
     if (gStatusWindow) {
         SetPort(gStatusWindow);
+        /* Initial LED area needs space at top */
+        gLineY = 20;
     }
 }
 
@@ -296,12 +397,44 @@ Boolean CheckUserAbort(void)
 
             case updateEvt:
                 BeginUpdate((WindowPtr)event.message);
+                DrawLEDs();  /* Redraw LEDs on update */
                 EndUpdate((WindowPtr)event.message);
                 break;
         }
     }
 
     return !gRunning;
+}
+
+/*
+ * Launch a GUI application at a Mac path and bring it to the foreground.
+ * Used by the LAUNCH: verb (ToolServer cannot foreground a GUI app).
+ */
+static OSErr LaunchAppAtPath(const char *macPath)
+{
+    Str255 pPath;
+    FSSpec spec;
+    LaunchParamBlockRec lpb;
+    OSErr err;
+    short i;
+
+    /* C string -> Pascal string (full HFS path) */
+    for (i = 0; macPath[i] && i < 255; i++) {
+        pPath[i + 1] = macPath[i];
+    }
+    pPath[0] = i;
+
+    err = FSMakeFSSpec(0, 0, pPath, &spec);
+    if (err != noErr) return err;
+
+    lpb.launchBlockID = extendedBlock;
+    lpb.launchEPBLength = extendedBlockLen;
+    lpb.launchFileFlags = 0;
+    lpb.launchControlFlags = launchContinue | launchNoFileFlags;
+    lpb.launchAppSpec = &spec;
+    lpb.launchAppParameters = NULL;
+
+    return LaunchApplication(&lpb);
 }
 
 /*
@@ -316,6 +449,10 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
     CommandResult cmdResult;
     OSStatus err;
 
+    /* Mark RX activity */
+    gLastRX = TickCount();
+    gRXCount++;
+
     request[requestLen] = '\0';
 
     /* Check if it's a screenshot request */
@@ -326,15 +463,63 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
 
         result = CaptureScreenshot(&screenshot);
         if (result == kBridgeNoErr) {
-            FormatScreenshotResponse(&screenshot, responseBuffer, &responseLength);
-            SendData(endpoint, responseBuffer, responseLength);
+            /* Overflow guard: only format/send if the raw image fits the
+               response buffer; otherwise report an error instead of smashing
+               memory. (Large-image chunking needs the framed protocol = later.) */
+            if (screenshot.dataSize > 0 &&
+                screenshot.dataSize <= MAX_RESPONSE_LENGTH - 128) {
+                FormatScreenshotResponse(&screenshot, responseBuffer, &responseLength);
+                SendData(endpoint, responseBuffer, responseLength);
+                StatusMessage("Screenshot sent");
+            } else {
+                strcpy(responseBuffer, "STATUS:-1\nSTDOUT:0\n\nSTDERR:20\nScreenshot too large\n\n");
+                SendData(endpoint, responseBuffer, strlen(responseBuffer));
+                StatusMessage("Screenshot too large");
+            }
             CleanupScreenshot(&screenshot);
-            StatusMessage("Screenshot sent");
         } else {
             strcpy(responseBuffer, "STATUS:-1\nSTDOUT:0\n\nSTDERR:18\nScreenshot failed\n\n");
             SendData(endpoint, responseBuffer, strlen(responseBuffer));
         }
 
+        /* Mark TX activity */
+        gLastTX = TickCount();
+        gTXCount++;
+
+        return;
+    }
+
+    /* PING verb: lightweight heartbeat (sent raw, not COMMAND-wrapped) */
+    if (strncmp(request, "PING", 4) == 0) {
+        strcpy(responseBuffer, "STATUS:0\rSTDOUT:4\rPONG\rSTDERR:0\r\r");
+        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        gLastTX = TickCount();
+        gTXCount++;
+        return;
+    }
+
+    /* LAUNCH:<MacPath> verb: bring a GUI app to the foreground */
+    if (strncmp(request, "LAUNCH:", 7) == 0) {
+        char launchPath[MAX_COMMAND_LENGTH];
+        OSErr lerr;
+        short n;
+
+        for (n = 0; request[7 + n] && request[7 + n] != '\r' &&
+                    request[7 + n] != '\n' && n < MAX_COMMAND_LENGTH - 1; n++) {
+            launchPath[n] = request[7 + n];
+        }
+        launchPath[n] = '\0';
+
+        StatusMessage("Launch requested");
+        lerr = LaunchAppAtPath(launchPath);
+        if (lerr == noErr) {
+            strcpy(responseBuffer, "STATUS:0\rSTDOUT:8\rLaunched\rSTDERR:0\r\r");
+        } else {
+            strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:13\rLaunch failed\r\r");
+        }
+        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        gLastTX = TickCount();
+        gTXCount++;
         return;
     }
 
@@ -344,6 +529,11 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         strcpy(responseBuffer, "STATUS:-1\nSTDOUT:0\n\nSTDERR:21\nInvalid command format\n\n");
         SendData(endpoint, responseBuffer, strlen(responseBuffer));
         StatusMessage("Invalid command format");
+
+        /* Mark TX activity */
+        gLastTX = TickCount();
+        gTXCount++;
+
         return;
     }
 
@@ -364,6 +554,10 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
     } else {
         StatusMessage("Response sent");
     }
+
+    /* Mark TX activity */
+    gLastTX = TickCount();
+    gTXCount++;
 
     CleanupCommandResult(&cmdResult);
 }
@@ -417,7 +611,6 @@ int main(void)
 
     /*
      * SET YOUR HOST IP HERE!
-     * This is the IP of your Mac host running host_server.py
      */
     char hostIPStr[] = "192.168.3.154";  /* Host Mac IP */
 
@@ -425,7 +618,7 @@ int main(void)
     InitApp();
 
     StatusMessage("=== AppleBridge Client ===");
-    StatusMessage("Version 0.3.0 (Client Mode)");
+    StatusMessage("Version 0.4.0 + Verbs");
     StatusMessage("");
     StatusMessage("Host IP:");
     StatusMessage(hostIPStr);
@@ -489,7 +682,6 @@ int main(void)
         if (err != noErr) {
             char errMsg[80];
             strcpy(errMsg, "ReceiveData error: ");
-            /* Add error code - simplified */
             StatusMessage(errMsg);
             StatusMessage("Connection lost");
         }

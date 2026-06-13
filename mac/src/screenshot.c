@@ -3,108 +3,64 @@
  * Capture screen using QuickDraw
  */
 
-#include "applebridge.h"
+#include <applebridge.h>
 #include <QuickDraw.h>
 #include <QDOffscreen.h>
 #include <Memory.h>
+
+/* External status function from main.c */
+extern void StatusMessage(const char *msg);
 
 /*
  * Capture screenshot of main screen
  */
 BridgeResult CaptureScreenshot(ScreenshotData *screenshot)
 {
-    GDHandle mainDevice;
-    PixMapHandle pixMap;
+    /*
+     * Direct screenBits capture - no GWorld needed
+     */
+    BitMap *screen;
     Rect bounds;
-    GWorldPtr offscreenGWorld;
-    OSErr err;
-    Ptr baseAddr;
-    long rowBytes;
     short width, height;
-    long imageSize;
+    long rowBytes, imageSize;
 
-    LogMessage("Capturing screenshot...");
+    StatusMessage("Getting screenBits...");
 
-    /* Get main screen device */
-    mainDevice = GetMainDevice();
-    if (mainDevice == NULL) {
-        LogMessage("Failed to get main device");
-        return kBridgeCommandErr;
-    }
-
-    /* Get screen bounds */
-    pixMap = (**mainDevice).gdPMap;
-    bounds = (**pixMap).bounds;
+    /* Get screen bitmap directly */
+    screen = &qd.screenBits;
+    bounds = screen->bounds;
 
     width = bounds.right - bounds.left;
     height = bounds.bottom - bounds.top;
+    rowBytes = screen->rowBytes & 0x3FFF;
+    imageSize = (long)height * rowBytes;
 
-    LogMessage("Screen size: width x height");
+    StatusMessage("Allocating memory...");
 
-    /* Create offscreen GWorld for copying */
-    err = NewGWorld(&offscreenGWorld, 32, &bounds, NULL, NULL, 0);
-    if (err != noErr) {
-        LogError("Failed to create offscreen GWorld", err);
-        return kBridgeCommandErr;
-    }
-
-    /* Copy screen to offscreen buffer */
-    {
-        CGrafPtr savedPort;
-        GDHandle savedDevice;
-        GWorldFlags flags;
-
-        GetGWorld(&savedPort, &savedDevice);
-        SetGWorld(offscreenGWorld, NULL);
-
-        /* Lock pixels */
-        flags = LockPixels(GetGWorldPixMap(offscreenGWorld));
-        if (!flags) {
-            LogMessage("Failed to lock pixels");
-            DisposeGWorld(offscreenGWorld);
-            SetGWorld(savedPort, savedDevice);
-            return kBridgeCommandErr;
-        }
-
-        /* Copy screen */
-        CopyBits((BitMap *)*pixMap,
-                 (BitMap *)*GetGWorldPixMap(offscreenGWorld),
-                 &bounds, &bounds,
-                 srcCopy, NULL);
-
-        /* Get pixel data */
-        pixMap = GetGWorldPixMap(offscreenGWorld);
-        baseAddr = GetPixBaseAddr(pixMap);
-        rowBytes = (**pixMap).rowBytes & 0x3FFF;
-
-        /* Calculate image size (simplified - just raw RGB data) */
+    /* Allocate memory for copy */
+    screenshot->data = NewPtr(imageSize);
+    if (screenshot->data == NULL) {
+        StatusMessage("FAIL: NewPtr - trying smaller");
+        /* Try a smaller portion - just top 100 lines */
+        height = 100;
         imageSize = (long)height * rowBytes;
-
-        /* Allocate memory for image data */
         screenshot->data = NewPtr(imageSize);
         if (screenshot->data == NULL) {
-            LogMessage("Failed to allocate screenshot memory");
-            UnlockPixels(pixMap);
-            DisposeGWorld(offscreenGWorld);
-            SetGWorld(savedPort, savedDevice);
+            StatusMessage("FAIL: Still no memory");
             return kBridgeCommandErr;
         }
-
-        /* Copy pixel data */
-        BlockMoveData(baseAddr, screenshot->data, imageSize);
-
-        screenshot->width = width;
-        screenshot->height = height;
-        screenshot->dataSize = imageSize;
-
-        /* Clean up */
-        UnlockPixels(pixMap);
-        SetGWorld(savedPort, savedDevice);
     }
 
-    DisposeGWorld(offscreenGWorld);
+    StatusMessage("Copying screen data...");
 
-    LogMessage("Screenshot captured successfully");
+    /* Copy directly from screen memory */
+    BlockMoveData(screen->baseAddr, screenshot->data, imageSize);
+
+    screenshot->width = width;
+    screenshot->height = height;
+    screenshot->dataSize = imageSize;
+
+    StatusMessage("Screenshot captured!");
 
     return kBridgeNoErr;
 }

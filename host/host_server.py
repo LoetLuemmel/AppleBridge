@@ -166,6 +166,46 @@ class AppleBridgeServer:
             return None
         return response.decode("mac_roman", errors="replace")
 
+    def send_raw(self, data):
+        """Send a RAW verb (PING / LAUNCH:<path>) — no COMMAND: wrapper.
+
+        The daemon's verb dispatch (ProcessRequest) matches the raw request
+        bytes, exactly like SCREENSHOT. Returns the raw response string.
+        """
+        if not self.connected or not self.client_socket:
+            return None
+        if not self._drain():
+            self._mark_disconnected("drain detected closed socket")
+            return None
+        try:
+            self.client_socket.sendall(data.encode("mac_roman", errors="replace"))
+        except OSError as e:
+            self._mark_disconnected(f"send failed: {e}")
+            return None
+
+        response = b""
+        try:
+            self.client_socket.settimeout(DEFAULT_TIMEOUT)
+            while True:
+                chunk = self.client_socket.recv(4096)
+                if not chunk:
+                    self._mark_disconnected("recv 0 (peer closed mid-response)")
+                    break
+                response += chunk
+                if b"\n\n" in response or b"\r\r" in response or b"\r\n\r\n" in response:
+                    break
+        except socket.timeout:
+            log(f"raw verb timeout: {data[:48]!r}")
+        except OSError as e:
+            self._mark_disconnected(f"recv error: {e}")
+        finally:
+            try:
+                if self.client_socket:
+                    self.client_socket.settimeout(None)
+            except OSError:
+                pass
+        return response.decode("mac_roman", errors="replace") if response else None
+
     def request_screenshot(self):
         """Request a screenshot; return raw bytes (or None)."""
         if not self.connected or not self.client_socket:
@@ -274,6 +314,10 @@ def run_control_server(server):
                     if cmd.lower() == "screenshot":
                         resp = server.request_screenshot()
                         out = f"Got {len(resp)} bytes" if resp else "No response"
+                    elif cmd == "PING" or cmd.startswith("LAUNCH:"):
+                        log(f"verb: {cmd[:60]!r}")
+                        resp = server.send_raw(cmd)   # raw, not COMMAND-wrapped
+                        out = resp if resp is not None else "No response"
                     else:
                         log(f"cmd: {cmd[:60]!r}")
                         resp = server.send_command(cmd)
