@@ -4,6 +4,10 @@
 
 AppleBridge connects Claude Code to an authentic Mac System 7.6.1 environment running in Basilisk II, enabling you to build, compile, and run classic Mac applications using natural language.
 
+![AppleBridge daemon running live on System 7.6.1](docs/images/daemon-live.png)
+
+*The AppleBridge v0.4.0 daemon running live on System 7.6.1 — RX/TX activity LEDs, a "Request received" log line, and an uptime counter, with the MPW/ToolServer environment behind it. This image was captured by the daemon itself (the emulated framebuffer), streamed over the bridge, and decoded to PNG on the host.*
+
 ## What You Can Do
 
 ```
