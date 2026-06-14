@@ -8,6 +8,10 @@ __pycache__/
 *.pyc
 .venv/
 
+# Process / log scratch
+nohup.out
+*.rtf
+
 # Screenshots
 *.raw
 *.png
