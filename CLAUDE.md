@@ -34,10 +34,17 @@ Smoke test: `cd host && /usr/bin/python3 send_command.py 'Echo HELLO'`.
 - **Encoding**: host UTF-8/LF ↔ Mac MacRoman/CR — use `host/encoding_convert.py`.
 - Long commands (e.g. `Link`) may return `-1712` (AE timeout) **yet still complete** — verify by the artifact, not the status.
 
-## Status (2026-06-13)
-Scope 1 (host hardening), Scope 2 (68k daemon: overflow-guard, PING/LAUNCH verbs, `-903` fix, AE debugger), and Scope 3 (large-response transfer: **length-framed host read** + defensive `kOTFlowErr` handling) are **done and verified live**. Branch `feature/daemon-haertung`, PR #2 open. Daemon is **v0.4.0 ("Verbs")** with colored RX/TX LEDs and a d/h/m/s uptime counter.
+## Status (2026-06-14)
+All hardening scopes are **done, merged, and verified live** (PRs #1–#6 closed, `main` at the `QUIT` verb commit):
+- **Scope 1** — host hardening.
+- **Scope 2** — 68k daemon: overflow-guard, PING/LAUNCH/QUIT verbs, `-903` fix, AE debugger. Daemon is **v0.4.0 ("Verbs")** with colored RX/TX LEDs and a d/h/m/s uptime counter.
+- **Scope 3** — large-response transfer: length-framed host read + defensive `kOTFlowErr` handling.
+- **Scope 4** — responses **>64 KB** stream via dynamic buffer + length-framing (`e667f5b`).
+- Screenshots stream the emulated screen and decode to PNG host-side.
 
-**Next / open:** responses **>64 KB** need dynamic buffers + real chunk-framing in the daemon; merge PRs #1/#2.
+Stack verified up on 2026-06-14: host server on :9000/:9001, daemon connected, ToolServer answering (`Echo HELLO` → `STATUS:0`).
+
+**Next / open:** clean up untracked scratch (`mac/src/main_enhanced.c`, `send_cmd.py`, `test_mcp_connection.py`, `test_project/`) — decide keep-or-drop.
 
 ## More detail
 - `README.md` — user-facing intro & examples

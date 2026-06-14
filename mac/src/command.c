@@ -124,6 +124,38 @@ static OSErr FindAppBySignature(OSType signature, ProcessSerialNumber *psn)
 }
 
 /*
+ * Send a Quit Apple Event (kCoreEventClass / kAEQuitApplication) to the running
+ * application with the given creator signature. Lets the QUIT: verb stop a
+ * launched GUI app (e.g. a game build) over the bridge — no manual quit needed.
+ * Returns procNotFound if no such app is running.
+ */
+OSErr QuitAppBySignature(OSType signature)
+{
+	OSErr err;
+	ProcessSerialNumber psn;
+	AppleEvent event, reply;
+	AEAddressDesc target;
+
+	if (InitAppleEvents() != noErr) return -1;
+
+	err = FindAppBySignature(signature, &psn);
+	if (err != noErr) return err;          /* not running */
+
+	err = AECreateDesc(typeProcessSerialNumber, &psn, sizeof(psn), &target);
+	if (err != noErr) return err;
+
+	err = AECreateAppleEvent(kCoreEventClass, kAEQuitApplication, &target,
+							 kAutoGenerateReturnID, kAnyTransactionID, &event);
+	AEDisposeDesc(&target);
+	if (err != noErr) return err;
+
+	err = AESend(&event, &reply, kAENoReply | kAECanSwitchLayer,
+				 kAENormalPriority, kAEDefaultTimeout, NULL, NULL);
+	AEDisposeDesc(&event);
+	return err;
+}
+
+/*
  * Send DoScript event to target app (instrumented).
  *
  * The reply data is extracted into a dynamically sized Handle (outH) instead

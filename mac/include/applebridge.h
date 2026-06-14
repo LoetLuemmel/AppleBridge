@@ -86,6 +86,9 @@ BridgeResult SendScreenshot(EndpointRef endpoint, const ScreenshotData *screensh
 BridgeResult ExecuteCommand(const char *command, CommandResult *result);
 void CleanupCommandResult(CommandResult *result);
 
+/* Send a Quit Apple Event to a running app by creator signature (QUIT: verb) */
+OSErr QuitAppBySignature(OSType signature);
+
 /* Screenshot capture */
 BridgeResult CaptureScreenshot(ScreenshotData *screenshot);
 void CleanupScreenshot(ScreenshotData *screenshot);
