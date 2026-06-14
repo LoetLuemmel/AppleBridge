@@ -42,9 +42,11 @@ All hardening scopes are **done, merged, and verified live** (PRs #1–#6 closed
 - **Scope 4** — responses **>64 KB** stream via dynamic buffer + length-framing (`e667f5b`).
 - Screenshots stream the emulated screen and decode to PNG host-side.
 
-Stack verified up on 2026-06-14: host server on :9000/:9001, daemon connected, ToolServer answering (`Echo HELLO` → `STATUS:0`).
+Stack verified up on 2026-06-14: host server on :9000/:9001, daemon connected, ToolServer answering (`Echo HELLO` → `STATUS:0`). **Screenshot path verified live** the same day — daemon captured the 1024×768 emulated framebuffer, streamed it over the bridge, decoded to PNG host-side (daemon window showed v0.4.0, RX lit, `Alive: 6m 54s`). Sample committed at `docs/images/daemon-live.png` and shown in `README.md`.
 
-**Next / open:** clean up untracked scratch (`mac/src/main_enhanced.c`, `send_cmd.py`, `test_mcp_connection.py`, `test_project/`) — decide keep-or-drop.
+Working tree cleaned (PR #8): the April scratch is gone and `nohup.out`/`*.rtf` are now git-ignored.
+
+**Next / open:** nothing blocking — hardening arc complete. Future ideas live in `README.md` / `ARCHITECTURE.md`.
 
 ## More detail
 - `README.md` — user-facing intro & examples
