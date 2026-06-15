@@ -28,7 +28,16 @@ QDGlobals qd;
 
 static Boolean gRunning = true;
 static WindowPtr gStatusWindow = NULL;
-static short gLineY = 20;
+/* Scrolling log as a ring buffer of the last LOG_LINES lines, redrawn whole on
+ * each message (robust: always in-window, survives redraws). Small 9pt font. */
+#define LOG_LINES 18
+#define LOG_W     160
+static char  gLog[LOG_LINES][LOG_W];
+static short gLogHead = 0;   /* next slot to write */
+static short gLogN    = 0;   /* lines currently stored */
+static Boolean gLogDirty = false;  /* redraw the body from ShowAlive's good
+                                    * context (drawing from ProcessRequest, right
+                                    * after an OT receive, doesn't render) */
 static long gTickCounter = 0;
 static long gStartTick = 0;   /* daemon launch tick (for Alive uptime) */
 static MenuHandle gAppleMenu;
@@ -39,6 +48,10 @@ static long gLastRX = 0;     /* Tick count of last receive */
 static long gLastTX = 0;     /* Tick count of last transmit */
 static long gRXCount = 0;    /* Total commands received */
 static long gTXCount = 0;    /* Total responses sent */
+
+/* Current activity shown on the top bar next to the green "Active" LED
+ * (the command/verb being processed). */
+static char gActivity[256] = "ready";
 
 /* LED flash duration in ticks (~0.66 seconds, long enough to be seen) */
 #define LED_FLASH_DURATION  40
@@ -73,20 +86,16 @@ static void NumToStr(long num, char *str)
 }
 
 /*
- * Draw RX/TX LED indicators
+ * Top bar: one round green "Active" LED + the current activity (the command/verb
+ * being processed) on a single line. RX/TX always move together, so a single
+ * Active indicator says all the old two-LED pair did.
  */
 void DrawLEDs(void)
 {
-    Rect rxLED, txLED, statusArea;
-    long now = TickCount();
-    Boolean rxActive, txActive;
-    char buf[64];
+    Rect statusArea, led;
     Str255 pstr;
     short i;
-    RGBColor rxOn  = { 0x3000, 0xFFFF, 0x3000 };  /* hellgruen */
-    RGBColor rxOff = { 0x0C00, 0x4000, 0x0C00 };  /* dunkelgruen */
-    RGBColor txOn  = { 0xFFFF, 0x3000, 0x3000 };  /* hellrot */
-    RGBColor txOff = { 0x4000, 0x0C00, 0x0C00 };  /* dunkelrot */
+    RGBColor ledGreen = { 0x1000, 0xE000, 0x1000 };  /* hellgruen */
     RGBColor cBlack = { 0, 0, 0 };
     RGBColor cWhite = { 0xFFFF, 0xFFFF, 0xFFFF };
 
@@ -95,80 +104,100 @@ void DrawLEDs(void)
     SetPort(gStatusWindow);
     PenNormal();
 
-    /* Clear status area at top (white background) */
+    /* Clear the top bar (white background, framed) */
     SetRect(&statusArea, 0, 0, 400, 18);
     RGBBackColor(&cWhite);
     RGBForeColor(&cBlack);
     EraseRect(&statusArea);
     FrameRect(&statusArea);
 
-    SetRect(&rxLED, 10, 4, 30, 14);   /* RX LED - left  */
-    SetRect(&txLED, 35, 4, 55, 14);   /* TX LED - right */
-
-    rxActive = (now - gLastRX) < LED_FLASH_DURATION;
-    txActive = (now - gLastTX) < LED_FLASH_DURATION;
-
-    /* RX LED - green (bright when active, dim otherwise) */
-    RGBForeColor(rxActive ? &rxOn : &rxOff);
-    PaintRect(&rxLED);
+    /* Round green LED (steady = daemon active) */
+    SetRect(&led, 8, 3, 22, 17);
+    RGBForeColor(&ledGreen);
+    PaintOval(&led);
     RGBForeColor(&cBlack);
-    FrameRect(&rxLED);
+    FrameOval(&led);
 
-    /* TX LED - red */
-    RGBForeColor(txActive ? &txOn : &txOff);
-    PaintRect(&txLED);
-    RGBForeColor(&cBlack);
-    FrameRect(&txLED);
-
-    /* Draw labels and counters (black) */
-    RGBForeColor(&cBlack);
+    /* "Active" + the live activity text, same line */
     TextSize(9);
-    MoveTo(60, 12);
+    MoveTo(28, 13);
+    DrawString("\pActive  ");
 
-    /* Build string manually: "RX:n TX:n" */
-    buf[0] = 'R'; buf[1] = 'X'; buf[2] = ':';
-    NumToStr(gRXCount, buf + 3);
-    i = strlen(buf);
-    buf[i++] = ' '; buf[i++] = 'T'; buf[i++] = 'X'; buf[i++] = ':';
-    NumToStr(gTXCount, buf + i);
-
-    /* Convert to Pascal string */
-    for (i = 0; buf[i] && i < 250; i++) {
-        pstr[i + 1] = buf[i];
-    }
-    pstr[0] = i;
+    for (i = 0; gActivity[i] && i < 250; i++) pstr[i + 1] = gActivity[i];
+    pstr[0] = (unsigned char)i;
     DrawString(pstr);
 
     TextSize(12);
 }
 
-/* Simple status display in window */
-void StatusMessage(const char *msg)
+/*
+ * Set the current activity shown on the top bar. Strips the "COMMAND:<len>\n"
+ * wire header so the real MPW command shows (verbs like SCREENSHOT/LAUNCH: are
+ * passed through), and stops at the first line end. Redraws the bar.
+ * (Classic-Mac C: '\r' is byte 0x0A, '\n' is 0x0D — both line ends are caught.)
+ */
+void SetActivity(const char *msg)
 {
-    Str255 pstr;
     short i;
+    const char *p = msg;
+
+    if (msg[0]=='C' && msg[1]=='O' && msg[2]=='M' && msg[3]=='M' &&
+        msg[4]=='A' && msg[5]=='N' && msg[6]=='D' && msg[7]==':') {
+        p = msg + 8;
+        while (*p && *p != '\r' && *p != '\n') p++;   /* skip past <len> */
+        if (*p) p++;                                  /* skip the separator */
+    }
+
+    for (i = 0; p[i] && i < (short)sizeof(gActivity) - 1; i++) {
+        if (p[i] == '\r' || p[i] == '\n') break;
+        gActivity[i] = p[i];
+    }
+    gActivity[i] = '\0';
+    if (i == 0) { gActivity[0] = 'i'; gActivity[1] = 'd'; gActivity[2] = 'l';
+                  gActivity[3] = 'e'; gActivity[4] = '\0'; }
+    DrawLEDs();
+}
+
+/* Simple status display in window */
+/* Redraw the whole log body from the ring buffer (9pt, black on white). */
+void RedrawLog(void)
+{
+    Rect body;
+    Str255 pstr;
+    short line, idx, k;
+    RGBColor cBlack = { 0, 0, 0 };
+    RGBColor cWhite = { 0xFFFF, 0xFFFF, 0xFFFF };
 
     if (gStatusWindow == NULL) return;
-
     SetPort(gStatusWindow);
 
-    /* Convert C string to Pascal string */
-    for (i = 0; msg[i] && i < 254; i++) {
-        pstr[i+1] = msg[i];
-    }
-    pstr[0] = i;
+    SetRect(&body, 0, 19, 400, 282);
+    RGBBackColor(&cWhite);
+    EraseRect(&body);
+    RGBForeColor(&cBlack);
+    TextSize(9);
 
-    MoveTo(10, gLineY);
-    DrawString(pstr);
-    gLineY += 15;
-
-    /* Scroll if needed - leave room for LED area */
-    if (gLineY > 280) {
-        Rect contentArea;
-        gLineY = 20;
-        SetRect(&contentArea, 0, 18, 400, 300);
-        EraseRect(&contentArea);
+    for (line = 0; line < gLogN; line++) {
+        idx = (gLogHead - gLogN + line + 2 * LOG_LINES) % LOG_LINES;
+        for (k = 0; gLog[idx][k] && k < 250; k++) pstr[k + 1] = gLog[idx][k];
+        pstr[0] = (unsigned char)k;
+        MoveTo(8, 30 + line * 13);
+        DrawString(pstr);
     }
+    TextSize(12);
+}
+
+void StatusMessage(const char *msg)
+{
+    short k;
+    if (gStatusWindow == NULL) return;
+
+    for (k = 0; msg[k] && k < LOG_W - 1; k++) gLog[gLogHead][k] = msg[k];
+    gLog[gLogHead][k] = '\0';
+    gLogHead = (short)((gLogHead + 1) % LOG_LINES);
+    if (gLogN < LOG_LINES) gLogN++;
+
+    gLogDirty = true;   /* ShowAlive redraws the body from a context that renders */
 }
 
 /* Show alive indicator with LEDs */
@@ -191,6 +220,9 @@ void ShowAlive(void)
 
     /* Draw LEDs at top */
     DrawLEDs();
+
+    /* Redraw the console body if new lines arrived (from this good context) */
+    if (gLogDirty) { RedrawLog(); gLogDirty = false; }
 
     /* Draw alive indicator at bottom */
     SetRect(&r, 10, 285, 390, 300);
@@ -255,7 +287,7 @@ void ShowAboutBox(void)
         MoveTo(20, 30);
         TextSize(14);
         TextFace(bold);
-        DrawString("\pAppleBridge v0.4.0");
+        DrawString("\pAppleBridge v0.5.1");
 
         MoveTo(20, 55);
         TextSize(10);
@@ -271,7 +303,7 @@ void ShowAboutBox(void)
 
         MoveTo(20, 120);
         TextFace(bold);
-        DrawString("\pRX/TX Health Monitor Edition");
+        DrawString("\pActive + Console Edition");
 
         MoveTo(20, 140);
         TextFace(0);
@@ -350,12 +382,10 @@ void InitApp(void)
 
     /* Create status window */
     SetRect(&bounds, 50, 50, 450, 350);
-    gStatusWindow = NewCWindow(NULL, &bounds, "\pAppleBridge v0.4.0 (Verbs)",
+    gStatusWindow = NewCWindow(NULL, &bounds, "\pAppleBridge v0.5.1",
                                true, documentProc, (WindowPtr)-1L, true, 0);
     if (gStatusWindow) {
         SetPort(gStatusWindow);
-        /* Initial LED area needs space at top */
-        gLineY = 20;
     }
 }
 
@@ -413,7 +443,8 @@ Boolean CheckUserAbort(void)
 
             case updateEvt:
                 BeginUpdate((WindowPtr)event.message);
-                DrawLEDs();  /* Redraw LEDs on update */
+                DrawLEDs();   /* top bar (activity) */
+                RedrawLog();   /* console body — else updates wipe it blank */
                 EndUpdate((WindowPtr)event.message);
                 break;
         }
@@ -476,14 +507,13 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
     if (strncmp(request, PROTO_SCREENSHOT, strlen(PROTO_SCREENSHOT)) == 0) {
         ScreenshotData screenshot;
 
-        StatusMessage("Screenshot requested");
+        SetActivity("SCREENSHOT");          /* daemon activity -> top bar */
 
         result = CaptureScreenshot(&screenshot);
         if (result == kBridgeNoErr) {
             /* Stream the full pixmap (header + CLUT + pixels) — no size cap;
                SendData chunks it over OTSnd. The host decodes it to PNG. */
             SendScreenshot(endpoint, &screenshot);
-            StatusMessage("Screenshot sent");
             CleanupScreenshot(&screenshot);
         } else {
             strcpy(responseBuffer, "STATUS:-1\nSTDOUT:0\n\nSTDERR:18\nScreenshot failed\n\n");
@@ -520,18 +550,17 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
 
         {
             char m[80]; short k;
-            strcpy(m, "Launch: ");
-            for (k = 0; launchPath[k] && k < 60; k++) m[8 + k] = launchPath[k];
-            m[8 + k] = '\0';
-            StatusMessage(m);
+            strcpy(m, "LAUNCH ");
+            for (k = 0; launchPath[k] && k < 64; k++) m[7 + k] = launchPath[k];
+            m[7 + k] = '\0';
+            SetActivity(m);                 /* daemon activity -> top bar */
         }
         lerr = LaunchAppAtPath(launchPath);
         if (lerr == noErr) {
             strcpy(responseBuffer, "STATUS:0\rSTDOUT:8\rLaunched\rSTDERR:0\r\r");
-            StatusMessage("Launched OK");
         } else {
             strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:13\rLaunch failed\r\r");
-            StatusMessage("Launch failed");
+            SetActivity("LAUNCH failed");
         }
         SendData(endpoint, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();
@@ -551,18 +580,17 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
             sig = (sig << 8) | (unsigned char)request[5 + i];
         }
         while (i < 4) { sig = (sig << 8) | ' '; i++; }
-        strcpy(m, "Quit: ");
-        m[6] = (char)((sig >> 24) & 0xFF); m[7] = (char)((sig >> 16) & 0xFF);
-        m[8] = (char)((sig >> 8) & 0xFF);  m[9] = (char)(sig & 0xFF);
-        m[10] = '\0';
-        StatusMessage(m);
+        strcpy(m, "QUIT ");
+        m[5] = (char)((sig >> 24) & 0xFF); m[6] = (char)((sig >> 16) & 0xFF);
+        m[7] = (char)((sig >> 8) & 0xFF);  m[8] = (char)(sig & 0xFF);
+        m[9] = '\0';
+        SetActivity(m);                     /* daemon activity -> top bar */
         qerr = QuitAppBySignature(sig);
         if (qerr == noErr) {
             strcpy(responseBuffer, "STATUS:0\rSTDOUT:7\rQuit OK\rSTDERR:0\r\r");
-            StatusMessage("Quit sent");
         } else {
             strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:11\rQuit failed\r\r");
-            StatusMessage("Quit: no such app");
+            SetActivity("QUIT no such app");
         }
         SendData(endpoint, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();
@@ -584,25 +612,48 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         return;
     }
 
+    /* Top bar = the command being run; console body = "> command" (input). */
+    SetActivity(command);
     {
-        char m[80]; short k;
-        strcpy(m, "Exec: ");
-        for (k = 0; command[k] && k < 64; k++) m[6 + k] = command[k];
-        m[6 + k] = '\0';
-        StatusMessage(m);   /* show the actual command being run */
+        char m[LOG_W]; short k;
+        m[0] = '>'; m[1] = ' ';
+        for (k = 0; command[k] && k < LOG_W - 3; k++) m[2 + k] = command[k];
+        m[2 + k] = '\0';
+        StatusMessage(m);
     }
 
     /* Execute command */
     result = ExecuteCommand(command, &cmdResult);
 
-    StatusMessage("Command done");
+    /* Console body = the command's output (first line of STDOUT, or the error
+     * diagnostics, or a short status). */
+    {
+        char o[LOG_W]; short k = 0;
+        if (cmdResult.outData && cmdResult.outLen > 0) {
+            char *p = *cmdResult.outData;
+            long n = cmdResult.outLen;
+            long j;
+            for (j = 0; j < n && k < LOG_W - 1; j++) {
+                if (p[j] == '\r' || p[j] == '\n') break;
+                o[k++] = p[j];
+            }
+            o[k] = '\0';
+            if (k == 0) { o[0]='('; o[1]='e'; o[2]='m'; o[3]='p'; o[4]='t';
+                          o[5]='y'; o[6]=')'; o[7]='\0'; }
+        } else if (cmdResult.errData[0]) {
+            for (k = 0; cmdResult.errData[k] && k < LOG_W - 1; k++)
+                o[k] = cmdResult.errData[k];
+            o[k] = '\0';
+        } else {
+            o[0]='O'; o[1]='K'; o[2]='\0';
+        }
+        StatusMessage(o);
+    }
 
     /* Stream response straight from the (possibly multi-MB) result handle. */
     err = SendCommandResult(endpoint, &cmdResult);
     if (err != noErr) {
-        StatusMessage("Failed to send response");
-    } else {
-        StatusMessage("Response sent");
+        StatusMessage("(send failed)");
     }
 
     /* Mark TX activity */
@@ -625,7 +676,7 @@ static Boolean WaitForReconnect(void)
     long elapsed;
     char buf[64];
 
-    StatusMessage("Reconnecting in 30 sec...");
+    SetActivity("reconnecting in 30s");
 
     while ((elapsed = TickCount() - startTicks) < RECONNECT_DELAY_TICKS) {
         SystemTask();
@@ -668,25 +719,19 @@ int main(void)
     InitApp();
     gStartTick = TickCount();   /* baseline for Alive uptime */
 
-    StatusMessage("=== AppleBridge Client ===");
-    StatusMessage("Version 0.4.0 + Verbs");
-    StatusMessage("");
-    StatusMessage("Host IP:");
-    StatusMessage(hostIPStr);
-    StatusMessage("");
-    StatusMessage("Initializing network...");
+    SetActivity("init network");        /* daemon activities -> top bar */
 
     SystemTask();
 
     /* Initialize network */
     err = InitializeNetwork();
     if (err != noErr) {
-        StatusMessage("Network init failed!");
+        SetActivity("network init FAILED");
         while (!Button()) { SystemTask(); ShowAlive(); }
         return 1;
     }
 
-    StatusMessage("Network OK");
+    SetActivity("network OK");
 
     /* Parse host IP */
     hostIP = ParseIPAddress(hostIPStr);
@@ -695,12 +740,12 @@ int main(void)
     while (gRunning) {
         /* Connect to host if not connected */
         if (!connected) {
-            StatusMessage("Connecting to host...");
+            SetActivity("CONNECTING");
             SystemTask();
 
             err = ConnectToHost(&endpoint, hostIP, BRIDGE_PORT);
             if (err != noErr) {
-                StatusMessage("Connection failed!");
+                SetActivity("connection FAILED");
 
                 /* Wait and retry */
                 if (WaitForReconnect()) {
@@ -710,15 +755,14 @@ int main(void)
             }
 
             connected = true;
-            StatusMessage("Connected!");
-            StatusMessage("Waiting for commands...");
+            SetActivity("CONNECTED - waiting for commands");
         }
 
         SystemTask();
         ShowAlive();
 
         if (CheckUserAbort()) {
-            StatusMessage("User quit");
+            SetActivity("user quit");
             break;
         }
 
@@ -731,14 +775,11 @@ int main(void)
         }
 
         if (err != noErr) {
-            char errMsg[80];
-            strcpy(errMsg, "ReceiveData error: ");
-            StatusMessage(errMsg);
-            StatusMessage("Connection lost");
+            SetActivity("connection lost");
         }
 
         if (err != noErr || bytesReceived == 0) {
-            StatusMessage("Connection lost");
+            SetActivity("connection lost");
 
             /* Close current connection */
             OTCloseProvider(endpoint);
@@ -751,7 +792,9 @@ int main(void)
             continue;  /* Try to reconnect */
         }
 
-        StatusMessage("Request received");
+        /* Each verb handler updates the top-bar activity (SCREENSHOT / LAUNCH /
+         * QUIT / the command) and the console body itself. */
+        requestBuffer[bytesReceived] = '\0';
         ProcessRequest(endpoint, requestBuffer, bytesReceived);
     }
 
