@@ -6,6 +6,7 @@ This document contains solutions to common issues, historical fixes, and known l
 
 - [Apple Events Issues](#apple-events-issues)
 - [Network and Connection](#network-and-connection)
+- [Emulator (Basilisk II) Crashes](#emulator-basilisk-ii-crashes)
 - [Compilation and Linking](#compilation-and-linking)
 - [File System and Encoding](#file-system-and-encoding)
 - [ToolServer vs MPW Shell](#toolserver-vs-mpw-shell)
@@ -177,6 +178,58 @@ Full write-up: <https://pit.390er.de/applebridge/anatomy-of-a-freeze-macnat-retu
    Mac: Quit AppleBridge, restart ToolServer, relaunch AppleBridge
    Host: MacintoshBridgeHost will reconnect automatically
    ```
+
+---
+
+## Emulator (Basilisk II) Crashes
+
+### BasiliskII crashes (SIGILL in `NSWMWindowCoordinator`) — host-side macOS bug
+
+**Symptoms:**
+- Basilisk II quits *completely* (the whole emulator window vanishes), often when
+  launching a GUI app, switching apps, or hiding/reordering the BasiliskII window.
+- The guest didn't bomb — the **host** process died. A macOS crash report appears
+  in `~/Library/Logs/DiagnosticReports/BasiliskII-*.ips`.
+- The same app may have launched fine other times — the crash is **intermittent**.
+
+**Root cause — NOT the guest app.** The crash report's faulting thread is entirely
+macOS window-management code:
+
+```
+EXC_BAD_INSTRUCTION (SIGILL)
+  -[NSWMWindowCoordinator performTransactionUsingBlock:]
+  -[NSWindow _doWindowWillBecomeHidden] / _reallyDoOrderWindowOut...
+  SDL2 ...
+```
+
+`WindowManagement` / `NSWMWindowCoordinator` is the framework behind **Stage
+Manager and window tiling**. This is a **macOS Sequoia (Darwin 24.x) + BasiliskII
+SDL2-port bug**: the emulator crashes when its host window is hidden or reordered.
+There are **zero 68k / CPU-emulation frames** in the trace — if a guest program
+were at fault, BAII would die inside its CPU core, not in `NSWindow` ordering. So a
+68k app "crashing" BAII this way is almost always *coincidence*: launching it just
+triggered a host window event (front-window change, show/hide) that tripped the bug.
+
+**Confirm it's this bug:**
+```bash
+# all crashes with this signature are the same host-side issue
+for f in ~/Library/Logs/DiagnosticReports/BasiliskII-*.ips; do
+  python3 -c "import json,sys;d=json.loads(open('$f').read().split(chr(10),1)[1]);\
+ft=d['faultingThread'];print(d['threads'][ft]['frames'][0].get('symbol'))" 2>/dev/null
+done
+# -> -[NSWMWindowCoordinator performTransactionUsingBlock:] = this bug
+```
+
+**Mitigations (all host-side — the guest/app needs no changes):**
+1. **Disable Stage Manager** and window tiling ("tiled window margins") in System
+   Settings — that framework is exactly what's in the trace.
+2. **Run BasiliskII full-screen** — avoids host window order/hide entirely.
+3. **Update the BasiliskII build** to a newer SDL2 port with Sequoia window fixes.
+4. Avoid hiding/reordering the BasiliskII window mid-session.
+
+**Note:** this is unrelated to the daemon-side "frozen at CONNECTING" freeze above —
+that one is a hung *connect* (no crash report, host process alive). This one is a
+real host *crash* (process gone, crash report present). Different failure entirely.
 
 ---
 
