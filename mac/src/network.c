@@ -10,8 +10,14 @@
 
 static Boolean gNetworkInitialized = false;
 
-/* External status function from main.c */
-extern void StatusMessage(const char *msg);
+/* External UI/status helpers from main.c (let the connect poll keep the Mac alive) */
+extern void    StatusMessage(const char *msg);   /* append a line to the console log */
+extern void    ShowAlive(void);                  /* repaint activity bar + uptime    */
+extern Boolean CheckUserAbort(void);             /* SystemTask + pump events + quit?  */
+
+/* Bound the connect so a stalled handshake can never wedge the cooperative
+ * scheduler. 600 ticks = 10 s. */
+#define CONNECT_TIMEOUT_TICKS  600
 
 /*
  * Initialize Open Transport network stack
@@ -46,7 +52,22 @@ void ShutdownNetwork(void)
 }
 
 /*
- * Connect to host server
+ * Connect to host server — non-blocking + timeout-bounded.
+ *
+ * An OT endpoint defaults to synchronous-BLOCKING mode, where OTConnect waits
+ * for the entire TCP handshake to finish. If the SYN-ACK never comes back (the
+ * classic symptom: the host's .154 is on a different NIC than the one the
+ * guest's MACNAT exits through), that wait spins forever WITHOUT yielding —
+ * starving System 7's cooperative scheduler, so the whole emulator freezes at
+ * 100% CPU and looks like a crash.
+ *
+ * So we flip the endpoint to non-blocking, kick the connect off, then POLL
+ * (OTLook -> OTRcvConnect) with a tick-based timeout while yielding every pass
+ * (WaitNextEvent, via CheckUserAbort). The UI stays alive, the user can quit,
+ * and a dead path gives up after CONNECT_TIMEOUT_TICKS with a diagnostic hint.
+ * The endpoint STAYS non-blocking afterwards: the main receive loop polls OTRcv
+ * (kOTNoDataErr when idle) and yields via WaitNextEvent — do NOT force blocking
+ * mode here, that makes OTRcv block and starves the cooperative scheduler.
  */
 OSStatus ConnectToHost(EndpointRef *endpoint, unsigned long hostIP, InetPort port)
 {
@@ -55,53 +76,100 @@ OSStatus ConnectToHost(EndpointRef *endpoint, unsigned long hostIP, InetPort por
     TCall sndCall;
     TBind bindReq;
     InetAddress localAddr;
+    long startTicks;
 
     StatusMessage("Opening TCP endpoint...");
 
-    /* Create TCP endpoint */
+    /* Create TCP endpoint (synchronous, blocking by default) */
     *endpoint = OTOpenEndpoint(OTCreateConfiguration(kTCPName), 0, NULL, &err);
     if (err != noErr) {
         StatusMessage("OTOpenEndpoint failed!");
         return err;
     }
-    StatusMessage("Endpoint opened OK");
 
-    /* Bind to any local port */
-    StatusMessage("Binding local port...");
+    /* Bind to any local port (quick + local; fine in default blocking mode) */
     OTMemzero(&localAddr, sizeof(localAddr));
     OTInitInetAddress(&localAddr, 0, kOTAnyInetAddress);
-
     bindReq.addr.buf = (UInt8 *)&localAddr;
     bindReq.addr.len = sizeof(localAddr);
     bindReq.qlen = 0;
-
     err = OTBind(*endpoint, &bindReq, NULL);
     if (err != noErr) {
         StatusMessage("OTBind failed!");
         OTCloseProvider(*endpoint);
         return err;
     }
-    StatusMessage("Bound OK");
 
-    /* Set up destination address */
+    /* Non-blocking so OTConnect can't block the Mac (and the receive loop polls) */
+    OTSetNonBlocking(*endpoint);
+
+    /* Initiate connect — non-blocking returns kOTNoDataErr ("in progress") */
     StatusMessage("Connecting to host...");
     OTMemzero(&addr, sizeof(addr));
     OTInitInetAddress(&addr, port, hostIP);
-
     OTMemzero(&sndCall, sizeof(sndCall));
     sndCall.addr.buf = (UInt8 *)&addr;
     sndCall.addr.len = sizeof(addr);
 
-    /* Connect to host */
     err = OTConnect(*endpoint, &sndCall, NULL);
-    if (err != noErr) {
+    if (err == noErr) {
+        /* Connected immediately (fast local .154 path). Don't poll — calling
+         * OTRcvConnect on an already-open endpoint just errors out. Leave the
+         * endpoint NON-blocking: the receive loop polls OTRcv and yields. */
+        StatusMessage("Connected to host!");
+        return noErr;
+    }
+    if (err != kOTNoDataErr) {
         StatusMessage("OTConnect failed!");
         OTCloseProvider(*endpoint);
         return err;
     }
 
-    StatusMessage("Connected to host!");
+    /* In progress. Poll OTLook for the completion event, bounded by a timeout
+     * and yielding each pass so a stall can't freeze the Mac. Drive it from
+     * OTLook (not a bare OTRcvConnect): OTRcvConnect must only be called once
+     * T_CONNECT is actually pending, otherwise it returns an error. */
+    startTicks = TickCount();
+    for (;;) {
+        OTResult look;
 
+        if (CheckUserAbort()) {              /* yields (SystemTask) + pumps events */
+            OTSndDisconnect(*endpoint, NULL);
+            OTCloseProvider(*endpoint);
+            return kOTCanceledErr;
+        }
+        ShowAlive();
+
+        look = OTLook(*endpoint);
+        if (look == T_CONNECT) {
+            err = OTRcvConnect(*endpoint, NULL);   /* completes the connection */
+            if (err != noErr) {
+                StatusMessage("OTRcvConnect failed!");
+                OTCloseProvider(*endpoint);
+                return err;
+            }
+            break;                            /* connected */
+        } else if (look == T_DISCONNECT) {
+            OTRcvDisconnect(*endpoint, NULL); /* refused / reset by host */
+            StatusMessage("connection refused by host");
+            OTCloseProvider(*endpoint);
+            return kOTLookErr;
+        }
+
+        /* nothing decisive yet — give up after the timeout */
+        if (TickCount() - startTicks > CONNECT_TIMEOUT_TICKS) {
+            StatusMessage("connect timeout - is .154 on the default-route NIC?");
+            OTSndDisconnect(*endpoint, NULL);
+            OTCloseProvider(*endpoint);
+            return kABConnectTimeout;
+        }
+    }
+
+    /* Leave the endpoint NON-blocking (do NOT force blocking here): the main
+     * loop polls OTRcv (kOTNoDataErr when idle) and yields via WaitNextEvent.
+     * Forcing blocking makes OTRcv block and starves System 7's cooperative
+     * scheduler — the UI freezes at low CPU (the v0.5.3 regression). */
+    StatusMessage("Connected to host!");
     return noErr;
 }
 

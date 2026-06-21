@@ -19,6 +19,7 @@ Claude ⇄ MCP server (stdio)  ──:9001──▶  host_server.py  ◀──:9
 The **Mac daemon connects OUT** to the host (the emulator sits behind NAT, so the host can't dial in). `host_server.py` serves **:9000** (daemon) + **:9001** (control/MCP). Wire protocol: request `COMMAND:<len>\n<payload>`; response `STATUS:<code>\rSTDOUT:<len>\r<data>\rSTDERR:<len>\r<data>\r\r` (read **by declared length**, not by terminator).
 
 ## Start the stack
+**One-shot:** `cd host && ./start_stack.sh` — aliases `.154` onto the default-route interface (the freeze-avoidance rule below), (re)starts the host server, and launches Basilisk II. Then do the two in-emulator steps (daemon + ToolServer) it prints. Manual steps:
 1. **Host server** (first): `cd host && nohup ./run_server.sh & ` — uses **`/usr/bin/python3`**, never the venv (macOS firewall blocks the un-allowlisted venv binary). Log: `/tmp/applebridge_server.log`.
 2. **Mac daemon**: launch `:bin:AppleBridge` in Basilisk II, and start **ToolServer ('MPSX')** (MPW Shell returns empty AE replies — only ToolServer gives output).
 3. **MCP server**: registered in `.mcp.json` as `applebridge`. 7 tools: `mpw_execute`, `mac_read_file`, `mac_write_file`, `mac_list_files`, `mac_compile`, `mac_screenshot`, `launch_app`.
@@ -33,6 +34,7 @@ Smoke test: `cd host && /usr/bin/python3 send_command.py 'Echo HELLO'`.
 - **Build off the running daemon**: link to `:bin:AppleBridge.new`, then swap; a heavy link in the same ToolServer that serves the bridge can take it (and the AE layer) down.
 - **Encoding**: host UTF-8/LF ↔ Mac MacRoman/CR — use `host/encoding_convert.py`.
 - Long commands (e.g. `Link`) may return `-1712` (AE timeout) **yet still complete** — verify by the artifact, not the status.
+- **Host `.154` must live on the default-route interface** (where the guest's MACNAT exits — normally Wi-Fi `en0`), *not* a second NIC. If it's on the wrong interface, the daemon hangs on "CONNECTING" and freezes the emulator at 100% CPU (synchronous `OTConnect` starving the cooperative scheduler). `host/start_stack.sh` sets this up. **Never pre-create a bridge** — `etherhelpertool` owns `en8` directly; a manual `bridge100` SIGSEGVs it (`fret == -10`). The guest is behind MACNAT, so it is **never pingable** — diagnose via the *outbound* connection, not ICMP. See `TROUBLESHOOTING.md` → "Daemon hangs on CONNECTING".
 
 ## Status (2026-06-14)
 All hardening scopes are **done, merged, and verified live** (PRs #1–#6 closed, `main` at the `QUIT` verb commit):

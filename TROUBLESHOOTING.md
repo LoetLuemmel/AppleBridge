@@ -115,6 +115,45 @@ if (WaitNextEvent(everyEvent, &event, 1, NULL)) {
    char hostIPStr[] = "192.168.3.154";  // Must match host IP
    ```
 
+### Daemon hangs on "CONNECTING" and freezes the emulator (100% CPU)
+
+**Symptoms:**
+- Daemon window stuck on "Active — CONNECTING"; never reaches CONNECTED
+- Basilisk II pegs the host CPU at ~100% (fan spins up)
+- You can't switch back to the Finder — the whole emulated Mac is frozen
+- Looks like a crash, but there is **no crash report** (the host process is alive, spinning)
+
+**Cause:** a host network-interface mismatch — **not** a crash, **not** the daemon code.
+The emulated Mac sits behind Basilisk's MACNAT (`ether etherhelper/en8`), so it can only
+connect *out*, and its traffic is NAT'd through the host's **default-route interface**
+(normally Wi-Fi, `en0`). The daemon dials the hardcoded host IP `.154`. If `.154` is
+aliased on a *different* interface than the default route (e.g. a wired `en8`), the
+conversation is split across NICs: the MACNAT return packet is swallowed by the host's
+own stack, the handshake never completes, and the daemon's **synchronous `OTConnect`**
+blocks without yielding → starves System 7's cooperative scheduler → total freeze.
+
+**Fix:** put `.154` on the **same interface as the default route**.
+```bash
+# detect the default-route interface (where MACNAT exits)
+DEF=$(route -n get default | awk '/interface:/{print $2}')   # usually en0 (Wi-Fi)
+sudo ifconfig en8 -alias 192.168.3.154 2>/dev/null            # strip stale .154 off other NIC
+sudo ifconfig "$DEF" inet 192.168.3.154 netmask 255.255.255.0 alias
+```
+`host/start_stack.sh` does exactly this. **Tell it's fixed:** the server log shows the
+guest's *real* address — `Mac connected from ('192.168.3.244', …)` ESTABLISHED — instead
+of the host's own Wi-Fi IP (`.213`), which is what you see when the path is cross-interface.
+
+**Do NOT pre-create a bridge.** `etherhelpertool` owns `en8` directly; a manually created
+`bridge100` containing `en8` collides with it and SIGSEGVs the helper
+(`etherhelpertool: fret == -10`) *before any screen appears*. Tear down any stale bridge
+and let the etherhelper own the interface.
+
+**Red herrings** (don't waste time here): firewall *stealth mode* (irrelevant);
+*pinging the guest* (`.244` is behind MACNAT — never pingable, by design); host SIGILL
+crash reports in window code (an unrelated macOS Sequoia + SDL2 GUI bug).
+
+Full write-up: <https://pit.390er.de/applebridge/anatomy-of-a-freeze-macnat-return-path/>
+
 ### Connection Drops / Daemon Stops Responding
 
 **Symptoms:**
