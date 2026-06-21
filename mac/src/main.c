@@ -287,7 +287,7 @@ void ShowAboutBox(void)
         MoveTo(20, 30);
         TextSize(14);
         TextFace(bold);
-        DrawString("\pAppleBridge v0.5.1");
+        DrawString("\pAppleBridge v0.5.2");
 
         MoveTo(20, 55);
         TextSize(10);
@@ -382,7 +382,7 @@ void InitApp(void)
 
     /* Create status window */
     SetRect(&bounds, 50, 50, 450, 350);
-    gStatusWindow = NewCWindow(NULL, &bounds, "\pAppleBridge v0.5.1",
+    gStatusWindow = NewCWindow(NULL, &bounds, "\pAppleBridge v0.5.2",
                                true, documentProc, (WindowPtr)-1L, true, 0);
     if (gStatusWindow) {
         SetPort(gStatusWindow);
@@ -745,7 +745,13 @@ int main(void)
 
             err = ConnectToHost(&endpoint, hostIP, BRIDGE_PORT);
             if (err != noErr) {
-                SetActivity("connection FAILED");
+                /* A timed-out connect almost always means .154 is on the wrong
+                 * host NIC — surface that hint instead of a generic failure. */
+                if (err == kOTTimeOutErr) {
+                    SetActivity("timeout - is host .154 on the default-route NIC?");
+                } else {
+                    SetActivity("connection FAILED");
+                }
 
                 /* Wait and retry */
                 if (WaitForReconnect()) {

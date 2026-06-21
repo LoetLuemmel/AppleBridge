@@ -10,8 +10,14 @@
 
 static Boolean gNetworkInitialized = false;
 
-/* External status function from main.c */
-extern void StatusMessage(const char *msg);
+/* External UI/status helpers from main.c (let the connect poll keep the Mac alive) */
+extern void    StatusMessage(const char *msg);   /* append a line to the console log */
+extern void    ShowAlive(void);                  /* repaint activity bar + uptime    */
+extern Boolean CheckUserAbort(void);             /* SystemTask + pump events + quit?  */
+
+/* Bound the connect so a stalled handshake can never wedge the cooperative
+ * scheduler. 600 ticks = 10 s. */
+#define CONNECT_TIMEOUT_TICKS  600
 
 /*
  * Initialize Open Transport network stack
@@ -46,7 +52,21 @@ void ShutdownNetwork(void)
 }
 
 /*
- * Connect to host server
+ * Connect to host server — non-blocking + timeout-bounded.
+ *
+ * An OT endpoint defaults to synchronous-BLOCKING mode, where OTConnect waits
+ * for the entire TCP handshake to finish. If the SYN-ACK never comes back (the
+ * classic symptom: the host's .154 is on a different NIC than the one the
+ * guest's MACNAT exits through), that wait spins forever WITHOUT yielding —
+ * starving System 7's cooperative scheduler, so the whole emulator freezes at
+ * 100% CPU and looks like a crash.
+ *
+ * So we flip the endpoint to non-blocking JUST for the connect, kick it off,
+ * then POLL OTRcvConnect with a tick-based timeout while yielding every pass
+ * (SystemTask, via CheckUserAbort). The UI stays alive, the user can quit, and
+ * a dead path gives up after CONNECT_TIMEOUT_TICKS with a diagnostic hint.
+ * On success we restore BLOCKING mode so the idle receive loop sleeps in OTRcv
+ * (low CPU) exactly as before — only the connect changes.
  */
 OSStatus ConnectToHost(EndpointRef *endpoint, unsigned long hostIP, InetPort port)
 {
@@ -55,53 +75,89 @@ OSStatus ConnectToHost(EndpointRef *endpoint, unsigned long hostIP, InetPort por
     TCall sndCall;
     TBind bindReq;
     InetAddress localAddr;
+    long startTicks;
 
     StatusMessage("Opening TCP endpoint...");
 
-    /* Create TCP endpoint */
+    /* Create TCP endpoint (synchronous, blocking by default) */
     *endpoint = OTOpenEndpoint(OTCreateConfiguration(kTCPName), 0, NULL, &err);
     if (err != noErr) {
         StatusMessage("OTOpenEndpoint failed!");
         return err;
     }
-    StatusMessage("Endpoint opened OK");
 
-    /* Bind to any local port */
-    StatusMessage("Binding local port...");
+    /* Bind to any local port (quick + local; fine in default blocking mode) */
     OTMemzero(&localAddr, sizeof(localAddr));
     OTInitInetAddress(&localAddr, 0, kOTAnyInetAddress);
-
     bindReq.addr.buf = (UInt8 *)&localAddr;
     bindReq.addr.len = sizeof(localAddr);
     bindReq.qlen = 0;
-
     err = OTBind(*endpoint, &bindReq, NULL);
     if (err != noErr) {
         StatusMessage("OTBind failed!");
         OTCloseProvider(*endpoint);
         return err;
     }
-    StatusMessage("Bound OK");
 
-    /* Set up destination address */
+    /* Non-blocking ONLY for the connect, so OTConnect can't block the Mac */
+    OTSetNonBlocking(*endpoint);
+
+    /* Initiate connect — non-blocking returns kOTNoDataErr ("in progress") */
     StatusMessage("Connecting to host...");
     OTMemzero(&addr, sizeof(addr));
     OTInitInetAddress(&addr, port, hostIP);
-
     OTMemzero(&sndCall, sizeof(sndCall));
     sndCall.addr.buf = (UInt8 *)&addr;
     sndCall.addr.len = sizeof(addr);
 
-    /* Connect to host */
     err = OTConnect(*endpoint, &sndCall, NULL);
-    if (err != noErr) {
+    if (err != noErr && err != kOTNoDataErr) {
         StatusMessage("OTConnect failed!");
         OTCloseProvider(*endpoint);
         return err;
     }
 
-    StatusMessage("Connected to host!");
+    /* Poll for completion, bounded + yielding, so a stall can't freeze us */
+    startTicks = TickCount();
+    for (;;) {
+        if (CheckUserAbort()) {              /* yields (SystemTask) + pumps events */
+            OTSndDisconnect(*endpoint, NULL);
+            OTCloseProvider(*endpoint);
+            return kOTCanceledErr;
+        }
+        ShowAlive();
 
+        err = OTRcvConnect(*endpoint, NULL);
+        if (err == noErr) {
+            break;                            /* connection established */
+        } else if (err == kOTNoDataErr) {
+            if (TickCount() - startTicks > CONNECT_TIMEOUT_TICKS) {
+                StatusMessage("connect timeout - is .154 on the default-route NIC?");
+                OTSndDisconnect(*endpoint, NULL);
+                OTCloseProvider(*endpoint);
+                return kOTTimeOutErr;
+            }
+            /* still pending — keep polling */
+        } else if (err == kOTLookErr) {
+            OTResult ev = OTLook(*endpoint);
+            if (ev == T_DISCONNECT) {         /* refused / reset by host */
+                OTRcvDisconnect(*endpoint, NULL);
+                StatusMessage("connection refused by host");
+                OTCloseProvider(*endpoint);
+                return kOTLookErr;
+            }
+            /* other async event — clear it by continuing to poll */
+        } else {
+            StatusMessage("OTRcvConnect failed!");
+            OTCloseProvider(*endpoint);
+            return err;
+        }
+    }
+
+    /* Restore blocking so the idle receive loop sleeps in OTRcv (low CPU) */
+    OTSetBlocking(*endpoint);
+
+    StatusMessage("Connected to host!");
     return noErr;
 }
 
