@@ -95,7 +95,10 @@ void DrawLEDs(void)
     Rect statusArea, led;
     Str255 pstr;
     short i;
-    RGBColor ledGreen = { 0x1000, 0xE000, 0x1000 };  /* hellgruen */
+    long now;
+    Boolean active;
+    RGBColor ledBright = { 0x1000, 0xE000, 0x1000 };  /* bright green: data moving */
+    RGBColor ledIdle   = { 0x0000, 0x5800, 0x0000 };  /* dim green: connected, idle */
     RGBColor cBlack = { 0, 0, 0 };
     RGBColor cWhite = { 0xFFFF, 0xFFFF, 0xFFFF };
 
@@ -111,17 +114,23 @@ void DrawLEDs(void)
     EraseRect(&statusArea);
     FrameRect(&statusArea);
 
-    /* Round green LED (steady = daemon active) */
+    /* LED brightness = traffic: bright green while a command was received or a
+     * response sent within LED_FLASH_DURATION ticks, dim green when connected
+     * but idle. ShowAlive's ~8x/sec refresh catches the flash and reverts it,
+     * so the dot now shows data actually flowing instead of being always lit. */
+    now = TickCount();
+    active = (now - gLastRX < LED_FLASH_DURATION) ||
+             (now - gLastTX < LED_FLASH_DURATION);
     SetRect(&led, 8, 3, 22, 17);
-    RGBForeColor(&ledGreen);
+    RGBForeColor(active ? &ledBright : &ledIdle);
     PaintOval(&led);
     RGBForeColor(&cBlack);
     FrameOval(&led);
 
-    /* "Active" + the live activity text, same line */
+    /* state label + the live activity text, same line */
     TextSize(9);
     MoveTo(28, 13);
-    DrawString("\pActive  ");
+    DrawString(active ? "\pActive  " : "\pIdle    ");
 
     for (i = 0; gActivity[i] && i < 250; i++) pstr[i + 1] = gActivity[i];
     pstr[0] = (unsigned char)i;
@@ -287,7 +296,7 @@ void ShowAboutBox(void)
         MoveTo(20, 30);
         TextSize(14);
         TextFace(bold);
-        DrawString("\pAppleBridge v0.5.2");
+        DrawString("\pAppleBridge v0.5.4");
 
         MoveTo(20, 55);
         TextSize(10);
@@ -382,7 +391,7 @@ void InitApp(void)
 
     /* Create status window */
     SetRect(&bounds, 50, 50, 450, 350);
-    gStatusWindow = NewCWindow(NULL, &bounds, "\pAppleBridge v0.5.2",
+    gStatusWindow = NewCWindow(NULL, &bounds, "\pAppleBridge v0.5.4",
                                true, documentProc, (WindowPtr)-1L, true, 0);
     if (gStatusWindow) {
         SetPort(gStatusWindow);
@@ -398,9 +407,11 @@ Boolean CheckUserAbort(void)
     WindowPtr window;
     short part;
 
-    SystemTask();
-
-    if (GetNextEvent(everyEvent, &event)) {
+    /* WaitNextEvent (not GetNextEvent) yields the CPU for up to 'sleep' ticks
+     * per call, so the connect poll and reconnect wait IDLE instead of spinning
+     * at 100% — Basilisk's idlewait then throttles host CPU and the Finder stays
+     * reachable. It also delivers our window/menu events like GetNextEvent did. */
+    if (WaitNextEvent(everyEvent, &event, 2L, NULL)) {
         switch (event.what) {
             case mouseDown:
                 part = FindWindow(event.where, &window);
@@ -747,7 +758,7 @@ int main(void)
             if (err != noErr) {
                 /* A timed-out connect almost always means .154 is on the wrong
                  * host NIC — surface that hint instead of a generic failure. */
-                if (err == kOTTimeOutErr) {
+                if (err == kABConnectTimeout) {
                     SetActivity("timeout - is host .154 on the default-route NIC?");
                 } else {
                     SetActivity("connection FAILED");

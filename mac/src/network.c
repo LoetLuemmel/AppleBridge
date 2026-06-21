@@ -61,12 +61,13 @@ void ShutdownNetwork(void)
  * starving System 7's cooperative scheduler, so the whole emulator freezes at
  * 100% CPU and looks like a crash.
  *
- * So we flip the endpoint to non-blocking JUST for the connect, kick it off,
- * then POLL OTRcvConnect with a tick-based timeout while yielding every pass
- * (SystemTask, via CheckUserAbort). The UI stays alive, the user can quit, and
- * a dead path gives up after CONNECT_TIMEOUT_TICKS with a diagnostic hint.
- * On success we restore BLOCKING mode so the idle receive loop sleeps in OTRcv
- * (low CPU) exactly as before — only the connect changes.
+ * So we flip the endpoint to non-blocking, kick the connect off, then POLL
+ * (OTLook -> OTRcvConnect) with a tick-based timeout while yielding every pass
+ * (WaitNextEvent, via CheckUserAbort). The UI stays alive, the user can quit,
+ * and a dead path gives up after CONNECT_TIMEOUT_TICKS with a diagnostic hint.
+ * The endpoint STAYS non-blocking afterwards: the main receive loop polls OTRcv
+ * (kOTNoDataErr when idle) and yields via WaitNextEvent — do NOT force blocking
+ * mode here, that makes OTRcv block and starves the cooperative scheduler.
  */
 OSStatus ConnectToHost(EndpointRef *endpoint, unsigned long hostIP, InetPort port)
 {
@@ -99,7 +100,7 @@ OSStatus ConnectToHost(EndpointRef *endpoint, unsigned long hostIP, InetPort por
         return err;
     }
 
-    /* Non-blocking ONLY for the connect, so OTConnect can't block the Mac */
+    /* Non-blocking so OTConnect can't block the Mac (and the receive loop polls) */
     OTSetNonBlocking(*endpoint);
 
     /* Initiate connect — non-blocking returns kOTNoDataErr ("in progress") */
@@ -111,15 +112,27 @@ OSStatus ConnectToHost(EndpointRef *endpoint, unsigned long hostIP, InetPort por
     sndCall.addr.len = sizeof(addr);
 
     err = OTConnect(*endpoint, &sndCall, NULL);
-    if (err != noErr && err != kOTNoDataErr) {
+    if (err == noErr) {
+        /* Connected immediately (fast local .154 path). Don't poll — calling
+         * OTRcvConnect on an already-open endpoint just errors out. Leave the
+         * endpoint NON-blocking: the receive loop polls OTRcv and yields. */
+        StatusMessage("Connected to host!");
+        return noErr;
+    }
+    if (err != kOTNoDataErr) {
         StatusMessage("OTConnect failed!");
         OTCloseProvider(*endpoint);
         return err;
     }
 
-    /* Poll for completion, bounded + yielding, so a stall can't freeze us */
+    /* In progress. Poll OTLook for the completion event, bounded by a timeout
+     * and yielding each pass so a stall can't freeze the Mac. Drive it from
+     * OTLook (not a bare OTRcvConnect): OTRcvConnect must only be called once
+     * T_CONNECT is actually pending, otherwise it returns an error. */
     startTicks = TickCount();
     for (;;) {
+        OTResult look;
+
         if (CheckUserAbort()) {              /* yields (SystemTask) + pumps events */
             OTSndDisconnect(*endpoint, NULL);
             OTCloseProvider(*endpoint);
@@ -127,36 +140,35 @@ OSStatus ConnectToHost(EndpointRef *endpoint, unsigned long hostIP, InetPort por
         }
         ShowAlive();
 
-        err = OTRcvConnect(*endpoint, NULL);
-        if (err == noErr) {
-            break;                            /* connection established */
-        } else if (err == kOTNoDataErr) {
-            if (TickCount() - startTicks > CONNECT_TIMEOUT_TICKS) {
-                StatusMessage("connect timeout - is .154 on the default-route NIC?");
-                OTSndDisconnect(*endpoint, NULL);
+        look = OTLook(*endpoint);
+        if (look == T_CONNECT) {
+            err = OTRcvConnect(*endpoint, NULL);   /* completes the connection */
+            if (err != noErr) {
+                StatusMessage("OTRcvConnect failed!");
                 OTCloseProvider(*endpoint);
-                return kOTTimeOutErr;
+                return err;
             }
-            /* still pending — keep polling */
-        } else if (err == kOTLookErr) {
-            OTResult ev = OTLook(*endpoint);
-            if (ev == T_DISCONNECT) {         /* refused / reset by host */
-                OTRcvDisconnect(*endpoint, NULL);
-                StatusMessage("connection refused by host");
-                OTCloseProvider(*endpoint);
-                return kOTLookErr;
-            }
-            /* other async event — clear it by continuing to poll */
-        } else {
-            StatusMessage("OTRcvConnect failed!");
+            break;                            /* connected */
+        } else if (look == T_DISCONNECT) {
+            OTRcvDisconnect(*endpoint, NULL); /* refused / reset by host */
+            StatusMessage("connection refused by host");
             OTCloseProvider(*endpoint);
-            return err;
+            return kOTLookErr;
+        }
+
+        /* nothing decisive yet — give up after the timeout */
+        if (TickCount() - startTicks > CONNECT_TIMEOUT_TICKS) {
+            StatusMessage("connect timeout - is .154 on the default-route NIC?");
+            OTSndDisconnect(*endpoint, NULL);
+            OTCloseProvider(*endpoint);
+            return kABConnectTimeout;
         }
     }
 
-    /* Restore blocking so the idle receive loop sleeps in OTRcv (low CPU) */
-    OTSetBlocking(*endpoint);
-
+    /* Leave the endpoint NON-blocking (do NOT force blocking here): the main
+     * loop polls OTRcv (kOTNoDataErr when idle) and yields via WaitNextEvent.
+     * Forcing blocking makes OTRcv block and starves System 7's cooperative
+     * scheduler — the UI freezes at low CPU (the v0.5.3 regression). */
     StatusMessage("Connected to host!");
     return noErr;
 }

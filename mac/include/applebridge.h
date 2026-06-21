@@ -12,6 +12,9 @@
 
 /* Configuration */
 #define BRIDGE_PORT 9000
+/* Custom connect-poll result code (kOTTimeOutErr isn't in these OT headers).
+ * Returned by ConnectToHost on timeout so main.c can show the .154/NIC hint. */
+#define kABConnectTimeout (-30001)
 #define MAX_COMMAND_LENGTH 8192
 #define MAX_RESPONSE_LENGTH 65536          /* screenshot / verb / error scratch buffer */
 #define MAX_DYNAMIC_RESPONSE (4L*1024L*1024L) /* 4 MB cap for command stdout (heap) */
