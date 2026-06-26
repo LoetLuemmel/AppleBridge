@@ -14,6 +14,9 @@ static Boolean gNetworkInitialized = false;
 extern void    StatusMessage(const char *msg);   /* append a line to the console log */
 extern void    ShowAlive(void);                  /* repaint activity bar + uptime    */
 extern Boolean CheckUserAbort(void);             /* SystemTask + pump events + quit?  */
+extern void    SetActivity(const char *msg);     /* top-bar text; repaints IMMEDIATELY
+                                                  * (so a stage marker survives a freeze
+                                                  * and pinpoints which call blocked)   */
 
 /* Bound the connect so a stalled handshake can never wedge the cooperative
  * scheduler. 600 ticks = 10 s. */
@@ -51,23 +54,49 @@ void ShutdownNetwork(void)
     }
 }
 
+/* Connect-completion outcome, recorded by the async notifier below and read by
+ * the ConnectToHost poll loop. `volatile` because it is written from OT's
+ * notification context, not the main flow. We track only the two terminal
+ * connect events; everything else is ignored. */
+static volatile OTEventCode gConnectEvent = 0;
+
 /*
- * Connect to host server — non-blocking + timeout-bounded.
+ * OT notifier for the connect phase. Runs at deferred-task/interrupt time, so it
+ * does the absolute minimum — just records the connect outcome. The poll loop in
+ * ConnectToHost does the real work (OTRcvConnect, mode switch, teardown). On 68K
+ * OTNotifyProcPtr "is never a UniversalProcPtr", so this plain pascal function is
+ * passed straight to OTInstallNotifier.
+ */
+static pascal void ConnectNotifier(void *contextPtr, OTEventCode code,
+                                   OTResult result, void *cookie)
+{
+    if (contextPtr || result || cookie) { /* silence unused-param warnings */ }
+    if (code == T_CONNECT || code == T_DISCONNECT) {
+        gConnectEvent = code;
+    }
+}
+
+/*
+ * Connect to host server — asynchronous + timeout-bounded.
  *
- * An OT endpoint defaults to synchronous-BLOCKING mode, where OTConnect waits
- * for the entire TCP handshake to finish. If the SYN-ACK never comes back (the
- * classic symptom: the host's .154 is on a different NIC than the one the
- * guest's MACNAT exits through), that wait spins forever WITHOUT yielding —
- * starving System 7's cooperative scheduler, so the whole emulator freezes at
- * 100% CPU and looks like a crash.
+ * Subtlety that bit us twice: OT has two ORTHOGONAL mode axes. Blocking vs
+ * non-blocking governs FLOW CONTROL (OTSnd/OTRcv); synchronous vs asynchronous
+ * governs whether a call WAITS FOR COMPLETION. A *synchronous* OTConnect waits
+ * for the whole handshake regardless of the blocking flag — so if the SYN-ACK
+ * never comes back (host unreachable, or the host's stealth firewall silently
+ * drops the SYN to a closed port) it blocks until the host returns, freezing the
+ * cooperative scheduler. The earlier "non-blocking + poll" design only seemed to
+ * work because the local .154 connect completes instantly; an unreachable host
+ * exposed the block (v0.5.6 heartbeat test: 'Alive' froze on 'connect: OTConnect').
  *
- * So we flip the endpoint to non-blocking, kick the connect off, then POLL
- * (OTLook -> OTRcvConnect) with a tick-based timeout while yielding every pass
- * (WaitNextEvent, via CheckUserAbort). The UI stays alive, the user can quit,
- * and a dead path gives up after CONNECT_TIMEOUT_TICKS with a diagnostic hint.
- * The endpoint STAYS non-blocking afterwards: the main receive loop polls OTRcv
- * (kOTNoDataErr when idle) and yields via WaitNextEvent — do NOT force blocking
- * mode here, that makes OTRcv block and starves the cooperative scheduler.
+ * So we put the endpoint in ASYNCHRONOUS mode with a notifier: OTConnect returns
+ * kOTNoDataErr immediately, the notifier records T_CONNECT/T_DISCONNECT, and we
+ * POLL that flag with a tick-based timeout while yielding every pass (via
+ * CheckUserAbort/ShowAlive). The UI stays alive, the user can quit, a dead path
+ * gives up after CONNECT_TIMEOUT_TICKS. On success we complete OTRcvConnect and
+ * return the endpoint to synchronous + NON-blocking, which is what the receive
+ * loop expects (it polls OTRcv, kOTNoDataErr when idle, and yields) — do NOT
+ * leave it blocking, that starves the cooperative scheduler.
  */
 OSStatus ConnectToHost(EndpointRef *endpoint, unsigned long hostIP, InetPort port)
 {
@@ -78,6 +107,11 @@ OSStatus ConnectToHost(EndpointRef *endpoint, unsigned long hostIP, InetPort por
     InetAddress localAddr;
     long startTicks;
 
+    /* Stage markers: SetActivity repaints the top bar IMMEDIATELY, so if any of
+     * the synchronous OT calls below wedges the cooperative scheduler, the frozen
+     * bar names the exact culprit (the console log only repaints from ShowAlive,
+     * which a blocked call never reaches). */
+    SetActivity("connect: open endpoint");
     StatusMessage("Opening TCP endpoint...");
 
     /* Create TCP endpoint (synchronous, blocking by default) */
@@ -87,7 +121,9 @@ OSStatus ConnectToHost(EndpointRef *endpoint, unsigned long hostIP, InetPort por
         return err;
     }
 
-    /* Bind to any local port (quick + local; fine in default blocking mode) */
+    /* Bind to any local port (quick + local; fine in default blocking mode — a
+     * non-blocking bind could return kOTNoDataErr and need its own poll). */
+    SetActivity("connect: bind");
     OTMemzero(&localAddr, sizeof(localAddr));
     OTInitInetAddress(&localAddr, 0, kOTAnyInetAddress);
     bindReq.addr.buf = (UInt8 *)&localAddr;
@@ -100,10 +136,31 @@ OSStatus ConnectToHost(EndpointRef *endpoint, unsigned long hostIP, InetPort por
         return err;
     }
 
-    /* Non-blocking so OTConnect can't block the Mac (and the receive loop polls) */
-    OTSetNonBlocking(*endpoint);
+    /* THE FIX (v0.5.6 heartbeat test froze here on 'connect: OTConnect'):
+     * the blocking/non-blocking flag governs FLOW CONTROL, not connection setup —
+     * a SYNCHRONOUS OTConnect waits for the whole handshake, so an unreachable
+     * host blocks it until the host returns, freezing the cooperative scheduler.
+     * In ASYNCHRONOUS mode OTConnect returns kOTNoDataErr at once and the outcome
+     * arrives via the notifier, so the yielding poll loop below keeps the Mac
+     * alive and can time out. (Verified: async OTConnect returns immediately —
+     * Inside Macintosh: Networking With Open Transport.) */
+    SetActivity("connect: async + notifier");
+    gConnectEvent = 0;
+    err = OTInstallNotifier(*endpoint, ConnectNotifier, NULL);
+    if (err != noErr) {
+        StatusMessage("OTInstallNotifier failed!");
+        OTCloseProvider(*endpoint);
+        return err;
+    }
+    err = OTSetAsynchronous(*endpoint);
+    if (err != noErr) {
+        StatusMessage("OTSetAsynchronous failed!");
+        OTRemoveNotifier(*endpoint);
+        OTCloseProvider(*endpoint);
+        return err;
+    }
 
-    /* Initiate connect — non-blocking returns kOTNoDataErr ("in progress") */
+    /* Initiate connect — async returns kOTNoDataErr ("in progress") immediately */
     StatusMessage("Connecting to host...");
     OTMemzero(&addr, sizeof(addr));
     OTInitInetAddress(&addr, port, hostIP);
@@ -111,69 +168,65 @@ OSStatus ConnectToHost(EndpointRef *endpoint, unsigned long hostIP, InetPort por
     sndCall.addr.buf = (UInt8 *)&addr;
     sndCall.addr.len = sizeof(addr);
 
+    SetActivity("connect: OTConnect");
     err = OTConnect(*endpoint, &sndCall, NULL);
-    if (err == noErr) {
-        /* Connected immediately (fast local .154 path). Don't poll — calling
-         * OTRcvConnect on an already-open endpoint just errors out. Leave the
-         * endpoint NON-blocking: the receive loop polls OTRcv and yields. */
-        StatusMessage("Connected to host!");
-        return noErr;
-    }
-    if (err != kOTNoDataErr) {
-        /* Connect failed immediately. On the local .154 path a not-yet-running
-         * host server refuses with an instant RST, so this is the everyday
-         * "host bridge isn't started" case — flag it as refused, not generic. */
-        StatusMessage("OTConnect failed - host bridge running?");
+    if (err != noErr && err != kOTNoDataErr) {
+        /* Immediate failure — e.g. no route to the host address (.154 not set up). */
+        StatusMessage("OTConnect failed - host reachable?");
+        OTRemoveNotifier(*endpoint);
         OTCloseProvider(*endpoint);
         return kABConnectRefused;
     }
 
-    /* In progress. Poll OTLook for the completion event, bounded by a timeout
-     * and yielding each pass so a stall can't freeze the Mac. Drive it from
-     * OTLook (not a bare OTRcvConnect): OTRcvConnect must only be called once
-     * T_CONNECT is actually pending, otherwise it returns an error. */
+    /* In progress. Wait for the notifier to record the outcome, bounded by a
+     * timeout and yielding each pass so a dead host can never freeze the Mac. */
+    SetActivity("connect: polling (yields)");
     startTicks = TickCount();
     for (;;) {
-        OTResult look;
-
         if (CheckUserAbort()) {              /* yields (SystemTask) + pumps events */
             OTSndDisconnect(*endpoint, NULL);
+            OTRemoveNotifier(*endpoint);
             OTCloseProvider(*endpoint);
             return kOTCanceledErr;
         }
         ShowAlive();
 
-        look = OTLook(*endpoint);
-        if (look == T_CONNECT) {
-            err = OTRcvConnect(*endpoint, NULL);   /* completes the connection */
-            if (err != noErr) {
-                StatusMessage("OTRcvConnect failed!");
-                OTCloseProvider(*endpoint);
-                return err;
-            }
-            break;                            /* connected */
-        } else if (look == T_DISCONNECT) {
+        if (gConnectEvent == T_CONNECT) {
+            break;                            /* connection established */
+        } else if (gConnectEvent == T_DISCONNECT) {
             OTRcvDisconnect(*endpoint, NULL); /* refused / reset by host */
-            /* Host is up but nothing is listening on the bridge port — the
-             * classic "host server not started yet" symptom. */
             StatusMessage("host refused - is AppleBridge running?");
+            OTRemoveNotifier(*endpoint);
             OTCloseProvider(*endpoint);
             return kABConnectRefused;
         }
 
         /* nothing decisive yet — give up after the timeout */
         if (TickCount() - startTicks > CONNECT_TIMEOUT_TICKS) {
-            StatusMessage("connect timeout - is .154 on the default-route NIC?");
+            StatusMessage("connect timeout - no reply from host");
             OTSndDisconnect(*endpoint, NULL);
+            OTRemoveNotifier(*endpoint);
             OTCloseProvider(*endpoint);
             return kABConnectTimeout;
         }
     }
 
-    /* Leave the endpoint NON-blocking (do NOT force blocking here): the main
-     * loop polls OTRcv (kOTNoDataErr when idle) and yields via WaitNextEvent.
-     * Forcing blocking makes OTRcv block and starves System 7's cooperative
-     * scheduler — the UI freezes at low CPU (the v0.5.3 regression). */
+    /* Connected. T_CONNECT is pending, so complete the handshake retrieval
+     * SYNCHRONOUSLY (returns at once), then return the endpoint to the
+     * synchronous + NON-blocking mode the receive loop expects (it polls OTRcv
+     * and yields). Drop the notifier — the session uses sync polling, not events. */
+    SetActivity("connect: finishing");
+    OTSetSynchronous(*endpoint);
+    err = OTRcvConnect(*endpoint, NULL);
+    if (err != noErr) {
+        StatusMessage("OTRcvConnect failed!");
+        OTRemoveNotifier(*endpoint);
+        OTCloseProvider(*endpoint);
+        return err;
+    }
+    OTRemoveNotifier(*endpoint);
+    OTSetNonBlocking(*endpoint);
+
     StatusMessage("Connected to host!");
     return noErr;
 }
