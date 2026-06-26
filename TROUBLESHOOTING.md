@@ -183,61 +183,92 @@ Full write-up: <https://pit.390er.de/applebridge/anatomy-of-a-freeze-macnat-retu
 
 ## Emulator (Basilisk II) Crashes
 
-### BasiliskII crashes (SIGILL in `NSWMWindowCoordinator`) — host-side macOS bug
+### BasiliskII crashes (SIGILL in `NSWMWindowCoordinator`) — usually a broken guest app
 
 **Symptoms:**
-- Basilisk II quits *completely* (the whole emulator window vanishes), often when
-  launching a GUI app, switching apps, or hiding/reordering the BasiliskII window.
-- The guest didn't bomb — the **host** process died. A macOS crash report appears
-  in `~/Library/Logs/DiagnosticReports/BasiliskII-*.ips`.
-- The same app may have launched fine other times — the crash is **intermittent**.
+- Basilisk II quits *completely* (the whole emulator window vanishes), typically
+  right after **launching a particular guest app**.
+- A macOS crash report appears in `~/Library/Logs/DiagnosticReports/BasiliskII-*.ips`
+  with `EXC_BAD_INSTRUCTION (SIGILL)` and a faulting thread topped by
+  `-[NSWMWindowCoordinator performTransactionUsingBlock:]`.
 
-**Root cause — NOT the guest app.** The crash report's faulting thread is entirely
-macOS window-management code:
+**The SIGILL is a red herring — it's a *secondary* crash during shutdown.** The
+window-management frame at the top of the faulting thread is *not* where things went
+wrong. Read the faulting thread **bottom-to-top** and the real sequence appears:
 
 ```
-EXC_BAD_INSTRUCTION (SIGILL)
-  -[NSWMWindowCoordinator performTransactionUsingBlock:]
-  -[NSWindow _doWindowWillBecomeHidden] / _reallyDoOrderWindowOut...
-  SDL2 ...
+catch_exception_raise → sigsegv_dump_state(...)   ← BAII CAUGHT A FATAL SIGSEGV
+  → QuitEmulator() → exit() → __cxa_finalize_ranges  ← orderly shutdown begins
+    → SDL2 atexit window teardown → -[NSWindow _doOrderWindowOut...]
+      → -[NSWMWindowCoordinator performTransactionUsingBlock:]  ← SIGILL (logged)
 ```
 
-`WindowManagement` / `NSWMWindowCoordinator` is the framework behind **Stage
-Manager and window tiling**. This is a **macOS Sequoia (Darwin 24.x) + BasiliskII
-SDL2-port bug**: the emulator crashes when its host window is hidden or reordered.
-There are **zero 68k / CPU-emulation frames** in the trace — if a guest program
-were at fault, BAII would die inside its CPU core, not in `NSWindow` ordering. So a
-68k app "crashing" BAII this way is almost always *coincidence*: launching it just
-triggered a host window event (front-window change, show/hide) that tripped the bug.
+So the **primary** fault is a **SIGSEGV during 68k execution**: look at **thread 0**
+(`com.apple.main-thread`) — it's the CPU, frozen mid-instruction on a `MOVE`
+opcode (`op_1158` = `MOVE.B`, `op_20f8` = `MOVE.L`, …) dereferencing an address
+BAII can't map. BAII's exception handler deems it fatal and calls `QuitEmulator()`;
+during the clean `exit()`, **SDL2 (2.30.11) tripping the macOS Sequoia
+`WindowManagement` framework on its way out** is the *secondary* SIGILL that the log
+records. The window frame masks the real cause.
 
-**Confirm it's this bug:**
+**Verified root cause (controlled test, 2026-06-26):** stock GUI apps are fine — a
+known-good app (`SimpleText`) launched **4×** with zero crashes. A purpose-built
+app (the **assembly** `CounterAsm`) crashed BAII **on launch**, every time, with
+this exact signature. The CPU was executing through an uninitialised global → a
+wild-pointer `MOVE` → SIGSEGV → quit → SIGILL-on-exit.
+
+`DumpFile -h` pins the defect — the asm binary was linked **without the MPW
+runtime startup**:
+
+| | working C app `Counter` | crashing asm `CounterAsm` |
+|---|---|---|
+| Resource fork | **6904 B** | **719 B** |
+| Runtime in `CODE` | `32-bit startup`, `_DataInit`, `%A5Init`, jump-table loader, `_RTInit` | **none** — raw traps + `Main` only |
+
+With no `_DataInit` / `%A5Init`, the **A5 world (globals, QuickDraw globals, jump
+table) is never set up**, so the first A5-relative access dereferences garbage.
+The C runtime links that bootstrap in automatically; the assembly link omitted it.
+The fault is the **assembly *link*, not `Asm`** — and certainly not macOS/SDL/BAII.
+
+**Diagnose correctly — read thread 0 and the shutdown chain, not just frame 0:**
 ```bash
-# all crashes with this signature are the same host-side issue
-for f in ~/Library/Logs/DiagnosticReports/BasiliskII-*.ips; do
-  python3 -c "import json,sys;d=json.loads(open('$f').read().split(chr(10),1)[1]);\
-ft=d['faultingThread'];print(d['threads'][ft]['frames'][0].get('symbol'))" 2>/dev/null
-done
-# -> -[NSWMWindowCoordinator performTransactionUsingBlock:] = this bug
+f=$(ls -t ~/Library/Logs/DiagnosticReports/BasiliskII-*.ips | head -1)
+python3 -c "
+import json
+d=json.loads(open('$f').read().split(chr(10),1)[1])
+ft=d['faultingThread']
+syms=[(x.get('symbol') or '') for x in d['threads'][ft]['frames']]
+chain=all(any(s in y for y in syms) for s in ('sigsegv_dump_state','QuitEmulator','exit'))
+print('shutdown-chain (caught SIGSEGV, then SIGILL-on-exit):', chain)
+print('CPU was here (thread 0):', (d['threads'][0]['frames'][0].get('symbol') or '?'))
+"
+# shutdown-chain True + a MOVE op on thread 0 = a guest/app SIGSEGV, NOT a host window bug.
 ```
 
-**Mitigations (all host-side — the guest/app needs no changes):**
-1. **Disable Stage Manager** and window tiling ("tiled window margins") in System
-   Settings — that framework is exactly what's in the trace.
-2. **Run BasiliskII full-screen** — avoids host window order/hide entirely.
-3. **Update the BasiliskII build** to a newer SDL2 port with Sequoia window fixes.
-4. Avoid hiding/reordering the BasiliskII window mid-session.
+**Fix the actual cause (in priority order):**
+1. **Fix the guest binary.** This is the real bug almost every time. If it's an
+   AppleBridge-built app, suspect the link. `DumpFile app -h` and compare against a
+   *working* app of the same kind: the broken one is far smaller and **missing the
+   MPW runtime bootstrap** (`32-bit startup`, `_DataInit`, `%A5Init`, jump-table
+   loader). For assembly apps this is the usual culprit — link in / set up the A5
+   world (`_DataInit`/`%A5Init`) or keep all globals PC-relative. Confirm the
+   emulator itself is healthy by launching a *stock* app (`SimpleText`) — if that's
+   stable, the fault is your binary, not BAII.
+2. **Make the exit graceful (host-side, optional).** The SIGILL-on-exit is a
+   Sequoia + SDL2 2.30.11 interaction. We run the latest BasiliskII build
+   (Jan 2025, SDL2 **2.30.11**); rebuilding it against **SDL2 2.32.x** may turn the
+   ugly SIGILL into a clean quit. **It will not stop the crashes** — the guest
+   SIGSEGV is upstream of it. Running full-screen / disabling Stage Manager may
+   likewise only affect the exit path, not the fault.
 
-**Not the only crash mode.** Most BasiliskII crashes share this signature, but a
-rarer, *distinct* one exists: a `EXC_BAD_ACCESS` (SIGSEGV) in BAII's own redraw
-thread — `video_refresh_window_static()` → `do_video_refresh()` → `redraw_func()`,
-with **no** `NSWMWindowCoordinator` in the stack. If the detection one-liner above
-prints `video_refresh_window_static()` instead, you're looking at that separate
-video-refresh fault, not this window-management bug — so the Stage-Manager / window
-mitigations won't apply to it.
+**A second, distinct crash mode** also exists: `EXC_BAD_ACCESS` (SIGSEGV) topped by
+`video_refresh_window_static()` → `do_video_refresh()` → `redraw_func()`, with **no**
+`NSWMWindowCoordinator` and **no** shutdown chain. That's a fault in BAII's own
+redraw thread, unrelated to a guest app — diagnose it separately.
 
-**Note:** this is unrelated to the daemon-side "frozen at CONNECTING" freeze above —
-that one is a hung *connect* (no crash report, host process alive). This one is a
-real host *crash* (process gone, crash report present). Different failure entirely.
+**Note:** all of the above is unrelated to the daemon-side "frozen at CONNECTING"
+freeze above — that one is a hung *connect* (no crash report, host process alive).
+These are real host *crashes* (process gone, crash report present).
 
 ---
 
