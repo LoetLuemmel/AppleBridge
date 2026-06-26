@@ -15,6 +15,12 @@
 /* Custom connect-poll result code (kOTTimeOutErr isn't in these OT headers).
  * Returned by ConnectToHost on timeout so main.c can show the .154/NIC hint. */
 #define kABConnectTimeout (-30001)
+/* Host answered but REFUSED the connection (TCP RST), or the connect attempt
+ * failed outright on the local .154 path. On a reachable host this almost
+ * always means the host-side AppleBridge server simply isn't running yet, so
+ * main.c shows a "start the host bridge" hint instead of a cryptic OTConnect
+ * error. (A genuinely unreachable host / wrong NIC gives kABConnectTimeout.) */
+#define kABConnectRefused (-30002)
 #define MAX_COMMAND_LENGTH 8192
 #define MAX_RESPONSE_LENGTH 65536          /* screenshot / verb / error scratch buffer */
 #define MAX_DYNAMIC_RESPONSE (4L*1024L*1024L) /* 4 MB cap for command stdout (heap) */

@@ -45,6 +45,18 @@ DEFAULT_TIMEOUT = 15.0
 LONG_TIMEOUT = 240.0   # multi-MB transfers (large DumpFile/Catenate) over OT
 SCREENSHOT_TIMEOUT = 30.0   # full-screen pixmap transfer + decode
 
+# Application-level heartbeat (design: /applebridge/designing-an-application-level-heartbeat/).
+# The host is the ACTIVE party: during idle it PINGs the daemon every
+# HEARTBEAT_INTERVAL s so the daemon's passive last-RX watchdog stays fed and so
+# the host itself notices a dead/replaced daemon connection (the MACNAT path does
+# not reliably deliver FIN/RST). The daemon's watchdog threshold (~30 s) must stay
+# well above this interval. A missing PONG is read-bounded by HEARTBEAT_TIMEOUT;
+# HEARTBEAT_MAX_MISS consecutive misses tear the connection down so the loop
+# re-accepts (e.g. the daemon reconnected with a fresh socket).
+HEARTBEAT_INTERVAL = 10.0   # seconds of link idle before emitting a PING
+HEARTBEAT_TIMEOUT = 4.0     # bounded read for the PONG (must not hang the loop)
+HEARTBEAT_MAX_MISS = 2      # consecutive unanswered PINGs -> declare disconnected
+
 _logf = open(LOG_PATH, "a", buffering=1)  # line-buffered
 
 
@@ -245,11 +257,12 @@ class AppleBridgeServer:
             log(f"recv {len(raw)}B outcome={outcome} cmd={command[:32]!r}")
         return bytes(raw).decode("mac_roman", errors="replace")
 
-    def send_raw(self, data):
+    def send_raw(self, data, timeout=DEFAULT_TIMEOUT):
         """Send a RAW verb (PING / LAUNCH:<path>) — no COMMAND: wrapper.
 
         The daemon's verb dispatch (ProcessRequest) matches the raw request
         bytes, exactly like SCREENSHOT. Returns the raw response string.
+        `timeout` bounds the response read (short for heartbeats).
         """
         if not self.connected or not self.client_socket:
             return None
@@ -264,7 +277,7 @@ class AppleBridgeServer:
 
         response = b""
         try:
-            self.client_socket.settimeout(DEFAULT_TIMEOUT)
+            self.client_socket.settimeout(timeout)
             while True:
                 chunk = self.client_socket.recv(4096)
                 if not chunk:
@@ -284,6 +297,17 @@ class AppleBridgeServer:
             except OSError:
                 pass
         return response.decode("mac_roman", errors="replace") if response else None
+
+    def heartbeat(self):
+        """Send one liveness PING with a short bounded read. Returns True if the
+        daemon answered with ANY bytes — content is deliberately not validated, so
+        a possibly-corrupt first packet after a reconnect still counts as 'alive'
+        (we only care that the peer is responsive). Returns False on no reply; the
+        caller counts consecutive misses before tearing the connection down."""
+        if not self.connected or not self.client_socket:
+            return False
+        resp = self.send_raw("PING", timeout=HEARTBEAT_TIMEOUT)
+        return resp is not None
 
     def request_screenshot(self):
         """Request a screenshot. Returns a dict with the decoded pixmap parts:
@@ -409,16 +433,37 @@ def run_control_server(server):
     control.settimeout(1.0)
     log(f"Control port on localhost:{CONTROL_PORT} (send_command.py / MCP)")
 
+    last_io = time.monotonic()   # last time we exchanged anything with the daemon
+    missed = 0                   # consecutive unanswered heartbeats
     try:
         while True:
             # Make sure a Mac is connected before serving commands.
             if not server.connected:
                 log("Waiting for Mac daemon to (re)connect...")
                 server.accept_mac()
+                # The first packet over a fresh OT/MACNAT connection is often
+                # corrupt; send one priming PING and discard its (possibly
+                # garbled) reply so a real command isn't the one that eats it.
+                server.heartbeat()
+                last_io = time.monotonic()
+                missed = 0
 
             try:
                 ctrl_conn, _addr = control.accept()
             except socket.timeout:
+                # Idle tick (~1 s). If the link has been quiet, emit a heartbeat
+                # so the daemon's watchdog stays fed and we notice a dead/replaced
+                # connection. Skip while a real command is obviously not in flight.
+                if server.connected and time.monotonic() - last_io >= HEARTBEAT_INTERVAL:
+                    if server.heartbeat():
+                        missed = 0
+                    else:
+                        missed += 1
+                        log(f"heartbeat missed ({missed}/{HEARTBEAT_MAX_MISS})")
+                        if missed >= HEARTBEAT_MAX_MISS:
+                            server._mark_disconnected("heartbeat lost")
+                            missed = 0
+                    last_io = time.monotonic()
                 continue
 
             try:
@@ -459,6 +504,9 @@ def run_control_server(server):
                     ctrl_conn.close()
                 except OSError:
                     pass
+                # A served command is itself fresh traffic; defer the next heartbeat.
+                last_io = time.monotonic()
+                missed = 0
     except KeyboardInterrupt:
         pass
     finally:

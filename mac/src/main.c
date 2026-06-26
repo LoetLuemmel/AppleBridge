@@ -296,7 +296,7 @@ void ShowAboutBox(void)
         MoveTo(20, 30);
         TextSize(14);
         TextFace(bold);
-        DrawString("\pAppleBridge v0.5.4");
+        DrawString("\pAppleBridge v0.5.6");
 
         MoveTo(20, 55);
         TextSize(10);
@@ -391,7 +391,7 @@ void InitApp(void)
 
     /* Create status window */
     SetRect(&bounds, 50, 50, 450, 350);
-    gStatusWindow = NewCWindow(NULL, &bounds, "\pAppleBridge v0.5.4",
+    gStatusWindow = NewCWindow(NULL, &bounds, "\pAppleBridge v0.5.6",
                                true, documentProc, (WindowPtr)-1L, true, 0);
     if (gStatusWindow) {
         SetPort(gStatusWindow);
@@ -677,6 +677,12 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
 /* Reconnection delay in ticks (30 seconds = 1800 ticks) */
 #define RECONNECT_DELAY_TICKS  1800
 
+/* Heartbeat watchdog: declare a silent, established link dead after this long
+ * with no traffic in either direction. The host PINGs every ~10 s, so 30 s is
+ * three missed beats — comfortably above the interval, below a human's patience.
+ * (60 ticks/sec.) */
+#define HEARTBEAT_WATCHDOG_TICKS  1800
+
 /*
  * Wait for reconnection delay, checking for user abort
  * Returns true if user aborted
@@ -756,10 +762,17 @@ int main(void)
 
             err = ConnectToHost(&endpoint, hostIP, BRIDGE_PORT);
             if (err != noErr) {
-                /* A timed-out connect almost always means .154 is on the wrong
-                 * host NIC — surface that hint instead of a generic failure. */
+                /* Two separate systems can't synchronise state when no link can
+                 * be formed, so each can only ASSUME the other's state. Behind the
+                 * host's stealth firewall a closed port returns no RST, so "server
+                 * not running" and "wrong NIC" both surface as a timeout and can't
+                 * be told apart here. Rather than over-claim a single cause, give
+                 * the user an honest, actionable hint covering the likely fixes —
+                 * a message with instructions still beats silence. */
                 if (err == kABConnectTimeout) {
-                    SetActivity("timeout - is host .154 on the default-route NIC?");
+                    SetActivity("no host reply - server up? .154 on right NIC?");
+                } else if (err == kABConnectRefused) {
+                    SetActivity("host unreachable - run start_stack.sh on host?");
                 } else {
                     SetActivity("connection FAILED");
                 }
@@ -772,6 +785,9 @@ int main(void)
             }
 
             connected = true;
+            /* Seed the heartbeat clock so the watchdog measures silence from NOW,
+             * not from the daemon's launch (gLastRX/gLastTX start at 0). */
+            gLastRX = gLastTX = TickCount();
             SetActivity("CONNECTED - waiting for commands");
         }
 
@@ -787,7 +803,20 @@ int main(void)
         err = ReceiveData(endpoint, requestBuffer, sizeof(requestBuffer) - 1, &bytesReceived);
 
         if (err == kOTNoDataErr) {
-            /* No data yet, keep waiting */
+            /* Idle. Heartbeat watchdog: the host PINGs every HEARTBEAT_INTERVAL
+             * while idle, so if we've heard NOTHING (and sent nothing) for longer
+             * than HEARTBEAT_WATCHDOG_TICKS the link is dead — even though no
+             * FIN/RST arrived, because the MACNAT path may never deliver one.
+             * Measure silence in BOTH directions (max of last RX / last TX) so a
+             * long command — during which the host waits instead of pinging — is
+             * not mistaken for a dead link. */
+            long lastIO = (gLastRX > gLastTX) ? gLastRX : gLastTX;
+            if (TickCount() - lastIO > HEARTBEAT_WATCHDOG_TICKS) {
+                StatusMessage("host silent - heartbeat lost");
+                SetActivity("host heartbeat lost - reconnecting");
+                OTCloseProvider(endpoint);
+                connected = false;   /* loop re-enters the connect path at once */
+            }
             continue;
         }
 
