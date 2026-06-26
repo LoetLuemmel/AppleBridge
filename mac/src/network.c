@@ -120,9 +120,12 @@ OSStatus ConnectToHost(EndpointRef *endpoint, unsigned long hostIP, InetPort por
         return noErr;
     }
     if (err != kOTNoDataErr) {
-        StatusMessage("OTConnect failed!");
+        /* Connect failed immediately. On the local .154 path a not-yet-running
+         * host server refuses with an instant RST, so this is the everyday
+         * "host bridge isn't started" case — flag it as refused, not generic. */
+        StatusMessage("OTConnect failed - host bridge running?");
         OTCloseProvider(*endpoint);
-        return err;
+        return kABConnectRefused;
     }
 
     /* In progress. Poll OTLook for the completion event, bounded by a timeout
@@ -151,9 +154,11 @@ OSStatus ConnectToHost(EndpointRef *endpoint, unsigned long hostIP, InetPort por
             break;                            /* connected */
         } else if (look == T_DISCONNECT) {
             OTRcvDisconnect(*endpoint, NULL); /* refused / reset by host */
-            StatusMessage("connection refused by host");
+            /* Host is up but nothing is listening on the bridge port — the
+             * classic "host server not started yet" symptom. */
+            StatusMessage("host refused - is AppleBridge running?");
             OTCloseProvider(*endpoint);
-            return kOTLookErr;
+            return kABConnectRefused;
         }
 
         /* nothing decisive yet — give up after the timeout */

@@ -296,7 +296,7 @@ void ShowAboutBox(void)
         MoveTo(20, 30);
         TextSize(14);
         TextFace(bold);
-        DrawString("\pAppleBridge v0.5.4");
+        DrawString("\pAppleBridge v0.5.5");
 
         MoveTo(20, 55);
         TextSize(10);
@@ -391,7 +391,7 @@ void InitApp(void)
 
     /* Create status window */
     SetRect(&bounds, 50, 50, 450, 350);
-    gStatusWindow = NewCWindow(NULL, &bounds, "\pAppleBridge v0.5.4",
+    gStatusWindow = NewCWindow(NULL, &bounds, "\pAppleBridge v0.5.5",
                                true, documentProc, (WindowPtr)-1L, true, 0);
     if (gStatusWindow) {
         SetPort(gStatusWindow);
@@ -756,10 +756,15 @@ int main(void)
 
             err = ConnectToHost(&endpoint, hostIP, BRIDGE_PORT);
             if (err != noErr) {
-                /* A timed-out connect almost always means .154 is on the wrong
-                 * host NIC — surface that hint instead of a generic failure. */
+                /* Distinguish the two everyday failure modes so the top bar
+                 * tells the user what to actually fix:
+                 *   - timeout  -> host unreachable, .154 likely on the wrong NIC
+                 *   - refused  -> host reachable but the host-side AppleBridge
+                 *                 server isn't running yet (start it!) */
                 if (err == kABConnectTimeout) {
                     SetActivity("timeout - is host .154 on the default-route NIC?");
+                } else if (err == kABConnectRefused) {
+                    SetActivity("no host bridge - start AppleBridge on the host?");
                 } else {
                     SetActivity("connection FAILED");
                 }
