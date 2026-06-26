@@ -227,6 +227,14 @@ done
 3. **Update the BasiliskII build** to a newer SDL2 port with Sequoia window fixes.
 4. Avoid hiding/reordering the BasiliskII window mid-session.
 
+**Not the only crash mode.** Most BasiliskII crashes share this signature, but a
+rarer, *distinct* one exists: a `EXC_BAD_ACCESS` (SIGSEGV) in BAII's own redraw
+thread — `video_refresh_window_static()` → `do_video_refresh()` → `redraw_func()`,
+with **no** `NSWMWindowCoordinator` in the stack. If the detection one-liner above
+prints `video_refresh_window_static()` instead, you're looking at that separate
+video-refresh fault, not this window-management bug — so the Stage-Manager / window
+mitigations won't apply to it.
+
 **Note:** this is unrelated to the daemon-side "frozen at CONNECTING" freeze above —
 that one is a hung *connect* (no crash report, host process alive). This one is a
 real host *crash* (process gone, crash report present). Different failure entirely.
