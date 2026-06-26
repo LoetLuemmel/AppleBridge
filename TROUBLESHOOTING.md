@@ -235,45 +235,44 @@ real host *crash* (process gone, crash report present). Different failure entire
 
 ## Compilation and Linking
 
-### ILink vs Link - Emulator Crashes
+### ILink vs Link
 
-**Problem:** ILink (incremental linker) frequently crashes Basilisk II emulator.
+**`Link` is the default** — verified and leaner output. **`ILink` is *not* broken.**
 
-**Solution:** Use Link (classic linker) instead.
+The old "ILink crashes Basilisk II" belief was a **misdiagnosis** (corrected
+2026-06-26). The committed `BuildIt` used an empty `{LIBS}`, so its library
+paths resolved to nothing → a broken binary that crashed *on launch* — not
+ILink's fault. With the correct `{CLibraries}`/`{Libraries}` paths, ILink
+links, runs, and round-trips commands cleanly.
 
-**Wrong:**
+ILink just yields a slightly larger binary plus a big `.NJ` incremental file,
+so `Link` stays the default by preference, not necessity.
+
 ```
-ILink -model far -o MyApp main.o Interface.o
+Link  -model far -o MyApp main.o "{LIBS}Libraries:Interface.o" "{LIBS}Libraries:MacRuntime.o"
+ILink -model far -o MyApp main.o "{LIBS}Libraries:Interface.o" "{LIBS}Libraries:MacRuntime.o"
 ```
-
-**Correct:**
-```
-Link -model far -o MyApp main.o "{LIBS}Libraries:Interface.o" "{LIBS}Libraries:MacRuntime.o"
-```
-
-**Note:** Link is slower but stable on Basilisk II. ILink works on real hardware but not reliably in emulation.
 
 ### Error -192 (resNotFound) When Launching App
 
 **Symptoms:**
 - App links without error
 - Launching shows Error -192
-- `DumpFile MyApp` shows Data Fork Length: 0
 
-**Cause:** ToolServer Link command sometimes creates executables with empty data forks.
+**A Data Fork Length of 0 is NORMAL for a 68K app** — the executable code lives
+in `CODE` resources in the **resource fork**, not the data fork. Every working
+AppleBridge build (Link *and* ILink) has a 0-byte data fork. So an empty data
+fork is *not* the symptom; don't chase it.
 
-**Solution:** Link via MPW Shell instead:
+**Cause:** no usable `CODE`/resources in the binary — almost always **wrong or
+empty library paths** (e.g. an empty `{LIBS}`), not the linker itself.
 
-```
-# Instead of linking via ToolServer automation:
-# Use MPW Shell interactively or via AppleBridge to MPW Shell
-```
+**Diagnose:** `DumpFile MyApp -h` → the **Resource Fork Length** should be
+non-trivial (CODE resources present). If it's empty, the link found no real
+libraries.
 
-**Workaround if must use ToolServer:**
-1. Link creates binary
-2. Check data fork: `DumpFile -l MyApp`
-3. If Data Fork Length is 0, link failed silently
-4. Try linking again via MPW Shell
+**Solution:** fix the library paths (use `{Libraries}`/`{CLibraries}`, not an
+empty `{LIBS}`) and re-link — via ToolServer is fine.
 
 ### Undefined Symbol Errors
 
