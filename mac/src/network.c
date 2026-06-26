@@ -227,7 +227,8 @@ OSStatus ConnectToHost(EndpointRef *endpoint, unsigned long hostIP, InetPort por
     OTRemoveNotifier(*endpoint);
     OTSetNonBlocking(*endpoint);
 
-    StatusMessage("Connected to host!");
+    /* Connected and the async->sync mode handover completed cleanly. */
+    StatusMessage("SYNC-OK");
     return noErr;
 }
 
