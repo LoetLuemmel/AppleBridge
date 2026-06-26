@@ -27,7 +27,7 @@ The **Mac daemon connects OUT** to the host (the emulator sits behind NAT, so th
 Smoke test: `cd host && /usr/bin/python3 send_command.py 'Echo HELLO'`.
 
 ## Hard rules (learned the hard way)
-- **Link, not ILink.** `ILink` crashes Basilisk II — always `Link -model far`.
+- **`Link -model far` is the default linker** — verified and leaner output. `ILink` is *not* broken: with the correct `{CLibraries}`/`{Libraries}` paths it links, runs, and round-trips commands cleanly (verified 2026-06-26). The old "ILink crashes Basilisk II" belief was a misdiagnosis — the committed `BuildIt` used an empty `{LIBS}`, so its lib paths resolved to nothing → a broken binary that crashed *on launch*. ILink is fine to use; it just yields a slightly larger binary plus a big `.NJ` incremental file, so `Link` stays the default.
 - **`/usr/bin/python3` for the host server** (firewall). Stdlib-only, so system Python suffices.
 - **Re-run `Rez AppleBridge_res.r` after every link** — the `SIZE` resource (`isHighLevelEventAware`) is required or every command fails with `-903`.
 - **Never `2>&1`** in MPW (crashes the shell) — use `≥ file.err` to capture stderr.
