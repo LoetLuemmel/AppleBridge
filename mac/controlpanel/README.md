@@ -68,6 +68,15 @@ cdev reaching into the Process Manager — and it works. Three lessons, each ear
 Memory-move discipline also matters: `GetNextProcess` may move the heap, so the `cdevValue`
 handle is re-dereferenced *after* it returns, never held across it.
 
+**Step 4b-detect — proven on-device (2026-06-27):** LIVE AUTOSTART STATUS. A second line polls
+the **Folder Manager** — `FindFolder(kStartupFolderType)` + `FSMakeFSSpec` for the watchdog
+alias — and shows `Autostart: installed` / `none`. Confirmed live showing **installed** beside
+`Daemon: RUNNING`. This was a *read-only* probe by design: if `FindFolder`/`FSMakeFSSpec` were
+glue they'd fail the **link** (undefined symbols) rather than crash at run time — they aren't,
+they link as inline traps and run. The lock lesson paid off immediately here: the first install
+silently no-op'd because the 4a panel was still open; caught at once via the mod-date check
+(not fooled by `Duplicate`'s `STATUS:0`), installed cleanly once the panel was closed.
+
 ## Why this matters
 
 Unlike the presence INIT (which C couldn't build — see `../init/README.md`), a cdev

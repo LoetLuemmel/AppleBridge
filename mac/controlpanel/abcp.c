@@ -5,23 +5,19 @@
  * state, modal Standard File from hitDev). Step 4 ports AppleBridgeConfig's
  * actual logic into the cdev, in on-device-proven sub-steps:
  *
- *   4a (this file): LIVE DAEMON STATUS. Poll the Process Manager for the
- *      faceless daemon (creator 'ABrg') and show RUNNING/stopped in a statText.
- *      We poll on BOTH nulDev (the idle message) and activDev (panel brought to
- *      front), redrawing only when the state changes. This probes the one real
- *      unknown of the port: do the Process Manager traps even link and run from
- *      a code resource? (Step 4b adds the Folder/Alias/Resource Manager autostart
- *      actions; 4c the helper list + Add-Helper via SFGetFile.)
+ *   4a: LIVE DAEMON STATUS via the Process Manager (proven).
+ *   4b-detect (this file): LIVE AUTOSTART STATUS. Also report whether the
+ *      watchdog autostart alias exists in the System Folder's Startup Items,
+ *      using the FOLDER MANAGER (FindFolder + FSMakeFSSpec). This probes the
+ *      next unknown of the port - do those traps link and run from a code
+ *      resource? - read-only, so a glue symbol fails the LINK rather than
+ *      crashing at run time. (4b-install then adds Install/Remove buttons.)
  *
- * Memory-move discipline: GetNextProcess / GetProcessInformation (and the Dialog
- * Manager) may move the heap, so we never hold a dereferenced handle pointer
- * across them - we re-dereference cdevValue AFTER the move-risk call.
- *
- * Still strictly A4-free, as a code resource must be:
- *   - per-instance state in the cdevValue handle, no globals/statics;
- *   - NO string literals in code - the status words are built on the stack from
- *     char constants (immediate moves), not a "\p..." constant in the code's data;
- *   - only inline Toolbox traps + our own same-segment helpers.
+ * Discipline unchanged: A4-free (state in the cdevValue handle; no globals; no
+ * string literals in code - every UI string is built on the stack from char
+ * constants, which compile to immediate moves; the alias name likewise);
+ * only inline Toolbox traps; CDevMain FIRST so it sits at offset 0; and the
+ * handle is re-dereferenced AFTER any heap-moving trap, never held across one.
  */
 
 #include <Types.h>
@@ -31,6 +27,8 @@
 #include <Events.h>
 #include <Memory.h>
 #include <Processes.h>      /* GetNextProcess / GetProcessInformation */
+#include <Files.h>          /* FSSpec, FSMakeFSSpec, fnfErr */
+#include <Folders.h>        /* FindFolder, kStartupFolderType */
 
 #define macDev    8
 #define initDev   0
@@ -42,11 +40,13 @@
 #define kDaemonCreator  'ABrg'
 
 /* our DITL items, 1-based within our own DITL */
-enum { kLabel = 1, kStatus };
+enum { kLabel = 1, kStatus, kAutostart };
 
-/* per-instance state, kept in the cdevValue handle (no globals) */
+/* per-instance state, kept in the cdevValue handle (no globals).
+ * -1 = unknown (forces the first poll to draw); 0/1 = last shown value. */
 typedef struct {
-    short lastState;   /* -1 unknown, 0 stopped, 1 running - gates redraw */
+    short lastDaemon;
+    short lastAuto;
 } CPState;
 
 /* CRITICAL: the Control Panel host calls a cdev by jumping to OFFSET 0 of the
@@ -55,8 +55,11 @@ typedef struct {
  * first put CDevMain at a non-zero offset -> the host jumped into a helper with
  * the wrong arguments -> instant fault that takes the emulator down with it.) */
 static Boolean DaemonRunning(void);
-static void    StatusString(Str255 d, Boolean running);
-static void    ShowStatus(DialogPtr cpDialog, short numItems, Boolean running);
+static Boolean AutostartInstalled(void);
+static void    DaemonString(Str255 d, Boolean running);
+static void    AutoString(Str255 d, Boolean installed);
+static void    ShowText(DialogPtr cpDialog, short numItems, short whichItem,
+                        ConstStr255Param text);
 static void    PollAndShow(long cdevValue, short numItems, DialogPtr cpDialog);
 
 pascal long CDevMain(short message, short item, short numItems, short rsrcID,
@@ -69,14 +72,22 @@ pascal long CDevMain(short message, short item, short numItems, short rsrcID,
 
         case initDev: {
             Handle h = NewHandle(sizeof(CPState));
-            if (h) ((CPState *)(*h))->lastState = -1;  /* force first poll to draw */
+            if (h) {
+                CPState *st = (CPState *)(*h);
+                st->lastDaemon = -1;               /* force first poll to draw */
+                st->lastAuto   = -1;
+            }
             return (long) h;                       /* becomes cdevValue */
         }
 
         case activDev:                             /* panel came to front: refresh */
-            if (cdevValue) ((CPState *)(*(Handle)cdevValue))->lastState = -1;
+            if (cdevValue) {
+                CPState *st = (CPState *)(*(Handle)cdevValue);
+                st->lastDaemon = -1;
+                st->lastAuto   = -1;
+            }
             /* fall through to poll-and-show */
-        case nulDev:                               /* idle: poll daemon status */
+        case nulDev:                               /* idle: poll daemon + autostart */
             PollAndShow(cdevValue, numItems, cpDialog);
             return cdevValue;
 
@@ -90,8 +101,7 @@ pascal long CDevMain(short message, short item, short numItems, short rsrcID,
 }
 
 /* Is the faceless daemon (creator 'ABrg') currently a running process?
- * Same enumeration AppleBridgeConfig uses, but it must link as inline traps
- * here. A4-free: only locals + immediate OSType constants. */
+ * A4-free: only locals + immediate OSType constants; inline Process Mgr traps. */
 static Boolean DaemonRunning(void)
 {
     ProcessSerialNumber psn;
@@ -109,9 +119,31 @@ static Boolean DaemonRunning(void)
     return false;
 }
 
-/* Build "Daemon: RUNNING" / "Daemon: stopped" with no string literals - each
- * char is an immediate constant, so the code holds no A4-relative data ref. */
-static void StatusString(Str255 d, Boolean running)
+/* Is the watchdog autostart alias present in Startup Items? Read-only: just
+ * FindFolder(Startup Items) + FSMakeFSSpec(name) -> noErr means it exists.
+ * The alias name is built on the stack (no string literal in the code). */
+static Boolean AutostartInstalled(void)
+{
+    Str255 nm;
+    FSSpec spec;
+    short  vRefNum, i = 0;
+    long   dirID;
+
+    nm[++i]='A'; nm[++i]='p'; nm[++i]='p'; nm[++i]='l'; nm[++i]='e';
+    nm[++i]='B'; nm[++i]='r'; nm[++i]='i'; nm[++i]='d'; nm[++i]='g'; nm[++i]='e';
+    nm[++i]=' ';
+    nm[++i]='W'; nm[++i]='a'; nm[++i]='t'; nm[++i]='c'; nm[++i]='h';
+    nm[++i]='d'; nm[++i]='o'; nm[++i]='g';
+    nm[0] = (unsigned char) i;
+
+    if (FindFolder(kOnSystemDisk, kStartupFolderType, kDontCreateFolder,
+                   &vRefNum, &dirID) != noErr)
+        return false;
+    return (FSMakeFSSpec(vRefNum, dirID, nm, &spec) == noErr);  /* noErr = exists */
+}
+
+/* "Daemon: RUNNING" / "Daemon: stopped" - char constants, no string literal. */
+static void DaemonString(Str255 d, Boolean running)
 {
     short i = 0;
     d[++i]='D'; d[++i]='a'; d[++i]='e'; d[++i]='m'; d[++i]='o'; d[++i]='n';
@@ -123,38 +155,55 @@ static void StatusString(Str255 d, Boolean running)
     d[0] = (unsigned char) i;
 }
 
-/* Set our status statText. A cdev's window carries the Control Panel's
- * windowKind, not dialogKind, so SetDialogItemText needs a brief juggle.
- * (SetDialogItemText draws the new text immediately when the window is visible.) */
-static void ShowStatus(DialogPtr cpDialog, short numItems, Boolean running)
+/* "Autostart: installed" / "Autostart: none" - char constants, no literal. */
+static void AutoString(Str255 d, Boolean installed)
 {
-    Str255 buf;
+    short i = 0;
+    d[++i]='A'; d[++i]='u'; d[++i]='t'; d[++i]='o'; d[++i]='s'; d[++i]='t';
+    d[++i]='a'; d[++i]='r'; d[++i]='t'; d[++i]=':'; d[++i]=' ';
+    if (installed) { d[++i]='i'; d[++i]='n'; d[++i]='s'; d[++i]='t';
+                     d[++i]='a'; d[++i]='l'; d[++i]='l'; d[++i]='e'; d[++i]='d'; }
+    else           { d[++i]='n'; d[++i]='o'; d[++i]='n'; d[++i]='e'; }
+    d[0] = (unsigned char) i;
+}
+
+/* Set a statText. A cdev's window carries the Control Panel's windowKind, not
+ * dialogKind, so SetDialogItemText (which draws immediately) needs a brief juggle. */
+static void ShowText(DialogPtr cpDialog, short numItems, short whichItem,
+                     ConstStr255Param text)
+{
     short  type, saveKind;
     Handle ih;
     Rect   box;
 
-    StatusString(buf, running);
-    GetDialogItem(cpDialog, numItems + kStatus, &type, &ih, &box);
+    GetDialogItem(cpDialog, numItems + whichItem, &type, &ih, &box);
     saveKind = ((WindowPeek) cpDialog)->windowKind;
     ((WindowPeek) cpDialog)->windowKind = dialogKind;
-    SetDialogItemText(ih, buf);
+    SetDialogItemText(ih, text);
     ((WindowPeek) cpDialog)->windowKind = saveKind;
 }
 
-/* Poll the daemon and, only if its state changed since last shown, redraw.
- * Memory-safe: DaemonRunning() may move the heap, so cdevValue is dereferenced
- * AFTER it returns, not before. */
+/* Poll daemon + autostart and redraw each line only on change. Memory-safe:
+ * DaemonRunning()/AutostartInstalled() may move the heap, so we deref cdevValue
+ * AFTER them, decide what changed, write BOTH state fields, THEN draw (drawing
+ * may move the heap too, but we don't touch the handle pointer after writing). */
 static void PollAndShow(long cdevValue, short numItems, DialogPtr cpDialog)
 {
-    Handle  h = (Handle) cdevValue;
-    short   now;
+    Handle   h = (Handle) cdevValue;
+    short    dnow, anow;
+    Boolean  drawD, drawA;
     CPState *st;
 
     if (!h) return;
-    now = DaemonRunning() ? 1 : 0;          /* <- may move memory */
-    st  = (CPState *)(*h);                   /* deref AFTER the move-risk call */
-    if (now != st->lastState) {
-        st->lastState = now;
-        ShowStatus(cpDialog, numItems, now); /* st unused after this point */
-    }
+    dnow = DaemonRunning()      ? 1 : 0;     /* <- may move memory */
+    anow = AutostartInstalled() ? 1 : 0;     /* <- may move memory */
+
+    st    = (CPState *)(*h);                  /* deref AFTER the move-risk calls */
+    drawD = (dnow != st->lastDaemon);
+    drawA = (anow != st->lastAuto);
+    st->lastDaemon = dnow;                     /* write both before any drawing */
+    st->lastAuto   = anow;
+
+    if (drawD) { Str255 b; DaemonString(b, dnow); ShowText(cpDialog, numItems, kStatus, b); }
+    if (drawA) { Str255 b; AutoString(b, anow);   ShowText(cpDialog, numItems, kAutostart, b); }
 }
