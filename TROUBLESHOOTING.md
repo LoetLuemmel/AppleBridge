@@ -261,6 +261,31 @@ print('CPU was here (thread 0):', (d['threads'][0]['frames'][0].get('symbol') or
    SIGSEGV is upstream of it. Running full-screen / disabling Stage Manager may
    likewise only affect the exit path, not the fault.
 
+**Verified recipe — a crash-free 68k *assembly* app (POC, 2026-06-27).** The
+crashing `CounterAsm` was rebuilt from scratch; each of these was a real defect, and
+fixing all of them produced an assembly app that launches repeatedly without
+crashing BAII (verified: stock `SimpleText` stable, `MinAsm` launched 4× clean):
+
+1. **Mac line endings.** LF-terminated source makes the MPW assembler emit an
+   *empty* object (`DumpObj` shows only First/Last records; warning "END supplied by
+   Assembler"). Convert with `host/encoding_convert.py` so it has CR endings.
+2. **Link against the runtime, not bare.** Add `"{Libraries}MacRuntime.o"` (and
+   `"{Libraries}Interface.o"`) so `%_MAIN`/`_DataInit`/`%A5Init` set up the A5 world
+   and call your `main`. A bare-linked asm app has no A5 world → first global/QD
+   access faults. Confirm with `DumpFile -h`: the fork should contain `A5Init` /
+   `DataInit` / `RTInit` (≈4 KB), not ≈700 B.
+3. **Case-exact `main`.** The C runtime calls lowercase `main`; the assembler folds
+   to `MAIN` by default. Add `CASE OBJECT` so the export matches (else the link
+   fails `-m`/`Error 53 main not found`, or links a dangling entry).
+4. **`InitGraf` wants `&thePort`, not the buffer base.** `thePort` is the *last*
+   field of QDGlobals (offset `QDSize-4`); the other globals grow downward from it.
+   Passing the buffer base puts them below SP where later pushes clobber them →
+   crash in the Window Manager. Use `PEA QDSize-4(SP)`.
+
+`Link` succeeding is necessary but **not** sufficient — verify by *launching* and
+watching BAII survive (and the crash-report count not increase), not by the link
+status. Heavy dialog/Toolbox code can still have its own bugs on top of the above.
+
 **A second, distinct crash mode** also exists: `EXC_BAD_ACCESS` (SIGSEGV) topped by
 `video_refresh_window_static()` → `do_video_refresh()` → `redraw_func()`, with **no**
 `NSWMWindowCoordinator` and **no** shutdown chain. That's a fault in BAII's own
