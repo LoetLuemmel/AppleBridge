@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""
+Generate the AppleBridge Control Panel Finder icon as Rez `data` statements.
+
+A code generator (run on the host) so the icon is reproducible and reviewable,
+not hand-packed hex. It draws the icon in the standard System 7 *Control Panel*
+house style — a little device with a "screen" on top and a slider at the bottom
+— with an AppleBridge motif (a blue arch bridge) in the screen. It emits:
+  ICN# (32x32 1-bit + mask), icl4 (32x32 4-bit colour), ics#/ics4 (16x16),
+  and BNDL / FREF / signature ('ABcp') so the Finder shows it.
+
+Standard Mac 16-colour indices (stable): 0 white, 6 blue, 12 light grey,
+13 mid grey, 14 dark grey, 15 black.
+
+Run on the host:  python3 gen_icon.py   ->  writes abcp_icon.r (+ ASCII preview)
+"""
+
+PAL = {'.': 0, 'W': 0, 'B': 6, 'K': 15, 'L': 12, 'M': 13, 'D': 14, 'T': 0}
+INK = set('KBMD')        # black/blue/greys read as "ink" in the 1-bit icon
+OPAQUE = set('WBKLMD')   # everything except 'T' (transparent) is part of the shape
+
+
+def blank(n):
+    return [['T'] * n for _ in range(n)]
+
+
+def draw(n):
+    """An n x n Control Panel icon: device body + screen (bridge) + slider."""
+    g = blank(n)
+    s = n / 32.0
+    def S(v): return int(round(v * s))
+
+    # ---- device body (rounded rect) ----
+    lo, hi = S(2), n - 1 - S(2)
+    for r in range(lo, hi + 1):
+        for c in range(lo, hi + 1):
+            g[r][c] = 'L'
+    for i in range(lo, hi + 1):
+        g[lo][i] = g[hi][i] = g[i][lo] = g[i][hi] = 'K'
+    for (r, c) in [(lo, lo), (lo, hi), (hi, lo), (hi, hi)]:   # round the corners
+        g[r][c] = 'T'
+
+    # ---- screen (white, black frame) with a blue bridge ----
+    st, sb, sl, sr = S(5), S(15), S(6), n - 1 - S(6)
+    for r in range(st, sb + 1):
+        for c in range(sl, sr + 1):
+            g[r][c] = 'W'
+    for i in range(sl, sr + 1):
+        g[st][i] = g[sb][i] = 'K'
+    for r in range(st, sb + 1):
+        g[r][sl] = g[r][sr] = 'K'
+    deck = sb - 2
+    left, right = sl + 2, sr - 2
+    cx, half, peak = (left + right) / 2.0, (right - left) / 2.0, st + 2
+    for c in range(left, right + 1):                          # arch (parabola)
+        t = (c - cx) / half
+        rr = int(round(deck - (deck - peak) * (1 - t * t)))
+        if st < rr < sb and g[rr][c] == 'W':
+            g[rr][c] = 'B'
+    for c in range(left, right + 1):                          # deck line
+        if g[deck][c] == 'W':
+            g[deck][c] = 'B'
+    for pc in (left + 1, right - 1):                           # two little piers
+        for r in range(deck, sb):
+            if g[r][pc] == 'W':
+                g[r][pc] = 'B'
+
+    # ---- slider near the bottom: a recessed groove with a raised knob ----
+    tr = S(23)
+    tl, trr = S(8), n - 1 - S(8)
+    for c in range(tl, trr + 1):                              # 2px recessed groove
+        g[tr][c] = 'D'
+        g[tr + 1][c] = 'M'
+    kw, kcx = S(4), S(15)                                     # knob, centre-ish
+    kl, kr = kcx - kw // 2, kcx + kw // 2
+    kt, kb = tr - S(2), tr + S(2)
+    for r in range(kt, kb + 1):                              # raised knob (body colour)
+        for c in range(kl, kr + 1):
+            if 0 <= r < n and 0 <= c < n:
+                g[r][c] = 'L'
+    for c in range(kl, kr + 1):                              # knob outline
+        g[kt][c] = g[kb][c] = 'K'
+    for r in range(kt, kb + 1):
+        g[r][kl] = g[r][kr] = 'K'
+    return g
+
+
+def bits1(g, pred):
+    n = len(g)
+    out = bytearray()
+    for r in range(n):
+        for byte in range(n // 8):
+            v = 0
+            for bit in range(8):
+                if pred(g[r][byte * 8 + bit]):
+                    v |= (0x80 >> bit)
+            out.append(v)
+    return bytes(out)
+
+
+def nibbles4(g):
+    n = len(g)
+    out = bytearray()
+    for r in range(n):
+        for c in range(0, n, 2):
+            out.append(((PAL[g[r][c]] & 0xF) << 4) | (PAL[g[r][c + 1]] & 0xF))
+    return bytes(out)
+
+
+def hexblock(b):
+    lines = []
+    for i in range(0, len(b), 16):
+        chunk = b[i:i + 16]
+        words, j = [], 0
+        while j < len(chunk):
+            if j + 1 < len(chunk):
+                words.append('%02X%02X' % (chunk[j], chunk[j + 1]))
+                j += 2
+            else:
+                words.append('%02X' % chunk[j])
+                j += 1
+        lines.append('\t$"%s"' % ' '.join(words))
+    return '\n'.join(lines)
+
+
+def data_res(typ, rid, b):
+    return "data '%s' (%d, purgeable) {\n%s\n};\n" % (typ, rid, hexblock(b))
+
+
+g32, g16 = draw(32), draw(16)
+icn = bits1(g32, lambda ch: ch in INK) + bits1(g32, lambda ch: ch in OPAQUE)
+ics = bits1(g16, lambda ch: ch in INK) + bits1(g16, lambda ch: ch in OPAQUE)
+bndl = bytes.fromhex('41426370 0000 0001 46524546 0000 0000F020 49434E23 0000 0000F020'.replace(' ', ''))
+fref = bytes.fromhex('63646576 0000 00'.replace(' ', ''))
+sig = b'\x18AppleBridge Control Panel'
+
+parts = [
+    "/* AppleBridge Control Panel icon - GENERATED by gen_icon.py; do not hand-edit. */", "",
+    data_res('ICN#', -4064, icn), data_res('icl4', -4064, nibbles4(g32)),
+    data_res('ics#', -4064, ics), data_res('ics4', -4064, nibbles4(g16)),
+    data_res('FREF', -4064, fref), data_res('BNDL', -4064, bndl),
+    data_res('ABcp', 0, sig),
+]
+open('abcp_icon.r', 'w').write('\n'.join(parts))
+print("wrote abcp_icon.r")
+legend = {'T': ' ', 'W': '.', 'L': ':', 'B': '#', 'K': '@', 'M': 'o', 'D': '-'}
+print('\n'.join(''.join(legend[c] for c in row) for row in g32))
