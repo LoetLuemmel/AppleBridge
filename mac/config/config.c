@@ -97,6 +97,10 @@ static OSErr LaunchDaemon(void)
     LaunchParamBlockRec lpb;
     OSErr err;
 
+    /* Don't spawn a second faceless daemon: two instances both dial the host
+     * and churn Open Transport, which can wedge the cooperative scheduler. */
+    if (DaemonRunning()) return noErr;
+
     CtoP(DAEMON_PATH, pPath);
     err = FSMakeFSSpec(0, 0, pPath, &spec);
     if (err != noErr) return err;
