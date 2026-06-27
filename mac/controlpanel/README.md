@@ -43,6 +43,65 @@ it up after a **desktop rebuild** (⌘-Option at boot) — installing a new `BND
 fresh creator doesn't re-register until the Desktop DB is rebuilt. Not pixel-perfect,
 but a distinct, recognisable CP icon.
 
+**Step 4a — proven on-device (2026-06-27):** LIVE DAEMON STATUS. The cdev polls the
+**Process Manager** (`GetNextProcess`/`GetProcessInformation`) for the faceless daemon
+(creator `'ABrg'`) on `nulDev`/`activDev` and shows `Daemon: RUNNING`/`stopped` via
+`SetDialogItemText`, redrawing only on change. This is the real unknown of the port — a
+cdev reaching into the Process Manager — and it works. Three lessons, each earned the hard way:
+
+- **The cdev entry must be at offset 0.** The Control Panel host *jumps to offset 0* of the
+  `'cdev'` resource. Steps 1–3 had a single function, so `CDevMain` sat at 0. Adding helper
+  functions and defining `CDevMain` **last** put it at a non-zero offset → the host jumped
+  into a helper with the wrong arguments → instant fault that **took the whole emulator down**
+  (SIGSEGV). Fix: **define `CDevMain` first**, forward-declare the helpers. (Same root cause
+  as the deferred presence INIT.)
+- **`-model near`, not `far`, for a multi-function code resource.** Far model makes every
+  C-function→C-function call a 32-bit absolute reference the linker can't relocate inside a
+  code resource (`Error: Linker does not edit 32-bit instructions`). Near model uses 16-bit
+  PC-relative calls — correct, and tiny, for a cdev. (Steps 1–3 only linked under far model
+  *because* they were single-function.)
+- **An open control panel locks its file.** While the panel window is open, the System holds
+  the cdev file's resource fork open; `Duplicate`/`Delete` then **silently no-op** (`STATUS:0`
+  but the file never changes — verify by mod-date + byte-level `DeRez`, not the status code).
+  Install while the panel is closed, or under a new name.
+
+Memory-move discipline also matters: `GetNextProcess` may move the heap, so the `cdevValue`
+handle is re-dereferenced *after* it returns, never held across it.
+
+**Step 4b-detect — proven on-device (2026-06-27):** LIVE AUTOSTART STATUS. A second line polls
+the **Folder Manager** — `FindFolder(kStartupFolderType)` + `FSMakeFSSpec` for the watchdog
+alias — and shows `Autostart: installed` / `none`. Confirmed live showing **installed** beside
+`Daemon: RUNNING`. This was a *read-only* probe by design: if `FindFolder`/`FSMakeFSSpec` were
+glue they'd fail the **link** (undefined symbols) rather than crash at run time — they aren't,
+they link as inline traps and run. The lock lesson paid off immediately here: the first install
+silently no-op'd because the 4a panel was still open; caught at once via the mod-date check
+(not fooled by `Duplicate`'s `STATUS:0`), installed cleanly once the panel was closed.
+
+**Step 4c — proven on-device (2026-06-27):** the HELPER-APP list + an "Add Helper App…"
+button — the last piece of `AppleBridgeConfig`'s logic. The cdev reads the shared
+`AppleBridge Prefs` file (`FindFolder(Preferences)` + `FSpOpenDF`/`FSRead`), shows the leaf
+name of each `APP=` line, and the button pops Standard File (`SFGetFile`, proven in step 3),
+turns the choice into an HFS path (`FSMakeFSSpec` + walking parents with `PBGetCatInfo`), and
+**appends an `APP=` line** to the prefs (`FSpCreate`/`SetFPos`/`FSWrite`). Verified live:
+opening showed `Helpers: ToolServer`; *Add → pick ToolServer* made it `ToolServer, ToolServer`
+and the prefs file gained a second `APP=` line. The panel also shows the **host IP** (the
+`IP=` line) read in the same single prefs pass, mirroring the original config app's display.
+
+Two findings from 4c:
+- **Design — Install/Remove autostart buttons were dropped on purpose.** Toggling the
+  daemon's autostart is the **Finder's** job (drag the watchdog alias in/out of Startup
+  Items), and the Extensions Manager doesn't touch Startup Items, so the cdev shows autostart
+  **read-only**. The helper list, by contrast, has no system equivalent — so it keeps its
+  button. (Quit doesn't exist in a cdev: the close box ends it.)
+- **Glue refinement — not all glue is forbidden in a code resource, only *A5-dependent* glue.**
+  The link probe (link *without* Interface.o; undefined names = the glue) showed `FSRead`/
+  `FSWrite`/`FSClose`/`SetFPos` are glue here. But that glue is a **thin trap-wrapper** — it
+  builds a param block on the stack and calls `_Read`/`_Write`/`_Close`/`_SetFPos`, with no
+  globals, strings, or A5 reference — so it is safe in a cdev and runs fine. The glue we must
+  avoid (`NumToString`, `StandardGetFile`) is the kind that calls *runtime helpers* or passes
+  *proc pointers*. (The param-block forms `PBReadSync`/`PBWriteSync`/`PBCloseSync` aren't even
+  declared inline in this older MPW, so they're not an option anyway.)
+
 ## Why this matters
 
 Unlike the presence INIT (which C couldn't build — see `../init/README.md`), a cdev
@@ -82,7 +141,10 @@ SetFile -t cdev -c 'ABcp' :bin:"AppleBridge CP"
 Note: `CDevMain` is `pascal`, so its linker symbol is **uppercased** to `CDEVMAIN`
 (`-m CDEVMAIN`). Install by copying into `System Folder:Control Panels:`.
 
-## Next steps (the rest of the port)
+## Status
 
-4. The full panel: daemon status on `nulDev`, helper list `userItem`, the autostart
-   actions — porting `AppleBridgeConfig`'s logic unchanged. (Steps 1–3 done.)
+Steps 1–4 are all proven on-device. The cdev now does **everything `AppleBridgeConfig`
+does** — live daemon status, live autostart status, the helper-app list, and Add Helper
+App (Standard File → prefs) — entirely from inside an A4-free code resource. The port is
+functionally complete; what's left is polish (e.g. a real list `userItem` instead of a
+one-line statText, a Remove-helper affordance) rather than unknowns.

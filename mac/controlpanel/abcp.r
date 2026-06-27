@@ -1,6 +1,7 @@
 /*
- * AppleBridge Control Panel resources (cdev PoC, step 3).
- * DITL item order MUST match the enum in abcp.c: 1=label, 2=button, 3=name.
+ * AppleBridge Control Panel resources (cdev PoC, step 4c).
+ * DITL item order MUST match the enum in abcp.c:
+ *   1=label, 2=status, 3=autostart, 4=host IP, 5=helper list, 6=Add Helper App.
  * nrct/mach formats taken from a working sample cdev.
  */
 
@@ -9,19 +10,27 @@
 resource 'DITL' (-4064, purgeable) {
     {
         /* 1: label / instructions */
-        {12, 92, 56, 318},
+        {6, 92, 36, 318},
         StaticText {
             disabled,
-            "AppleBridge cdev - step 3: Standard File from hitDev.  Click "
-            "Choose File... to pop the modal Open dialog; the picked file's "
-            "name appears below."
+            "AppleBridge cdev - step 4c: daemon + autostart status, host IP, "
+            "helper apps, and Add Helper App."
         };
-        /* 2: the button (dispatched via hitDev) */
-        {66, 92, 88, 200},
-        Button { enabled, "Choose File..." };
-        /* 3: the chosen file name, updated via SetDialogItemText */
-        {68, 208, 86, 318},
-        StaticText { disabled, "(no file picked)" };
+        /* 2: the daemon status, updated via SetDialogItemText on nulDev */
+        {42, 92, 58, 318},
+        StaticText { disabled, "(checking daemon...)" };
+        /* 3: the autostart status, updated via SetDialogItemText on nulDev */
+        {60, 92, 76, 318},
+        StaticText { disabled, "(checking autostart...)" };
+        /* 4: the host IP, read from the prefs file's IP= line */
+        {78, 92, 94, 318},
+        StaticText { disabled, "(reading IP...)" };
+        /* 5: the helper-app list, read from the prefs file's APP= lines */
+        {96, 92, 112, 318},
+        StaticText { disabled, "(reading helpers...)" };
+        /* 6: Add Helper App button (dispatched via hitDev -> Standard File) */
+        {120, 92, 140, 318},
+        Button { enabled, "Add Helper App..." };
     }
 };
 
