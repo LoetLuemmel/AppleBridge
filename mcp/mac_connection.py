@@ -49,7 +49,13 @@ class MacConnection:
             return False
 
     def is_connected(self) -> bool:
-        """Check if connected to MacintoshBridgeHost."""
+        """Return True if the host control server (:9001) is accepting connections.
+
+        NOTE: this only proves host_server.py is up — it does NOT guarantee a
+        Mac daemon is connected behind it. That is fine as a fast pre-check:
+        send_command() now surfaces a "daemon not connected" error for any
+        STATUS-less reply, so callers cannot be fooled into a false success.
+        """
         # Test actual connection since we use fresh sockets per command
         try:
             test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -92,17 +98,21 @@ class MacConnection:
             message = f"{command}\n\n"
             sock.sendall(message.encode('utf-8'))
 
-            # Receive response until connection closes
+            # Receive until the control server closes the socket (the normal
+            # end-of-reply signal) or we hit the read timeout. A clean reply
+            # always ends with a server-side close, so a timeout means the
+            # reply is incomplete and must not be trusted.
             response = b""
+            timed_out = False
             while True:
                 try:
                     chunk = sock.recv(4096)
                     if not chunk:
-                        # Connection closed by server - this is normal
+                        # Connection closed by server - clean end of reply
                         break
                     response += chunk
                 except socket.timeout:
-                    # Timeout - use what we have
+                    timed_out = True
                     break
 
         except Exception as e:
@@ -111,14 +121,43 @@ class MacConnection:
         finally:
             sock.close()
 
-        return self._parse_response(response)
+        status, stdout, stderr = self._parse_response(response)
+
+        if timed_out:
+            # Incomplete reply: annotate, and downgrade a stray STATUS:0 to an
+            # error so a truncated response is never seen as a clean success.
+            note = f"client read timed out after {timeout:g}s (response may be truncated)"
+            stderr = f"{stderr}; {note}" if stderr else note
+            if status == 0:
+                status = -2
+
+        return status, stdout, stderr
 
     def _parse_response(self, response: bytes) -> Tuple[int, str, str]:
-        """Parse AppleBridge response format."""
+        """Parse the control server's framed reply into (status, stdout, stderr).
+
+        Robustness contract: a reply with **no** ``STATUS:`` line is never a
+        success. The control server emits bare, unframed ``No response`` /
+        ``ERROR: ...`` sentinels when the Mac daemon is down or a command never
+        round-trips, and a truncated frame can likewise lack a parseable
+        STATUS. Previously the status defaulted to ``0`` (success), so all of
+        these were silently reported as a clean, empty result. We now return a
+        negative status for every STATUS-less reply so the caller cannot
+        mistake a non-event for success.
+        """
         # The :9001 control server returns the response as UTF-8.
         text = response.decode('utf-8', errors='replace')
+        stripped = text.strip()
 
-        status = 0
+        # Bare, unframed control-server sentinels => the command did not run.
+        if not stripped:
+            return -1, "", "Empty reply from control server (is host_server.py running?)."
+        if stripped == "No response":
+            return -1, "", "Mac daemon not connected (control server returned 'No response')."
+        if stripped.startswith("ERROR:"):
+            return -1, "", stripped
+
+        status: Optional[int] = None  # None => no STATUS line seen yet
         stdout = ""
         stderr = ""
 
@@ -129,7 +168,7 @@ class MacConnection:
             if line.startswith("STATUS:"):
                 try:
                     status = int(line[7:])
-                except:
+                except ValueError:
                     pass
             elif line.startswith("STDOUT:"):
                 try:
@@ -144,7 +183,7 @@ class MacConnection:
                         i += 1
                     stdout = '\n'.join(stdout_lines)
                     continue
-                except:
+                except ValueError:
                     pass
             elif line.startswith("STDERR:"):
                 try:
@@ -159,9 +198,15 @@ class MacConnection:
                         i += 1
                     stderr = '\n'.join(stderr_lines)
                     continue
-                except:
+                except ValueError:
                     pass
             i += 1
+
+        if status is None:
+            # Bytes arrived but there was no parseable STATUS frame: treat a
+            # malformed/truncated reply as an error, never as success.
+            detail = stderr.strip() or f"malformed response, no STATUS line: {stripped[:200]!r}"
+            return -1, stdout.strip(), detail
 
         return status, stdout.strip(), stderr.strip()
 
