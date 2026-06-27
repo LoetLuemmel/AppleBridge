@@ -23,22 +23,30 @@ designed to be stopped and restarted from the UI.
 
 ## How autostart works
 
-"Install Autostart" creates a real Finder alias file named **AppleBridge** in
-`System Folder:Startup Items:` pointing at the daemon binary:
+"Install Autostart" creates a real Finder alias file named **AppleBridge Watchdog**
+in `System Folder:Startup Items:` pointing at the *watchdog* binary (see
+`../watchdog/`). The watchdog — not the daemon — is the boot entry, because it owns
+the daemon's lifecycle:
 
-1. `NewAlias` builds an alias record to the daemon's `FSSpec`.
-2. `FSpCreateResFile` makes the alias file (type `APPL`, creator `'ABrg'`).
+```
+boot ─▶ Startup Items: AppleBridge Watchdog ─▶ launches AppleBridge (daemon)
+                                                   └─▶ chain-launches ToolServer
+```
+
+1. `NewAlias` builds an alias record to the watchdog's `FSSpec`.
+2. `FSpCreateResFile` makes the alias file (type `APPL`, creator `'ABwd'`).
 3. The alias record is added as an `'alis'` resource and written.
 4. The file's `kIsAlias` Finder flag is set so the Finder resolves it at boot.
 
-At startup the Finder launches everything in Startup Items, resolving the alias
-and launching the daemon faceless.
+At startup the Finder launches everything in Startup Items, resolving the alias and
+launching the watchdog faceless; the watchdog finds no daemon and launches it, and
+the daemon chain-launches its helpers (ToolServer) from the prefs.
 
 ### Manual placement (fallback)
 
 If you'd rather not use the button, make the alias by hand: select
-`:bin:AppleBridge` in the Finder, **File ▸ Make Alias**, then drag the alias into
-`System Folder:Startup Items:`. Same result.
+`:bin:AppleBridgeWatchdog` in the Finder, **File ▸ Make Alias**, then drag the alias
+into `System Folder:Startup Items:`. Same result.
 
 ## Build
 
