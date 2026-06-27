@@ -16,6 +16,15 @@ Each click beeps (the click reached our handler), increments a counter kept in t
 `SetDialogItemText` (item addressed as `numItems + index`). Confirmed by beeps +
 screenshot of the growing tally.
 
+**Step 3 — proven on-device (2026-06-27):** the modal **Standard File** picker fired
+from `hitDev` — the one real unknown of the port (a nested modal dialog driven from a
+Control Panel message). Clicking *Choose File…* pops the Open dialog over the panel;
+picking a file beeps and writes its name into a statText. The code-resource rule bit
+once more: **`StandardGetFile` (the FSSpec call) is glue** and won't link into a cdev, so
+we call **`SFGetFile`** — the inline-trap form (`{0x3F3C,0x0002,0xA9EA}` → selector 2,
+`_Pack3`). The link confirmed it: *"Interface.o was not needed for link"* — `SFGetFile`
+resolved as a pure trap, no glue pulled in.
+
 Getting step 2 to link reinforced the central rule three times — **a code resource
 can't reach glue/runtime code, only inline traps**:
 - `SysBeep` moved to `<Sound.h>` (was implicitly extern → undefined).
@@ -75,8 +84,5 @@ Note: `CDevMain` is `pascal`, so its linker symbol is **uppercased** to `CDEVMAI
 
 ## Next steps (the rest of the port)
 
-2. `hitDev` dispatch on a pushButton (item `numItems + index`).
-3. `StandardGetFile` from a `hitDev` handler (the one real unknown — modal, expected
-   to work).
 4. The full panel: daemon status on `nulDev`, helper list `userItem`, the autostart
-   actions — porting `AppleBridgeConfig`'s logic unchanged.
+   actions — porting `AppleBridgeConfig`'s logic unchanged. (Steps 1–3 done.)
