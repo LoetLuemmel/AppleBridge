@@ -1,0 +1,55 @@
+# AppleBridgeConfig
+
+A small foreground control-panel app for the **faceless** AppleBridge daemon
+(creator `'ABrg'`, `onlyBackground` — no window of its own). The daemon is meant
+to run continuously, so this app is where a human configures and supervises it.
+
+## What it does
+
+- **Status** — shows whether the daemon is running (walks `GetNextProcess` for
+  creator `'ABrg'`) and whether autostart is installed.
+- **Install / Remove Autostart** — drops (or deletes) an alias to the daemon in
+  the System Folder's **Startup Items**, so the daemon launches at boot. The
+  daemon in turn chain-launches its helper apps (ToolServer first), so a single
+  Startup Items entry is enough.
+- **Add Helper App…** — a Standard File picker; the chosen app's full HFS path is
+  appended as an `APP=` line in the shared **AppleBridge Prefs** file (in the
+  Preferences folder). The daemon chain-launches these on startup.
+- **Quit** — quits the config app.
+
+There are intentionally **no Launch/Stop Daemon buttons**: the daemon is a
+continuously-running service. Start it via autostart (or the Finder); it is not
+designed to be stopped and restarted from the UI.
+
+## How autostart works
+
+"Install Autostart" creates a real Finder alias file named **AppleBridge** in
+`System Folder:Startup Items:` pointing at the daemon binary:
+
+1. `NewAlias` builds an alias record to the daemon's `FSSpec`.
+2. `FSpCreateResFile` makes the alias file (type `APPL`, creator `'ABrg'`).
+3. The alias record is added as an `'alis'` resource and written.
+4. The file's `kIsAlias` Finder flag is set so the Finder resolves it at boot.
+
+At startup the Finder launches everything in Startup Items, resolving the alias
+and launching the daemon faceless.
+
+### Manual placement (fallback)
+
+If you'd rather not use the button, make the alias by hand: select
+`:bin:AppleBridge` in the Finder, **File ▸ Make Alias**, then drag the alias into
+`System Folder:Startup Items:`. Same result.
+
+## Build
+
+Run inside MPW from the AppleBridge project folder (`MeinMac:MPW:AppleBridge:`),
+after the daemon's `:obj:prefs.c.o` and `:obj:mystring.c.o` have been built:
+
+```mpw
+Directory MeinMac:MPW:AppleBridge:
+Execute :config:BuildConfig.emu      # SC + Link + Rez + SetFile -c 'ABcf'
+```
+
+Produces `:bin:AppleBridgeConfig` (type `APPL`, creator `'ABcf'`). No Open
+Transport — it talks to the daemon only through the prefs file and the Startup
+Items alias.

@@ -3,12 +3,13 @@
  *
  * The daemon (creator 'ABrg') is onlyBackground and has no UI, so this normal
  * foreground app is where a human:
- *   - sees whether the daemon is running,
- *   - launches / stops it,
+ *   - sees whether the daemon is running + whether autostart is installed,
+ *   - installs / removes autostart (an alias in the System Folder's Startup Items),
  *   - picks helper apps (e.g. ToolServer) to chain-launch, via Standard File,
  *   - reviews the prefs (host IP + helper list).
- * It shares prefs.c with the daemon and talks to the daemon only through the
- * prefs file + a quit Apple Event — no direct linkage.
+ * It shares prefs.c with the daemon and talks to it only through the prefs file
+ * and the Startup Items alias — no direct linkage. The daemon is meant to run
+ * continuously, so there are no Launch/Stop buttons (use autostart + the Finder).
  */
 
 #include <Quickdraw.h>
@@ -23,6 +24,9 @@
 #include <Processes.h>
 #include <AppleEvents.h>
 #include <Files.h>
+#include <Folders.h>
+#include <Aliases.h>
+#include <Resources.h>
 #include <prefs.h>
 #include <mystring.h>
 
@@ -34,7 +38,7 @@ QDGlobals qd;
 static Boolean      gRunning = true;
 static WindowPtr    gWin = NULL;
 static AppPrefs     gPrefs;
-static ControlHandle gLaunchBtn, gStopBtn, gAddBtn, gQuitBtn;
+static ControlHandle gInstallBtn, gRemoveBtn, gAddBtn, gQuitBtn;
 
 /* ---- small helpers ---------------------------------------------------- */
 
@@ -71,69 +75,80 @@ static Boolean DaemonRunning(void)
     return false;
 }
 
-/* Find the daemon's PSN; returns true if found. */
-static Boolean FindDaemon(ProcessSerialNumber *out)
-{
-    ProcessSerialNumber psn;
-    ProcessInfoRec info;
+/* ---- autostart (a daemon alias in the System Folder's Startup Items) ---- */
 
-    psn.highLongOfPSN = 0;
-    psn.lowLongOfPSN = kNoProcess;
-    while (GetNextProcess(&psn) == noErr) {
-        info.processInfoLength = sizeof(info);
-        info.processName = NULL;
-        info.processAppSpec = NULL;
-        if (GetProcessInformation(&psn, &info) == noErr) {
-            if (info.processSignature == kDaemonCreator) { *out = psn; return true; }
-        }
-    }
-    return false;
-}
+#define kStartupAliasName "\pAppleBridge"
 
-static OSErr LaunchDaemon(void)
+/* FSSpec of the daemon binary we want launched at boot. */
+static OSErr DaemonSpec(FSSpec *spec)
 {
     Str255 pPath;
-    FSSpec spec;
-    LaunchParamBlockRec lpb;
-    OSErr err;
-
-    /* Don't spawn a second faceless daemon: two instances both dial the host
-     * and churn Open Transport, which can wedge the cooperative scheduler. */
-    if (DaemonRunning()) return noErr;
-
     CtoP(DAEMON_PATH, pPath);
-    err = FSMakeFSSpec(0, 0, pPath, &spec);
-    if (err != noErr) return err;
-
-    lpb.launchBlockID = extendedBlock;
-    lpb.launchEPBLength = extendedBlockLen;
-    lpb.launchFileFlags = 0;
-    lpb.launchControlFlags = launchContinue | launchNoFileFlags;
-    lpb.launchAppSpec = &spec;
-    lpb.launchAppParameters = NULL;
-    return LaunchApplication(&lpb);
+    return FSMakeFSSpec(0, 0, pPath, spec);
 }
 
-/* Stop the daemon with a kAEQuitApplication Apple Event (its handler quits). */
-static OSErr StopDaemon(void)
+/* FSSpec of our alias file inside Startup Items (fnfErr if not present). */
+static OSErr StartupAliasSpec(FSSpec *spec)
 {
-    ProcessSerialNumber psn;
-    AEAddressDesc target;
-    AppleEvent event, reply;
     OSErr err;
+    short vRefNum;
+    long  dirID;
 
-    if (!FindDaemon(&psn)) return procNotFound;
+    err = FindFolder(kOnSystemDisk, kStartupFolderType, kDontCreateFolder,
+                     &vRefNum, &dirID);
+    if (err != noErr) return err;
+    return FSMakeFSSpec(vRefNum, dirID, kStartupAliasName, spec);
+}
 
-    err = AECreateDesc(typeProcessSerialNumber, (Ptr)&psn, sizeof(psn), &target);
+static Boolean AutostartInstalled(void)
+{
+    FSSpec spec;
+    return (StartupAliasSpec(&spec) == noErr);   /* noErr == file exists */
+}
+
+/* Drop an alias to the daemon into Startup Items so it launches at boot. */
+static OSErr InstallAutostart(void)
+{
+    FSSpec      target, aliasFile;
+    AliasHandle alias;
+    OSErr       err;
+    short       refNum;
+    FInfo       fi;
+
+    err = DaemonSpec(&target);
+    if (err != noErr) return err;                 /* daemon binary not found */
+    err = StartupAliasSpec(&aliasFile);
+    if (err == noErr) return noErr;               /* already installed */
+    if (err != fnfErr) return err;
+
+    err = NewAlias(NULL, &target, &alias);        /* absolute alias */
     if (err != noErr) return err;
-    err = AECreateAppleEvent(kCoreEventClass, kAEQuitApplication, &target,
-                             kAutoGenerateReturnID, kAnyTransactionID, &event);
-    AEDisposeDesc(&target);
-    if (err != noErr) return err;
-    err = AESend(&event, &reply, kAENoReply, kAENormalPriority,
-                 kAEDefaultTimeout, NULL, NULL);
-    AEDisposeDesc(&event);
-    return err;
+
+    FSpCreateResFile(&aliasFile, 'ABrg', 'APPL', 0);
+    err = ResError();
+    if (err != noErr && err != dupFNErr) { DisposeHandle((Handle)alias); return err; }
+
+    refNum = FSpOpenResFile(&aliasFile, fsRdWrPerm);
+    if (refNum == -1) { DisposeHandle((Handle)alias); return ResError(); }
+    UseResFile(refNum);
+    AddResource((Handle)alias, 'alis', 0, aliasFile.name);
+    if (ResError() == noErr) WriteResource((Handle)alias);
+    CloseResFile(refNum);
+
+    /* Mark it as an alias so the Finder resolves the target at startup. */
+    if (FSpGetFInfo(&aliasFile, &fi) == noErr) {
+        fi.fdFlags |= 0x8000;                     /* kIsAlias */
+        FSpSetFInfo(&aliasFile, &fi);
+    }
+    return noErr;
+}
+
+static OSErr RemoveAutostart(void)
+{
+    FSSpec aliasFile;
+    OSErr  err = StartupAliasSpec(&aliasFile);
+    if (err != noErr) return err;                 /* not installed */
+    return FSpDelete(&aliasFile);
 }
 
 /* Build a full "Vol:dir:...:name" HFS path from an FSSpec by walking parents. */
@@ -208,6 +223,12 @@ static void DrawContent(void)
     else
         DrawString("\pDaemon: stopped");
 
+    MoveTo(160, 44);
+    if (AutostartInstalled())
+        DrawString("\pAutostart: installed");
+    else
+        DrawString("\pAutostart: not installed");
+
     MoveTo(16, 62);
     DrawString("\pHost IP: ");
     { Str255 p; CtoP(gPrefs.ip, p); DrawString(p); }
@@ -235,13 +256,13 @@ static void MakeButtons(void)
     Rect r;
     short top = gWin->portRect.bottom - 36;
 
-    SetRect(&r, 12, top, 112, top + 20);
-    gLaunchBtn = NewControl(gWin, &r, "\pLaunch Daemon", true, 0, 0, 1, 0 /*pushButProc*/, 0);
-    SetRect(&r, 120, top, 200, top + 20);
-    gStopBtn = NewControl(gWin, &r, "\pStop Daemon", true, 0, 0, 1, 0 /*pushButProc*/, 0);
-    SetRect(&r, 208, top, 320, top + 20);
+    SetRect(&r, 12, top, 124, top + 20);
+    gInstallBtn = NewControl(gWin, &r, "\pInstall Autostart", true, 0, 0, 1, 0 /*pushButProc*/, 0);
+    SetRect(&r, 132, top, 256, top + 20);
+    gRemoveBtn = NewControl(gWin, &r, "\pRemove Autostart", true, 0, 0, 1, 0 /*pushButProc*/, 0);
+    SetRect(&r, 264, top, 376, top + 20);
     gAddBtn = NewControl(gWin, &r, "\pAdd Helper App...", true, 0, 0, 1, 0 /*pushButProc*/, 0);
-    SetRect(&r, 328, top, 388, top + 20);
+    SetRect(&r, 384, top, 444, top + 20);
     gQuitBtn = NewControl(gWin, &r, "\pQuit", true, 0, 0, 1, 0 /*pushButProc*/, 0);
 }
 
@@ -258,8 +279,8 @@ static void HandleClick(EventRecord *ev)
         GlobalToLocal(&pt);
         if (FindControl(pt, gWin, &ctl)) {
             if (TrackControl(ctl, pt, NULL)) {
-                if (ctl == gLaunchBtn)      { LaunchDaemon(); }
-                else if (ctl == gStopBtn)   { StopDaemon(); }
+                if (ctl == gInstallBtn)     { InstallAutostart(); }
+                else if (ctl == gRemoveBtn) { RemoveAutostart(); }
                 else if (ctl == gAddBtn)    { AddHelperApp(); }
                 else if (ctl == gQuitBtn)   { gRunning = false; }
                 DrawContent();
@@ -290,7 +311,7 @@ int main(void)
     PrefsDefaults(&gPrefs);
     LoadPrefs(&gPrefs);
 
-    SetRect(&bounds, 40, 60, 440, 320);
+    SetRect(&bounds, 40, 60, 500, 320);
     gWin = NewCWindow(NULL, &bounds, "\pAppleBridge Config", true,
                       documentProc, (WindowPtr)-1L, true, 0);
     SetPort(gWin);
