@@ -37,9 +37,13 @@ CONTROL_PORT = 9001                # local control clients connect to this
 LOG_PATH = "/tmp/applebridge_server.log"
 
 # Adaptive timeouts (seconds), chosen by the command's first token.
+# Includes the large-output readers (catenate/files/print) so big file reads
+# and listings get the long transfer budget instead of truncating at 15s —
+# mac_read_file uses Catenate and mac_list_files uses Files.
 LONG_CMDS = {
     "link", "ilink", "sc", "scpp", "asm", "make",
     "dumpobj", "dumpfile", "rez", "derez", "lib", "duplicate",
+    "catenate", "files", "print",
 }
 DEFAULT_TIMEOUT = 15.0
 LONG_TIMEOUT = 240.0   # multi-MB transfers (large DumpFile/Catenate) over OT
