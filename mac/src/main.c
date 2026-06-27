@@ -296,7 +296,7 @@ void ShowAboutBox(void)
         MoveTo(20, 30);
         TextSize(14);
         TextFace(bold);
-        DrawString("\pAppleBridge v0.5.6");
+        DrawString("\pAppleBridge v0.5.7");
 
         MoveTo(20, 55);
         TextSize(10);
@@ -391,7 +391,7 @@ void InitApp(void)
 
     /* Create status window */
     SetRect(&bounds, 50, 50, 450, 350);
-    gStatusWindow = NewCWindow(NULL, &bounds, "\pAppleBridge v0.5.6",
+    gStatusWindow = NewCWindow(NULL, &bounds, "\pAppleBridge v0.5.7",
                                true, documentProc, (WindowPtr)-1L, true, 0);
     if (gStatusWindow) {
         SetPort(gStatusWindow);
