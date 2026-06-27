@@ -17,8 +17,13 @@
 #include <ToolUtils.h>
 #include <AppleEvents.h>
 #include <Gestalt.h>
+#include <prefs.h>
 
 QDGlobals qd;
+
+/* Loaded from "AppleBridge Prefs" at startup (host IP + chain-launch list).
+ * File-scope (not on main's stack) since AppPrefs is ~2 KB. */
+static AppPrefs gPrefs;
 
 /* Menu IDs */
 #define APPLE_MENU_ID   128
@@ -831,14 +836,17 @@ int main(void)
     unsigned long hostIP;
     Boolean connected = false;
 
-    /*
-     * SET YOUR HOST IP HERE!
-     */
-    char hostIPStr[] = "192.168.3.154";  /* Host Mac IP */
-
     /* Initialize Mac Toolbox */
     InitApp();
     gStartTick = TickCount();   /* baseline for Alive uptime */
+
+    /* Load config from "AppleBridge Prefs" (host IP + chain-launch apps). The
+     * compiled-in fallback IP is seeded first, so a missing/corrupt file never
+     * breaks connectivity; a default file is written on first run. */
+    PrefsDefaults(&gPrefs);
+    if (!LoadPrefs(&gPrefs)) {
+        SavePrefs(&gPrefs);
+    }
 
     SetActivity("init network");        /* daemon activities -> top bar */
 
@@ -855,8 +863,8 @@ int main(void)
 
     SetActivity("network OK");
 
-    /* Parse host IP */
-    hostIP = ParseIPAddress(hostIPStr);
+    /* Parse host IP (from prefs, or the seeded fallback) */
+    hostIP = ParseIPAddress(gPrefs.ip);
 
     /* Main connection loop with auto-reconnect */
     while (gRunning) {
