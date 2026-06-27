@@ -1,0 +1,30 @@
+; MinAsm - minimal 68k assembly GUI app (POC)
+; Proves the assembly build pipeline can produce a non-crashing app:
+;   runtime sets up the A5 world -> calls main -> InitGraf + SysBeep -> RTS
+; Links against MacRuntime.o (%_MAIN / _DataInit / %A5Init) like a C app.
+
+        MACHINE MC68020
+        CASE    OBJECT              ; case-exact 'main' so the C runtime finds it
+
+; Toolbox Traps
+_InitGraf       OPWORD  $A86E
+_SysBeep        OPWORD  $A9C8
+
+; QDGlobals structure size
+QDSize          EQU     206
+
+main            PROC    EXPORT
+        ; Set up QuickDraw globals (correctly: pass &thePort, the LAST field)
+        LEA     -QDSize(SP),SP      ; allocate 206-byte QDGlobals buffer
+        PEA     QDSize-4(SP)        ; &qd.thePort (top of the buffer)
+        _InitGraf
+
+        ; Audible proof we ran
+        MOVE.W  #40,-(SP)           ; beep duration (ticks)
+        _SysBeep
+
+        LEA     QDSize(SP),SP       ; restore stack past the QDGlobals buffer
+        RTS                         ; return to runtime -> ExitToShell
+        ENDPROC
+
+        END
