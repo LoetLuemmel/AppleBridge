@@ -30,10 +30,13 @@ OBJS = {OBJ_DIR}main.c.o {OBJ_DIR}network.c.o {OBJ_DIR}protocol.c.o {OBJ_DIR}com
 # Default target
 all ƒ {BIN_DIR}AppleBridge
 
-# Link
-{BIN_DIR}AppleBridge ƒ {OBJS}
+# Link + merge the SIZE resource (onlyBackground / isHighLevelEventAware) and set
+# the real creator. The Rez step used to be out-of-band — it is now part of the
+# build so a fresh :bin:AppleBridge can never be missing its SIZE resource.
+{BIN_DIR}AppleBridge ƒ {OBJS} AppleBridge_res.r
 	{LINK} {LDFLAGS} {OBJS} {LIBS_LIST}
-	SetFile -t APPL -c '????' {BIN_DIR}AppleBridge
+	Rez AppleBridge_res.r -a -o {BIN_DIR}AppleBridge
+	SetFile -t APPL -c 'ABrg' {BIN_DIR}AppleBridge
 
 # Compile rules
 {OBJ_DIR}main.c.o ƒ {SRC_DIR}main.c {INC_DIR}applebridge.h {INC_DIR}mystring.h

@@ -5,9 +5,11 @@
 
 #include "Types.r"
 
-/* SIZE resource - CRITICAL for Apple Events!
- * Flags:
- *   0x5880 = acceptSuspendResumeEvents | canBackground | isHighLevelEventAware | localAndRemoteHLEvents
+/* SIZE resource - CRITICAL for Apple Events + faceless background operation.
+ * v0.6.0: onlyBackground (was backgroundAndForeground) makes AppleBridge a true
+ * faceless service — no window, no Application-menu entry. isHighLevelEventAware
+ * + localAndRemoteHLEvents stay set (required: -903 without them, and the
+ * inbound kAEQuitApplication quit path needs HL events delivered).
  */
 resource 'SIZE' (-1) {
     reserved,
@@ -15,7 +17,7 @@ resource 'SIZE' (-1) {
     reserved,
     canBackground,
     doesActivateOnFGSwitch,
-    backgroundAndForeground,
+    onlyBackground,
     dontGetFrontClicks,
     ignoreChildDiedEvents,
     is32BitCompatible,
@@ -38,7 +40,7 @@ resource 'SIZE' (0) {
     reserved,
     canBackground,
     doesActivateOnFGSwitch,
-    backgroundAndForeground,
+    onlyBackground,
     dontGetFrontClicks,
     ignoreChildDiedEvents,
     is32BitCompatible,
