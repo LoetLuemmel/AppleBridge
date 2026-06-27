@@ -848,6 +848,22 @@ int main(void)
         SavePrefs(&gPrefs);
     }
 
+    /* Chain-launch helper apps from prefs (ToolServer first, by list order) so
+     * the faceless service brings up its own dependencies — the daemon needs
+     * ToolServer running to return command output. Errors are non-fatal. */
+    {
+        short ai;
+        for (ai = 0; ai < gPrefs.appCount; ai++) {
+            LaunchAppAtPath(gPrefs.apps[ai]);
+        }
+        /* Let a freshly-launched ToolServer register before commands arrive.
+         * (The connect + first-command lag usually covers this too.) */
+        if (gPrefs.appCount > 0) {
+            long until = TickCount() + 180L;   /* ~3s settle */
+            while (TickCount() < until) { SystemTask(); }
+        }
+    }
+
     SetActivity("init network");        /* daemon activities -> top bar */
 
     SystemTask();
