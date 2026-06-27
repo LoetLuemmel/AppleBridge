@@ -4,7 +4,8 @@
  * The daemon (creator 'ABrg') is onlyBackground and has no UI, so this normal
  * foreground app is where a human:
  *   - sees whether the daemon is running + whether autostart is installed,
- *   - installs / removes autostart (an alias in the System Folder's Startup Items),
+ *   - installs / removes autostart (an alias to the watchdog in Startup Items;
+ *     at boot the watchdog launches the daemon and keeps it alive),
  *   - picks helper apps (e.g. ToolServer) to chain-launch, via Standard File,
  *   - reviews the prefs (host IP + helper list).
  * It shares prefs.c with the daemon and talks to it only through the prefs file
@@ -34,6 +35,7 @@ QDGlobals qd;
 
 #define kDaemonCreator  'ABrg'
 #define DAEMON_PATH     "MeinMac:MPW:AppleBridge:bin:AppleBridge"
+#define WATCHDOG_PATH   "MeinMac:MPW:AppleBridge:bin:AppleBridgeWatchdog"
 
 static Boolean      gRunning = true;
 static WindowPtr    gWin = NULL;
@@ -75,15 +77,18 @@ static Boolean DaemonRunning(void)
     return false;
 }
 
-/* ---- autostart (a daemon alias in the System Folder's Startup Items) ---- */
+/* ---- autostart (a watchdog alias in the System Folder's Startup Items) ----
+ * Autostart installs an alias to the *watchdog*, not the daemon: at boot the
+ * watchdog comes up, launches the daemon (which chain-launches ToolServer), and
+ * then keeps the daemon alive. One Startup Items entry owns the whole service. */
 
-#define kStartupAliasName "\pAppleBridge"
+#define kStartupAliasName "\pAppleBridge Watchdog"
 
-/* FSSpec of the daemon binary we want launched at boot. */
-static OSErr DaemonSpec(FSSpec *spec)
+/* FSSpec of the binary we want launched at boot — the watchdog. */
+static OSErr WatchdogSpec(FSSpec *spec)
 {
     Str255 pPath;
-    CtoP(DAEMON_PATH, pPath);
+    CtoP(WATCHDOG_PATH, pPath);
     return FSMakeFSSpec(0, 0, pPath, spec);
 }
 
@@ -106,7 +111,7 @@ static Boolean AutostartInstalled(void)
     return (StartupAliasSpec(&spec) == noErr);   /* noErr == file exists */
 }
 
-/* Drop an alias to the daemon into Startup Items so it launches at boot. */
+/* Drop an alias to the watchdog into Startup Items so it launches at boot. */
 static OSErr InstallAutostart(void)
 {
     FSSpec      target, aliasFile;
@@ -115,8 +120,8 @@ static OSErr InstallAutostart(void)
     short       refNum;
     FInfo       fi;
 
-    err = DaemonSpec(&target);
-    if (err != noErr) return err;                 /* daemon binary not found */
+    err = WatchdogSpec(&target);
+    if (err != noErr) return err;                 /* watchdog binary not found */
     err = StartupAliasSpec(&aliasFile);
     if (err == noErr) return noErr;               /* already installed */
     if (err != fnfErr) return err;
@@ -124,7 +129,7 @@ static OSErr InstallAutostart(void)
     err = NewAlias(NULL, &target, &alias);        /* absolute alias */
     if (err != noErr) return err;
 
-    FSpCreateResFile(&aliasFile, 'ABrg', 'APPL', 0);
+    FSpCreateResFile(&aliasFile, 'ABwd', 'APPL', 0);
     err = ResError();
     if (err != noErr && err != dupFNErr) { DisposeHandle((Handle)alias); return err; }
 

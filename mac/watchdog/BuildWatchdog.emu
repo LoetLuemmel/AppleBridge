@@ -1,0 +1,9 @@
+# Build AppleBridgeWatchdog (the keep-alive helper).
+# Run inside MPW from the AppleBridge project folder (MeinMac:MPW:AppleBridge:).
+# watchdog.c goes in :src: alongside the daemon/config sources. No prefs, no OT,
+# no StdCLib — it only needs the Toolbox (Process Manager + File Manager), so it
+# links against Interface.o + MacRuntime.o only.
+SC -i :include: :src:watchdog.c -o :obj:watchdog.c.o
+Link -model far -o :bin:AppleBridgeWatchdog :obj:watchdog.c.o "{Libraries}Interface.o" "{Libraries}MacRuntime.o"
+Rez watchdog_res.r -a -o :bin:AppleBridgeWatchdog
+SetFile -t APPL -c 'ABwd' :bin:AppleBridgeWatchdog
