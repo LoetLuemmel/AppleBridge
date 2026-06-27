@@ -36,19 +36,17 @@ Smoke test: `cd host && /usr/bin/python3 send_command.py 'Echo HELLO'`.
 - Long commands (e.g. `Link`) may return `-1712` (AE timeout) **yet still complete** — verify by the artifact, not the status.
 - **Host `.154` must live on the default-route interface** (where the guest's MACNAT exits — normally Wi-Fi `en0`), *not* a second NIC. If it's on the wrong interface, the daemon hangs on "CONNECTING" and freezes the emulator at 100% CPU (synchronous `OTConnect` starving the cooperative scheduler). `host/start_stack.sh` sets this up. **Never pre-create a bridge** — `etherhelpertool` owns `en8` directly; a manual `bridge100` SIGSEGVs it (`fret == -10`). The guest is behind MACNAT, so it is **never pingable** — diagnose via the *outbound* connection, not ICMP. See `TROUBLESHOOTING.md` → "Daemon hangs on CONNECTING".
 
-## Status (2026-06-14)
-All hardening scopes are **done, merged, and verified live** (PRs #1–#6 closed, `main` at the `QUIT` verb commit):
-- **Scope 1** — host hardening.
-- **Scope 2** — 68k daemon: overflow-guard, PING/LAUNCH/QUIT verbs, `-903` fix, AE debugger. Daemon is **v0.4.0 ("Verbs")** with colored RX/TX LEDs and a d/h/m/s uptime counter.
-- **Scope 3** — large-response transfer: length-framed host read + defensive `kOTFlowErr` handling.
-- **Scope 4** — responses **>64 KB** stream via dynamic buffer + length-framing (`e667f5b`).
+## Status (2026-06-27)
+The hardening arc is **done, merged, and verified live**. Daemon is **v0.5.7**; the host server auto-starts via launchd.
+- **Host + large-response** (Scopes 1, 3–4): length-framed reads, `kOTFlowErr` handling, dynamic buffers; responses **>64 KB** stream from the heap.
+- **68k daemon**: PING/LAUNCH/QUIT verbs, `-903` fix, colored RX/TX LEDs, uptime counter. v0.5.x added **async `OTConnect` + an application-level heartbeat** (no host-down freeze; PRs #10–#13) and the **v0.5.7 audit hardening** (PR #19): length-framed *receive* reassembly for fragmented commands, an off-by-one fix, teardown-on-send-failure (no wire desync), a 64 KB buffer moved off the stack, a longer AE timeout for builds (no spurious `-1712`), and watchdog reconnect backoff. Rollback binary at `:bin:AppleBridge.v056`.
+- **MCP host path** (PR #17): a STATUS-less/truncated reply no longer reports false success. Repo cleaned of the pre-NAT code + the superseded Swift `MacintoshBridgeHost/` (PR #18).
 - Screenshots stream the emulated screen and decode to PNG host-side.
+- **Guest apps**: the old "GUI apps crash BAII" was a **broken guest binary**, not a macOS/SDL window bug (PR #15, `TROUBLESHOOTING.md`). Verified by example in `examples/`: build GUI apps in **C** (`MinQDC`), use assembly for **MPW tools** (`MinAsm`).
 
-Stack verified up on 2026-06-14: host server on :9000/:9001, daemon connected, ToolServer answering (`Echo HELLO` → `STATUS:0`). **Screenshot path verified live** the same day — daemon captured the 1024×768 emulated framebuffer, streamed it over the bridge, decoded to PNG host-side (daemon window showed v0.4.0, RX lit, `Alive: 6m 54s`). Sample committed at `docs/images/daemon-live.png` and shown in `README.md`.
+Verified live 2026-06-27: v0.5.7 daemon connected (`SYNC-OK`), `Echo` → `STATUS:0`, a 3000-byte fragmenting command round-tripped intact (reassembly), a C QuickDraw app compiled/linked/launched and drew its window, screenshots stream.
 
-Working tree cleaned (PR #8): the April scratch is gone and `nohup.out`/`*.rtf` are now git-ignored.
-
-**Next / open:** nothing blocking — hardening arc complete. Future ideas live in `README.md` / `ARCHITECTURE.md`.
+**Next / open:** daemon-side audit closed. Remaining backlog (from the interim audit, see the CMS): P3 security (daemon handshake / bounded reads) and P4 tests; the roadmap then points at decoupling from the LAN (slirp transport). Future ideas also in `README.md` / `ARCHITECTURE.md`.
 
 ## More detail
 - `README.md` — user-facing intro & examples
