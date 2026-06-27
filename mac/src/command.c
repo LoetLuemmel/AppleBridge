@@ -197,10 +197,15 @@ static OSErr SendDoScript(ProcessSerialNumber *psn, const char *script,
 		return err;
 	}
 
+	/* AE_SCRIPT_TIMEOUT (~5 min) not kAEDefaultTimeout (~60 s): long Link/SC
+	 * builds blew past the default and returned -1712 even though the build
+	 * had completed, forcing "verify by the artifact, not the status". The
+	 * generous bounded timeout lets the daemon report the real exit code for
+	 * builds up to a few minutes, while still bailing if ToolServer wedges. */
 	err = AESend(&event, &reply,
 				 kAEWaitReply | kAECanSwitchLayer,
 				 kAENormalPriority,
-				 kAEDefaultTimeout,
+				 AE_SCRIPT_TIMEOUT,
 				 NULL, NULL);
 	Trace(diag, "send=", err);
 	AEDisposeDesc(&event);

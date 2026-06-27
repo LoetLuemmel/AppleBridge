@@ -498,9 +498,11 @@ static OSErr LaunchAppAtPath(const char *macPath)
 /*
  * Process a request from the host
  */
-void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
+/* Returns true if the connection is still healthy, false if a response send
+ * failed partway (the wire is then desynced and the caller must reconnect). */
+Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
 {
-    char responseBuffer[MAX_RESPONSE_LENGTH];
+    char responseBuffer[RESP_SCRATCH];   /* small: fixed verb/error strings only (was 64 KB on the stack) */
     char command[MAX_COMMAND_LENGTH];
     long commandLength;
     BridgeResult result;
@@ -517,25 +519,27 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
     /* Check if it's a screenshot request */
     if (strncmp(request, PROTO_SCREENSHOT, strlen(PROTO_SCREENSHOT)) == 0) {
         ScreenshotData screenshot;
+        Boolean ok = true;
 
         SetActivity("SCREENSHOT");          /* daemon activity -> top bar */
 
         result = CaptureScreenshot(&screenshot);
         if (result == kBridgeNoErr) {
             /* Stream the full pixmap (header + CLUT + pixels) — no size cap;
-               SendData chunks it over OTSnd. The host decodes it to PNG. */
-            SendScreenshot(endpoint, &screenshot);
+               SendData chunks it over OTSnd. The host decodes it to PNG. A
+               partial send here desyncs the wire, so report it as unhealthy. */
+            if (SendScreenshot(endpoint, &screenshot) != kBridgeNoErr) ok = false;
             CleanupScreenshot(&screenshot);
         } else {
             strcpy(responseBuffer, "STATUS:-1\nSTDOUT:0\n\nSTDERR:18\nScreenshot failed\n\n");
-            SendData(endpoint, responseBuffer, strlen(responseBuffer));
+            if (SendData(endpoint, responseBuffer, strlen(responseBuffer)) != noErr) ok = false;
         }
 
         /* Mark TX activity */
         gLastTX = TickCount();
         gTXCount++;
 
-        return;
+        return ok;
     }
 
     /* PING verb: lightweight heartbeat (sent raw, not COMMAND-wrapped) */
@@ -544,7 +548,7 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         SendData(endpoint, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();
         gTXCount++;
-        return;
+        return true;
     }
 
     /* LAUNCH:<MacPath> verb: bring a GUI app to the foreground */
@@ -576,7 +580,7 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         SendData(endpoint, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();
         gTXCount++;
-        return;
+        return true;
     }
 
     /* QUIT:<4-char creator> verb: send a quit Apple Event to a running app so
@@ -606,7 +610,7 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         SendData(endpoint, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();
         gTXCount++;
-        return;
+        return true;
     }
 
     /* Parse command */
@@ -620,7 +624,7 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         gLastTX = TickCount();
         gTXCount++;
 
-        return;
+        return true;
     }
 
     /* Top bar = the command being run; console body = "> command" (input). */
@@ -663,15 +667,22 @@ void ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
 
     /* Stream response straight from the (possibly multi-MB) result handle. */
     err = SendCommandResult(endpoint, &cmdResult);
-    if (err != noErr) {
-        StatusMessage("(send failed)");
-    }
 
     /* Mark TX activity */
     gLastTX = TickCount();
     gTXCount++;
 
     CleanupCommandResult(&cmdResult);
+
+    /* A partial streamed send leaves the host counting bytes that will never
+     * line up — every later command would misframe. Signal the caller to drop
+     * and re-establish the link instead of limping on a desynced wire. */
+    if (err != noErr) {
+        StatusMessage("send failed - reconnecting");
+        SetActivity("send failed - reconnecting");
+        return false;
+    }
+    return true;
 }
 
 /* Reconnection delay in ticks (30 seconds = 1800 ticks) */
@@ -713,6 +724,64 @@ static Boolean WaitForReconnect(void)
     }
 
     return false;
+}
+
+/*
+ * Length-framed receive reassembly for COMMAND requests.
+ *
+ * TCP is a byte stream: a "COMMAND:<len>\n<payload>" can arrive split across
+ * segments (a large mac_write_file is the realistic case). The old code did a
+ * single OTRcv per request, so a fragmented command was parsed short — ParseCommand
+ * would strncpy past the bytes actually received. This tops the buffer up to the
+ * full declared length before the command is parsed.
+ *
+ * Safety: it only ever APPENDS bytes; it never drops or reorders. If the header
+ * is incomplete, the length is invalid, or this is a (non-length-framed) verb,
+ * it returns immediately and the request is handled exactly as before. When the
+ * whole request already arrived in one segment (the common case) the while-loop
+ * body never runs, so there is zero behaviour change on the fast path.
+ */
+static void TopUpCommand(EndpointRef endpoint, char *buf, long bufSize, long *got)
+{
+    const char *p;
+    long declared = 0;
+    long headerEnd, need;
+    long hdrLen = (long)strlen(PROTO_COMMAND);
+    unsigned long lastProgress;
+
+    if (*got < hdrLen || strncmp(buf, PROTO_COMMAND, hdrLen) != 0) {
+        return;   /* not a COMMAND (verbs are single-recv) */
+    }
+
+    /* Parse the declared length from "COMMAND:<digits>\n", but only if the
+     * whole header has arrived; otherwise let ParseCommand reject it. */
+    p = buf + hdrLen;
+    while (p < buf + *got && *p >= '0' && *p <= '9') {
+        declared = declared * 10 + (*p - '0');
+        p++;
+    }
+    if (p >= buf + *got) return;                 /* header digits not all here yet */
+    if (*p != '\n' && *p != '\r') return;        /* malformed header */
+    headerEnd = (p - buf) + 1;                   /* first payload byte */
+    if (declared <= 0 || declared >= MAX_COMMAND_LENGTH) return;
+
+    need = headerEnd + declared;                 /* bytes for a complete request */
+    if (need > bufSize) need = bufSize;
+
+    lastProgress = TickCount();
+    while (*got < need) {
+        long chunk = 0;
+        OSStatus rerr = ReceiveData(endpoint, buf + *got, bufSize - *got, &chunk);
+        if (rerr == noErr && chunk > 0) {
+            *got += chunk;
+            lastProgress = TickCount();          /* progress -> reset the stall timer */
+        } else if (rerr == kOTNoDataErr) {
+            if (TickCount() - lastProgress > 600) break;   /* ~10 s with no more data */
+            SystemTask();                        /* yield while the rest arrives */
+        } else {
+            break;                               /* error: process what we have */
+        }
+    }
 }
 
 /*
@@ -815,7 +884,13 @@ int main(void)
                 StatusMessage("host silent - heartbeat lost");
                 SetActivity("host heartbeat lost - reconnecting");
                 OTCloseProvider(endpoint);
-                connected = false;   /* loop re-enters the connect path at once */
+                connected = false;
+                /* Back off like the other reconnect paths: a genuinely down
+                 * host would otherwise be hammered with immediate 10 s connect
+                 * spins instead of the 30 s retry cadence. */
+                if (WaitForReconnect()) {
+                    break;   /* user aborted */
+                }
             }
             continue;
         }
@@ -838,10 +913,22 @@ int main(void)
             continue;  /* Try to reconnect */
         }
 
+        /* Gather a fragmented COMMAND in full before parsing (no-op for verbs
+         * and single-segment commands). */
+        TopUpCommand(endpoint, requestBuffer, sizeof(requestBuffer) - 1, &bytesReceived);
+
         /* Each verb handler updates the top-bar activity (SCREENSHOT / LAUNCH /
          * QUIT / the command) and the console body itself. */
         requestBuffer[bytesReceived] = '\0';
-        ProcessRequest(endpoint, requestBuffer, bytesReceived);
+        if (!ProcessRequest(endpoint, requestBuffer, bytesReceived)) {
+            /* A streamed response failed mid-send: the wire is desynced. Drop
+             * the link and reconnect rather than misframe every later command. */
+            OTCloseProvider(endpoint);
+            connected = false;
+            if (WaitForReconnect()) {
+                break;   /* user aborted */
+            }
+        }
     }
 
     /* Cleanup */

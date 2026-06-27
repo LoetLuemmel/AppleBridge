@@ -85,7 +85,11 @@ BridgeResult ParseCommand(const char *request, char *command, long *commandLengt
         }
     }
 
-    if (length <= 0 || length > MAX_COMMAND_LENGTH) {
+    /* Reject length >= MAX_COMMAND_LENGTH: command[] is MAX_COMMAND_LENGTH
+     * bytes, and command[length] = '\0' below must stay in bounds, so the
+     * largest admissible payload is MAX_COMMAND_LENGTH - 1. (Was '>', which
+     * let length == MAX_COMMAND_LENGTH write one byte past the buffer.) */
+    if (length <= 0 || length >= MAX_COMMAND_LENGTH) {
         return kBridgeProtocolErr;
     }
 

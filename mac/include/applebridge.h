@@ -22,9 +22,11 @@
  * error. (A genuinely unreachable host / wrong NIC gives kABConnectTimeout.) */
 #define kABConnectRefused (-30002)
 #define MAX_COMMAND_LENGTH 8192
-#define MAX_RESPONSE_LENGTH 65536          /* screenshot / verb / error scratch buffer */
+#define MAX_RESPONSE_LENGTH 65536          /* (legacy) — no longer stack-allocated */
 #define MAX_DYNAMIC_RESPONSE (4L*1024L*1024L) /* 4 MB cap for command stdout (heap) */
 #define SOCKET_BACKLOG 5
+#define RESP_SCRATCH 128                   /* small fixed verb/error replies; replaces the 64 KB stack frame */
+#define AE_SCRIPT_TIMEOUT (18000L)         /* ticks (~5 min) for the 'dosc' AESend; kAEDefaultTimeout (~60 s) gave spurious -1712 on long Link/SC */
 
 /* Protocol constants */
 #define PROTO_COMMAND "COMMAND:"
