@@ -6,7 +6,7 @@ AppleBridge connects Claude Code to an authentic Mac System 7.6.1 environment ru
 
 ![AppleBridge daemon running live on System 7.6.1](docs/images/daemon-live.png)
 
-*The AppleBridge v0.4.0 daemon running live on System 7.6.1 — RX/TX activity LEDs, a "Request received" log line, and an uptime counter, with the MPW/ToolServer environment behind it. This image was captured by the daemon itself (the emulated framebuffer), streamed over the bridge, and decoded to PNG on the host.*
+*The AppleBridge v0.5.6 daemon running live on System 7.6.1 — RX/TX activity LEDs, a "Request received" log line, and an uptime counter, with the MPW/ToolServer environment behind it. This image was captured by the daemon itself (the emulated framebuffer), streamed over the bridge, and decoded to PNG on the host.*
 
 ## What You Can Do
 
@@ -29,9 +29,8 @@ Result: Classic Mac app running in authentic 1990s environment
 flowchart TB
     subgraph Host["Host (macOS Sequoia)"]
         Claude["Claude Code\n(AI/LLM)"]
-        MCPServer["MacintoshBridgeHost\n(Swift)"]
-        MCPPort["MCP Server\n:9001"]
-        TCPPort["TCP Server\n:9000"]
+        MCPServer["mcp/server.py\n(MCP, stdio)"]
+        HostSrv["host_server.py\n:9001 control, :9000 daemon"]
     end
 
     subgraph BAII["Basilisk II Emulator"]
@@ -43,10 +42,9 @@ flowchart TB
         end
     end
 
-    Claude -->|"MCP Protocol\nTool calls"| MCPPort
-    MCPPort -->|"MCP tools:\nmpw_execute\nmac_write_file\nmac_screenshot"| MCPServer
-    MCPServer <-->|"Forward commands\nvia TCP"| TCPPort
-    TCPPort <-->|"TCP Socket\n(Mac connects OUT)"| OT
+    Claude -->|"MCP (stdio)\ntool calls"| MCPServer
+    MCPServer -->|"localhost TCP :9001\nforward command"| HostSrv
+    HostSrv <-->|"daemon socket :9000\n(Mac connects OUT)"| OT
     OT <-->|"Network layer"| AppleBridge
     AppleBridge -->|"Apple Events\n'misc'/'dosc'"| ToolServer
     AppleBridge -.->|"fallback"| MPWShell
@@ -64,7 +62,7 @@ flowchart TB
 ```mermaid
 sequenceDiagram
     participant CC as Claude Code
-    participant MH as MacintoshBridgeHost
+    participant MH as Host (mcp + host_server.py)
     participant OT as OpenTransport
     participant AB as AppleBridge Daemon
     participant TS as ToolServer
@@ -95,11 +93,11 @@ sequenceDiagram
 
 ### Three-Layer Design
 
-1. **MCP Layer** - Claude Code ↔ MacintoshBridgeHost (port 9001)
+1. **MCP Layer** - Claude Code ↔ `mcp/server.py` ↔ `host_server.py` (control port 9001)
    - Standardized AI tool interface
    - Tools: `mpw_execute`, `mac_write_file`, `mac_screenshot`, etc.
 
-2. **TCP/OpenTransport Layer** - Mac daemon ↔ MacintoshBridgeHost (port 9000)
+2. **TCP/OpenTransport Layer** - Mac daemon ↔ `host_server.py` (port 9000)
    - Reversed architecture: Mac connects OUT to host
    - Solves Basilisk II NAT limitation
    - OpenTransport provides TCP/IP on System 7.6.1
@@ -114,7 +112,7 @@ sequenceDiagram
 
 **Host (macOS):**
 - Basilisk II emulator configured and running
-- MacintoshBridgeHost built (Xcode project included)
+- Host server (`host/host_server.py`, Python stdlib — no build; auto-starts via launchd)
 - Claude Code with MCP configured
 
 **Mac (Basilisk II):**
@@ -131,12 +129,18 @@ Edit `.mcp.json` in your project or `~/.claude/`:
 {
   "mcpServers": {
     "applebridge": {
-      "command": "/path/to/MacintoshBridgeHost.app/Contents/MacOS/MacintoshBridgeHost",
-      "args": []
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "python", "-m", "mcp.server"],
+      "env": {}
     }
   }
 }
 ```
+
+This is the configuration committed in `.mcp.json`. The MCP server talks to
+`host_server.py` on the local control port (9001); start the host stack with
+`cd host && ./start_stack.sh` (it also auto-starts via launchd).
 
 ### 2. Build Mac Daemon
 
@@ -163,7 +167,8 @@ Edit `src/main.c` first to set your host IP address.
 3. Watch for "Connected to host!" status
 
 **On Host:**
-MacintoshBridgeHost starts automatically via MCP.
+`host_server.py` auto-starts via launchd (or run `host/start_stack.sh`); Claude
+Code launches the MCP server (`mcp/server.py`) on demand per `.mcp.json`.
 
 ### 4. Use with Claude Code
 
@@ -195,15 +200,16 @@ AppleBridge/
 ├── mac/                          # 68k Mac daemon (C)
 │   ├── src/                      # Source files
 │   └── Makefile.68k              # MPW makefile
-├── MacintoshBridgeHost/          # Swift MCP bridge (Xcode)
-│   └── MacintoshBridgeHost/      # Swift source
-├── mcp/                          # Python MCP server (alternative)
-│   ├── server.py
-│   └── tools.py
-└── host/                         # Utilities
-    ├── encoding_convert.py       # UTF-8 ↔ MacRoman
-    ├── screenshot_decode.py      # Raw Mac pixmap → PNG (stdlib only)
-    └── host_server.py            # Standalone TCP server (testing)
+├── mcp/                          # Python MCP server (the MCP entry point)
+│   ├── server.py                 # `python -m mcp.server` (see .mcp.json)
+│   ├── tools.py                  # the 7 MCP tools
+│   └── mac_connection.py         # talks to host_server.py on :9001
+├── host/                         # Host server + utilities
+│   ├── host_server.py            # the bridge: :9000 daemon socket + :9001 control
+│   ├── start_stack.sh            # bring up the stack (+ launchd auto-start)
+│   ├── encoding_convert.py       # UTF-8 ↔ MacRoman
+│   └── screenshot_decode.py      # Raw Mac pixmap → PNG (stdlib only)
+└── examples/                     # Reference guest apps (e.g. MinAsm)
 ```
 
 ## Documentation
@@ -243,16 +249,18 @@ AppleBridge/
 
 ## Status
 
-**Current Version:** 0.3.0 (with RX/TX health indicators)
+**Current daemon:** v0.5.6 ("async connect + heartbeat")
 **Status:** Production Ready ✅
 
 All core features working:
-- ✅ TCP bridge with automatic reconnection
-- ✅ Apple Events command execution
+- ✅ TCP bridge, NAT-reversed (Mac connects OUT), with async OpenTransport connect
+- ✅ Application-level heartbeat + watchdog (no host-down freeze)
+- ✅ Apple Events command execution (ToolServer returns output)
 - ✅ Remote compilation and linking
-- ✅ MCP integration with Claude Code
+- ✅ MCP integration with Claude Code (7 tools)
 - ✅ Encoding conversion (UTF-8 ↔ MacRoman)
-- ✅ Screenshot capture
+- ✅ Screenshot capture (emulated framebuffer → PNG, host-side decode)
+- ✅ Host server auto-start via launchd
 
 ## Credits
 

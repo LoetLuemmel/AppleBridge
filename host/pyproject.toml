@@ -4,13 +4,10 @@ version = "0.1.0"
 description = "Connect Claude to classic Mac MPW shell via emulator"
 authors = [{name = "AppleBridge Contributors"}]
 requires-python = ">=3.9"
-dependencies = [
-    "anthropic>=0.39.0",
-    "pillow>=10.0.0",
-]
-
-[project.scripts]
-applebridge = "main:main"
+# host_server.py and the utilities are stdlib-only (run under /usr/bin/python3,
+# the firewall-allowlisted interpreter). The old anthropic/pillow deps and the
+# `applebridge = main:main` script belonged to the removed pre-NAT bridge.
+dependencies = []
 
 [build-system]
 requires = ["hatchling"]
