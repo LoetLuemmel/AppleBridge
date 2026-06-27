@@ -1,0 +1,9 @@
+# Build AppleBridgeConfig (the foreground control-panel app).
+# Run inside MPW from the AppleBridge project folder (MeinMac:MPW:AppleBridge:).
+# config.c is placed in :src: alongside the daemon sources; it reuses the
+# already-built :obj:prefs.c.o and :obj:mystring.c.o. No OpenTransport — the
+# config app talks to the daemon only via the prefs file + a quit Apple Event.
+SC -i :include: :src:config.c -o :obj:config.c.o
+Link -model far -o :bin:AppleBridgeConfig :obj:config.c.o :obj:prefs.c.o :obj:mystring.c.o "{CLibraries}StdCLib.o" "{Libraries}Interface.o" "{Libraries}MacRuntime.o"
+Rez config_res.r -a -o :bin:AppleBridgeConfig
+SetFile -t APPL -c 'ABcf' :bin:AppleBridgeConfig
