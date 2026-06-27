@@ -1,0 +1,18 @@
+# Build AppleBridgeINIT (the boot-time presence extension).  *** DEFERRED ***
+# See README.md — this builds, but does not function as an MPW C code resource
+# (the Gestalt callback can't be made to work in C; needs assembly). Kept for the
+# record. Run inside MPW from the AppleBridge project folder (MeinMac:MPW:AppleBridge:).
+#
+# Built as a *code resource* ('INIT' id 0), not an app:
+#   -model far     PC-relative-ish code references (near model's A5 jump table is
+#                  meaningless in a code resource)
+#   -rt INIT=0     output is a resource of type 'INIT', id 0
+#   -m ABInitMain  the entry point the System jumps to at boot (must be source-first)
+#   -ra resSysHeap,resLocked   load into the system heap (NewGestalt requires its
+#                  callback to be in the system heap) and lock it resident
+# No C runtime / MacRuntime.o — a code resource has no A5 world; Interface.o covers
+# the inline Toolbox traps (Gestalt, Resource Mgr, Window Mgr, Icon Mgr).
+SC -model far -i :include: :src:applebridge_init.c -o :obj:applebridge_init.c.o
+Link -rt INIT=0 -m ABInitMain -ra =resSysHeap,resLocked :obj:applebridge_init.c.o "{Libraries}Interface.o" -o :bin:AppleBridgeINIT
+Rez applebridge_init.r -a -o :bin:AppleBridgeINIT
+SetFile -t INIT -c 'ABin' :bin:AppleBridgeINIT
