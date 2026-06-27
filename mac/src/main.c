@@ -15,8 +15,15 @@
 #include <Files.h>
 #include <Processes.h>
 #include <ToolUtils.h>
+#include <AppleEvents.h>
+#include <Gestalt.h>
+#include <prefs.h>
 
 QDGlobals qd;
+
+/* Loaded from "AppleBridge Prefs" at startup (host IP + chain-launch list).
+ * File-scope (not on main's stack) since AppPrefs is ~2 KB. */
+static AppPrefs gPrefs;
 
 /* Menu IDs */
 #define APPLE_MENU_ID   128
@@ -296,7 +303,7 @@ void ShowAboutBox(void)
         MoveTo(20, 30);
         TextSize(14);
         TextFace(bold);
-        DrawString("\pAppleBridge v0.5.7");
+        DrawString("\pAppleBridge v0.6.0");
 
         MoveTo(20, 55);
         TextSize(10);
@@ -372,11 +379,30 @@ void InitMenuBar(void)
 }
 
 /*
- * Initialize Toolbox and create status window
+ * Inbound kAEQuitApplication handler. A faceless app has no window close box
+ * or Quit menu, so this is how the Finder / a system shutdown stops it cleanly
+ * (otherwise an invisible app could stall shutdown). Just signals the loop.
+ */
+static pascal OSErr HandleQuitApp(const AppleEvent *evt, AppleEvent *reply, long refcon)
+{
+#pragma unused(evt, reply, refcon)
+    gRunning = false;
+    return noErr;
+}
+
+/*
+ * Initialize the Toolbox for a FACELESS background service.
+ *
+ * v0.6.0: no status window and no menu bar — the daemon runs invisibly
+ * (onlyBackground in the SIZE resource). gStatusWindow stays NULL, so every
+ * drawing function (DrawLEDs / RedrawLog / StatusMessage / ShowAlive) is a
+ * no-op. The debug UI now lives in the separate AppleBridgeConfig app.
+ * InitGraf is still required (qd.screenBits + the screenshot path use it); the
+ * other inits are harmless and kept for any transient Toolbox use.
  */
 void InitApp(void)
 {
-    Rect bounds;
+    long aeAttr;
 
     InitGraf(&qd.thePort);
     InitFonts();
@@ -386,15 +412,11 @@ void InitApp(void)
     InitDialogs(NULL);
     InitCursor();
 
-    /* Initialize menu bar */
-    InitMenuBar();
-
-    /* Create status window */
-    SetRect(&bounds, 50, 50, 450, 350);
-    gStatusWindow = NewCWindow(NULL, &bounds, "\pAppleBridge v0.5.7",
-                               true, documentProc, (WindowPtr)-1L, true, 0);
-    if (gStatusWindow) {
-        SetPort(gStatusWindow);
+    /* Quit cleanly when the Finder / system asks (no close box exists). */
+    if (Gestalt(gestaltAppleEventsAttr, &aeAttr) == noErr &&
+        (aeAttr & (1L << gestaltAppleEventsPresent))) {
+        AEInstallEventHandler(kCoreEventClass, kAEQuitApplication,
+                              NewAEEventHandlerUPP(HandleQuitApp), 0, false);
     }
 }
 
@@ -413,6 +435,12 @@ Boolean CheckUserAbort(void)
      * reachable. It also delivers our window/menu events like GetNextEvent did. */
     if (WaitNextEvent(everyEvent, &event, 2L, NULL)) {
         switch (event.what) {
+            case kHighLevelEvent:
+                /* Faceless quit path: dispatch kAEQuitApplication -> HandleQuitApp.
+                 * (The mouse/menu cases below are inert with no window/menu.) */
+                AEProcessAppleEvent(&event);
+                break;
+
             case mouseDown:
                 part = FindWindow(event.where, &window);
                 switch (part) {
@@ -548,6 +576,18 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         SendData(endpoint, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();
         gTXCount++;
+        return true;
+    }
+
+    /* QUITDAEMON verb: stop the faceless daemon over the bridge. With no window
+     * or menu, this (or a system kAEQuitApplication) is how the service is
+     * stopped. Ack first, then signal the main loop to exit. */
+    if (strncmp(request, "QUITDAEMON", 10) == 0) {
+        strcpy(responseBuffer, "STATUS:0\rSTDOUT:7\rStopped\rSTDERR:0\r\r");
+        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        gLastTX = TickCount();
+        gTXCount++;
+        gRunning = false;   /* while(gRunning) loop exits after this request */
         return true;
     }
 
@@ -796,14 +836,33 @@ int main(void)
     unsigned long hostIP;
     Boolean connected = false;
 
-    /*
-     * SET YOUR HOST IP HERE!
-     */
-    char hostIPStr[] = "192.168.3.154";  /* Host Mac IP */
-
     /* Initialize Mac Toolbox */
     InitApp();
     gStartTick = TickCount();   /* baseline for Alive uptime */
+
+    /* Load config from "AppleBridge Prefs" (host IP + chain-launch apps). The
+     * compiled-in fallback IP is seeded first, so a missing/corrupt file never
+     * breaks connectivity; a default file is written on first run. */
+    PrefsDefaults(&gPrefs);
+    if (!LoadPrefs(&gPrefs)) {
+        SavePrefs(&gPrefs);
+    }
+
+    /* Chain-launch helper apps from prefs (ToolServer first, by list order) so
+     * the faceless service brings up its own dependencies — the daemon needs
+     * ToolServer running to return command output. Errors are non-fatal. */
+    {
+        short ai;
+        for (ai = 0; ai < gPrefs.appCount; ai++) {
+            LaunchAppAtPath(gPrefs.apps[ai]);
+        }
+        /* Let a freshly-launched ToolServer register before commands arrive.
+         * (The connect + first-command lag usually covers this too.) */
+        if (gPrefs.appCount > 0) {
+            long until = TickCount() + 180L;   /* ~3s settle */
+            while (TickCount() < until) { SystemTask(); }
+        }
+    }
 
     SetActivity("init network");        /* daemon activities -> top bar */
 
@@ -813,14 +872,15 @@ int main(void)
     err = InitializeNetwork();
     if (err != noErr) {
         SetActivity("network init FAILED");
-        while (!Button()) { SystemTask(); ShowAlive(); }
+        /* Faceless: no mouse to wait for. Exit; Startup Items / the watchdog
+         * relaunch us, and OpenTransport is usually ready on the next try. */
         return 1;
     }
 
     SetActivity("network OK");
 
-    /* Parse host IP */
-    hostIP = ParseIPAddress(hostIPStr);
+    /* Parse host IP (from prefs, or the seeded fallback) */
+    hostIP = ParseIPAddress(gPrefs.ip);
 
     /* Main connection loop with auto-reconnect */
     while (gRunning) {
@@ -938,10 +998,9 @@ int main(void)
     ShutdownNetwork();
 
     StatusMessage("Disconnected");
-    StatusMessage("Click to exit...");
 
-    while (!Button()) { SystemTask(); ShowAlive(); }
-
+    /* Faceless: nothing to click. The loop ended because gRunning went false
+     * (QUITDAEMON verb or a kAEQuitApplication), so just exit. */
     if (gStatusWindow) {
         DisposeWindow(gStatusWindow);
     }
