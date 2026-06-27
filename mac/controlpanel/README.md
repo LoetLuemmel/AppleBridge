@@ -43,6 +43,31 @@ it up after a **desktop rebuild** (⌘-Option at boot) — installing a new `BND
 fresh creator doesn't re-register until the Desktop DB is rebuilt. Not pixel-perfect,
 but a distinct, recognisable CP icon.
 
+**Step 4a — proven on-device (2026-06-27):** LIVE DAEMON STATUS. The cdev polls the
+**Process Manager** (`GetNextProcess`/`GetProcessInformation`) for the faceless daemon
+(creator `'ABrg'`) on `nulDev`/`activDev` and shows `Daemon: RUNNING`/`stopped` via
+`SetDialogItemText`, redrawing only on change. This is the real unknown of the port — a
+cdev reaching into the Process Manager — and it works. Three lessons, each earned the hard way:
+
+- **The cdev entry must be at offset 0.** The Control Panel host *jumps to offset 0* of the
+  `'cdev'` resource. Steps 1–3 had a single function, so `CDevMain` sat at 0. Adding helper
+  functions and defining `CDevMain` **last** put it at a non-zero offset → the host jumped
+  into a helper with the wrong arguments → instant fault that **took the whole emulator down**
+  (SIGSEGV). Fix: **define `CDevMain` first**, forward-declare the helpers. (Same root cause
+  as the deferred presence INIT.)
+- **`-model near`, not `far`, for a multi-function code resource.** Far model makes every
+  C-function→C-function call a 32-bit absolute reference the linker can't relocate inside a
+  code resource (`Error: Linker does not edit 32-bit instructions`). Near model uses 16-bit
+  PC-relative calls — correct, and tiny, for a cdev. (Steps 1–3 only linked under far model
+  *because* they were single-function.)
+- **An open control panel locks its file.** While the panel window is open, the System holds
+  the cdev file's resource fork open; `Duplicate`/`Delete` then **silently no-op** (`STATUS:0`
+  but the file never changes — verify by mod-date + byte-level `DeRez`, not the status code).
+  Install while the panel is closed, or under a new name.
+
+Memory-move discipline also matters: `GetNextProcess` may move the heap, so the `cdevValue`
+handle is re-dereferenced *after* it returns, never held across it.
+
 ## Why this matters
 
 Unlike the presence INIT (which C couldn't build — see `../init/README.md`), a cdev

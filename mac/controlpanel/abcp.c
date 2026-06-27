@@ -1,28 +1,27 @@
 /*
  * AppleBridge Control Panel - cdev proof of concept.
  *
- * Step 1: macDev/initDev + a statText (the host calls us; the DITL draws).
- * Step 2: a pushButton dispatched through hitDev (beep + handle-counted tally).
- * Step 3: pop the modal Standard File picker FROM hitDev, then show the chosen
- *   file's name in a statText. This is the one real unknown of the port — a
- *   nested modal dialog driven from a Control Panel message — and it works.
+ * Steps 1-3 proved the cdev mechanics (appear/open, hitDev dispatch + handle
+ * state, modal Standard File from hitDev). Step 4 ports AppleBridgeConfig's
+ * actual logic into the cdev, in on-device-proven sub-steps:
  *
- *   Code-resource gotcha (the same rule as every other step): a cdev can only
- *   reach INLINE Toolbox traps, never glue. StandardGetFile (the FSSpec call) is
- *   GLUE — it massages params and calls the package — so it can't be linked into
- *   a code resource. SFGetFile is the inline-trap form ({0x3F3C,0x0002,0xA9EA} =
- *   push selector 2, _Pack3), so we use it; its SFReply carries the old
- *   vRefNum + Str63 name, which is all the PoC needs.
+ *   4a (this file): LIVE DAEMON STATUS. Poll the Process Manager for the
+ *      faceless daemon (creator 'ABrg') and show RUNNING/stopped in a statText.
+ *      We poll on BOTH nulDev (the idle message) and activDev (panel brought to
+ *      front), redrawing only when the state changes. This probes the one real
+ *      unknown of the port: do the Process Manager traps even link and run from
+ *      a code resource? (Step 4b adds the Folder/Alias/Resource Manager autostart
+ *      actions; 4c the helper list + Add-Helper via SFGetFile.)
  *
- * Strictly self-contained and A4-free, by necessity for a code resource:
- *   - no globals/statics (state is in the cdevValue handle),
- *   - no string literals in code (UI text is in the DITL; the empty Standard File
- *     prompt is built on the stack, not stored as a "\p" literal — a string
- *     constant in a code resource would need the A4 world we don't have),
- *   - no calls to glue routines or helper functions — only INLINE Toolbox traps.
+ * Memory-move discipline: GetNextProcess / GetProcessInformation (and the Dialog
+ * Manager) may move the heap, so we never hold a dereferenced handle pointer
+ * across them - we re-dereference cdevValue AFTER the move-risk call.
  *
- * Item numbering: our DITL items are appended after the Control Panel's own, so a
- * click on our item N arrives as hitDev with (item == numItems + N).
+ * Still strictly A4-free, as a code resource must be:
+ *   - per-instance state in the cdevValue handle, no globals/statics;
+ *   - NO string literals in code - the status words are built on the stack from
+ *     char constants (immediate moves), not a "\p..." constant in the code's data;
+ *   - only inline Toolbox traps + our own same-segment helpers.
  */
 
 #include <Types.h>
@@ -31,68 +30,55 @@
 #include <Dialogs.h>
 #include <Events.h>
 #include <Memory.h>
-#include <Sound.h>          /* SysBeep (moved here from OSUtils.h) */
-#include <StandardFile.h>   /* SFGetFile, SFReply, SFTypeList (inline-trap form) */
+#include <Processes.h>      /* GetNextProcess / GetProcessInformation */
 
 #define macDev    8
 #define initDev   0
 #define hitDev    1
 #define closeDev  2
+#define nulDev    3
+#define activDev  5
+
+#define kDaemonCreator  'ABrg'
 
 /* our DITL items, 1-based within our own DITL */
-enum { kLabel = 1, kButton, kCount };
+enum { kLabel = 1, kStatus };
+
+/* per-instance state, kept in the cdevValue handle (no globals) */
+typedef struct {
+    short lastState;   /* -1 unknown, 0 stopped, 1 running - gates redraw */
+} CPState;
+
+/* CRITICAL: the Control Panel host calls a cdev by jumping to OFFSET 0 of the
+ * 'cdev' resource, so CDevMain MUST be the first code emitted. We therefore
+ * DEFINE it first and forward-declare the helpers below it. (Defining helpers
+ * first put CDevMain at a non-zero offset -> the host jumped into a helper with
+ * the wrong arguments -> instant fault that takes the emulator down with it.) */
+static Boolean DaemonRunning(void);
+static void    StatusString(Str255 d, Boolean running);
+static void    ShowStatus(DialogPtr cpDialog, short numItems, Boolean running);
+static void    PollAndShow(long cdevValue, short numItems, DialogPtr cpDialog);
 
 pascal long CDevMain(short message, short item, short numItems, short rsrcID,
                      EventRecord *event, long cdevValue, DialogPtr cpDialog)
 {
-#pragma unused(rsrcID, event)
+#pragma unused(rsrcID, event, item)
     switch (message) {
         case macDev:
             return 1;                              /* appear on this machine */
 
         case initDev: {
-            Handle h = NewHandle(sizeof(short));   /* our private storage */
-            if (h) *(short *)(*h) = 0;             /* files-picked count = 0 */
+            Handle h = NewHandle(sizeof(CPState));
+            if (h) ((CPState *)(*h))->lastState = -1;  /* force first poll to draw */
             return (long) h;                       /* becomes cdevValue */
         }
 
-        case hitDev:
-            if (item - numItems == kButton) {
-                Point       where;
-                Str255      prompt;
-                SFReply     reply;
-                SFTypeList  types;
-                short       type, saveKind;
-                Handle      ih;
-                Rect        box;
-
-                where.v = 90;                       /* top-left of the dialog */
-                where.h = 100;
-                prompt[0] = 0;                      /* empty prompt, built on stack */
-
-                /* The modal Standard File "open" dialog, run from inside hitDev.
-                 * numTypes = -1 -> show all files; no filter / no hook procs (we
-                 * must not hand a code-resource function pointer to a trap). */
-                SFGetFile(where, prompt, (FileFilterProcPtr) 0,
-                          -1, types, (DlgHookProcPtr) 0, &reply);
-
-                if (reply.good) {
-                    Handle h = (Handle) cdevValue;
-                    if (h) (*(short *)(*h))++;       /* count the pick in our handle */
-                    SysBeep(5);                      /* audible: a file was chosen */
-
-                    /* Show the chosen file's name. Same windowKind juggle as step 2:
-                     * a cdev's window carries the Control Panel's windowKind, so
-                     * SetDialogItemText needs dialogKind briefly. reply.fName is a
-                     * Str63 pascal string. */
-                    GetDialogItem(cpDialog, numItems + kCount, &type, &ih, &box);
-                    saveKind = ((WindowPeek) cpDialog)->windowKind;
-                    ((WindowPeek) cpDialog)->windowKind = dialogKind;
-                    SetDialogItemText(ih, reply.fName);
-                    ((WindowPeek) cpDialog)->windowKind = saveKind;
-                }
-            }
-            return cdevValue;                       /* carry storage forward */
+        case activDev:                             /* panel came to front: refresh */
+            if (cdevValue) ((CPState *)(*(Handle)cdevValue))->lastState = -1;
+            /* fall through to poll-and-show */
+        case nulDev:                               /* idle: poll daemon status */
+            PollAndShow(cdevValue, numItems, cpDialog);
+            return cdevValue;
 
         case closeDev:
             if (cdevValue) DisposeHandle((Handle) cdevValue);
@@ -100,5 +86,75 @@ pascal long CDevMain(short message, short item, short numItems, short rsrcID,
 
         default:
             return cdevValue;
+    }
+}
+
+/* Is the faceless daemon (creator 'ABrg') currently a running process?
+ * Same enumeration AppleBridgeConfig uses, but it must link as inline traps
+ * here. A4-free: only locals + immediate OSType constants. */
+static Boolean DaemonRunning(void)
+{
+    ProcessSerialNumber psn;
+    ProcessInfoRec      info;
+
+    psn.highLongOfPSN = 0;
+    psn.lowLongOfPSN  = kNoProcess;
+    while (GetNextProcess(&psn) == noErr) {
+        info.processInfoLength = sizeof(info);
+        info.processName       = NULL;
+        info.processAppSpec    = NULL;
+        if (GetProcessInformation(&psn, &info) == noErr)
+            if (info.processSignature == kDaemonCreator) return true;
+    }
+    return false;
+}
+
+/* Build "Daemon: RUNNING" / "Daemon: stopped" with no string literals - each
+ * char is an immediate constant, so the code holds no A4-relative data ref. */
+static void StatusString(Str255 d, Boolean running)
+{
+    short i = 0;
+    d[++i]='D'; d[++i]='a'; d[++i]='e'; d[++i]='m'; d[++i]='o'; d[++i]='n';
+    d[++i]=':'; d[++i]=' ';
+    if (running) { d[++i]='R'; d[++i]='U'; d[++i]='N'; d[++i]='N';
+                   d[++i]='I'; d[++i]='N'; d[++i]='G'; }
+    else         { d[++i]='s'; d[++i]='t'; d[++i]='o'; d[++i]='p';
+                   d[++i]='p'; d[++i]='e'; d[++i]='d'; }
+    d[0] = (unsigned char) i;
+}
+
+/* Set our status statText. A cdev's window carries the Control Panel's
+ * windowKind, not dialogKind, so SetDialogItemText needs a brief juggle.
+ * (SetDialogItemText draws the new text immediately when the window is visible.) */
+static void ShowStatus(DialogPtr cpDialog, short numItems, Boolean running)
+{
+    Str255 buf;
+    short  type, saveKind;
+    Handle ih;
+    Rect   box;
+
+    StatusString(buf, running);
+    GetDialogItem(cpDialog, numItems + kStatus, &type, &ih, &box);
+    saveKind = ((WindowPeek) cpDialog)->windowKind;
+    ((WindowPeek) cpDialog)->windowKind = dialogKind;
+    SetDialogItemText(ih, buf);
+    ((WindowPeek) cpDialog)->windowKind = saveKind;
+}
+
+/* Poll the daemon and, only if its state changed since last shown, redraw.
+ * Memory-safe: DaemonRunning() may move the heap, so cdevValue is dereferenced
+ * AFTER it returns, not before. */
+static void PollAndShow(long cdevValue, short numItems, DialogPtr cpDialog)
+{
+    Handle  h = (Handle) cdevValue;
+    short   now;
+    CPState *st;
+
+    if (!h) return;
+    now = DaemonRunning() ? 1 : 0;          /* <- may move memory */
+    st  = (CPState *)(*h);                   /* deref AFTER the move-risk call */
+    if (now != st->lastState) {
+        st->lastState = now;
+        ShowStatus(cpDialog, numItems, now); /* st unused after this point */
     }
 }

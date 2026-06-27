@@ -1,6 +1,6 @@
 /*
- * AppleBridge Control Panel resources (cdev PoC, step 3).
- * DITL item order MUST match the enum in abcp.c: 1=label, 2=button, 3=name.
+ * AppleBridge Control Panel resources (cdev PoC, step 4a).
+ * DITL item order MUST match the enum in abcp.c: 1=label, 2=status.
  * nrct/mach formats taken from a working sample cdev.
  */
 
@@ -12,16 +12,12 @@ resource 'DITL' (-4064, purgeable) {
         {12, 92, 56, 318},
         StaticText {
             disabled,
-            "AppleBridge cdev - step 3: Standard File from hitDev.  Click "
-            "Choose File... to pop the modal Open dialog; the picked file's "
-            "name appears below."
+            "AppleBridge cdev - step 4a: live daemon status.  Polled from the "
+            "Process Manager on nulDev (the Control Panel's idle message)."
         };
-        /* 2: the button (dispatched via hitDev) */
-        {66, 92, 88, 200},
-        Button { enabled, "Choose File..." };
-        /* 3: the chosen file name, updated via SetDialogItemText */
-        {68, 208, 86, 318},
-        StaticText { disabled, "(no file picked)" };
+        /* 2: the daemon status, updated via SetDialogItemText on nulDev */
+        {66, 92, 84, 318},
+        StaticText { disabled, "(checking...)" };
     }
 };
 
