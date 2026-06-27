@@ -77,6 +77,30 @@ they link as inline traps and run. The lock lesson paid off immediately here: th
 silently no-op'd because the 4a panel was still open; caught at once via the mod-date check
 (not fooled by `Duplicate`'s `STATUS:0`), installed cleanly once the panel was closed.
 
+**Step 4c — proven on-device (2026-06-27):** the HELPER-APP list + an "Add Helper App…"
+button — the last piece of `AppleBridgeConfig`'s logic. The cdev reads the shared
+`AppleBridge Prefs` file (`FindFolder(Preferences)` + `FSpOpenDF`/`FSRead`), shows the leaf
+name of each `APP=` line, and the button pops Standard File (`SFGetFile`, proven in step 3),
+turns the choice into an HFS path (`FSMakeFSSpec` + walking parents with `PBGetCatInfo`), and
+**appends an `APP=` line** to the prefs (`FSpCreate`/`SetFPos`/`FSWrite`). Verified live:
+opening showed `Helpers: ToolServer`; *Add → pick ToolServer* made it `ToolServer, ToolServer`
+and the prefs file gained a second `APP=` line.
+
+Two findings from 4c:
+- **Design — Install/Remove autostart buttons were dropped on purpose.** Toggling the
+  daemon's autostart is the **Finder's** job (drag the watchdog alias in/out of Startup
+  Items), and the Extensions Manager doesn't touch Startup Items, so the cdev shows autostart
+  **read-only**. The helper list, by contrast, has no system equivalent — so it keeps its
+  button. (Quit doesn't exist in a cdev: the close box ends it.)
+- **Glue refinement — not all glue is forbidden in a code resource, only *A5-dependent* glue.**
+  The link probe (link *without* Interface.o; undefined names = the glue) showed `FSRead`/
+  `FSWrite`/`FSClose`/`SetFPos` are glue here. But that glue is a **thin trap-wrapper** — it
+  builds a param block on the stack and calls `_Read`/`_Write`/`_Close`/`_SetFPos`, with no
+  globals, strings, or A5 reference — so it is safe in a cdev and runs fine. The glue we must
+  avoid (`NumToString`, `StandardGetFile`) is the kind that calls *runtime helpers* or passes
+  *proc pointers*. (The param-block forms `PBReadSync`/`PBWriteSync`/`PBCloseSync` aren't even
+  declared inline in this older MPW, so they're not an option anyway.)
+
 ## Why this matters
 
 Unlike the presence INIT (which C couldn't build — see `../init/README.md`), a cdev
@@ -116,7 +140,10 @@ SetFile -t cdev -c 'ABcp' :bin:"AppleBridge CP"
 Note: `CDevMain` is `pascal`, so its linker symbol is **uppercased** to `CDEVMAIN`
 (`-m CDEVMAIN`). Install by copying into `System Folder:Control Panels:`.
 
-## Next steps (the rest of the port)
+## Status
 
-4. The full panel: daemon status on `nulDev`, helper list `userItem`, the autostart
-   actions — porting `AppleBridgeConfig`'s logic unchanged. (Steps 1–3 done.)
+Steps 1–4 are all proven on-device. The cdev now does **everything `AppleBridgeConfig`
+does** — live daemon status, live autostart status, the helper-app list, and Add Helper
+App (Standard File → prefs) — entirely from inside an A4-free code resource. The port is
+functionally complete; what's left is polish (e.g. a real list `userItem` instead of a
+one-line statText, a Remove-helper affordance) rather than unknowns.
