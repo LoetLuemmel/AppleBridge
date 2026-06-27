@@ -1,22 +1,27 @@
 /*
- * AppleBridge Control Panel resources (minimal cdev).
- * The required cdev resources at ID -4064: DITL (the items, appended to the
- * Control Panel's), nrct (the rectangle our area occupies), mach (machine
- * filter; FFFF/0000 = "ask macDev"). Formats taken from a working sample cdev.
+ * AppleBridge Control Panel resources (cdev PoC, step 2).
+ * DITL item order MUST match the enum in abcp.c: 1=label, 2=button, 3=count.
+ * nrct/mach formats taken from a working sample cdev.
  */
 
 #include "Types.r"
 
-/* One statText. The host's Dialog Manager draws it automatically. */
 resource 'DITL' (-4064, purgeable) {
     {
-        {16, 92, 120, 318},
+        /* 1: label / instructions */
+        {12, 92, 56, 318},
         StaticText {
             disabled,
-            "AppleBridge - minimal Control Panel (cdev) test.  "
-            "If you can read this in the Control Panel, the cdev built, the "
-            "host called macDev + initDev, and the DITL drew.  Step 1 proven."
+            "AppleBridge cdev - step 2: button dispatch.  Click the button; "
+            "the Mac beeps and a '*' is added below (one per click, counted in "
+            "the cdev's storage handle)."
         };
+        /* 2: the button (dispatched via hitDev) */
+        {66, 92, 88, 188},
+        Button { enabled, "Click me" };
+        /* 3: the click tally, updated via SetDialogItemText */
+        {68, 200, 86, 318},
+        StaticText { disabled, "(clicks appear here)" };
     }
 };
 

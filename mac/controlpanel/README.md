@@ -1,15 +1,29 @@
-# AppleBridge Control Panel (cdev) — minimal proof of concept
+# AppleBridge Control Panel (cdev) — proof of concept
 
-A minimal System 7 Control Panel (`'cdev'`, creator `'ABcp'`) that proves the
-toolchain and approach for porting `AppleBridgeConfig` from an app into a Control
-Panel. **Step 1 of the port** (see the CMS article *"Settings Belong in a Control
-Panel"*): it does nothing useful yet — it answers the host's `macDev`/`initDev`
-messages and shows one `statText` from its DITL.
+A System 7 Control Panel (`'cdev'`, creator `'ABcp'`) that proves the toolchain and
+approach for porting `AppleBridgeConfig` from an app into a Control Panel (see the CMS
+article *"Settings Belong in a Control Panel"*). It does nothing useful yet — it's a
+PoC for the cdev mechanics.
 
-**Proven on-device (2026-06-27):** built via MPW over the bridge, installed into
-`System Folder:Control Panels:`, opened from Apple menu ▸ Control Panels — it
-appears in the list (`macDev`), opens (`initDev` allocates the `cdevValue` handle),
-and draws its text (`DITL`). A screenshot confirmed the panel rendering.
+**Step 1 — proven on-device (2026-06-27):** `macDev`/`initDev` + a `statText`. Built
+via MPW over the bridge, installed into `System Folder:Control Panels:`, opened from
+Apple menu ▸ Control Panels — it appears in the list (`macDev`), opens (`initDev`
+allocates the `cdevValue` handle), and draws its text (`DITL`). Screenshot-confirmed.
+
+**Step 2 — proven on-device (2026-06-27):** a pushButton dispatched through `hitDev`.
+Each click beeps (the click reached our handler), increments a counter kept in the
+`cdevValue` handle (handle-based state — no globals), and shows one `*` per click via
+`SetDialogItemText` (item addressed as `numItems + index`). Confirmed by beeps +
+screenshot of the growing tally.
+
+Getting step 2 to link reinforced the central rule three times — **a code resource
+can't reach glue/runtime code, only inline traps**:
+- `SysBeep` moved to `<Sound.h>` (was implicitly extern → undefined).
+- `GetDItem`/`SetIText` are old-name macros gated off; use the inline new names
+  `GetDialogItem`/`SetDialogItemText`.
+- `NumToString` is glue, and even `%`/`/` call runtime helpers — all unreachable in a
+  code resource (far-model 32-bit refs / undefined `LMODT`). The count is formatted by
+  hand with a fill loop instead.
 
 ## Why this matters
 
