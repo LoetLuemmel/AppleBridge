@@ -84,7 +84,8 @@ name of each `APP=` line, and the button pops Standard File (`SFGetFile`, proven
 turns the choice into an HFS path (`FSMakeFSSpec` + walking parents with `PBGetCatInfo`), and
 **appends an `APP=` line** to the prefs (`FSpCreate`/`SetFPos`/`FSWrite`). Verified live:
 opening showed `Helpers: ToolServer`; *Add → pick ToolServer* made it `ToolServer, ToolServer`
-and the prefs file gained a second `APP=` line.
+and the prefs file gained a second `APP=` line. The panel also shows the **host IP** (the
+`IP=` line) read in the same single prefs pass, mirroring the original config app's display.
 
 Two findings from 4c:
 - **Design — Install/Remove autostart buttons were dropped on purpose.** Toggling the

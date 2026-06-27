@@ -43,7 +43,7 @@
 #define kPathBufSize      256
 
 /* our DITL items, 1-based within our own DITL */
-enum { kLabel = 1, kStatus, kAutostart, kHelpers, kAddBtn };
+enum { kLabel = 1, kStatus, kAutostart, kIP, kHelpers, kAddBtn };
 
 /* per-instance state, kept in the cdevValue handle (no globals). */
 typedef struct {
@@ -63,7 +63,7 @@ static void    DaemonString(Str255 d, Boolean running);
 static void    AutoString(Str255 d, Boolean installed);
 static void    ShowText(DialogPtr cpDialog, short numItems, short whichItem,
                         ConstStr255Param text);
-static void    ShowHelpers(DialogPtr cpDialog, short numItems);
+static void    ShowPrefsLines(DialogPtr cpDialog, short numItems);
 static void    PollAndShow(long cdevValue, short numItems, DialogPtr cpDialog);
 
 pascal long CDevMain(short message, short item, short numItems, short rsrcID,
@@ -294,24 +294,51 @@ static void ShowText(DialogPtr cpDialog, short numItems, short whichItem,
     ((WindowPeek) cpDialog)->windowKind = saveKind;
 }
 
-/* Read the prefs file and show the leaf name of each APP= line as
- * "Helpers: name1, name2" (or "Helpers: none"). A4-free: char constants + file bytes. */
-static void ShowHelpers(DialogPtr cpDialog, short numItems)
+/* Read the prefs file ONCE and show two lines from it: the host IP ("Host IP:
+ * <value>" from the IP= line) and the helper list ("Helpers: name1, name2" from
+ * each APP= line's leaf, or "Helpers: none"). A4-free: char constants + file bytes. */
+static void ShowPrefsLines(DialogPtr cpDialog, short numItems)
 {
-    FSSpec spec;
-    short  refNum;
-    long   len, j;
-    char   buf[kPrefsBufSize];
-    Str255 out;
-    short  oi = 0, n = 0;
-
-    out[++oi]='H';out[++oi]='e';out[++oi]='l';out[++oi]='p';out[++oi]='e';
-    out[++oi]='r';out[++oi]='s';out[++oi]=':';out[++oi]=' ';
+    FSSpec  spec;
+    short   refNum;
+    long    len = 0, j;
+    char    buf[kPrefsBufSize];
+    Str255  out;
+    short   oi, n;
+    Boolean haveFile = false;
 
     if (PrefsSpec(&spec) == noErr && FSpOpenDF(&spec, fsRdPerm, &refNum) == noErr) {
         len = kPrefsBufSize;                      /* FSRead/FSClose: thin trap-wrapper */
         FSRead(refNum, &len, buf);                /* glue (A4-safe), len <- bytes read */
         FSClose(refNum);
+        haveFile = true;
+    }
+
+    /* --- "Host IP: <value>" from the first IP= line --- */
+    oi = 0;
+    out[++oi]='H'; out[++oi]='o'; out[++oi]='s'; out[++oi]='t'; out[++oi]=' ';
+    out[++oi]='I'; out[++oi]='P'; out[++oi]=':'; out[++oi]=' ';
+    if (haveFile) {
+        j = 0;
+        while (j < len) {
+            if (j + 3 <= len && buf[j]=='I' && buf[j+1]=='P' && buf[j+2]=='=') {
+                long v = j + 3, k;
+                while (v < len && buf[v] != '\r' && buf[v] != '\n') v++;
+                for (k = j + 3; k < v && oi < 250; k++) out[++oi] = buf[k];
+                break;
+            }
+            while (j < len && buf[j] != '\r' && buf[j] != '\n') j++;
+            while (j < len && (buf[j] == '\r' || buf[j] == '\n')) j++;
+        }
+    }
+    out[0] = (unsigned char) oi;
+    ShowText(cpDialog, numItems, kIP, out);
+
+    /* --- "Helpers: leaf1, leaf2" from the APP= lines --- */
+    oi = 0; n = 0;
+    out[++oi]='H'; out[++oi]='e'; out[++oi]='l'; out[++oi]='p'; out[++oi]='e';
+    out[++oi]='r'; out[++oi]='s'; out[++oi]=':'; out[++oi]=' ';
+    if (haveFile) {
         j = 0;
         while (j < len) {
             if (j + 4 <= len &&
@@ -356,5 +383,5 @@ static void PollAndShow(long cdevValue, short numItems, DialogPtr cpDialog)
 
     if (drawD) { Str255 b; DaemonString(b, dnow); ShowText(cpDialog, numItems, kStatus, b); }
     if (drawA) { Str255 b; AutoString(b, anow);   ShowText(cpDialog, numItems, kAutostart, b); }
-    if (drawH) ShowHelpers(cpDialog, numItems);
+    if (drawH) ShowPrefsLines(cpDialog, numItems);   /* host IP + helper list */
 }
