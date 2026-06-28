@@ -128,15 +128,15 @@ ourSysTask
         MOVEM.L D0-D7/A0-A6,-(SP)
         MOVE.L  oldSysTask(PC),A0
         JSR     (A0)                  ; original SystemTask
-        _TickCount                    ; D0 = now
-        MOVE.L  D0,D2                ; keep now
+        MOVE.L  $016A,D0             ; D0 = now (Ticks low-mem global; unambiguous)
         MOVE.L  gLastDraw(PC),D1
         SUB.L   D1,D0               ; D0 = now - lastDraw
         CMP.L   #kRedrawTicks,D0
         BLT.S   @nodraw
-        LEA     gLastDraw(PC),A0
-        MOVE.L  D2,(A0)             ; lastDraw = now
-        BSR.S   DrawDot
+        BSR.S   DrawDot               ; DrawDot resets gLastDraw ONLY when it really
+                                      ; draws — it bails in the daemon's own context
+                                      ; (no Help menu), so the daemon's frequent
+                                      ; SystemTask calls never starve the redraw
 @nodraw
         MOVEM.L (SP)+,D0-D7/A0-A6
         RTS
@@ -148,77 +148,80 @@ ourSysTask
 ;----------------------------------------------------------------------
 DrawDot
         LINK    A6,#-24
-        PEA     -4(A6)                ; &savePort
-        _GetPort
-        PEA     -8(A6)                ; &wmgrPort (CGrafPtr — colour WMgr port)
-        _GetCWMgrPort
-        MOVE.L  -8(A6),A0             ; A0 = colour WMgr port
-        MOVE.L  A0,D0
-        BEQ     @done                ; (word branch: @done is now far)
-        MOVE.L  A0,-(SP)
-        _SetPort
-        MOVE.L  -8(A6),A0
-        MOVE.W  22(A0),D6            ; D6 = screenRight (portRect.right)
-
-        ; --- anchor to the Help menu (leftmost right-justified menu) ---
-        ; helpH = GetMenuHandle(kHMHelpMenuID); then locate that exact 4-byte handle
-        ; in the current menu-bar list block and read the menuLeft word after it
-        ; (entry layout {menuHandle:long, menuLeft:word}) — no knowledge of the
-        ; right-group structure needed. If the Help menu is NOT in the bar yet
-        ; (early boot, before the system's right-justified icons appear) we SKIP
-        ; drawing, so the LED fades in only once that group exists — never at a
-        ; lone fixed position before the other icons.
+        ; --- find the anchor FIRST, before any port work ---
+        ; GetMenuHandle(kHMHelpMenuID); locate that exact 4-byte handle in the
+        ; current menu-bar list; read the menuLeft word after it. Bail CHEAPLY (no
+        ; port setup, no gLastDraw reset) if the Help menu isn't present — the
+        ; faceless daemon's own context (its frequent SystemTask calls then cost one
+        ; GetMenuHandle and never starve the foreground redraw), or early boot before
+        ; the right-justified icons exist (so the LED fades in only once they do).
         SUBQ.L  #4,SP
         MOVE.W  #kHelpMenuID,-(SP)
         _GetMenuHandle
         MOVE.L  (SP)+,D2           ; D2 = Help menu handle (or nil)
-        BEQ     @restore           ; no Help menu yet -> don't draw this pass
-        MOVE.L  MenuListGlobal,A0  ; MenuList handle
+        BEQ     @out               ; no Help menu -> bail, nothing drawn
+        MOVE.L  MenuListGlobal,A0
         MOVE.L  A0,D0
-        BEQ     @restore
+        BEQ     @out
         MOVE.L  A0,A3
-        _GetHandleSize             ; OS: A0 = handle -> D0 = block size
+        _GetHandleSize             ; D0 = block size
         MOVE.L  D0,D3
-        SUBQ.L  #6,D3              ; last offset where {long,word} fits
-        BLE     @restore
-        MOVE.L  (A3),A1            ; A1 = block ptr
-        MOVEQ   #0,D4              ; D4 = scan offset
+        SUBQ.L  #6,D3
+        BLE     @out
+        MOVE.L  (A3),A1
+        MOVEQ   #0,D4
 @scan
         CMP.L   D3,D4
-        BGT     @restore           ; Help handle not in the list -> don't draw
-        MOVE.L  0(A1,D4.L),D5      ; candidate menuHandle
+        BGT     @out               ; Help handle not in the list -> bail
+        MOVE.L  0(A1,D4.L),D5
         CMP.L   D2,D5
         BEQ.S   @found
         ADDQ.L  #2,D4
         BRA.S   @scan
 @found
-        MOVE.W  4(A1,D4.L),D1      ; D1 = Help menu's menuLeft
-        BLE     @restore           ; invalid -> don't draw
-        CMP.W   D6,D1
+        MOVE.W  4(A1,D4.L),D1      ; Help menu's menuLeft
+        BLE     @out
+        MOVE.W  D1,D7              ; D7 = anchor (D3-D7 survive the port traps)
+
+        ; --- we will draw: set up the COLOUR WMgr port (true 8-bit colours) ---
+        PEA     -4(A6)             ; &savePort
+        _GetPort
+        PEA     -8(A6)             ; &wmgrPort (CGrafPtr)
+        _GetCWMgrPort
+        MOVE.L  -8(A6),A0
+        MOVE.L  A0,D0
+        BEQ     @out               ; no colour port -> bail (no SetPort done)
+        MOVE.L  A0,-(SP)
+        _SetPort
+        MOVE.L  -8(A6),A0
+        MOVE.W  22(A0),D6          ; screenRight (portRect.right)
+        CMP.W   D6,D7              ; anchor must be on-screen
         BGE     @restore
-        MOVE.W  D1,D7              ; ledRight = HelpLeft - kGap
-        SUB.W   #kGap,D7
-        MOVE.W  D7,D0               ; led.right
+        SUB.W   #kGap,D7           ; ledRight = anchor - kGap
+        MOVE.W  D7,D0
         MOVE.W  D7,D1
-        SUB.W   #kLedWidth,D1       ; led.left
-        MOVE.W  #4,-16(A6)          ; led.top
-        MOVE.W  D1,-14(A6)          ; led.left
-        MOVE.W  #16,-12(A6)         ; led.bottom
-        MOVE.W  D0,-10(A6)          ; led.right
-        ; colour by activity: (now - gLastTick) < kFlashTicks => bright green
-        ; (active), else dark green (passive). gLastTick == 0 (never stamped) = idle.
-        MOVE.L  gLastTick(PC),D2     ; last activity tick
+        SUB.W   #kLedWidth,D1
+        MOVE.W  #4,-16(A6)         ; led.top
+        MOVE.W  D1,-14(A6)         ; led.left
+        MOVE.W  #16,-12(A6)        ; led.bottom
+        MOVE.W  D0,-10(A6)         ; led.right
+
+        ; --- committed to drawing: reset the redraw throttle, then pick colour ---
+        MOVE.L  $016A,D0           ; now (Ticks low-mem global)
+        LEA     gLastDraw(PC),A1
+        MOVE.L  D0,(A1)            ; gLastDraw = now (ONLY on a real draw)
+        MOVE.L  gLastTick(PC),D2   ; last activity tick (0 = never stamped)
         BEQ.S   @idle
-        _TickCount                   ; D0 = now
-        SUB.L   D2,D0               ; D0 = now - last
-        CMP.L   #kFlashTicks,D0
+        MOVE.L  D0,D1
+        SUB.L   D2,D1             ; D1 = now - gLastTick
+        CMP.L   #kFlashTicks,D1
         BGE.S   @idle
-        MOVE.W  #$1000,-22(A6)       ; bright green (active)
+        MOVE.W  #$1000,-22(A6)     ; bright green (active)
         MOVE.W  #$E000,-20(A6)
         MOVE.W  #$1000,-18(A6)
         BRA.S   @paintled
 @idle
-        MOVE.W  #$0000,-22(A6)       ; dark green (passive)
+        MOVE.W  #$0000,-22(A6)     ; dark green (passive)
         MOVE.W  #$5800,-20(A6)
         MOVE.W  #$0000,-18(A6)
 @paintled
@@ -226,7 +229,7 @@ DrawDot
         _RGBForeColor
         PEA     -16(A6)
         _PaintOval
-        CLR.W   -22(A6)              ; black ring for definition
+        CLR.W   -22(A6)            ; black ring
         CLR.W   -20(A6)
         CLR.W   -18(A6)
         PEA     -22(A6)
@@ -234,9 +237,9 @@ DrawDot
         PEA     -16(A6)
         _FrameOval
 @restore
-        MOVE.L  -4(A6),-(SP)         ; restore caller's port (also the skip target)
+        MOVE.L  -4(A6),-(SP)       ; restore caller's port
         _SetPort
-@done
+@out
         UNLK    A6
         RTS
 
