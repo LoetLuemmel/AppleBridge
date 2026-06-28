@@ -49,6 +49,7 @@ _AppendMenu      OPWORD  $A933        ; Toolbox: (menu, dataStr)                
 _InsertMenu      OPWORD  $A935        ; Toolbox: (menu, beforeID)               [stack]
 _PopUpMenuSelect OPWORD  $A80B        ; Toolbox: (menu, top, left, item) -> long [stack]
 _DeleteMenu      OPWORD  $A936        ; Toolbox: (menuID)                       [stack]
+_DisposeHandle   OPWORD  $A023        ; OS: A0 = Handle
 _SysBeep         OPWORD  $A9C8        ; Toolbox: (duration)                     [stack]
 
 DrawMenuBarTrap  EQU     $A937
@@ -195,28 +196,44 @@ ourMenuSelect
         BLT.S   @pass               ; left of the LED
         CMP.W   gLedR(PC),D1
         BGE.S   @pass               ; right of the LED
-        ; --- HIT: pop up the 'Mitlesen' menu ---
-        MOVE.L  gPopMenu(PC),D2
-        BEQ.S   @ret0               ; no menu -> just swallow the click
-        ; proper pop-up idiom: insert into the CURRENT menu list, pop up, delete
-        MOVE.L  D2,-(SP)
-        MOVE.W  #-1,-(SP)
+        ; --- HIT: build the 'Mitlesen' pop-up FRESH in this app's context, pop it
+        ;     up, tear it down. (A menu created once at INIT time faulted inside
+        ;     PopUpMenuSelect — wrong heap/MDEF context. Per-click is cheap.) The
+        ;     handle is stashed in gPopMenu so it survives the register-trashing
+        ;     Pascal calls below.
+        SUBQ.L  #4,SP                  ; room for MenuHandle result
+        MOVE.W  #kPopMenuID,-(SP)
+        PEA     popTitle(PC)
+        _NewMenu
+        MOVE.L  (SP)+,A0               ; A0 = new menu handle
+        MOVE.L  A0,D0
+        BEQ     @ret0                  ; nil -> bail (stack already balanced)
+        LEA     gPopMenu(PC),A1
+        MOVE.L  A0,(A1)                ; stash (survives PopUpMenuSelect)
+        MOVE.L  A0,-(SP)
+        PEA     popItem(PC)
+        _AppendMenu
+        MOVE.L  gPopMenu(PC),-(SP)
+        MOVE.W  #-1,-(SP)              ; insert at end of (hierarchical) list
         _InsertMenu
-        SUBQ.L  #4,SP               ; result space
-        MOVE.L  D2,-(SP)            ; the menu handle
-        MOVE.W  #20,-(SP)           ; top: just below the menu bar
-        MOVE.W  gLedL(PC),-(SP)     ; left: under the LED
-        MOVE.W  #1,-(SP)            ; popUpItem
+        SUBQ.L  #4,SP                  ; room for the long selection result
+        MOVE.L  gPopMenu(PC),-(SP)
+        MOVE.W  #20,-(SP)              ; top  (just under the menu bar)
+        MOVE.W  gLedL(PC),-(SP)        ; left (under the LED)
+        MOVE.W  #1,-(SP)               ; popUpItem = 1
         _PopUpMenuSelect
-        MOVE.L  (SP)+,D2            ; D2 = selection (0 = nothing chosen)
-        MOVE.W  #kPopMenuID,-(SP)   ; remove it from the list again
+        MOVE.L  (SP)+,D0               ; D0 = selection (0 = none chosen)
+        TST.L   D0
+        BEQ.S   @teardown
+        LEA     gMonReq(PC),A1         ; 'Mitlesen' chosen -> ask the daemon to open
+        ADDQ.L  #1,(A1)
+        MOVE.W  #10,-(SP)              ; (audible ack until the daemon opens the window)
+        _SysBeep
+@teardown
+        MOVE.W  #kPopMenuID,-(SP)
         _DeleteMenu
-        TST.L   D2
-        BEQ.S   @ret0
-        LEA     gMonReq(PC),A0      ; 'Mitlesen' chosen -> request the monitor
-        ADDQ.L  #1,(A0)
-        MOVE.W  #10,-(SP)
-        _SysBeep                    ; audible confirmation (Stage A self-test)
+        MOVE.L  gPopMenu(PC),A0
+        _DisposeHandle
 @ret0
         CLR.L   8(SP)               ; MenuSelect result = 0 (no menu-bar selection)
         MOVEA.L (SP)+,A0            ; pop return address
