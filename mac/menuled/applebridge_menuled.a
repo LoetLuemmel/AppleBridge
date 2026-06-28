@@ -44,8 +44,17 @@ _GetMenuHandle   OPWORD  $A949        ; Toolbox: (menuID) -> MenuHandle  [stack]
 _GetHandleSize   OPWORD  $A025        ; OS: A0 = Handle -> D0 = size
 _NewGestalt      OPWORD  $A3AD        ; Toolbox: (selector, procPtr) -> OSErr  [stack]
 _TickCount       OPWORD  $A975        ; Toolbox: () -> D0 = ticks
+_NewMenu         OPWORD  $A931        ; Toolbox: (menuID, title) -> MenuHandle  [stack]
+_AppendMenu      OPWORD  $A933        ; Toolbox: (menu, dataStr)                [stack]
+_InsertMenu      OPWORD  $A935        ; Toolbox: (menu, beforeID)               [stack]
+_PopUpMenuSelect OPWORD  $A80B        ; Toolbox: (menu, top, left, item) -> long [stack]
+_DeleteMenu      OPWORD  $A936        ; Toolbox: (menuID)                       [stack]
+_DisposeHandle   OPWORD  $A023        ; OS: A0 = Handle
+_SysBeep         OPWORD  $A9C8        ; Toolbox: (duration)                     [stack]
 
 DrawMenuBarTrap  EQU     $A937
+MenuSelectTrap   EQU     $A93D        ; patched: click on the LED -> 'Mitlesen' pop-up
+kPopMenuID       EQU     230          ; our pop-up menu's id
 SystemTaskTrap   EQU     $A9B4        ; patched for the frequent, throttled redraw
                                       ; (DrawMenuBar alone only fires on bar changes)
 kRedrawTicks     EQU     6            ; ~10 Hz cap on the LED redraw
@@ -103,6 +112,31 @@ ABInitMain  PROC    EXPORT
         MOVE.L  #kABSelector,D0       ; D0 = selector
         LEA     ABGestaltProc(PC),A0  ; A0 = SelectorFunction ProcPtr
         _NewGestalt                   ; D0 = OSErr (ignored; non-fatal)
+
+        ; --- build the one-item 'Mitlesen' pop-up (system heap at INIT time, so it
+        ;     persists), and patch MenuSelect so a click on the LED pops it up ---
+        SUBQ.L  #4,SP                 ; result space (MenuHandle)
+        MOVE.W  #kPopMenuID,-(SP)
+        PEA     popTitle(PC)          ; title (not shown for a pop-up)
+        _NewMenu
+        MOVE.L  (SP)+,A2              ; A2 = menu handle
+        MOVE.L  A2,D0
+        BEQ.S   @nomenu
+        LEA     gPopMenu(PC),A0
+        MOVE.L  A2,(A0)               ; remember the handle
+        MOVE.L  A2,-(SP)
+        PEA     popItem(PC)           ; "Verbose mitlesen"
+        _AppendMenu
+        ; (do NOT InsertMenu here — apps rebuild the menu bar, so a once-inserted
+        ;  pop-up goes stale; we Insert/Delete around PopUpMenuSelect per click)
+@nomenu:
+        MOVE.W  #MenuSelectTrap,D0
+        _GetTrapAddress
+        LEA     oldMenuSelect(PC),A1
+        MOVE.L  A0,(A1)
+        LEA     ourMenuSelect(PC),A0
+        MOVE.W  #MenuSelectTrap,D0
+        _SetTrapAddress
         RTS
 
 ;----------------------------------------------------------------------
@@ -114,7 +148,7 @@ ourDMB
         MOVEM.L D0-D7/A0-A6,-(SP)
         MOVE.L  oldDMB(PC),A0
         JSR     (A0)                  ; original DrawMenuBar (no params/result)
-        BSR.S   DrawDot               ; our LED, on top of the fresh bar
+        BSR     DrawDot               ; our LED, on top of the fresh bar (word branch)
         MOVEM.L (SP)+,D0-D7/A0-A6
         RTS
 
@@ -133,13 +167,81 @@ ourSysTask
         SUB.L   D1,D0               ; D0 = now - lastDraw
         CMP.L   #kRedrawTicks,D0
         BLT.S   @nodraw
-        BSR.S   DrawDot               ; DrawDot resets gLastDraw ONLY when it really
+        BSR     DrawDot               ; DrawDot resets gLastDraw ONLY when it really
                                       ; draws — it bails in the daemon's own context
                                       ; (no Help menu), so the daemon's frequent
                                       ; SystemTask calls never starve the redraw
 @nodraw
         MOVEM.L (SP)+,D0-D7/A0-A6
         RTS
+
+;----------------------------------------------------------------------
+; ourMenuSelect — MenuSelect ($A93D) patch. The app calls this on a mouse-down
+; in the menu bar. If the click is inside the LED rect (gLedT/L/B/R, saved by
+; DrawDot), pop up our one-item 'Mitlesen' menu and, if chosen, bump gMonReq (the
+; daemon polls it and opens the monitor window) + a short beep; then return 0 so
+; the app does nothing further. Otherwise tail-call the original MenuSelect, so
+; every real menu still works untouched.
+;   pascal long MenuSelect(Point startPt)
+;   stack: 0(SP)=ret  4(SP)=startPt(v,h)  8(SP)=result(long)
+;----------------------------------------------------------------------
+ourMenuSelect
+        MOVE.W  4(SP),D0            ; startPt.v (y)
+        MOVE.W  6(SP),D1            ; startPt.h (x)
+        CMP.W   gLedT(PC),D0
+        BLT.S   @pass               ; above the LED
+        CMP.W   gLedB(PC),D0
+        BGE.S   @pass               ; below the LED
+        CMP.W   gLedL(PC),D1
+        BLT.S   @pass               ; left of the LED
+        CMP.W   gLedR(PC),D1
+        BGE.S   @pass               ; right of the LED
+        ; --- HIT: build the 'Mitlesen' pop-up FRESH in this app's context, pop it
+        ;     up, tear it down. (A menu created once at INIT time faulted inside
+        ;     PopUpMenuSelect — wrong heap/MDEF context. Per-click is cheap.) The
+        ;     handle is stashed in gPopMenu so it survives the register-trashing
+        ;     Pascal calls below.
+        SUBQ.L  #4,SP                  ; room for MenuHandle result
+        MOVE.W  #kPopMenuID,-(SP)
+        PEA     popTitle(PC)
+        _NewMenu
+        MOVE.L  (SP)+,A0               ; A0 = new menu handle
+        MOVE.L  A0,D0
+        BEQ     @ret0                  ; nil -> bail (stack already balanced)
+        LEA     gPopMenu(PC),A1
+        MOVE.L  A0,(A1)                ; stash (survives PopUpMenuSelect)
+        MOVE.L  A0,-(SP)
+        PEA     popItem(PC)
+        _AppendMenu
+        MOVE.L  gPopMenu(PC),-(SP)
+        MOVE.W  #-1,-(SP)              ; insert at end of (hierarchical) list
+        _InsertMenu
+        SUBQ.L  #4,SP                  ; room for the long selection result
+        MOVE.L  gPopMenu(PC),-(SP)
+        MOVE.W  #20,-(SP)              ; top  (just under the menu bar)
+        MOVE.W  gLedL(PC),-(SP)        ; left (under the LED)
+        MOVE.W  #0,-(SP)               ; popUpItem = 0: highlight/CHECK nothing
+        _PopUpMenuSelect                ;   (item 1 would get a checkmark -> stray glyph)
+        MOVE.L  (SP)+,D0               ; D0 = selection (0 = none chosen)
+        TST.L   D0
+        BEQ.S   @teardown
+        LEA     gMonReq(PC),A1         ; 'Mitlesen' chosen -> ask the daemon to open
+        ADDQ.L  #1,(A1)
+        MOVE.W  #10,-(SP)              ; (audible ack until the daemon opens the window)
+        _SysBeep
+@teardown
+        MOVE.W  #kPopMenuID,-(SP)
+        _DeleteMenu
+        MOVE.L  gPopMenu(PC),A0
+        _DisposeHandle
+@ret0
+        CLR.L   8(SP)               ; MenuSelect result = 0 (no menu-bar selection)
+        MOVEA.L (SP)+,A0            ; pop return address
+        ADDQ.L  #4,SP              ; remove the Point param (Pascal callee removes)
+        JMP     (A0)               ; return; result long stays on the stack
+@pass
+        MOVE.L  oldMenuSelect(PC),A0
+        JMP     (A0)               ; original MenuSelect, untouched stack
 
 ;----------------------------------------------------------------------
 ; DrawDot — paint the LED into the Window Manager port (the menu bar),
@@ -206,6 +308,13 @@ DrawDot
         MOVE.W  #16,-12(A6)        ; led.bottom
         MOVE.W  D0,-10(A6)         ; led.right
 
+        ; remember the on-screen LED rect for the MenuSelect hit-test
+        LEA     gLedT(PC),A1
+        MOVE.W  #4,(A1)            ; gLedT
+        MOVE.W  D1,2(A1)           ; gLedL
+        MOVE.W  #16,4(A1)          ; gLedB
+        MOVE.W  D0,6(A1)           ; gLedR
+
         ; --- committed to drawing: reset the redraw throttle, then pick colour ---
         MOVE.L  $016A,D0           ; now (Ticks low-mem global)
         LEA     gLastDraw(PC),A1
@@ -264,11 +373,25 @@ ABGestaltProc
 ; detached. PC-relative reads/writes reach it.
 ;----------------------------------------------------------------------
         ALIGN   2
-oldDMB     DC.L 0                     ; saved original DrawMenuBar address
-oldSysTask DC.L 0                     ; saved original SystemTask address
-gLastDraw  DC.L 0                     ; TickCount of our last throttled redraw
-gLastTick DC.L  0                     ; TickCount of last RX/TX (0 = never); the
-                                      ; daemon writes here via the Gestalt selector
+gLastTick     DC.L 0                  ; base: TickCount of last RX (daemon writes,
+                                      ; DrawDot reads). Gestalt 'ABrg' returns &gLastTick.
+gMonReq       DC.L 0                  ; base+4: monitor-window request counter — this
+                                      ; INIT increments it, the daemon polls it. MUST
+                                      ; stay immediately after gLastTick.
+oldDMB        DC.L 0                  ; saved original DrawMenuBar
+oldSysTask    DC.L 0                  ; saved original SystemTask
+oldMenuSelect DC.L 0                  ; saved original MenuSelect
+gLastDraw     DC.L 0                  ; TickCount of our last throttled redraw
+gPopMenu      DC.L 0                  ; the 'Mitlesen' pop-up MenuHandle
+gLedT         DC.W 0                  ; last on-screen LED rect (for the hit-test)
+gLedL         DC.W 0
+gLedB         DC.W 0
+gLedR         DC.W 0
+        ALIGN   2
+popTitle      DC.B 'AB'               ; title (MPW Asm STRING PASCAL adds the len byte)
+        ALIGN   2
+popItem       DC.B 'Verbose'           ; len byte auto-added (STRING PASCAL)
+        ALIGN   2
 
         ENDPROC
         END

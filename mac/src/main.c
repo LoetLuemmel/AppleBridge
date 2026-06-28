@@ -11,6 +11,7 @@
 #include <Events.h>
 #include <Menus.h>
 #include <TextEdit.h>
+#include <Scrap.h>
 #include <Dialogs.h>
 #include <Files.h>
 #include <Processes.h>
@@ -28,20 +29,50 @@ static AppPrefs gPrefs;
 /* Menu IDs */
 #define APPLE_MENU_ID   128
 #define FILE_MENU_ID    129
+#define EDIT_MENU_ID    130
+
+/* Monaco's well-known fixed font ID (not in this older Fonts.h). Monospace, so
+ * command/response columns line up in the monitor log. */
+#define kLogFontID      4
 
 /* Menu items */
 #define ABOUT_ITEM      1
 #define QUIT_ITEM       1
+#define COPY_ITEM       1
+#define DETAILS_ITEM    3      /* Edit: Copy(1), (divider 2), Show details(3) */
 
 static Boolean gRunning = true;
+/* The on-demand "Mitlesen" live-traffic monitor window. The daemon is faceless;
+ * this window only exists between a Mitlesen pick (LED click) and its close. All
+ * the drawing functions are no-ops while it is NULL, so the daemon stays
+ * invisible until asked. It is resizable; close != quit (DisposeWindow, the loop
+ * keeps running). */
 static WindowPtr gStatusWindow = NULL;
+static Boolean gMenuInstalled = false;   /* minimal Apple menu, installed lazily */
+#define MON_MIN_W 240
+#define MON_MIN_H 140
 /* Scrolling log as a ring buffer of the last LOG_LINES lines, redrawn whole on
- * each message (robust: always in-window, survives redraws). Small 9pt font. */
-#define LOG_LINES 18
+ * each message (robust: always in-window, survives redraws). Small 9pt font.
+ * The window reflows to its live size, showing the last lines that fit. */
+/* Keep LOG_LINES*LOG_W (gLog) + the same-size gTEBuf comfortably under the 32 KB
+ * A5 near-data limit: SC compiles with the near data model (the Link's -model far
+ * is code-only), so total globals over 32 KB corrupt A5 addressing and crash on
+ * launch. 60*160*2 = ~19 KB of log buffers leaves headroom; 120 did not. */
+#define LOG_LINES 60
 #define LOG_W     160
 static char  gLog[LOG_LINES][LOG_W];
+/* Per-line kind: 0 = primary ("> command" + its output), 1 = detail (the AE
+ * trace). Both are always stored; the monitor can collapse the detail lines. */
+static unsigned char gLogKind[LOG_LINES];
+static Boolean gShowDetails = false;   /* collapsed by default (clean log) */
 static short gLogHead = 0;   /* next slot to write */
 static short gLogN    = 0;   /* lines currently stored */
+/* The body is a real TextEdit field so the user can mouse-select and copy log
+ * text to the clipboard. It mirrors the ring (rebuilt from it on each dirty
+ * sync). NULL while the window is closed. gTEBuf is the off-stack scratch the
+ * ring is flattened into for TESetText (LOG_LINES*LOG_W ~ under TE's 32 KB cap). */
+static TEHandle gLogTE = NULL;
+static char     gTEBuf[LOG_LINES * LOG_W];
 static Boolean gLogDirty = false;  /* redraw the body from ShowAlive's good
                                     * context (drawing from ProcessRequest, right
                                     * after an OT receive, doesn't render) */
@@ -51,9 +82,15 @@ static long gTickCounter = 0;
  * AppleBridgeMenuLED INIT); NULL if that extension isn't installed. We stamp
  * TickCount() here on each RX so the menu-bar LED flashes on traffic. */
 static long *gMenuLED = NULL;
+/* &gMonReq, the second long in the shared 'ABrg' block (gMenuLED+1). The MenuLED
+ * INIT bumps it when the user picks "Mitlesen" on the menu-bar LED; we poll it
+ * and open the monitor window. NULL if the INIT isn't installed. */
+static long *gMonReqCell = NULL;
+static long  gMonReqSeen = 0;
 static long gStartTick = 0;   /* daemon launch tick (for Alive uptime) */
 static MenuHandle gAppleMenu;
 static MenuHandle gFileMenu;
+static MenuHandle gEditMenu;
 
 /* RX/TX Activity tracking */
 static long gLastRX = 0;     /* Tick count of last receive */
@@ -106,7 +143,7 @@ void DrawLEDs(void)
 {
     Rect statusArea, led;
     Str255 pstr;
-    short i;
+    short i, w;
     long now;
     Boolean active;
     RGBColor ledBright = { 0x1000, 0xE000, 0x1000 };  /* bright green: data moving */
@@ -118,9 +155,10 @@ void DrawLEDs(void)
 
     SetPort(gStatusWindow);
     PenNormal();
+    w = gStatusWindow->portRect.right - gStatusWindow->portRect.left;
 
-    /* Clear the top bar (white background, framed) */
-    SetRect(&statusArea, 0, 0, 400, 18);
+    /* Clear the top bar (white background, framed) — full window width */
+    SetRect(&statusArea, 0, 0, w, 18);
     RGBBackColor(&cWhite);
     RGBForeColor(&cBlack);
     EraseRect(&statusArea);
@@ -179,47 +217,103 @@ void SetActivity(const char *msg)
     DrawLEDs();
 }
 
-/* Simple status display in window */
-/* Redraw the whole log body from the ring buffer (9pt, black on white). */
-void RedrawLog(void)
+/* The log body's rectangle in the window's local coords: full width, between the
+ * top activity bar (18px) and the Alive line + grow box (16px). Reflows with the
+ * window. Inset 2px so text doesn't touch the frame. */
+void MonitorBodyRect(Rect *r)
 {
-    Rect body;
-    Str255 pstr;
+    short w = gStatusWindow->portRect.right - gStatusWindow->portRect.left;
+    short h = gStatusWindow->portRect.bottom - gStatusWindow->portRect.top;
+    SetRect(r, 2, 20, w - 2, h - 17);
+}
+
+/* Flatten the ring into the TextEdit field so its text mirrors the log, then
+ * pin the view to the bottom (newest visible). Rebuilding wholesale resets any
+ * in-progress mouse selection, but only fires on NEW traffic (gLogDirty) — while
+ * the bridge is idle (the usual time you read/copy a result) the selection is
+ * stable. */
+void SyncLogTE(void)
+{
     short line, idx, k;
-    RGBColor cBlack = { 0, 0, 0 };
-    RGBColor cWhite = { 0xFFFF, 0xFFFF, 0xFFFF };
+    long n = 0;
 
-    if (gStatusWindow == NULL) return;
-    SetPort(gStatusWindow);
-
-    SetRect(&body, 0, 19, 400, 282);
-    RGBBackColor(&cWhite);
-    EraseRect(&body);
-    RGBForeColor(&cBlack);
-    TextSize(9);
+    if (gLogTE == NULL) return;
 
     for (line = 0; line < gLogN; line++) {
         idx = (gLogHead - gLogN + line + 2 * LOG_LINES) % LOG_LINES;
-        for (k = 0; gLog[idx][k] && k < 250; k++) pstr[k + 1] = gLog[idx][k];
-        pstr[0] = (unsigned char)k;
-        MoveTo(8, 30 + line * 13);
-        DrawString(pstr);
+        if (!gShowDetails && gLogKind[idx]) continue;   /* collapsed: hide details */
+        for (k = 0; gLog[idx][k] && k < LOG_W - 1; k++) gTEBuf[n++] = gLog[idx][k];
+        gTEBuf[n++] = '\n';                       /* TE line break: MPW C '\n' is
+                                                   * 0x0D (CR), the char TextEdit
+                                                   * breaks on; '\r' is 0x0A (LF),
+                                                   * which TE draws as a box glyph. */
     }
-    TextSize(12);
+    TESetText(gTEBuf, n, gLogTE);
+    TESetSelect(n, n, gLogTE);                    /* caret at the end ... */
+    TESelView(gLogTE);                            /* ... and scroll it into view */
+
+    /* TESetText updates the record but does NOT redraw — repaint the body here
+     * (we run from ShowAlive's render-safe context). Without this only the very
+     * first line (drawn via OpenMonitor's InvalRect) would ever appear. */
+    {
+        Rect body;
+        RGBColor cWhite = { 0xFFFF, 0xFFFF, 0xFFFF };
+        MonitorBodyRect(&body);
+        RGBBackColor(&cWhite);
+        EraseRect(&body);
+        TEUpdate(&body, gLogTE);
+    }
 }
 
-void StatusMessage(const char *msg)
+/* Redraw the log body. With the TE field present (window open) this is a
+ * TEUpdate; the old ring-DrawString path is kept only as a guard. */
+void RedrawLog(void)
+{
+    Rect body;
+    RGBColor cWhite = { 0xFFFF, 0xFFFF, 0xFFFF };
+
+    if (gStatusWindow == NULL || gLogTE == NULL) return;
+    SetPort(gStatusWindow);
+    MonitorBodyRect(&body);
+    RGBBackColor(&cWhite);
+    EraseRect(&body);
+    TEUpdate(&body, gLogTE);
+}
+
+/* Copy the current selection to the clipboard so it can be pasted into any app.
+ * An empty selection means "copy everything" — a quick grab of the whole log. */
+void DoCopyLog(void)
+{
+    if (gLogTE == NULL) return;
+    if ((**gLogTE).selStart == (**gLogTE).selEnd) {
+        TESetSelect(0, (**gLogTE).teLength, gLogTE);
+    }
+    TECopy(gLogTE);
+    ZeroScrap();
+    TEToScrap();
+}
+
+/* Append one log line of the given kind (0=primary, 1=detail) to the ring. */
+static void AddLogLine(const char *msg, short kind)
 {
     short k;
     if (gStatusWindow == NULL) return;
 
     for (k = 0; msg[k] && k < LOG_W - 1; k++) gLog[gLogHead][k] = msg[k];
     gLog[gLogHead][k] = '\0';
+    gLogKind[gLogHead] = (unsigned char)kind;
     gLogHead = (short)((gLogHead + 1) % LOG_LINES);
     if (gLogN < LOG_LINES) gLogN++;
 
     gLogDirty = true;   /* ShowAlive redraws the body from a context that renders */
 }
+
+/* Primary line (command + output): always shown. */
+void StatusMessage(const char *msg) { AddLogLine(msg, 0); }
+
+/* Detail line (AE trace): stored always, hidden when details are collapsed.
+ * Called from command.c's Trace(). */
+void StatusDetail(const char *msg) { AddLogLine(msg, 1); }
 
 /* Show alive indicator with LEDs */
 void ShowAlive(void)
@@ -227,12 +321,14 @@ void ShowAlive(void)
     Rect r;
     char buf[32];
     Str255 pstr;
-    short i;
+    short i, w, h;
     long ticks;
 
     if (gStatusWindow == NULL) return;
 
     SetPort(gStatusWindow);
+    w = gStatusWindow->portRect.right - gStatusWindow->portRect.left;
+    h = gStatusWindow->portRect.bottom - gStatusWindow->portRect.top;
 
     /* Refresh ~8x/sec so the LED flash is caught and reverts promptly */
     ticks = TickCount();
@@ -242,11 +338,12 @@ void ShowAlive(void)
     /* Draw LEDs at top */
     DrawLEDs();
 
-    /* Redraw the console body if new lines arrived (from this good context) */
-    if (gLogDirty) { RedrawLog(); gLogDirty = false; }
+    /* Sync the TE field from the ring if new lines arrived (from this good
+     * context — TESetText draws, which doesn't render in the OT-receive path). */
+    if (gLogDirty) { SyncLogTE(); gLogDirty = false; }
 
-    /* Draw alive indicator at bottom */
-    SetRect(&r, 10, 285, 390, 300);
+    /* Draw alive indicator at the bottom (left of the grow box) */
+    SetRect(&r, 10, h - 15, w - 16, h - 1);
     EraseRect(&r);
 
     /* Show DAEMON uptime broken into d / h / m / s */
@@ -285,7 +382,7 @@ void ShowAlive(void)
     }
     pstr[0] = i;
 
-    MoveTo(10, 295);
+    MoveTo(10, h - 4);
     DrawString("\pAlive: ");
     DrawString(pstr);
 }
@@ -361,6 +458,16 @@ void HandleMenuCommand(long menuResult)
                 gRunning = false;
             }
             break;
+
+        case EDIT_MENU_ID:
+            if (menuItem == COPY_ITEM) {
+                DoCopyLog();
+            } else if (menuItem == DETAILS_ITEM) {
+                gShowDetails = !gShowDetails;
+                CheckItem(gEditMenu, DETAILS_ITEM, gShowDetails);
+                gLogDirty = true;   /* re-sync to expand/collapse detail lines */
+            }
+            break;
     }
 
     HiliteMenu(0);
@@ -426,6 +533,80 @@ void InitApp(void)
 }
 
 /*
+ * Open the on-demand "Mitlesen" live-traffic monitor window (resizable). Called
+ * when the menu-bar LED's "Mitlesen" item is picked (gMonReq bumped). The daemon
+ * is otherwise faceless; this is its only window. A minimal Apple menu is
+ * installed lazily so a foregrounded daemon has a sane menu bar — deliberately NO
+ * Quit item (quitting tears down Open Transport and crashes the SDL2 host).
+ */
+void OpenMonitor(void)
+{
+    Rect r;
+
+    if (gStatusWindow != NULL) {      /* already open: just bring it forward */
+        SelectWindow(gStatusWindow);
+        return;
+    }
+
+    SetRect(&r, 40, 60, 40 + 480, 60 + 340);
+    gStatusWindow = NewCWindow(NULL, &r, "\pAppleBridge - Verbose", true,
+                               zoomDocProc, (WindowPtr)-1L, true, 0);
+    if (gStatusWindow == NULL) return;
+
+    if (!gMenuInstalled) {
+        gAppleMenu = NewMenu(APPLE_MENU_ID, "\p\024");
+        AppendMenu(gAppleMenu, "\pAbout AppleBridge...;(-");
+        AppendResMenu(gAppleMenu, 'DRVR');
+        InsertMenu(gAppleMenu, 0);
+        /* Edit menu so Copy (Cmd-C) is discoverable; the system also routes the
+         * standard Cut/Copy/Paste keys here. We only act on Copy. */
+        gEditMenu = NewMenu(EDIT_MENU_ID, "\pEdit");
+        AppendMenu(gEditMenu, "\pCopy/C;(-;Show details/D");
+        CheckItem(gEditMenu, DETAILS_ITEM, gShowDetails);
+        InsertMenu(gEditMenu, 0);
+        DrawMenuBar();
+        gMenuInstalled = true;
+    }
+
+    SelectWindow(gStatusWindow);
+    SetPort(gStatusWindow);
+
+    /* The body is a TextEdit field (monospace 9pt) so the log is mouse-
+     * selectable and copyable. Monaco reads well for command/response text. */
+    {
+        Rect body;
+        MonitorBodyRect(&body);
+        TextFont(kLogFontID);
+        TextSize(9);
+        gLogTE = TENew(&body, &body);
+        if (gLogTE != NULL) {
+            TEAutoView(true, gLogTE);     /* let TESelView scroll to the bottom */
+            TEActivate(gLogTE);           /* show selection highlight */
+        }
+        TextSize(12);
+    }
+
+    StatusMessage("--- Verbose: live bridge traffic ---");
+    gLogDirty = true;
+    gTickCounter = 0;                 /* force the next ShowAlive to redraw */
+    InvalRect(&gStatusWindow->portRect);
+}
+
+/*
+ * Poll the shared 'ABrg' block for a Mitlesen request from the menu-bar LED and
+ * open (or re-foreground) the monitor window when it changes. Cheap: one deref
+ * and compare. No-op when the MenuLED INIT isn't installed (gMonReqCell NULL).
+ */
+void PollMonitorRequest(void)
+{
+    if (gMonReqCell == NULL) return;
+    if (*gMonReqCell != gMonReqSeen) {
+        gMonReqSeen = *gMonReqCell;
+        OpenMonitor();
+    }
+}
+
+/*
  * Check for user interrupt and process events
  */
 Boolean CheckUserAbort(void)
@@ -462,14 +643,63 @@ Boolean CheckUserAbort(void)
                         }
                         break;
                     case inGoAway:
+                        /* Close != quit: tear down the TE field + window, the
+                         * daemon keeps running (gRunning stays true). */
                         if (window == gStatusWindow) {
                             if (TrackGoAway(window, event.where)) {
-                                gRunning = false;
+                                if (gLogTE != NULL) {
+                                    TEDispose(gLogTE);
+                                    gLogTE = NULL;
+                                }
+                                DisposeWindow(window);
+                                gStatusWindow = NULL;
+                            }
+                        }
+                        break;
+                    case inGrow:
+                        if (window == gStatusWindow) {
+                            Rect limits;
+                            long newSize;
+                            SetRect(&limits, MON_MIN_W, MON_MIN_H,
+                                    qd.screenBits.bounds.right,
+                                    qd.screenBits.bounds.bottom);
+                            newSize = GrowWindow(window, event.where, &limits);
+                            if (newSize != 0) {
+                                SizeWindow(window, LoWord(newSize),
+                                           HiWord(newSize), true);
+                                /* Reflow the TE field to the new body; the next
+                                 * ShowAlive re-wraps + re-pins to the bottom. */
+                                if (gLogTE != NULL) {
+                                    Rect body;
+                                    MonitorBodyRect(&body);
+                                    (**gLogTE).viewRect = body;
+                                    (**gLogTE).destRect = body;
+                                    gLogDirty = true;
+                                }
+                                InvalRect(&window->portRect);
                             }
                         }
                         break;
                     case inContent:
-                        SelectWindow(window);
+                        /* In our window: a click brings it front (if needed) or,
+                         * when already front, starts a TE text selection. */
+                        if (window == gStatusWindow) {
+                            if (window != FrontWindow()) {
+                                SelectWindow(window);
+                            } else if (gLogTE != NULL) {
+                                Point pt = event.where;
+                                Rect body;
+                                SetPort(window);
+                                GlobalToLocal(&pt);
+                                MonitorBodyRect(&body);
+                                if (PtInRect(pt, &body)) {
+                                    TEClick(pt, (event.modifiers & shiftKey) != 0,
+                                            gLogTE);
+                                }
+                            }
+                        } else {
+                            SelectWindow(window);
+                        }
                         break;
                 }
                 break;
@@ -485,10 +715,20 @@ Boolean CheckUserAbort(void)
                 }
                 break;
 
+            case activateEvt:
+                if ((WindowPtr)event.message == gStatusWindow && gLogTE != NULL) {
+                    if (event.modifiers & activeFlag) TEActivate(gLogTE);
+                    else                               TEDeactivate(gLogTE);
+                }
+                break;
+
             case updateEvt:
                 BeginUpdate((WindowPtr)event.message);
                 DrawLEDs();   /* top bar (activity) */
-                RedrawLog();   /* console body — else updates wipe it blank */
+                RedrawLog();   /* console body (TEUpdate) — else updates wipe it */
+                if ((WindowPtr)event.message == gStatusWindow) {
+                    DrawGrowIcon(gStatusWindow);   /* size box / bottom frame */
+                }
                 EndUpdate((WindowPtr)event.message);
                 break;
         }
@@ -852,7 +1092,14 @@ int main(void)
      * Gestalt fails -> gMenuLED stays NULL -> the stamp is a no-op. */
     {
         long abResp;
-        if (Gestalt('ABrg', &abResp) == noErr) gMenuLED = (long *) abResp;
+        if (Gestalt('ABrg', &abResp) == noErr) {
+            gMenuLED = (long *) abResp;
+            /* Shared block layout: [0]=gLastTick (we stamp RX), [1]=gMonReq (the
+             * INIT bumps on a Mitlesen pick). Seed 'seen' from the current value
+             * so a pre-existing count doesn't pop the window at launch. */
+            gMonReqCell = gMenuLED + 1;
+            gMonReqSeen = *gMonReqCell;
+        }
     }
 
     /* Load config from "AppleBridge Prefs" (host IP + chain-launch apps). The
@@ -936,6 +1183,7 @@ int main(void)
         }
 
         SystemTask();
+        PollMonitorRequest();   /* LED "Mitlesen" pick -> open the monitor window */
         ShowAlive();
 
         if (CheckUserAbort()) {
@@ -1016,6 +1264,10 @@ int main(void)
 
     /* Faceless: nothing to click. The loop ended because gRunning went false
      * (QUITDAEMON verb or a kAEQuitApplication), so just exit. */
+    if (gLogTE) {
+        TEDispose(gLogTE);
+        gLogTE = NULL;
+    }
     if (gStatusWindow) {
         DisposeWindow(gStatusWindow);
     }
