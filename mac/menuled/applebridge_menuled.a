@@ -32,7 +32,10 @@ _HLock           OPWORD  $A029        ; OS:      A0 = Handle
 _GetTrapAddress  OPWORD  $A146        ; OS:      D0 = trap word -> A0
 _SetTrapAddress  OPWORD  $A047        ; OS:      A0 = addr, D0 = trap word
 _GetPort         OPWORD  $A874        ; Toolbox: (VAR GrafPtr)       [stack]
-_GetWMgrPort     OPWORD  $A910        ; Toolbox: (VAR GrafPtr)       [stack]
+_GetCWMgrPort    OPWORD  $AA48        ; Toolbox: (VAR CGrafPtr) — the COLOR WMgr
+                                      ; port, so RGBForeColor gives TRUE colours
+                                      ; (the basic port rounds to 8 QD colours, so
+                                      ;  dark green collapses to black)
 _SetPort         OPWORD  $A873        ; Toolbox: (GrafPtr)           [stack]
 _RGBForeColor    OPWORD  $AA14        ; Toolbox: (VAR RGBColor)      [stack]
 _PaintOval       OPWORD  $A8B8        ; Toolbox: (VAR Rect)          [stack]
@@ -112,9 +115,9 @@ DrawDot
         LINK    A6,#-24
         PEA     -4(A6)                ; &savePort
         _GetPort
-        PEA     -8(A6)                ; &wmgrPort
-        _GetWMgrPort
-        MOVE.L  -8(A6),A0             ; A0 = wmgrPort
+        PEA     -8(A6)                ; &wmgrPort (CGrafPtr — colour WMgr port)
+        _GetCWMgrPort
+        MOVE.L  -8(A6),A0             ; A0 = colour WMgr port
         MOVE.L  A0,D0
         BEQ     @done                ; (word branch: @done is now far)
         MOVE.L  A0,-(SP)
