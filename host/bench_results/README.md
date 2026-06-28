@@ -83,3 +83,7 @@ the caveat the migration plan flagged.
 Trade-off, not a clear win: slirp buys **dock-independence + lower latency** at the
 price of **much slower bulk transfer** (DumpFile, screenshots, large file reads).
 Which matters more depends on the workload.
+
+**Decision (2026-06-28): stay on `etherhelper/en8`** — the bulk-transfer regression and
+the loss of real-LAN AppleShare outweigh slirp's latency/dock-independence gains. slirp
+remains a documented, prefs-swappable option; revisit only with a `libslirp`-based build.
