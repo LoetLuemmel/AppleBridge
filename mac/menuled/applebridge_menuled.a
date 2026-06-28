@@ -37,12 +37,15 @@ _SetPort         OPWORD  $A873        ; Toolbox: (GrafPtr)           [stack]
 _RGBForeColor    OPWORD  $AA14        ; Toolbox: (VAR RGBColor)      [stack]
 _PaintOval       OPWORD  $A8B8        ; Toolbox: (VAR Rect)          [stack]
 _FrameOval       OPWORD  $A8B7        ; Toolbox: (VAR Rect)          [stack]
+_GetMenuHandle   OPWORD  $A949        ; Toolbox: (menuID) -> MenuHandle  [stack]
+_GetHandleSize   OPWORD  $A025        ; OS: A0 = Handle -> D0 = size
 
 DrawMenuBarTrap  EQU     $A937
-kRightInset      EQU     78           ; FALLBACK px from screen-right to the LED's
-                                      ; right edge if the menu list can't be parsed
+kHelpMenuID      EQU     -16490       ; kHMHelpMenuID — the system Help menu (the
+                                      ; LEFTMOST right-justified menu); we anchor to it
+kRightInset      EQU     78           ; FALLBACK px from screen-right if Help not found
 kLedWidth        EQU     12
-kGap             EQU     6            ; px gap left of the right-justified menus
+kGap             EQU     6            ; px gap left of the Help menu
 MenuListGlobal   EQU     $0A1C        ; low-mem: Handle to the current menu bar list
 
 ;----------------------------------------------------------------------
@@ -109,45 +112,42 @@ DrawDot
         MOVE.W  D6,D7
         SUB.W   #kRightInset,D7
 
-        ; --- dynamic: place the LED just left of the right-justified menu group ---
-        ; Menu-bar list layout: +0 lastMenu(=6*nLeft) | +2 lastRight | +4 mbResID |
-        ; then nLeft {menuH:long, menuLeft:word} entries; at +6+lastMenu a word
-        ; nRight(=6*nRight) then the right-justified {menuH, menuLeft} entries.
-        ; We take the smallest menuLeft among the right entries. All reads are
-        ; bounds-checked; any garbage falls through to the fixed fallback (D7).
-        MOVE.L  MenuListGlobal,A0   ; MenuList handle
+        ; --- dynamic: anchor to the Help menu (leftmost right-justified menu) ---
+        ; helpH = GetMenuHandle(kHMHelpMenuID); then locate that exact 4-byte handle
+        ; inside the current menu-bar list block and read the menuLeft word that
+        ; follows it (entry layout {menuHandle:long, menuLeft:word}). No knowledge of
+        ; the right-group structure is needed — we match OUR known handle value.
+        ; Word-aligned scan, bounded by the block's GetHandleSize; any miss/garbage
+        ; falls through to the fixed fallback (D7).
+        SUBQ.L  #4,SP
+        MOVE.W  #kHelpMenuID,-(SP)
+        _GetMenuHandle
+        MOVE.L  (SP)+,D2           ; D2 = Help menu handle (or nil)
+        BEQ     @anchor
+        MOVE.L  MenuListGlobal,A0  ; MenuList handle
         MOVE.L  A0,D0
-        BEQ.S   @anchor
-        MOVE.L  (A0),A1            ; A1 = menu list base ptr
-        MOVE.L  A1,D0
-        BEQ.S   @anchor
-        MOVE.W  (A1),D2            ; lastMenu (6 * nLeft)
-        BLE.S   @anchor
-        CMP.W   #600,D2
-        BGT.S   @anchor
-        MOVE.W  2(A1),D3           ; lastRight (right edge of the left menus)
-        MOVE.W  D2,D4
-        ADDQ.W  #6,D4              ; D4 -> right-group header word
-        MOVE.W  0(A1,D4.W),D5      ; nRight (6 * count)
-        BLE.S   @anchor
-        CMP.W   #600,D5
-        BGT.S   @anchor
-        ADDQ.W  #2,D4              ; D4 -> first right-justified entry
-        MOVE.W  #$7FFF,D1          ; running min menuLeft
-@rloop
-        MOVE.W  4(A1,D4.W),D0      ; entry.menuLeft
-        CMP.W   D1,D0
-        BGE.S   @rnext
-        MOVE.W  D0,D1
-@rnext
-        ADDQ.W  #6,D4
-        SUBQ.W  #6,D5
-        BGT.S   @rloop
-        CMP.W   D3,D1              ; valid only if lastRight < min < screenRight
-        BLE.S   @anchor
+        BEQ     @anchor
+        MOVE.L  A0,A3
+        _GetHandleSize             ; OS: A0 = handle -> D0 = block size
+        MOVE.L  D0,D3
+        SUBQ.L  #6,D3              ; last offset where {long,word} fits
+        BLE     @anchor
+        MOVE.L  (A3),A1            ; A1 = block ptr
+        MOVEQ   #0,D4              ; D4 = scan offset
+@scan
+        CMP.L   D3,D4
+        BGT     @anchor            ; scanned the whole block, no match -> fallback
+        MOVE.L  0(A1,D4.L),D5      ; candidate menuHandle
+        CMP.L   D2,D5
+        BEQ.S   @found
+        ADDQ.L  #2,D4
+        BRA.S   @scan
+@found
+        MOVE.W  4(A1,D4.L),D1      ; D1 = Help menu's menuLeft
+        BLE     @anchor            ; <= 0 -> fallback
         CMP.W   D6,D1
-        BGE.S   @anchor
-        MOVE.W  D1,D7              ; ledRight = leftmost right-menu - kGap
+        BGE     @anchor            ; >= screenRight -> fallback
+        MOVE.W  D1,D7              ; ledRight = HelpLeft - kGap
         SUB.W   #kGap,D7
 @anchor
         MOVE.W  D7,D0               ; led.right
