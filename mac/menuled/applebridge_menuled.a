@@ -388,9 +388,9 @@ gLedL         DC.W 0
 gLedB         DC.W 0
 gLedR         DC.W 0
         ALIGN   2
-popTitle      DC.B 2,'AB'             ; pop-up menu title (not shown for a pop-up)
+popTitle      DC.B 'AB'               ; title (MPW Asm STRING PASCAL adds the len byte)
         ALIGN   2
-popItem       DC.B 16,'Verbose mitlesen'
+popItem       DC.B 'Verbose mitlesen'  ; len byte auto-added (no explicit count!)
         ALIGN   2
 
         ENDPROC

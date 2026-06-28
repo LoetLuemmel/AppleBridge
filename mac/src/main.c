@@ -470,7 +470,7 @@ void OpenMonitor(void)
     }
 
     SetRect(&r, 40, 60, 40 + 480, 60 + 340);
-    gStatusWindow = NewCWindow(NULL, &r, "\pAppleBridge - Mitlesen", true,
+    gStatusWindow = NewCWindow(NULL, &r, "\pAppleBridge - Verbose mitlesen", true,
                                zoomDocProc, (WindowPtr)-1L, true, 0);
     if (gStatusWindow == NULL) return;
 
@@ -485,7 +485,7 @@ void OpenMonitor(void)
 
     SelectWindow(gStatusWindow);
     SetPort(gStatusWindow);
-    StatusMessage("--- Mitlesen: live bridge traffic ---");
+    StatusMessage("--- Verbose mitlesen: live bridge traffic ---");
     gLogDirty = true;
     gTickCounter = 0;                 /* force the next ShowAlive to redraw */
     InvalRect(&gStatusWindow->portRect);
