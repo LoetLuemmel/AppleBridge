@@ -54,7 +54,11 @@ static Boolean gMenuInstalled = false;   /* minimal Apple menu, installed lazily
 /* Scrolling log as a ring buffer of the last LOG_LINES lines, redrawn whole on
  * each message (robust: always in-window, survives redraws). Small 9pt font.
  * The window reflows to its live size, showing the last lines that fit. */
-#define LOG_LINES 120
+/* Keep LOG_LINES*LOG_W (gLog) + the same-size gTEBuf comfortably under the 32 KB
+ * A5 near-data limit: SC compiles with the near data model (the Link's -model far
+ * is code-only), so total globals over 32 KB corrupt A5 addressing and crash on
+ * launch. 60*160*2 = ~19 KB of log buffers leaves headroom; 120 did not. */
+#define LOG_LINES 60
 #define LOG_W     160
 static char  gLog[LOG_LINES][LOG_W];
 /* Per-line kind: 0 = primary ("> command" + its output), 1 = detail (the AE
