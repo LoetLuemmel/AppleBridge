@@ -81,15 +81,13 @@ ABInitMain  PROC    EXPORT
         _SetTrapAddress               ; route DrawMenuBar through us
 
         ; --- register Gestalt 'ABrg' -> &gLastTick (the activity channel) ---
-        ; The callback is PC-addressable and lives in the system heap (resSysHeap),
-        ; which is exactly what NewGestalt requires — the construct a C INIT could
-        ; not form (see mac/init/README.md).
-        SUBQ.L  #2,SP                 ; OSErr result space
-        MOVE.L  #kABSelector,-(SP)    ; selector
-        LEA     ABGestaltProc(PC),A0
-        MOVE.L  A0,-(SP)              ; SelectorFunctionUPP
-        _NewGestalt
-        ADDQ.L  #2,SP                 ; discard result (non-fatal if it fails)
+        ; NewGestalt is a REGISTER-based trap (like Gestalt): D0 = selector,
+        ; A0 = selector-function ProcPtr, returns D0 = OSErr. (The C glue hid this;
+        ; pushing params on the stack corrupts it and wedges the boot.) The callback
+        ; is PC-addressable and in the system heap (resSysHeap) — what C couldn't do.
+        MOVE.L  #kABSelector,D0       ; D0 = selector
+        LEA     ABGestaltProc(PC),A0  ; A0 = SelectorFunction ProcPtr
+        _NewGestalt                   ; D0 = OSErr (ignored; non-fatal)
         RTS
 
 ;----------------------------------------------------------------------
