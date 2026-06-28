@@ -39,8 +39,13 @@ _PaintOval       OPWORD  $A8B8        ; Toolbox: (VAR Rect)          [stack]
 _FrameOval       OPWORD  $A8B7        ; Toolbox: (VAR Rect)          [stack]
 _GetMenuHandle   OPWORD  $A949        ; Toolbox: (menuID) -> MenuHandle  [stack]
 _GetHandleSize   OPWORD  $A025        ; OS: A0 = Handle -> D0 = size
+_NewGestalt      OPWORD  $A3AD        ; Toolbox: (selector, procPtr) -> OSErr  [stack]
+_TickCount       OPWORD  $A975        ; Toolbox: () -> D0 = ticks
 
 DrawMenuBarTrap  EQU     $A937
+kABSelector      EQU     'ABrg'       ; Gestalt selector: returns &gLastTick so the
+                                      ; daemon can publish activity into our block
+kFlashTicks      EQU     40           ; ticks (~0.66s): recent stamp => bright (active)
 kHelpMenuID      EQU     -16490       ; kHMHelpMenuID — the system Help menu (the
                                       ; LEFTMOST right-justified menu); we anchor to it
 kRightInset      EQU     78           ; FALLBACK px from screen-right if Help not found
@@ -74,6 +79,17 @@ ABInitMain  PROC    EXPORT
         LEA     ourDMB(PC),A0         ; our patch
         MOVE.W  #DrawMenuBarTrap,D0
         _SetTrapAddress               ; route DrawMenuBar through us
+
+        ; --- register Gestalt 'ABrg' -> &gLastTick (the activity channel) ---
+        ; The callback is PC-addressable and lives in the system heap (resSysHeap),
+        ; which is exactly what NewGestalt requires — the construct a C INIT could
+        ; not form (see mac/init/README.md).
+        SUBQ.L  #2,SP                 ; OSErr result space
+        MOVE.L  #kABSelector,-(SP)    ; selector
+        LEA     ABGestaltProc(PC),A0
+        MOVE.L  A0,-(SP)              ; SelectorFunctionUPP
+        _NewGestalt
+        ADDQ.L  #2,SP                 ; discard result (non-fatal if it fails)
         RTS
 
 ;----------------------------------------------------------------------
@@ -157,9 +173,23 @@ DrawDot
         MOVE.W  D1,-14(A6)          ; led.left
         MOVE.W  #16,-12(A6)         ; led.bottom
         MOVE.W  D0,-10(A6)          ; led.right
-        MOVE.W  #$1000,-22(A6)        ; rgb.red    } bright green
-        MOVE.W  #$E000,-20(A6)        ; rgb.green  }
-        MOVE.W  #$1000,-18(A6)        ; rgb.blue   }
+        ; colour by activity: (now - gLastTick) < kFlashTicks => bright green
+        ; (active), else dark green (passive). gLastTick == 0 (never stamped) = idle.
+        MOVE.L  gLastTick(PC),D2     ; last activity tick
+        BEQ.S   @idle
+        _TickCount                   ; D0 = now
+        SUB.L   D2,D0               ; D0 = now - last
+        CMP.L   #kFlashTicks,D0
+        BGE.S   @idle
+        MOVE.W  #$1000,-22(A6)       ; bright green (active)
+        MOVE.W  #$E000,-20(A6)
+        MOVE.W  #$1000,-18(A6)
+        BRA.S   @paintled
+@idle
+        MOVE.W  #$0000,-22(A6)       ; dark green (passive)
+        MOVE.W  #$5800,-20(A6)
+        MOVE.W  #$0000,-18(A6)
+@paintled
         PEA     -22(A6)
         _RGBForeColor
         PEA     -16(A6)
@@ -178,11 +208,29 @@ DrawDot
         RTS
 
 ;----------------------------------------------------------------------
+; ABGestaltProc — Gestalt selector 'ABrg' callback. Returns the address of
+; our resident gLastTick cell so the daemon can stamp activity into it.
+;   pascal OSErr ABGestaltProc(OSType selector, long *response)
+; Stack at entry: 0(SP)=ret 4(SP)=response 8(SP)=selector 12(SP)=result(word).
+; PC-addressable + in the system heap (resSysHeap) — what C couldn't do.
+;----------------------------------------------------------------------
+ABGestaltProc
+        MOVE.L  4(SP),A0              ; A0 = response (long*)
+        LEA     gLastTick(PC),A1
+        MOVE.L  A1,(A0)               ; *response = &gLastTick
+        CLR.W   12(SP)               ; function result = noErr
+        MOVEA.L (SP)+,A0              ; pop return address
+        ADDQ.L  #8,SP                ; pop selector + response (Pascal: callee removes)
+        JMP     (A0)                 ; return; result word stays on the stack
+
+;----------------------------------------------------------------------
 ; Resident data — valid because the resource is resSysHeap,resLocked and
 ; detached. PC-relative reads/writes reach it.
 ;----------------------------------------------------------------------
         ALIGN   2
-oldDMB  DC.L    0                     ; saved original DrawMenuBar address
+oldDMB    DC.L  0                     ; saved original DrawMenuBar address
+gLastTick DC.L  0                     ; TickCount of last RX/TX (0 = never); the
+                                      ; daemon writes here via the Gestalt selector
 
         ENDPROC
         END
