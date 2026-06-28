@@ -243,7 +243,10 @@ void SyncLogTE(void)
         idx = (gLogHead - gLogN + line + 2 * LOG_LINES) % LOG_LINES;
         if (!gShowDetails && gLogKind[idx]) continue;   /* collapsed: hide details */
         for (k = 0; gLog[idx][k] && k < LOG_W - 1; k++) gTEBuf[n++] = gLog[idx][k];
-        gTEBuf[n++] = '\r';                       /* TE line break */
+        gTEBuf[n++] = '\n';                       /* TE line break: MPW C '\n' is
+                                                   * 0x0D (CR), the char TextEdit
+                                                   * breaks on; '\r' is 0x0A (LF),
+                                                   * which TE draws as a box glyph. */
     }
     TESetText(gTEBuf, n, gLogTE);
     TESetSelect(n, n, gLogTE);                    /* caret at the end ... */
