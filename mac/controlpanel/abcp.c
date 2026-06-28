@@ -63,6 +63,7 @@ static void    DaemonString(Str255 d, Boolean running);
 static void    AutoString(Str255 d, Boolean installed);
 static void    ShowText(DialogPtr cpDialog, short numItems, short whichItem,
                         ConstStr255Param text);
+static void    DrawLED(DialogPtr cpDialog, const Rect *box, Boolean good);
 static void    ShowPrefsLines(DialogPtr cpDialog, short numItems);
 static void    PollAndShow(long cdevValue, short numItems, DialogPtr cpDialog);
 
@@ -294,6 +295,40 @@ static void ShowText(DialogPtr cpDialog, short numItems, short whichItem,
     ((WindowPeek) cpDialog)->windowKind = saveKind;
 }
 
+/* Draw a status LED just LEFT of a status line: light-green = good, light-red =
+ * bad. A4-free: RGBColor fields set with immediate constants (no initialised-data
+ * globals), and only inline Color-QuickDraw traps (RGBForeColor/PaintOval/FrameOval).
+ * The LED sits at a fixed x (94..106) inside the panel but outside any DITL item
+ * box (the status items start at left=114), so SetDialogItemText never erases it.
+ * `box` is the status item's display rect, used only for vertical alignment. */
+static void DrawLED(DialogPtr cpDialog, const Rect *box, Boolean good)
+{
+    GrafPtr  savePort;
+    RGBColor saveFore, c;
+    Rect     led;
+
+    GetPort(&savePort);
+    SetPort((GrafPtr) cpDialog);
+    GetForeColor(&saveFore);
+
+    led.top    = (short)(box->top + 2);
+    led.left   = 94;
+    led.bottom = (short)(box->top + 14);
+    led.right  = 106;
+
+    if (good) { c.red = 0x2000; c.green = 0xD000; c.blue = 0x2000; }  /* hellgrün */
+    else      { c.red = 0xF000; c.green = 0x3000; c.blue = 0x3000; }  /* hellrot  */
+    RGBForeColor(&c);
+    PaintOval(&led);
+
+    c.red = c.green = c.blue = 0;            /* black ring for definition */
+    RGBForeColor(&c);
+    FrameOval(&led);
+
+    RGBForeColor(&saveFore);                 /* restore caller's colour + port */
+    SetPort(savePort);
+}
+
 /* Read the prefs file ONCE and show two lines from it: the host IP ("Host IP:
  * <value>" from the IP= line) and the helper list ("Helpers: name1, name2" from
  * each APP= line's leaf, or "Helpers: none"). A4-free: char constants + file bytes. */
@@ -384,4 +419,16 @@ static void PollAndShow(long cdevValue, short numItems, DialogPtr cpDialog)
     if (drawD) { Str255 b; DaemonString(b, dnow); ShowText(cpDialog, numItems, kStatus, b); }
     if (drawA) { Str255 b; AutoString(b, anow);   ShowText(cpDialog, numItems, kAutostart, b); }
     if (drawH) ShowPrefsLines(cpDialog, numItems);   /* host IP + helper list */
+
+    /* LEDs: redraw EVERY poll (not just on change) so they survive update events,
+     * using the item boxes only for vertical alignment. Two small ovals/tick. */
+    {
+        short  type;
+        Handle ih;
+        Rect   box;
+        GetDialogItem(cpDialog, numItems + kStatus, &type, &ih, &box);
+        DrawLED(cpDialog, &box, (Boolean) dnow);
+        GetDialogItem(cpDialog, numItems + kAutostart, &type, &ih, &box);
+        DrawLED(cpDialog, &box, (Boolean) anow);
+    }
 }

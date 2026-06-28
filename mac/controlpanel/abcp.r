@@ -16,11 +16,14 @@ resource 'DITL' (-4064, purgeable) {
             "AppleBridge cdev - step 4c: daemon + autostart status, host IP, "
             "helper apps, and Add Helper App."
         };
-        /* 2: the daemon status, updated via SetDialogItemText on nulDev */
-        {42, 92, 58, 318},
+        /* 2: the daemon status, updated via SetDialogItemText on nulDev.
+         *    Left edge indented to 114 so the LED (x 94..106) drawn by the cdev
+         *    sits in a region owned by NO DITL item (Dialog Mgr won't erase it). */
+        {42, 114, 58, 318},
         StaticText { disabled, "(checking daemon...)" };
-        /* 3: the autostart status, updated via SetDialogItemText on nulDev */
-        {60, 92, 76, 318},
+        /* 3: the autostart status, updated via SetDialogItemText on nulDev.
+         *    Left edge indented to 114 for the same LED reason. */
+        {60, 114, 76, 318},
         StaticText { disabled, "(checking autostart...)" };
         /* 4: the host IP, read from the prefs file's IP= line */
         {78, 92, 94, 318},
