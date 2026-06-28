@@ -125,35 +125,32 @@ DrawDot
         MOVE.L  -8(A6),A0
         MOVE.W  22(A0),D6            ; D6 = screenRight (portRect.right)
 
-        ; fallback ledRight = screenRight - kRightInset
-        MOVE.W  D6,D7
-        SUB.W   #kRightInset,D7
-
-        ; --- dynamic: anchor to the Help menu (leftmost right-justified menu) ---
+        ; --- anchor to the Help menu (leftmost right-justified menu) ---
         ; helpH = GetMenuHandle(kHMHelpMenuID); then locate that exact 4-byte handle
-        ; inside the current menu-bar list block and read the menuLeft word that
-        ; follows it (entry layout {menuHandle:long, menuLeft:word}). No knowledge of
-        ; the right-group structure is needed — we match OUR known handle value.
-        ; Word-aligned scan, bounded by the block's GetHandleSize; any miss/garbage
-        ; falls through to the fixed fallback (D7).
+        ; in the current menu-bar list block and read the menuLeft word after it
+        ; (entry layout {menuHandle:long, menuLeft:word}) — no knowledge of the
+        ; right-group structure needed. If the Help menu is NOT in the bar yet
+        ; (early boot, before the system's right-justified icons appear) we SKIP
+        ; drawing, so the LED fades in only once that group exists — never at a
+        ; lone fixed position before the other icons.
         SUBQ.L  #4,SP
         MOVE.W  #kHelpMenuID,-(SP)
         _GetMenuHandle
         MOVE.L  (SP)+,D2           ; D2 = Help menu handle (or nil)
-        BEQ     @anchor
+        BEQ     @restore           ; no Help menu yet -> don't draw this pass
         MOVE.L  MenuListGlobal,A0  ; MenuList handle
         MOVE.L  A0,D0
-        BEQ     @anchor
+        BEQ     @restore
         MOVE.L  A0,A3
         _GetHandleSize             ; OS: A0 = handle -> D0 = block size
         MOVE.L  D0,D3
         SUBQ.L  #6,D3              ; last offset where {long,word} fits
-        BLE     @anchor
+        BLE     @restore
         MOVE.L  (A3),A1            ; A1 = block ptr
         MOVEQ   #0,D4              ; D4 = scan offset
 @scan
         CMP.L   D3,D4
-        BGT     @anchor            ; scanned the whole block, no match -> fallback
+        BGT     @restore           ; Help handle not in the list -> don't draw
         MOVE.L  0(A1,D4.L),D5      ; candidate menuHandle
         CMP.L   D2,D5
         BEQ.S   @found
@@ -161,12 +158,11 @@ DrawDot
         BRA.S   @scan
 @found
         MOVE.W  4(A1,D4.L),D1      ; D1 = Help menu's menuLeft
-        BLE     @anchor            ; <= 0 -> fallback
+        BLE     @restore           ; invalid -> don't draw
         CMP.W   D6,D1
-        BGE     @anchor            ; >= screenRight -> fallback
+        BGE     @restore
         MOVE.W  D1,D7              ; ledRight = HelpLeft - kGap
         SUB.W   #kGap,D7
-@anchor
         MOVE.W  D7,D0               ; led.right
         MOVE.W  D7,D1
         SUB.W   #kLedWidth,D1       ; led.left
@@ -202,7 +198,8 @@ DrawDot
         _RGBForeColor
         PEA     -16(A6)
         _FrameOval
-        MOVE.L  -4(A6),-(SP)         ; restore caller's port
+@restore
+        MOVE.L  -4(A6),-(SP)         ; restore caller's port (also the skip target)
         _SetPort
 @done
         UNLK    A6
