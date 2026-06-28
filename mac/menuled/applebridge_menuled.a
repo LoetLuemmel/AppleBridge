@@ -125,7 +125,7 @@ ABInitMain  PROC    EXPORT
         LEA     gPopMenu(PC),A0
         MOVE.L  A2,(A0)               ; remember the handle
         MOVE.L  A2,-(SP)
-        PEA     popItem(PC)           ; "Mitlesen"
+        PEA     popItem(PC)           ; "Verbose mitlesen"
         _AppendMenu
         ; (do NOT InsertMenu here — apps rebuild the menu bar, so a once-inserted
         ;  pop-up goes stale; we Insert/Delete around PopUpMenuSelect per click)
@@ -220,8 +220,8 @@ ourMenuSelect
         MOVE.L  gPopMenu(PC),-(SP)
         MOVE.W  #20,-(SP)              ; top  (just under the menu bar)
         MOVE.W  gLedL(PC),-(SP)        ; left (under the LED)
-        MOVE.W  #1,-(SP)               ; popUpItem = 1
-        _PopUpMenuSelect
+        MOVE.W  #0,-(SP)               ; popUpItem = 0: highlight/CHECK nothing
+        _PopUpMenuSelect                ;   (item 1 would get a checkmark -> stray glyph)
         MOVE.L  (SP)+,D0               ; D0 = selection (0 = none chosen)
         TST.L   D0
         BEQ.S   @teardown
@@ -390,7 +390,7 @@ gLedR         DC.W 0
         ALIGN   2
 popTitle      DC.B 2,'AB'             ; pop-up menu title (not shown for a pop-up)
         ALIGN   2
-popItem       DC.B 8,'Mitlesen'
+popItem       DC.B 16,'Verbose mitlesen'
         ALIGN   2
 
         ENDPROC
