@@ -1,0 +1,274 @@
+;
+; AppleBridgeMenuLED — System 7 'INIT' (creator 'ABin') — STAGE 1
+;
+; Goal of this stage: prove the riskiest mechanism in isolation — a resident,
+; trap-patching code resource that draws into the menu bar across ALL apps
+; without crashing. It installs a TAIL patch on DrawMenuBar ($A937): every time
+; any app (re)draws the menu bar, the original runs and then we paint a small
+; fixed-colour LED at the top-right. Nothing erases that strip between redraws,
+; so a single DrawMenuBar patch keeps the dot persistent.
+;
+; Stage 1 has NO Gestalt selector and NO activity wiring yet — the colour is a
+; fixed bright green just to confirm it shows and survives app switches.
+;
+; Why assembly (see mac/init/README.md): a C 'INIT' can't form a working
+; PC-relative reference to its own resident routines in a code resource. In asm,
+; LEA label(PC),An is natural and nothing is dead-stripped.
+;
+; This MPW assembler does not auto-define the _Trap call macros, so (like the
+; project's Add5and2.a) every trap used is declared with OPWORD = its A-line word.
+; Register vs stack conventions are ours to honour: HLock/GetTrapAddress/
+; SetTrapAddress are OS traps (registers); the rest are Toolbox (stack).
+;
+; Build: Asm -model far ; Link -rt INIT=0 -m ABInitMain -ra =resSysHeap,resLocked
+;
+        TITLE   'AppleBridgeMenuLED'
+        CASE    OBJ
+
+; --- traps as opwords (A-line words) ---
+_Get1Resource    OPWORD  $A81F        ; Toolbox: (type,id) -> Handle  [stack]
+_DetachResource  OPWORD  $A992        ; Toolbox: (Handle)            [stack]
+_HLock           OPWORD  $A029        ; OS:      A0 = Handle
+_GetTrapAddress  OPWORD  $A146        ; OS:      D0 = trap word -> A0
+_SetTrapAddress  OPWORD  $A047        ; OS:      A0 = addr, D0 = trap word
+_GetPort         OPWORD  $A874        ; Toolbox: (VAR GrafPtr)       [stack]
+_GetCWMgrPort    OPWORD  $AA48        ; Toolbox: (VAR CGrafPtr) — the COLOR WMgr
+                                      ; port, so RGBForeColor gives TRUE colours
+                                      ; (the basic port rounds to 8 QD colours, so
+                                      ;  dark green collapses to black)
+_SetPort         OPWORD  $A873        ; Toolbox: (GrafPtr)           [stack]
+_RGBForeColor    OPWORD  $AA14        ; Toolbox: (VAR RGBColor)      [stack]
+_PaintOval       OPWORD  $A8B8        ; Toolbox: (VAR Rect)          [stack]
+_FrameOval       OPWORD  $A8B7        ; Toolbox: (VAR Rect)          [stack]
+_GetMenuHandle   OPWORD  $A949        ; Toolbox: (menuID) -> MenuHandle  [stack]
+_GetHandleSize   OPWORD  $A025        ; OS: A0 = Handle -> D0 = size
+_NewGestalt      OPWORD  $A3AD        ; Toolbox: (selector, procPtr) -> OSErr  [stack]
+_TickCount       OPWORD  $A975        ; Toolbox: () -> D0 = ticks
+
+DrawMenuBarTrap  EQU     $A937
+SystemTaskTrap   EQU     $A9B4        ; patched for the frequent, throttled redraw
+                                      ; (DrawMenuBar alone only fires on bar changes)
+kRedrawTicks     EQU     6            ; ~10 Hz cap on the LED redraw
+kABSelector      EQU     'ABrg'       ; Gestalt selector: returns &gLastTick so the
+                                      ; daemon can publish activity into our block
+kFlashTicks      EQU     40           ; ticks (~0.66s): recent stamp => bright (active)
+kHelpMenuID      EQU     -16490       ; kHMHelpMenuID — the system Help menu (the
+                                      ; LEFTMOST right-justified menu); we anchor to it
+kRightInset      EQU     78           ; FALLBACK px from screen-right if Help not found
+kLedWidth        EQU     12
+kGap             EQU     6            ; px gap left of the Help menu
+MenuListGlobal   EQU     $0A1C        ; low-mem: Handle to the current menu bar list
+
+;----------------------------------------------------------------------
+; Entry point — MUST be the first function (System jumps to offset 0).
+;----------------------------------------------------------------------
+ABInitMain  PROC    EXPORT
+
+        ; --- stay resident: detach + lock our own 'INIT' 0 resource ---
+        SUBQ.L  #4,SP                 ; space for Handle result
+        MOVE.L  #'INIT',-(SP)         ; ResType
+        CLR.W   -(SP)                 ; theID = 0
+        _Get1Resource
+        MOVE.L  (SP)+,A2              ; A2 = our resource handle (result popped)
+        MOVE.L  A2,D0
+        BEQ.S   @noself
+        MOVE.L  A2,-(SP)
+        _DetachResource               ; Toolbox (stack): survive resfile close
+        MOVE.L  A2,A0
+        _HLock                        ; OS (A0): pin it resident
+@noself:
+        ; --- install the DrawMenuBar tail patch ---
+        MOVE.W  #DrawMenuBarTrap,D0
+        _GetTrapAddress               ; A0 = original DrawMenuBar
+        LEA     oldDMB(PC),A1         ; PC-relative writable cell in-resource
+        MOVE.L  A0,(A1)               ; remember the original
+        LEA     ourDMB(PC),A0         ; our patch
+        MOVE.W  #DrawMenuBarTrap,D0
+        _SetTrapAddress               ; route DrawMenuBar through us
+
+        ; --- tail-patch SystemTask for the frequent (throttled) LED redraw ---
+        MOVE.W  #SystemTaskTrap,D0
+        _GetTrapAddress
+        LEA     oldSysTask(PC),A1
+        MOVE.L  A0,(A1)
+        LEA     ourSysTask(PC),A0
+        MOVE.W  #SystemTaskTrap,D0
+        _SetTrapAddress
+
+        ; --- register Gestalt 'ABrg' -> &gLastTick (the activity channel) ---
+        ; NewGestalt is a REGISTER-based trap (like Gestalt): D0 = selector,
+        ; A0 = selector-function ProcPtr, returns D0 = OSErr. (The C glue hid this;
+        ; pushing params on the stack corrupts it and wedges the boot.) The callback
+        ; is PC-addressable and in the system heap (resSysHeap) — what C couldn't do.
+        MOVE.L  #kABSelector,D0       ; D0 = selector
+        LEA     ABGestaltProc(PC),A0  ; A0 = SelectorFunction ProcPtr
+        _NewGestalt                   ; D0 = OSErr (ignored; non-fatal)
+        RTS
+
+;----------------------------------------------------------------------
+; ourDMB — DrawMenuBar tail patch. Runs at application time (valid A5,
+; QuickDraw safe). Call the original, then paint our LED on top. Save/
+; restore all data+addr regs except A7 so the caller is undisturbed.
+;----------------------------------------------------------------------
+ourDMB
+        MOVEM.L D0-D7/A0-A6,-(SP)
+        MOVE.L  oldDMB(PC),A0
+        JSR     (A0)                  ; original DrawMenuBar (no params/result)
+        BSR.S   DrawDot               ; our LED, on top of the fresh bar
+        MOVEM.L (SP)+,D0-D7/A0-A6
+        RTS
+
+;----------------------------------------------------------------------
+; ourSysTask — SystemTask tail patch: the frequent redraw. SystemTask is
+; called many times/sec by every app's event loop (app time, QuickDraw safe),
+; so a throttled DrawDot here makes the LED track gLastTick live — DrawMenuBar
+; alone fires only on bar changes. Throttle: at most once per kRedrawTicks.
+;----------------------------------------------------------------------
+ourSysTask
+        MOVEM.L D0-D7/A0-A6,-(SP)
+        MOVE.L  oldSysTask(PC),A0
+        JSR     (A0)                  ; original SystemTask
+        MOVE.L  $016A,D0             ; D0 = now (Ticks low-mem global; unambiguous)
+        MOVE.L  gLastDraw(PC),D1
+        SUB.L   D1,D0               ; D0 = now - lastDraw
+        CMP.L   #kRedrawTicks,D0
+        BLT.S   @nodraw
+        BSR.S   DrawDot               ; DrawDot resets gLastDraw ONLY when it really
+                                      ; draws — it bails in the daemon's own context
+                                      ; (no Help menu), so the daemon's frequent
+                                      ; SystemTask calls never starve the redraw
+@nodraw
+        MOVEM.L (SP)+,D0-D7/A0-A6
+        RTS
+
+;----------------------------------------------------------------------
+; DrawDot — paint the LED into the Window Manager port (the menu bar),
+; near the top-right. Stage 1 colour is a fixed bright green. Frame:
+;   savePort -4 | wmgrPort -8 | led(Rect) -16..-9 | rgb(RGBColor) -22..-17
+;----------------------------------------------------------------------
+DrawDot
+        LINK    A6,#-24
+        ; --- find the anchor FIRST, before any port work ---
+        ; GetMenuHandle(kHMHelpMenuID); locate that exact 4-byte handle in the
+        ; current menu-bar list; read the menuLeft word after it. Bail CHEAPLY (no
+        ; port setup, no gLastDraw reset) if the Help menu isn't present — the
+        ; faceless daemon's own context (its frequent SystemTask calls then cost one
+        ; GetMenuHandle and never starve the foreground redraw), or early boot before
+        ; the right-justified icons exist (so the LED fades in only once they do).
+        SUBQ.L  #4,SP
+        MOVE.W  #kHelpMenuID,-(SP)
+        _GetMenuHandle
+        MOVE.L  (SP)+,D2           ; D2 = Help menu handle (or nil)
+        BEQ     @out               ; no Help menu -> bail, nothing drawn
+        MOVE.L  MenuListGlobal,A0
+        MOVE.L  A0,D0
+        BEQ     @out
+        MOVE.L  A0,A3
+        _GetHandleSize             ; D0 = block size
+        MOVE.L  D0,D3
+        SUBQ.L  #6,D3
+        BLE     @out
+        MOVE.L  (A3),A1
+        MOVEQ   #0,D4
+@scan
+        CMP.L   D3,D4
+        BGT     @out               ; Help handle not in the list -> bail
+        MOVE.L  0(A1,D4.L),D5
+        CMP.L   D2,D5
+        BEQ.S   @found
+        ADDQ.L  #2,D4
+        BRA.S   @scan
+@found
+        MOVE.W  4(A1,D4.L),D1      ; Help menu's menuLeft
+        BLE     @out
+        MOVE.W  D1,D7              ; D7 = anchor (D3-D7 survive the port traps)
+
+        ; --- we will draw: set up the COLOUR WMgr port (true 8-bit colours) ---
+        PEA     -4(A6)             ; &savePort
+        _GetPort
+        PEA     -8(A6)             ; &wmgrPort (CGrafPtr)
+        _GetCWMgrPort
+        MOVE.L  -8(A6),A0
+        MOVE.L  A0,D0
+        BEQ     @out               ; no colour port -> bail (no SetPort done)
+        MOVE.L  A0,-(SP)
+        _SetPort
+        MOVE.L  -8(A6),A0
+        MOVE.W  22(A0),D6          ; screenRight (portRect.right)
+        CMP.W   D6,D7              ; anchor must be on-screen
+        BGE     @restore
+        SUB.W   #kGap,D7           ; ledRight = anchor - kGap
+        MOVE.W  D7,D0
+        MOVE.W  D7,D1
+        SUB.W   #kLedWidth,D1
+        MOVE.W  #4,-16(A6)         ; led.top
+        MOVE.W  D1,-14(A6)         ; led.left
+        MOVE.W  #16,-12(A6)        ; led.bottom
+        MOVE.W  D0,-10(A6)         ; led.right
+
+        ; --- committed to drawing: reset the redraw throttle, then pick colour ---
+        MOVE.L  $016A,D0           ; now (Ticks low-mem global)
+        LEA     gLastDraw(PC),A1
+        MOVE.L  D0,(A1)            ; gLastDraw = now (ONLY on a real draw)
+        MOVE.L  gLastTick(PC),D2   ; last activity tick (0 = never stamped)
+        BEQ.S   @idle
+        MOVE.L  D0,D1
+        SUB.L   D2,D1             ; D1 = now - gLastTick
+        CMP.L   #kFlashTicks,D1
+        BGE.S   @idle
+        MOVE.W  #$1000,-22(A6)     ; bright green (active)
+        MOVE.W  #$E000,-20(A6)
+        MOVE.W  #$1000,-18(A6)
+        BRA.S   @paintled
+@idle
+        MOVE.W  #$0000,-22(A6)     ; dark green (passive)
+        MOVE.W  #$5800,-20(A6)
+        MOVE.W  #$0000,-18(A6)
+@paintled
+        PEA     -22(A6)
+        _RGBForeColor
+        PEA     -16(A6)
+        _PaintOval
+        CLR.W   -22(A6)            ; black ring
+        CLR.W   -20(A6)
+        CLR.W   -18(A6)
+        PEA     -22(A6)
+        _RGBForeColor
+        PEA     -16(A6)
+        _FrameOval
+@restore
+        MOVE.L  -4(A6),-(SP)       ; restore caller's port
+        _SetPort
+@out
+        UNLK    A6
+        RTS
+
+;----------------------------------------------------------------------
+; ABGestaltProc — Gestalt selector 'ABrg' callback. Returns the address of
+; our resident gLastTick cell so the daemon can stamp activity into it.
+;   pascal OSErr ABGestaltProc(OSType selector, long *response)
+; Stack at entry: 0(SP)=ret 4(SP)=response 8(SP)=selector 12(SP)=result(word).
+; PC-addressable + in the system heap (resSysHeap) — what C couldn't do.
+;----------------------------------------------------------------------
+ABGestaltProc
+        MOVE.L  4(SP),A0              ; A0 = response (long*)
+        LEA     gLastTick(PC),A1
+        MOVE.L  A1,(A0)               ; *response = &gLastTick
+        CLR.W   12(SP)               ; function result = noErr
+        MOVEA.L (SP)+,A0              ; pop return address
+        ADDQ.L  #8,SP                ; pop selector + response (Pascal: callee removes)
+        JMP     (A0)                 ; return; result word stays on the stack
+
+;----------------------------------------------------------------------
+; Resident data — valid because the resource is resSysHeap,resLocked and
+; detached. PC-relative reads/writes reach it.
+;----------------------------------------------------------------------
+        ALIGN   2
+oldDMB     DC.L 0                     ; saved original DrawMenuBar address
+oldSysTask DC.L 0                     ; saved original SystemTask address
+gLastDraw  DC.L 0                     ; TickCount of our last throttled redraw
+gLastTick DC.L  0                     ; TickCount of last RX/TX (0 = never); the
+                                      ; daemon writes here via the Gestalt selector
+
+        ENDPROC
+        END
