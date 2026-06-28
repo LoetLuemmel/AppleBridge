@@ -46,6 +46,11 @@ static Boolean gLogDirty = false;  /* redraw the body from ShowAlive's good
                                     * context (drawing from ProcessRequest, right
                                     * after an OT receive, doesn't render) */
 static long gTickCounter = 0;
+
+/* Address of the menu-bar LED's activity cell, from Gestalt 'ABrg' (the
+ * AppleBridgeMenuLED INIT); NULL if that extension isn't installed. We stamp
+ * TickCount() here on each RX so the menu-bar LED flashes on traffic. */
+static long *gMenuLED = NULL;
 static long gStartTick = 0;   /* daemon launch tick (for Alive uptime) */
 static MenuHandle gAppleMenu;
 static MenuHandle gFileMenu;
@@ -540,6 +545,7 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
     /* Mark RX activity */
     gLastRX = TickCount();
     gRXCount++;
+    if (gMenuLED) *gMenuLED = gLastRX;   /* flash the menu-bar LED (if installed) */
     DrawLEDs();   /* light RX immediately */
 
     request[requestLen] = '\0';
@@ -839,6 +845,15 @@ int main(void)
     /* Initialize Mac Toolbox */
     InitApp();
     gStartTick = TickCount();   /* baseline for Alive uptime */
+
+    /* Cache the menu-bar LED's activity cell: the AppleBridgeMenuLED INIT (if
+     * installed) registers Gestalt 'ABrg' returning the address of a system-heap
+     * long. We stamp it on each RX so the menu-bar LED flashes. No extension ->
+     * Gestalt fails -> gMenuLED stays NULL -> the stamp is a no-op. */
+    {
+        long abResp;
+        if (Gestalt('ABrg', &abResp) == noErr) gMenuLED = (long *) abResp;
+    }
 
     /* Load config from "AppleBridge Prefs" (host IP + chain-launch apps). The
      * compiled-in fallback IP is seeded first, so a missing/corrupt file never
