@@ -1,0 +1,137 @@
+;
+; AppleBridgeMenuLED — System 7 'INIT' (creator 'ABin') — STAGE 1
+;
+; Goal of this stage: prove the riskiest mechanism in isolation — a resident,
+; trap-patching code resource that draws into the menu bar across ALL apps
+; without crashing. It installs a TAIL patch on DrawMenuBar ($A937): every time
+; any app (re)draws the menu bar, the original runs and then we paint a small
+; fixed-colour LED at the top-right. Nothing erases that strip between redraws,
+; so a single DrawMenuBar patch keeps the dot persistent.
+;
+; Stage 1 has NO Gestalt selector and NO activity wiring yet — the colour is a
+; fixed bright green just to confirm it shows and survives app switches.
+;
+; Why assembly (see mac/init/README.md): a C 'INIT' can't form a working
+; PC-relative reference to its own resident routines in a code resource. In asm,
+; LEA label(PC),An is natural and nothing is dead-stripped.
+;
+; This MPW assembler does not auto-define the _Trap call macros, so (like the
+; project's Add5and2.a) every trap used is declared with OPWORD = its A-line word.
+; Register vs stack conventions are ours to honour: HLock/GetTrapAddress/
+; SetTrapAddress are OS traps (registers); the rest are Toolbox (stack).
+;
+; Build: Asm -model far ; Link -rt INIT=0 -m ABInitMain -ra =resSysHeap,resLocked
+;
+        TITLE   'AppleBridgeMenuLED'
+        CASE    OBJ
+
+; --- traps as opwords (A-line words) ---
+_Get1Resource    OPWORD  $A81F        ; Toolbox: (type,id) -> Handle  [stack]
+_DetachResource  OPWORD  $A992        ; Toolbox: (Handle)            [stack]
+_HLock           OPWORD  $A029        ; OS:      A0 = Handle
+_GetTrapAddress  OPWORD  $A146        ; OS:      D0 = trap word -> A0
+_SetTrapAddress  OPWORD  $A047        ; OS:      A0 = addr, D0 = trap word
+_GetPort         OPWORD  $A874        ; Toolbox: (VAR GrafPtr)       [stack]
+_GetWMgrPort     OPWORD  $A910        ; Toolbox: (VAR GrafPtr)       [stack]
+_SetPort         OPWORD  $A873        ; Toolbox: (GrafPtr)           [stack]
+_RGBForeColor    OPWORD  $AA14        ; Toolbox: (VAR RGBColor)      [stack]
+_PaintOval       OPWORD  $A8B8        ; Toolbox: (VAR Rect)          [stack]
+_FrameOval       OPWORD  $A8B7        ; Toolbox: (VAR Rect)          [stack]
+
+DrawMenuBarTrap  EQU     $A937
+
+;----------------------------------------------------------------------
+; Entry point — MUST be the first function (System jumps to offset 0).
+;----------------------------------------------------------------------
+ABInitMain  PROC    EXPORT
+
+        ; --- stay resident: detach + lock our own 'INIT' 0 resource ---
+        SUBQ.L  #4,SP                 ; space for Handle result
+        MOVE.L  #'INIT',-(SP)         ; ResType
+        CLR.W   -(SP)                 ; theID = 0
+        _Get1Resource
+        MOVE.L  (SP)+,A2              ; A2 = our resource handle (result popped)
+        MOVE.L  A2,D0
+        BEQ.S   @noself
+        MOVE.L  A2,-(SP)
+        _DetachResource               ; Toolbox (stack): survive resfile close
+        MOVE.L  A2,A0
+        _HLock                        ; OS (A0): pin it resident
+@noself:
+        ; --- install the DrawMenuBar tail patch ---
+        MOVE.W  #DrawMenuBarTrap,D0
+        _GetTrapAddress               ; A0 = original DrawMenuBar
+        LEA     oldDMB(PC),A1         ; PC-relative writable cell in-resource
+        MOVE.L  A0,(A1)               ; remember the original
+        LEA     ourDMB(PC),A0         ; our patch
+        MOVE.W  #DrawMenuBarTrap,D0
+        _SetTrapAddress               ; route DrawMenuBar through us
+        RTS
+
+;----------------------------------------------------------------------
+; ourDMB — DrawMenuBar tail patch. Runs at application time (valid A5,
+; QuickDraw safe). Call the original, then paint our LED on top. Save/
+; restore all data+addr regs except A7 so the caller is undisturbed.
+;----------------------------------------------------------------------
+ourDMB
+        MOVEM.L D0-D7/A0-A6,-(SP)
+        MOVE.L  oldDMB(PC),A0
+        JSR     (A0)                  ; original DrawMenuBar (no params/result)
+        BSR.S   DrawDot               ; our LED, on top of the fresh bar
+        MOVEM.L (SP)+,D0-D7/A0-A6
+        RTS
+
+;----------------------------------------------------------------------
+; DrawDot — paint the LED into the Window Manager port (the menu bar),
+; near the top-right. Stage 1 colour is a fixed bright green. Frame:
+;   savePort -4 | wmgrPort -8 | led(Rect) -16..-9 | rgb(RGBColor) -22..-17
+;----------------------------------------------------------------------
+DrawDot
+        LINK    A6,#-24
+        PEA     -4(A6)                ; &savePort
+        _GetPort
+        PEA     -8(A6)                ; &wmgrPort
+        _GetWMgrPort
+        MOVE.L  -8(A6),A0             ; A0 = wmgrPort
+        MOVE.L  A0,D0
+        BEQ.S   @done
+        MOVE.L  A0,-(SP)
+        _SetPort
+        MOVE.L  -8(A6),A0
+        MOVE.W  22(A0),D0             ; portRect.right (portRect@16 + right@6)
+        SUB.W   #52,D0               ; led.right = right - 52
+        MOVE.W  D0,D1
+        SUB.W   #12,D1               ; led.left  = led.right - 12
+        MOVE.W  #4,-16(A6)            ; led.top
+        MOVE.W  D1,-14(A6)            ; led.left
+        MOVE.W  #16,-12(A6)           ; led.bottom
+        MOVE.W  D0,-10(A6)            ; led.right
+        MOVE.W  #$1000,-22(A6)        ; rgb.red    } bright green
+        MOVE.W  #$E000,-20(A6)        ; rgb.green  }
+        MOVE.W  #$1000,-18(A6)        ; rgb.blue   }
+        PEA     -22(A6)
+        _RGBForeColor
+        PEA     -16(A6)
+        _PaintOval
+        CLR.W   -22(A6)              ; black ring for definition
+        CLR.W   -20(A6)
+        CLR.W   -18(A6)
+        PEA     -22(A6)
+        _RGBForeColor
+        PEA     -16(A6)
+        _FrameOval
+        MOVE.L  -4(A6),-(SP)         ; restore caller's port
+        _SetPort
+@done
+        UNLK    A6
+        RTS
+
+;----------------------------------------------------------------------
+; Resident data — valid because the resource is resSysHeap,resLocked and
+; detached. PC-relative reads/writes reach it.
+;----------------------------------------------------------------------
+        ALIGN   2
+oldDMB  DC.L    0                     ; saved original DrawMenuBar address
+
+        ENDPROC
+        END

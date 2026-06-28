@@ -1,0 +1,19 @@
+# Build AppleBridgeMenuLED — the menu-bar activity-LED 'INIT' (creator 'ABin').
+# 68k assembly code resource. Run inside MPW from MeinMac:MPW:AppleBridge:.
+#
+#   -model far                 PC-relative-ish refs (a code resource has no A5 world)
+#   -rt INIT=0                 output is a resource of type 'INIT', id 0
+#   -m ABInitMain              entry the System jumps to at boot (must be source-first)
+#   -ra =resSysHeap,resLocked  load into the system heap and lock resident (so the
+#                              patch code AND its oldDMB data cell stay valid all session)
+# No Interface.o / MacRuntime.o: every trap is declared inline via OPWORD, so there
+# are no external references and no A5 world is needed.
+#
+# Install: copy :bin:AppleBridgeMenuLED into "System Folder:Extensions:" and reboot.
+# Recovery if a patch wedges the boot: hold Shift while booting (System 7 skips
+# extensions), then remove the file; or, with Basilisk shut down, delete it from the
+# disk image host-side with hfsutils (hmount / hdel / humount).
+Directory MeinMac:MPW:AppleBridge:
+Asm -model far :src:menuled.a -o :obj:menuled.a.o
+Link -rt INIT=0 -m ABInitMain -ra =resSysHeap,resLocked :obj:menuled.a.o -o :bin:AppleBridgeMenuLED
+SetFile -t INIT -c 'ABin' :bin:AppleBridgeMenuLED
