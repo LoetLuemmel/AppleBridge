@@ -11,6 +11,7 @@
 #include <Events.h>
 #include <Menus.h>
 #include <TextEdit.h>
+#include <Scrap.h>
 #include <Dialogs.h>
 #include <Files.h>
 #include <Processes.h>
@@ -28,10 +29,16 @@ static AppPrefs gPrefs;
 /* Menu IDs */
 #define APPLE_MENU_ID   128
 #define FILE_MENU_ID    129
+#define EDIT_MENU_ID    130
+
+/* Monaco's well-known fixed font ID (not in this older Fonts.h). Monospace, so
+ * command/response columns line up in the monitor log. */
+#define kLogFontID      4
 
 /* Menu items */
 #define ABOUT_ITEM      1
 #define QUIT_ITEM       1
+#define COPY_ITEM       1
 
 static Boolean gRunning = true;
 /* The on-demand "Mitlesen" live-traffic monitor window. The daemon is faceless;
@@ -51,6 +58,12 @@ static Boolean gMenuInstalled = false;   /* minimal Apple menu, installed lazily
 static char  gLog[LOG_LINES][LOG_W];
 static short gLogHead = 0;   /* next slot to write */
 static short gLogN    = 0;   /* lines currently stored */
+/* The body is a real TextEdit field so the user can mouse-select and copy log
+ * text to the clipboard. It mirrors the ring (rebuilt from it on each dirty
+ * sync). NULL while the window is closed. gTEBuf is the off-stack scratch the
+ * ring is flattened into for TESetText (LOG_LINES*LOG_W ~ under TE's 32 KB cap). */
+static TEHandle gLogTE = NULL;
+static char     gTEBuf[LOG_LINES * LOG_W];
 static Boolean gLogDirty = false;  /* redraw the body from ShowAlive's good
                                     * context (drawing from ProcessRequest, right
                                     * after an OT receive, doesn't render) */
@@ -68,6 +81,7 @@ static long  gMonReqSeen = 0;
 static long gStartTick = 0;   /* daemon launch tick (for Alive uptime) */
 static MenuHandle gAppleMenu;
 static MenuHandle gFileMenu;
+static MenuHandle gEditMenu;
 
 /* RX/TX Activity tracking */
 static long gLastRX = 0;     /* Tick count of last receive */
@@ -194,44 +208,64 @@ void SetActivity(const char *msg)
     DrawLEDs();
 }
 
-/* Simple status display in window */
-/* Redraw the whole log body from the ring buffer (9pt, black on white). */
+/* The log body's rectangle in the window's local coords: full width, between the
+ * top activity bar (18px) and the Alive line + grow box (16px). Reflows with the
+ * window. Inset 2px so text doesn't touch the frame. */
+void MonitorBodyRect(Rect *r)
+{
+    short w = gStatusWindow->portRect.right - gStatusWindow->portRect.left;
+    short h = gStatusWindow->portRect.bottom - gStatusWindow->portRect.top;
+    SetRect(r, 2, 20, w - 2, h - 17);
+}
+
+/* Flatten the ring into the TextEdit field so its text mirrors the log, then
+ * pin the view to the bottom (newest visible). Rebuilding wholesale resets any
+ * in-progress mouse selection, but only fires on NEW traffic (gLogDirty) — while
+ * the bridge is idle (the usual time you read/copy a result) the selection is
+ * stable. */
+void SyncLogTE(void)
+{
+    short line, idx, k;
+    long n = 0;
+
+    if (gLogTE == NULL) return;
+
+    for (line = 0; line < gLogN; line++) {
+        idx = (gLogHead - gLogN + line + 2 * LOG_LINES) % LOG_LINES;
+        for (k = 0; gLog[idx][k] && k < LOG_W - 1; k++) gTEBuf[n++] = gLog[idx][k];
+        gTEBuf[n++] = '\r';                       /* TE line break */
+    }
+    TESetText(gTEBuf, n, gLogTE);
+    TESetSelect(n, n, gLogTE);                    /* caret at the end ... */
+    TESelView(gLogTE);                            /* ... and scroll it into view */
+}
+
+/* Redraw the log body. With the TE field present (window open) this is a
+ * TEUpdate; the old ring-DrawString path is kept only as a guard. */
 void RedrawLog(void)
 {
     Rect body;
-    Str255 pstr;
-    short line, idx, k, w, h, bodyBot, rows, start, shown;
-    RGBColor cBlack = { 0, 0, 0 };
     RGBColor cWhite = { 0xFFFF, 0xFFFF, 0xFFFF };
 
-    if (gStatusWindow == NULL) return;
+    if (gStatusWindow == NULL || gLogTE == NULL) return;
     SetPort(gStatusWindow);
-
-    w = gStatusWindow->portRect.right - gStatusWindow->portRect.left;
-    h = gStatusWindow->portRect.bottom - gStatusWindow->portRect.top;
-    bodyBot = h - 16;                 /* leave room for the Alive line + grow box */
-
-    SetRect(&body, 0, 19, w, bodyBot);
+    MonitorBodyRect(&body);
     RGBBackColor(&cWhite);
     EraseRect(&body);
-    RGBForeColor(&cBlack);
-    TextSize(9);
+    TEUpdate(&body, gLogTE);
+}
 
-    /* How many 13px lines fit; show the last 'rows' of the ring (a tall window
-     * shows more history, a short one the most recent few). */
-    rows = (bodyBot - 30) / 13 + 1;
-    if (rows < 1) rows = 1;
-    start = (gLogN > rows) ? gLogN - rows : 0;
-    shown = 0;
-    for (line = start; line < gLogN; line++) {
-        idx = (gLogHead - gLogN + line + 2 * LOG_LINES) % LOG_LINES;
-        for (k = 0; gLog[idx][k] && k < 250; k++) pstr[k + 1] = gLog[idx][k];
-        pstr[0] = (unsigned char)k;
-        MoveTo(8, 30 + shown * 13);
-        DrawString(pstr);
-        shown++;
+/* Copy the current selection to the clipboard so it can be pasted into any app.
+ * An empty selection means "copy everything" — a quick grab of the whole log. */
+void DoCopyLog(void)
+{
+    if (gLogTE == NULL) return;
+    if ((**gLogTE).selStart == (**gLogTE).selEnd) {
+        TESetSelect(0, (**gLogTE).teLength, gLogTE);
     }
-    TextSize(12);
+    TECopy(gLogTE);
+    ZeroScrap();
+    TEToScrap();
 }
 
 void StatusMessage(const char *msg)
@@ -270,8 +304,9 @@ void ShowAlive(void)
     /* Draw LEDs at top */
     DrawLEDs();
 
-    /* Redraw the console body if new lines arrived (from this good context) */
-    if (gLogDirty) { RedrawLog(); gLogDirty = false; }
+    /* Sync the TE field from the ring if new lines arrived (from this good
+     * context — TESetText draws, which doesn't render in the OT-receive path). */
+    if (gLogDirty) { SyncLogTE(); gLogDirty = false; }
 
     /* Draw alive indicator at the bottom (left of the grow box) */
     SetRect(&r, 10, h - 15, w - 16, h - 1);
@@ -389,6 +424,12 @@ void HandleMenuCommand(long menuResult)
                 gRunning = false;
             }
             break;
+
+        case EDIT_MENU_ID:
+            if (menuItem == COPY_ITEM) {
+                DoCopyLog();
+            }
+            break;
     }
 
     HiliteMenu(0);
@@ -479,12 +520,33 @@ void OpenMonitor(void)
         AppendMenu(gAppleMenu, "\pAbout AppleBridge...;(-");
         AppendResMenu(gAppleMenu, 'DRVR');
         InsertMenu(gAppleMenu, 0);
+        /* Edit menu so Copy (Cmd-C) is discoverable; the system also routes the
+         * standard Cut/Copy/Paste keys here. We only act on Copy. */
+        gEditMenu = NewMenu(EDIT_MENU_ID, "\pEdit");
+        AppendMenu(gEditMenu, "\pCopy/C");
+        InsertMenu(gEditMenu, 0);
         DrawMenuBar();
         gMenuInstalled = true;
     }
 
     SelectWindow(gStatusWindow);
     SetPort(gStatusWindow);
+
+    /* The body is a TextEdit field (monospace 9pt) so the log is mouse-
+     * selectable and copyable. Monaco reads well for command/response text. */
+    {
+        Rect body;
+        MonitorBodyRect(&body);
+        TextFont(kLogFontID);
+        TextSize(9);
+        gLogTE = TENew(&body, &body);
+        if (gLogTE != NULL) {
+            TEAutoView(true, gLogTE);     /* let TESelView scroll to the bottom */
+            TEActivate(gLogTE);           /* show selection highlight */
+        }
+        TextSize(12);
+    }
+
     StatusMessage("--- Verbose: live bridge traffic ---");
     gLogDirty = true;
     gTickCounter = 0;                 /* force the next ShowAlive to redraw */
@@ -542,10 +604,14 @@ Boolean CheckUserAbort(void)
                         }
                         break;
                     case inGoAway:
-                        /* Close != quit: dispose the monitor window, the daemon
-                         * keeps running (gRunning stays true). */
+                        /* Close != quit: tear down the TE field + window, the
+                         * daemon keeps running (gRunning stays true). */
                         if (window == gStatusWindow) {
                             if (TrackGoAway(window, event.where)) {
+                                if (gLogTE != NULL) {
+                                    TEDispose(gLogTE);
+                                    gLogTE = NULL;
+                                }
                                 DisposeWindow(window);
                                 gStatusWindow = NULL;
                             }
@@ -562,12 +628,39 @@ Boolean CheckUserAbort(void)
                             if (newSize != 0) {
                                 SizeWindow(window, LoWord(newSize),
                                            HiWord(newSize), true);
+                                /* Reflow the TE field to the new body; the next
+                                 * ShowAlive re-wraps + re-pins to the bottom. */
+                                if (gLogTE != NULL) {
+                                    Rect body;
+                                    MonitorBodyRect(&body);
+                                    (**gLogTE).viewRect = body;
+                                    (**gLogTE).destRect = body;
+                                    gLogDirty = true;
+                                }
                                 InvalRect(&window->portRect);
                             }
                         }
                         break;
                     case inContent:
-                        SelectWindow(window);
+                        /* In our window: a click brings it front (if needed) or,
+                         * when already front, starts a TE text selection. */
+                        if (window == gStatusWindow) {
+                            if (window != FrontWindow()) {
+                                SelectWindow(window);
+                            } else if (gLogTE != NULL) {
+                                Point pt = event.where;
+                                Rect body;
+                                SetPort(window);
+                                GlobalToLocal(&pt);
+                                MonitorBodyRect(&body);
+                                if (PtInRect(pt, &body)) {
+                                    TEClick(pt, (event.modifiers & shiftKey) != 0,
+                                            gLogTE);
+                                }
+                            }
+                        } else {
+                            SelectWindow(window);
+                        }
                         break;
                 }
                 break;
@@ -583,10 +676,17 @@ Boolean CheckUserAbort(void)
                 }
                 break;
 
+            case activateEvt:
+                if ((WindowPtr)event.message == gStatusWindow && gLogTE != NULL) {
+                    if (event.modifiers & activeFlag) TEActivate(gLogTE);
+                    else                               TEDeactivate(gLogTE);
+                }
+                break;
+
             case updateEvt:
                 BeginUpdate((WindowPtr)event.message);
                 DrawLEDs();   /* top bar (activity) */
-                RedrawLog();   /* console body — else updates wipe it blank */
+                RedrawLog();   /* console body (TEUpdate) — else updates wipe it */
                 if ((WindowPtr)event.message == gStatusWindow) {
                     DrawGrowIcon(gStatusWindow);   /* size box / bottom frame */
                 }
@@ -1125,6 +1225,10 @@ int main(void)
 
     /* Faceless: nothing to click. The loop ended because gRunning went false
      * (QUITDAEMON verb or a kAEQuitApplication), so just exit. */
+    if (gLogTE) {
+        TEDispose(gLogTE);
+        gLogTE = NULL;
+    }
     if (gStatusWindow) {
         DisposeWindow(gStatusWindow);
     }
