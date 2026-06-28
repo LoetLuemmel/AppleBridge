@@ -39,6 +39,7 @@ static AppPrefs gPrefs;
 #define ABOUT_ITEM      1
 #define QUIT_ITEM       1
 #define COPY_ITEM       1
+#define DETAILS_ITEM    3      /* Edit: Copy(1), (divider 2), Show details(3) */
 
 static Boolean gRunning = true;
 /* The on-demand "Mitlesen" live-traffic monitor window. The daemon is faceless;
@@ -53,9 +54,13 @@ static Boolean gMenuInstalled = false;   /* minimal Apple menu, installed lazily
 /* Scrolling log as a ring buffer of the last LOG_LINES lines, redrawn whole on
  * each message (robust: always in-window, survives redraws). Small 9pt font.
  * The window reflows to its live size, showing the last lines that fit. */
-#define LOG_LINES 60
+#define LOG_LINES 120
 #define LOG_W     160
 static char  gLog[LOG_LINES][LOG_W];
+/* Per-line kind: 0 = primary ("> command" + its output), 1 = detail (the AE
+ * trace). Both are always stored; the monitor can collapse the detail lines. */
+static unsigned char gLogKind[LOG_LINES];
+static Boolean gShowDetails = false;   /* collapsed by default (clean log) */
 static short gLogHead = 0;   /* next slot to write */
 static short gLogN    = 0;   /* lines currently stored */
 /* The body is a real TextEdit field so the user can mouse-select and copy log
@@ -232,12 +237,25 @@ void SyncLogTE(void)
 
     for (line = 0; line < gLogN; line++) {
         idx = (gLogHead - gLogN + line + 2 * LOG_LINES) % LOG_LINES;
+        if (!gShowDetails && gLogKind[idx]) continue;   /* collapsed: hide details */
         for (k = 0; gLog[idx][k] && k < LOG_W - 1; k++) gTEBuf[n++] = gLog[idx][k];
         gTEBuf[n++] = '\r';                       /* TE line break */
     }
     TESetText(gTEBuf, n, gLogTE);
     TESetSelect(n, n, gLogTE);                    /* caret at the end ... */
     TESelView(gLogTE);                            /* ... and scroll it into view */
+
+    /* TESetText updates the record but does NOT redraw — repaint the body here
+     * (we run from ShowAlive's render-safe context). Without this only the very
+     * first line (drawn via OpenMonitor's InvalRect) would ever appear. */
+    {
+        Rect body;
+        RGBColor cWhite = { 0xFFFF, 0xFFFF, 0xFFFF };
+        MonitorBodyRect(&body);
+        RGBBackColor(&cWhite);
+        EraseRect(&body);
+        TEUpdate(&body, gLogTE);
+    }
 }
 
 /* Redraw the log body. With the TE field present (window open) this is a
@@ -268,18 +286,27 @@ void DoCopyLog(void)
     TEToScrap();
 }
 
-void StatusMessage(const char *msg)
+/* Append one log line of the given kind (0=primary, 1=detail) to the ring. */
+static void AddLogLine(const char *msg, short kind)
 {
     short k;
     if (gStatusWindow == NULL) return;
 
     for (k = 0; msg[k] && k < LOG_W - 1; k++) gLog[gLogHead][k] = msg[k];
     gLog[gLogHead][k] = '\0';
+    gLogKind[gLogHead] = (unsigned char)kind;
     gLogHead = (short)((gLogHead + 1) % LOG_LINES);
     if (gLogN < LOG_LINES) gLogN++;
 
     gLogDirty = true;   /* ShowAlive redraws the body from a context that renders */
 }
+
+/* Primary line (command + output): always shown. */
+void StatusMessage(const char *msg) { AddLogLine(msg, 0); }
+
+/* Detail line (AE trace): stored always, hidden when details are collapsed.
+ * Called from command.c's Trace(). */
+void StatusDetail(const char *msg) { AddLogLine(msg, 1); }
 
 /* Show alive indicator with LEDs */
 void ShowAlive(void)
@@ -428,6 +455,10 @@ void HandleMenuCommand(long menuResult)
         case EDIT_MENU_ID:
             if (menuItem == COPY_ITEM) {
                 DoCopyLog();
+            } else if (menuItem == DETAILS_ITEM) {
+                gShowDetails = !gShowDetails;
+                CheckItem(gEditMenu, DETAILS_ITEM, gShowDetails);
+                gLogDirty = true;   /* re-sync to expand/collapse detail lines */
             }
             break;
     }
@@ -523,7 +554,8 @@ void OpenMonitor(void)
         /* Edit menu so Copy (Cmd-C) is discoverable; the system also routes the
          * standard Cut/Copy/Paste keys here. We only act on Copy. */
         gEditMenu = NewMenu(EDIT_MENU_ID, "\pEdit");
-        AppendMenu(gEditMenu, "\pCopy/C");
+        AppendMenu(gEditMenu, "\pCopy/C;(-;Show details/D");
+        CheckItem(gEditMenu, DETAILS_ITEM, gShowDetails);
         InsertMenu(gEditMenu, 0);
         DrawMenuBar();
         gMenuInstalled = true;

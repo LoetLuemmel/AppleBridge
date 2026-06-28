@@ -21,8 +21,10 @@
 /* ToolServer signature (preferred for automation) */
 #define kToolServerCreator 'MPSX'
 
-/* Provided by main.c - writes a line to the daemon status window. */
+/* Provided by main.c - writes a line to the daemon status window. StatusDetail
+ * marks the line as collapsible AE-trace detail (hidden unless "Show details"). */
 extern void StatusMessage(const char *msg);
+extern void StatusDetail(const char *msg);
 
 static Boolean gAEInitialized = false;
 
@@ -56,7 +58,7 @@ static void Trace(char *diag, const char *label, long num)
 	while (nb[j] && i < 72) line[i++] = nb[j++];
 	line[i] = '\0';
 
-	StatusMessage(line);                 /* live, on the daemon window */
+	StatusDetail(line);                  /* live, on the daemon window (collapsible) */
 
 	if (diag) {                          /* accumulate for the host (STDERR) */
 		d = 0;
