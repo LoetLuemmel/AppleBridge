@@ -39,6 +39,11 @@ _PaintOval       OPWORD  $A8B8        ; Toolbox: (VAR Rect)          [stack]
 _FrameOval       OPWORD  $A8B7        ; Toolbox: (VAR Rect)          [stack]
 
 DrawMenuBarTrap  EQU     $A937
+kRightInset      EQU     78           ; FALLBACK px from screen-right to the LED's
+                                      ; right edge if the menu list can't be parsed
+kLedWidth        EQU     12
+kGap             EQU     6            ; px gap left of the right-justified menus
+MenuListGlobal   EQU     $0A1C        ; low-mem: Handle to the current menu bar list
 
 ;----------------------------------------------------------------------
 ; Entry point — MUST be the first function (System jumps to offset 0).
@@ -94,18 +99,64 @@ DrawDot
         _GetWMgrPort
         MOVE.L  -8(A6),A0             ; A0 = wmgrPort
         MOVE.L  A0,D0
-        BEQ.S   @done
+        BEQ     @done                ; (word branch: @done is now far)
         MOVE.L  A0,-(SP)
         _SetPort
         MOVE.L  -8(A6),A0
-        MOVE.W  22(A0),D0             ; portRect.right (portRect@16 + right@6)
-        SUB.W   #52,D0               ; led.right = right - 52
+        MOVE.W  22(A0),D6            ; D6 = screenRight (portRect.right)
+
+        ; fallback ledRight = screenRight - kRightInset
+        MOVE.W  D6,D7
+        SUB.W   #kRightInset,D7
+
+        ; --- dynamic: place the LED just left of the right-justified menu group ---
+        ; Menu-bar list layout: +0 lastMenu(=6*nLeft) | +2 lastRight | +4 mbResID |
+        ; then nLeft {menuH:long, menuLeft:word} entries; at +6+lastMenu a word
+        ; nRight(=6*nRight) then the right-justified {menuH, menuLeft} entries.
+        ; We take the smallest menuLeft among the right entries. All reads are
+        ; bounds-checked; any garbage falls through to the fixed fallback (D7).
+        MOVE.L  MenuListGlobal,A0   ; MenuList handle
+        MOVE.L  A0,D0
+        BEQ.S   @anchor
+        MOVE.L  (A0),A1            ; A1 = menu list base ptr
+        MOVE.L  A1,D0
+        BEQ.S   @anchor
+        MOVE.W  (A1),D2            ; lastMenu (6 * nLeft)
+        BLE.S   @anchor
+        CMP.W   #600,D2
+        BGT.S   @anchor
+        MOVE.W  2(A1),D3           ; lastRight (right edge of the left menus)
+        MOVE.W  D2,D4
+        ADDQ.W  #6,D4              ; D4 -> right-group header word
+        MOVE.W  0(A1,D4.W),D5      ; nRight (6 * count)
+        BLE.S   @anchor
+        CMP.W   #600,D5
+        BGT.S   @anchor
+        ADDQ.W  #2,D4              ; D4 -> first right-justified entry
+        MOVE.W  #$7FFF,D1          ; running min menuLeft
+@rloop
+        MOVE.W  4(A1,D4.W),D0      ; entry.menuLeft
+        CMP.W   D1,D0
+        BGE.S   @rnext
         MOVE.W  D0,D1
-        SUB.W   #12,D1               ; led.left  = led.right - 12
-        MOVE.W  #4,-16(A6)            ; led.top
-        MOVE.W  D1,-14(A6)            ; led.left
-        MOVE.W  #16,-12(A6)           ; led.bottom
-        MOVE.W  D0,-10(A6)            ; led.right
+@rnext
+        ADDQ.W  #6,D4
+        SUBQ.W  #6,D5
+        BGT.S   @rloop
+        CMP.W   D3,D1              ; valid only if lastRight < min < screenRight
+        BLE.S   @anchor
+        CMP.W   D6,D1
+        BGE.S   @anchor
+        MOVE.W  D1,D7              ; ledRight = leftmost right-menu - kGap
+        SUB.W   #kGap,D7
+@anchor
+        MOVE.W  D7,D0               ; led.right
+        MOVE.W  D7,D1
+        SUB.W   #kLedWidth,D1       ; led.left
+        MOVE.W  #4,-16(A6)          ; led.top
+        MOVE.W  D1,-14(A6)          ; led.left
+        MOVE.W  #16,-12(A6)         ; led.bottom
+        MOVE.W  D0,-10(A6)          ; led.right
         MOVE.W  #$1000,-22(A6)        ; rgb.red    } bright green
         MOVE.W  #$E000,-20(A6)        ; rgb.green  }
         MOVE.W  #$1000,-18(A6)        ; rgb.blue   }
