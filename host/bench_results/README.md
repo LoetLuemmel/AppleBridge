@@ -50,9 +50,36 @@ Raw samples in the JSON file alongside this README.
 
 ### Reading the baseline
 
-Throughput sits around **1 MiB/s** — far below what either host backend can carry,
-which supports the plan's core claim: the **emulated 68K Open Transport is the
-ceiling**, not the host transport. That is the central reason slirp is not expected
-to regress throughput (and may even help by dropping the physical wire hop). The
-`dumpfile` figure (larger payload, sd ≈ 0) is the most reliable bandwidth number;
-`latency` has a wide spread typical of the cooperative scheduler under AE load.
+Throughput sits around **1 MiB/s**. The pre-switch hypothesis was that this is the
+**emulated 68K Open Transport ceiling** — implying the host backend can't move it
+much, so slirp would be ~flat or net-faster. *The slirp run below refutes that for
+bulk transfer.* The `dumpfile` figure (larger payload, sd ≈ 0) is the most reliable
+bandwidth number; `latency` has a wide spread typical of the cooperative scheduler
+under AE load.
+
+## slirp (2026-06-28) — measured
+
+Identical daemon binary and host code; only `~/.basilisk_ii_prefs` changed to
+`ether slirp` and the guest TCP/IP set to `10.0.2.15` / gw `10.0.2.2`. The daemon's
+outbound dial to `10.0.2.2:9000` arrives at the host as loopback `127.0.0.1` —
+confirming the slirp gateway path works with no `redir`.
+
+| Metric | etherhelper/en8 | slirp | delta |
+|---|---|---|---|
+| latency (Echo) | 154.5 ms | 112.3 ms | **−27 % (faster)** |
+| catenate | 1.2 MiB/s | 0.2 MiB/s | **−82 % (slower)** |
+| dumpfile | 0.8 MiB/s | 0.2 MiB/s | **−78 % (slower)** |
+| screenshot | 1683 ms | 5275 ms | **+213 % (slower)** |
+
+### Verdict
+
+The prediction was **half right**. Latency improves and stabilises (host-internal,
+no wire hop; sd 49 → 14 ms) — good for interactive command/response. But **bulk
+throughput collapses ~80 %** and screenshots take 3× longer. So the host backend is
+*not* irrelevant: this Basilisk build ships the **legacy slirp**, not modern
+`libslirp`, and its per-packet user-mode NAT cost dominates large transfers — exactly
+the caveat the migration plan flagged.
+
+Trade-off, not a clear win: slirp buys **dock-independence + lower latency** at the
+price of **much slower bulk transfer** (DumpFile, screenshots, large file reads).
+Which matters more depends on the workload.
