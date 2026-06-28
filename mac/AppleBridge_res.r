@@ -6,10 +6,13 @@
 #include "Types.r"
 
 /* SIZE resource - CRITICAL for Apple Events + faceless background operation.
- * v0.6.0: onlyBackground (was backgroundAndForeground) makes AppleBridge a true
- * faceless service — no window, no Application-menu entry. isHighLevelEventAware
- * + localAndRemoteHLEvents stay set (required: -903 without them, and the
- * inbound kAEQuitApplication quit path needs HL events delivered).
+ * The daemon normally runs faceless (no window, no Application-menu entry), but
+ * the "Mitlesen" live-traffic monitor needs a real foreground window that can
+ * come to front and receive clicks/resizes — so backgroundAndForeground +
+ * getFrontClicks (was onlyBackground/dontGetFrontClicks). It still opens NO
+ * window until the user picks Mitlesen, so at boot it stays invisibly in back.
+ * isHighLevelEventAware + localAndRemoteHLEvents stay set (required: -903 without
+ * them, and the inbound kAEQuitApplication quit path needs HL events delivered).
  */
 resource 'SIZE' (-1) {
     reserved,
@@ -17,8 +20,8 @@ resource 'SIZE' (-1) {
     reserved,
     canBackground,
     doesActivateOnFGSwitch,
-    onlyBackground,
-    dontGetFrontClicks,
+    backgroundAndForeground,
+    getFrontClicks,
     ignoreChildDiedEvents,
     is32BitCompatible,
     isHighLevelEventAware,      /* REQUIRED for Apple Events! */
@@ -40,8 +43,8 @@ resource 'SIZE' (0) {
     reserved,
     canBackground,
     doesActivateOnFGSwitch,
-    onlyBackground,
-    dontGetFrontClicks,
+    backgroundAndForeground,
+    getFrontClicks,
     ignoreChildDiedEvents,
     is32BitCompatible,
     isHighLevelEventAware,

@@ -34,10 +34,19 @@ static AppPrefs gPrefs;
 #define QUIT_ITEM       1
 
 static Boolean gRunning = true;
+/* The on-demand "Mitlesen" live-traffic monitor window. The daemon is faceless;
+ * this window only exists between a Mitlesen pick (LED click) and its close. All
+ * the drawing functions are no-ops while it is NULL, so the daemon stays
+ * invisible until asked. It is resizable; close != quit (DisposeWindow, the loop
+ * keeps running). */
 static WindowPtr gStatusWindow = NULL;
+static Boolean gMenuInstalled = false;   /* minimal Apple menu, installed lazily */
+#define MON_MIN_W 240
+#define MON_MIN_H 140
 /* Scrolling log as a ring buffer of the last LOG_LINES lines, redrawn whole on
- * each message (robust: always in-window, survives redraws). Small 9pt font. */
-#define LOG_LINES 18
+ * each message (robust: always in-window, survives redraws). Small 9pt font.
+ * The window reflows to its live size, showing the last lines that fit. */
+#define LOG_LINES 60
 #define LOG_W     160
 static char  gLog[LOG_LINES][LOG_W];
 static short gLogHead = 0;   /* next slot to write */
@@ -51,6 +60,11 @@ static long gTickCounter = 0;
  * AppleBridgeMenuLED INIT); NULL if that extension isn't installed. We stamp
  * TickCount() here on each RX so the menu-bar LED flashes on traffic. */
 static long *gMenuLED = NULL;
+/* &gMonReq, the second long in the shared 'ABrg' block (gMenuLED+1). The MenuLED
+ * INIT bumps it when the user picks "Mitlesen" on the menu-bar LED; we poll it
+ * and open the monitor window. NULL if the INIT isn't installed. */
+static long *gMonReqCell = NULL;
+static long  gMonReqSeen = 0;
 static long gStartTick = 0;   /* daemon launch tick (for Alive uptime) */
 static MenuHandle gAppleMenu;
 static MenuHandle gFileMenu;
@@ -106,7 +120,7 @@ void DrawLEDs(void)
 {
     Rect statusArea, led;
     Str255 pstr;
-    short i;
+    short i, w;
     long now;
     Boolean active;
     RGBColor ledBright = { 0x1000, 0xE000, 0x1000 };  /* bright green: data moving */
@@ -118,9 +132,10 @@ void DrawLEDs(void)
 
     SetPort(gStatusWindow);
     PenNormal();
+    w = gStatusWindow->portRect.right - gStatusWindow->portRect.left;
 
-    /* Clear the top bar (white background, framed) */
-    SetRect(&statusArea, 0, 0, 400, 18);
+    /* Clear the top bar (white background, framed) — full window width */
+    SetRect(&statusArea, 0, 0, w, 18);
     RGBBackColor(&cWhite);
     RGBForeColor(&cBlack);
     EraseRect(&statusArea);
@@ -185,25 +200,36 @@ void RedrawLog(void)
 {
     Rect body;
     Str255 pstr;
-    short line, idx, k;
+    short line, idx, k, w, h, bodyBot, rows, start, shown;
     RGBColor cBlack = { 0, 0, 0 };
     RGBColor cWhite = { 0xFFFF, 0xFFFF, 0xFFFF };
 
     if (gStatusWindow == NULL) return;
     SetPort(gStatusWindow);
 
-    SetRect(&body, 0, 19, 400, 282);
+    w = gStatusWindow->portRect.right - gStatusWindow->portRect.left;
+    h = gStatusWindow->portRect.bottom - gStatusWindow->portRect.top;
+    bodyBot = h - 16;                 /* leave room for the Alive line + grow box */
+
+    SetRect(&body, 0, 19, w, bodyBot);
     RGBBackColor(&cWhite);
     EraseRect(&body);
     RGBForeColor(&cBlack);
     TextSize(9);
 
-    for (line = 0; line < gLogN; line++) {
+    /* How many 13px lines fit; show the last 'rows' of the ring (a tall window
+     * shows more history, a short one the most recent few). */
+    rows = (bodyBot - 30) / 13 + 1;
+    if (rows < 1) rows = 1;
+    start = (gLogN > rows) ? gLogN - rows : 0;
+    shown = 0;
+    for (line = start; line < gLogN; line++) {
         idx = (gLogHead - gLogN + line + 2 * LOG_LINES) % LOG_LINES;
         for (k = 0; gLog[idx][k] && k < 250; k++) pstr[k + 1] = gLog[idx][k];
         pstr[0] = (unsigned char)k;
-        MoveTo(8, 30 + line * 13);
+        MoveTo(8, 30 + shown * 13);
         DrawString(pstr);
+        shown++;
     }
     TextSize(12);
 }
@@ -227,12 +253,14 @@ void ShowAlive(void)
     Rect r;
     char buf[32];
     Str255 pstr;
-    short i;
+    short i, w, h;
     long ticks;
 
     if (gStatusWindow == NULL) return;
 
     SetPort(gStatusWindow);
+    w = gStatusWindow->portRect.right - gStatusWindow->portRect.left;
+    h = gStatusWindow->portRect.bottom - gStatusWindow->portRect.top;
 
     /* Refresh ~8x/sec so the LED flash is caught and reverts promptly */
     ticks = TickCount();
@@ -245,8 +273,8 @@ void ShowAlive(void)
     /* Redraw the console body if new lines arrived (from this good context) */
     if (gLogDirty) { RedrawLog(); gLogDirty = false; }
 
-    /* Draw alive indicator at bottom */
-    SetRect(&r, 10, 285, 390, 300);
+    /* Draw alive indicator at the bottom (left of the grow box) */
+    SetRect(&r, 10, h - 15, w - 16, h - 1);
     EraseRect(&r);
 
     /* Show DAEMON uptime broken into d / h / m / s */
@@ -285,7 +313,7 @@ void ShowAlive(void)
     }
     pstr[0] = i;
 
-    MoveTo(10, 295);
+    MoveTo(10, h - 4);
     DrawString("\pAlive: ");
     DrawString(pstr);
 }
@@ -426,6 +454,58 @@ void InitApp(void)
 }
 
 /*
+ * Open the on-demand "Mitlesen" live-traffic monitor window (resizable). Called
+ * when the menu-bar LED's "Mitlesen" item is picked (gMonReq bumped). The daemon
+ * is otherwise faceless; this is its only window. A minimal Apple menu is
+ * installed lazily so a foregrounded daemon has a sane menu bar — deliberately NO
+ * Quit item (quitting tears down Open Transport and crashes the SDL2 host).
+ */
+void OpenMonitor(void)
+{
+    Rect r;
+
+    if (gStatusWindow != NULL) {      /* already open: just bring it forward */
+        SelectWindow(gStatusWindow);
+        return;
+    }
+
+    SetRect(&r, 40, 60, 40 + 480, 60 + 340);
+    gStatusWindow = NewCWindow(NULL, &r, "\pAppleBridge - Mitlesen", true,
+                               zoomDocProc, (WindowPtr)-1L, true, 0);
+    if (gStatusWindow == NULL) return;
+
+    if (!gMenuInstalled) {
+        gAppleMenu = NewMenu(APPLE_MENU_ID, "\p\024");
+        AppendMenu(gAppleMenu, "\pAbout AppleBridge...;(-");
+        AppendResMenu(gAppleMenu, 'DRVR');
+        InsertMenu(gAppleMenu, 0);
+        DrawMenuBar();
+        gMenuInstalled = true;
+    }
+
+    SelectWindow(gStatusWindow);
+    SetPort(gStatusWindow);
+    StatusMessage("--- Mitlesen: live bridge traffic ---");
+    gLogDirty = true;
+    gTickCounter = 0;                 /* force the next ShowAlive to redraw */
+    InvalRect(&gStatusWindow->portRect);
+}
+
+/*
+ * Poll the shared 'ABrg' block for a Mitlesen request from the menu-bar LED and
+ * open (or re-foreground) the monitor window when it changes. Cheap: one deref
+ * and compare. No-op when the MenuLED INIT isn't installed (gMonReqCell NULL).
+ */
+void PollMonitorRequest(void)
+{
+    if (gMonReqCell == NULL) return;
+    if (*gMonReqCell != gMonReqSeen) {
+        gMonReqSeen = *gMonReqCell;
+        OpenMonitor();
+    }
+}
+
+/*
  * Check for user interrupt and process events
  */
 Boolean CheckUserAbort(void)
@@ -462,9 +542,27 @@ Boolean CheckUserAbort(void)
                         }
                         break;
                     case inGoAway:
+                        /* Close != quit: dispose the monitor window, the daemon
+                         * keeps running (gRunning stays true). */
                         if (window == gStatusWindow) {
                             if (TrackGoAway(window, event.where)) {
-                                gRunning = false;
+                                DisposeWindow(window);
+                                gStatusWindow = NULL;
+                            }
+                        }
+                        break;
+                    case inGrow:
+                        if (window == gStatusWindow) {
+                            Rect limits;
+                            long newSize;
+                            SetRect(&limits, MON_MIN_W, MON_MIN_H,
+                                    qd.screenBits.bounds.right,
+                                    qd.screenBits.bounds.bottom);
+                            newSize = GrowWindow(window, event.where, &limits);
+                            if (newSize != 0) {
+                                SizeWindow(window, LoWord(newSize),
+                                           HiWord(newSize), true);
+                                InvalRect(&window->portRect);
                             }
                         }
                         break;
@@ -489,6 +587,9 @@ Boolean CheckUserAbort(void)
                 BeginUpdate((WindowPtr)event.message);
                 DrawLEDs();   /* top bar (activity) */
                 RedrawLog();   /* console body — else updates wipe it blank */
+                if ((WindowPtr)event.message == gStatusWindow) {
+                    DrawGrowIcon(gStatusWindow);   /* size box / bottom frame */
+                }
                 EndUpdate((WindowPtr)event.message);
                 break;
         }
@@ -852,7 +953,14 @@ int main(void)
      * Gestalt fails -> gMenuLED stays NULL -> the stamp is a no-op. */
     {
         long abResp;
-        if (Gestalt('ABrg', &abResp) == noErr) gMenuLED = (long *) abResp;
+        if (Gestalt('ABrg', &abResp) == noErr) {
+            gMenuLED = (long *) abResp;
+            /* Shared block layout: [0]=gLastTick (we stamp RX), [1]=gMonReq (the
+             * INIT bumps on a Mitlesen pick). Seed 'seen' from the current value
+             * so a pre-existing count doesn't pop the window at launch. */
+            gMonReqCell = gMenuLED + 1;
+            gMonReqSeen = *gMonReqCell;
+        }
     }
 
     /* Load config from "AppleBridge Prefs" (host IP + chain-launch apps). The
@@ -936,6 +1044,7 @@ int main(void)
         }
 
         SystemTask();
+        PollMonitorRequest();   /* LED "Mitlesen" pick -> open the monitor window */
         ShowAlive();
 
         if (CheckUserAbort()) {
