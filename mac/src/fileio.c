@@ -30,13 +30,26 @@
 #include <Files.h>
 #include <Errors.h>
 #include <Events.h>     /* TickCount, SystemTask */
+#include <Memory.h>     /* NewPtr */
 
-#define FILE_CHUNK      8192L            /* per-transfer buffer (static, off-stack) */
+#define FILE_CHUNK      8192L            /* per-transfer buffer */
 #define FILE_STALL_TICKS 1800L           /* ~30 s with no progress -> give up */
 
-/* Reused across a single (single-connection) transfer; keeps it off the 68k
- * stack and out of the heap. The daemon serves one request at a time. */
-static char gFileChunk[FILE_CHUNK];
+/* One 8 KB transfer buffer, lazily allocated on the HEAP. It must NOT be a
+ * static array: that lands in the A5 near-data world, whose 16-bit-addressable
+ * span the daemon already fills (the ~19 KB log buffers), so an 8 KB array there
+ * overflows it and the link fails with "Error 114: 16-bit reference offset out
+ * of range". A heap Ptr costs only 4 bytes of A5. Single-connection daemon, so
+ * one shared buffer is fine; never freed (negligible) to keep every path simple. */
+static Ptr gChunk = NULL;
+static long gDbgRsrcPrePos = 0;   /* INSTRUMENTATION: rsrc offset within pushback */
+
+/* Allocate the shared chunk buffer on first use; NULL on out-of-memory. */
+static Ptr EnsureChunk(void)
+{
+    if (gChunk == NULL) gChunk = NewPtr(FILE_CHUNK);
+    return gChunk;
+}
 
 /* ---- a pushback byte reader: drains bytes already received in `request`,
  *      then pulls more from the endpoint (one ReceiveData per call) ---------- */
@@ -96,10 +109,10 @@ static OSStatus StreamToFork(StreamCtx *ctx, short refNum, long total)
         long got = 0;
         OSStatus err;
         if (want > FILE_CHUNK) want = FILE_CHUNK;
-        err = StreamRead(ctx, gFileChunk, want, &got);
+        err = StreamRead(ctx, gChunk, want, &got);
         if (err == noErr && got > 0) {
             long n = got;
-            OSErr werr = FSWrite(refNum, &n, gFileChunk);
+            OSErr werr = FSWrite(refNum, &n, gChunk);
             if (werr != noErr) return werr;     /* disk full / write error */
             done += got;
             lastProgress = TickCount();
@@ -187,6 +200,30 @@ static Boolean ReplyStatus(EndpointRef endpoint, const char *frame, Boolean heal
     return healthy;
 }
 
+/* Append a C string; returns the pointer past it. */
+static char *AppendStr(char *p, const char *s)
+{
+    while (*s) *p++ = *s++;
+    return p;
+}
+
+/* Send STATUS:0 with an arbitrary (small) STDOUT string. */
+static Boolean SendStatusOut(EndpointRef endpoint, const char *out)
+{
+    char frame[256];
+    char *p = frame;
+    long olen = 0;
+    const char *q;
+    for (q = out; *q; q++) olen++;
+    p = AppendStr(p, "STATUS:0\rSTDOUT:");
+    p = AppendULong(p, (unsigned long)olen);
+    *p++ = '\r';
+    p = AppendStr(p, out);
+    p = AppendStr(p, "\rSTDERR:0\r\r");
+    SendData(endpoint, frame, p - frame);
+    return true;
+}
+
 /* ---- WRITEFILE ----------------------------------------------------------- */
 
 Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
@@ -201,6 +238,10 @@ Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
     OSErr     ferr;
     OSStatus  serr;
     short     dataRef = 0, rsrcRef = 0;
+
+    if (EnsureChunk() == NULL)
+        return ReplyStatus(endpoint,
+            "STATUS:-1\rSTDOUT:0\rSTDERR:13\rout of memory\r\r", true);
 
     /* The header line must be present in the first segment (it is tiny and is
      * always sent ahead of the body). Find its terminating newline. */
@@ -251,7 +292,7 @@ Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
         while (drop > 0) {
             long got = 0;
             n = (drop > FILE_CHUNK) ? FILE_CHUNK : drop;
-            if (StreamRead(&ctx, gFileChunk, n, &got) == noErr && got > 0) drop -= got;
+            if (StreamRead(&ctx, gChunk, n, &got) == noErr && got > 0) drop -= got;
             else SystemTask();
         }
         return ReplyStatus(endpoint,
@@ -262,6 +303,7 @@ Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
     if (FSpOpenDF(&spec, fsRdWrPerm, &dataRef) != noErr)
         return ReplyStatus(endpoint,
             "STATUS:-1\rSTDOUT:0\rSTDERR:17\ropen data fork err\r\r", true);
+    SetEOF(dataRef, dataLen);                    /* pre-size the fork */
     serr = StreamToFork(&ctx, dataRef, dataLen);
     FSClose(dataRef);
     if (serr != noErr) return false;
@@ -271,12 +313,54 @@ Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
         if (FSpOpenRF(&spec, fsRdWrPerm, &rsrcRef) != noErr)
             return ReplyStatus(endpoint,
                 "STATUS:-1\rSTDOUT:0\rSTDERR:17\ropen rsrc fork err\r\r", true);
+        gDbgRsrcPrePos = ctx.prePos;             /* where rsrc sits in the pushback */
+        SetEOF(rsrcRef, rsrcLen);                /* pre-size the fork */
         serr = StreamToFork(&ctx, rsrcRef, rsrcLen);
         FSClose(rsrcRef);
         if (serr != noErr) return false;
     }
 
-    return ReplyStatus(endpoint, "STATUS:0\rSTDOUT:7\rWritten\rSTDERR:0\r\r", true);
+    /* INSTRUMENTATION: read this file's OWN resource fork back from disk at
+     * offset 40..55 and report it as hex, to tell write-corruption (on-disk
+     * wrong) apart from read-corruption (READFILE wrong) in one round trip. */
+    {
+        static const char hx[] = "0123456789abcdef";
+        char  diag[160];
+        char *dp = diag;
+        char  rb[16];
+        char *src;
+        short rref = 0, i;
+        long  cnt = 16;
+        long  srcOff = gDbgRsrcPrePos + 40;      /* pushback offset of rsrc[40] */
+        for (i = 0; i < 16; i++) rb[i] = 0;
+        if (rsrcLen >= 56 && FSpOpenRF(&spec, fsRdPerm, &rref) == noErr) {
+            SetFPos(rref, fsFromStart, 40L);
+            cnt = 16;
+            FSRead(rref, &cnt, rb);
+            FSClose(rref);
+        }
+        dp = AppendStr(dp, "ok rl=");
+        dp = AppendULong(dp, (unsigned long)rsrcLen);
+        dp = AppendStr(dp, " pl=");                /* preLen: was it all one segment? */
+        dp = AppendULong(dp, (unsigned long)requestLen);
+        dp = AppendStr(dp, " src=");               /* what we MEANT to write (pushback) */
+        if (srcOff + 16 <= requestLen) {
+            src = request + srcOff;
+            for (i = 0; i < 16; i++) {
+                *dp++ = hx[((unsigned char)src[i] >> 4) & 0xF];
+                *dp++ = hx[(unsigned char)src[i] & 0xF];
+            }
+        } else {
+            dp = AppendStr(dp, "notinpushback");
+        }
+        dp = AppendStr(dp, " rb40=");              /* what's actually on disk */
+        for (i = 0; i < 16; i++) {
+            *dp++ = hx[(rb[i] >> 4) & 0xF];
+            *dp++ = hx[rb[i] & 0xF];
+        }
+        *dp = '\0';
+        return SendStatusOut(endpoint, diag);
+    }
 
 badhdr:
     return ReplyStatus(endpoint,
@@ -292,9 +376,9 @@ static Boolean SendFork(EndpointRef endpoint, short refNum, long total)
     while (remaining > 0) {
         long want = (remaining > FILE_CHUNK) ? FILE_CHUNK : remaining;
         long n = want;
-        OSErr rerr = FSRead(refNum, &n, gFileChunk);    /* n := bytes actually read */
+        OSErr rerr = FSRead(refNum, &n, gChunk);    /* n := bytes actually read */
         if (n > 0) {
-            if (SendData(endpoint, gFileChunk, n) != noErr) return false;
+            if (SendData(endpoint, gChunk, n) != noErr) return false;
             remaining -= n;
         }
         if (rerr != noErr && rerr != eofErr) return false;
@@ -314,6 +398,10 @@ Boolean ReadFileVerb(EndpointRef endpoint, char *request, long requestLen)
     char   *p;
     short   n;
     Boolean ok;
+
+    if (EnsureChunk() == NULL)
+        return ReplyStatus(endpoint,
+            "STATUS:-1\rSTDOUT:0\rSTDERR:13\rout of memory\r\r", true);
 
     /* Everything after "READFILE:" up to \r/\n/end is the path. */
     for (n = 0; (long)(9 + n) < requestLen && request[9 + n] &&
@@ -362,6 +450,4 @@ Boolean ReadFileVerb(EndpointRef endpoint, char *request, long requestLen)
     if (rsrcRef) FSClose(rsrcRef);
 
     return ok;   /* false on a mid-stream send failure -> reconnect */
-
-    ferr = ferr; /* silence unused on some compilers */
 }
