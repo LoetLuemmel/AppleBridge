@@ -210,6 +210,17 @@ data-fork only).""",
             },
             "required": ["mac_path", "host_path"]
         }
+    },
+    {
+        "name": "mac_reboot",
+        "description": """Restart the emulated classic Mac (System 7).
+
+Sends the Finder restart Apple Event — the programmatic equivalent of
+Special > Restart. Use it to re-activate a freshly built/swapped daemon without a
+manual reboot. The bridge connection drops; the watchdog brings the daemon back
+up on boot. After calling this, poll mpw_execute (e.g. Echo) until it answers
+again before continuing.""",
+        "inputSchema": {"type": "object", "properties": {}, "required": []}
     }
 ]
 
@@ -533,6 +544,23 @@ def mac_get_file(mac_path: str, host_path: str, format: str = "auto") -> Dict[st
         return {"success": False, "path": mac_path, "error": str(e)}
 
 
+def mac_reboot() -> Dict[str, Any]:
+    """Restart the emulated Mac via the daemon's REBOOT verb."""
+    try:
+        conn = get_connection()
+        if not conn.is_connected():
+            return {"success": False, "error": "Mac not connected"}
+        status, stdout, stderr = conn.send_command("REBOOT", timeout=15.0)
+        return {
+            "success": True,
+            "message": stdout or "reboot triggered",
+            "note": "Mac is restarting; poll mpw_execute until it answers again.",
+        }
+    except Exception as e:
+        # The connection dropping mid-restart is expected, not a failure.
+        return {"success": True, "note": f"reboot triggered (connection dropped: {e})"}
+
+
 # Tool dispatcher
 TOOL_HANDLERS = {
     "mpw_execute": mpw_execute,
@@ -544,6 +572,7 @@ TOOL_HANDLERS = {
     "launch_app": launch_app,
     "mac_put_file": mac_put_file,
     "mac_get_file": mac_get_file,
+    "mac_reboot": mac_reboot,
 }
 
 

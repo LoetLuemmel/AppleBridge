@@ -769,6 +769,51 @@ static OSErr LaunchAppAtPath(const char *macPath)
 }
 
 /*
+ * Trigger a clean System 7 restart by sending the Finder ('MACS') the restart
+ * Apple Event — the programmatic equivalent of Special > Restart. Used by the
+ * REBOOT verb so the host can re-activate a freshly swapped daemon without a
+ * manual reboot. A full OS restart is safe; only quitting the daemon while the
+ * OS keeps running (QUITDAEMON) trips the host OT-teardown crash.
+ */
+static OSErr RebootMac(void)
+{
+    ProcessSerialNumber psn;
+    ProcessInfoRec      info;
+    Str31               procName;
+    AEAddressDesc       target;
+    AppleEvent          event, reply;
+    OSErr               err;
+    Boolean             found = false;
+
+    /* Quit ToolServer cleanly first so its shutdown can't pop a dialog. */
+    (void)QuitAppBySignature('MPSX');
+
+    /* Find the Finder by creator signature. */
+    psn.highLongOfPSN = 0;
+    psn.lowLongOfPSN  = kNoProcess;
+    while (GetNextProcess(&psn) == noErr) {
+        info.processInfoLength = sizeof(ProcessInfoRec);
+        info.processName       = procName;
+        info.processAppSpec    = NULL;
+        if (GetProcessInformation(&psn, &info) == noErr &&
+            info.processSignature == 'MACS') { found = true; break; }
+    }
+    if (!found) return -1;
+
+    err = AECreateDesc(typeProcessSerialNumber, &psn, sizeof(psn), &target);
+    if (err != noErr) return err;
+    err = AECreateAppleEvent(kCoreEventClass, 'rest', &target,
+                             kAutoGenerateReturnID, kAnyTransactionID, &event);
+    if (err == noErr) {
+        err = AESend(&event, &reply, kAENoReply | kAECanSwitchLayer,
+                     kAENormalPriority, kAEDefaultTimeout, NULL, NULL);
+        AEDisposeDesc(&event);
+    }
+    AEDisposeDesc(&target);
+    return err;
+}
+
+/*
  * Process a request from the host
  */
 /* Returns true if the connection is still healthy, false if a response send
@@ -834,6 +879,19 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         gLastTX = TickCount();
         gTXCount++;
         gRunning = false;   /* while(gRunning) loop exits after this request */
+        return true;
+    }
+
+    /* REBOOT verb: clean System 7 restart (re-activates a freshly swapped
+     * daemon). Ack first, then trigger the restart; the connection then drops
+     * and the watchdog brings the new daemon up after the reboot. */
+    if (strncmp(request, "REBOOT", 6) == 0) {
+        strcpy(responseBuffer, "STATUS:0\rSTDOUT:6\rReboot\rSTDERR:0\r\r");
+        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        gLastTX = TickCount();
+        gTXCount++;
+        SetActivity("REBOOT");
+        RebootMac();
         return true;
     }
 

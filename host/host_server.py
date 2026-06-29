@@ -638,7 +638,7 @@ def run_control_server(server):
                             log(f"READFILE -> {len(blob)}B MacBinary ({len(b64)}B base64)")
                         else:
                             out = "STATUS:-1\rSTDOUT:0\rSTDERR:14\rREADFILE failed\r\r"
-                    elif (cmd == "PING" or cmd == "QUITDAEMON"
+                    elif (cmd == "PING" or cmd == "QUITDAEMON" or cmd == "REBOOT"
                           or cmd.startswith("LAUNCH:") or cmd.startswith("QUIT:")):
                         log(f"verb: {cmd[:60]!r}")
                         resp = server.send_raw(cmd)   # raw, not COMMAND-wrapped

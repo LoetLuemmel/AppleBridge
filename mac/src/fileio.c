@@ -28,6 +28,7 @@
 
 #include <applebridge.h>
 #include <Files.h>
+#include <Resources.h>  /* FSpCreateResFile */
 #include <Errors.h>
 #include <Events.h>     /* TickCount, SystemTask */
 #include <Memory.h>     /* NewPtr */
@@ -283,9 +284,17 @@ Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
      * any other (path) error is caught by FSpCreate below. */
     (void)MakeFSSpecFromPath(macPath, &spec);
 
-    /* 2) (re)create the file, stamping type + creator so an APPL is launchable */
+    /* 2) (re)create the file, stamping type + creator so an APPL is launchable.
+     * Use FSpCreateResFile for the resource fork: a raw FSpOpenRF write onto a
+     * bare FSpCreate'd file corrupts at offset 48 (the File Manager stamps the
+     * file name into the uninitialised resource fork). FSpCreateResFile lays
+     * down a proper (empty) resource fork first; we then SetEOF it to 0 and
+     * overwrite with the raw bytes. */
     FSpDelete(&spec);                            /* ignore error if absent */
     ferr = FSpCreate(&spec, fCreator, fType, 0);
+    if (ferr == noErr && rsrcLen > 0) {
+        FSpCreateResFile(&spec, fCreator, fType, 0);   /* add an initialised resource fork */
+    }
     if (ferr != noErr) {
         /* Still drain the declared body so the wire stays in sync, then report. */
         long drop = dataLen + rsrcLen, n;
@@ -314,7 +323,8 @@ Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
             return ReplyStatus(endpoint,
                 "STATUS:-1\rSTDOUT:0\rSTDERR:17\ropen rsrc fork err\r\r", true);
         gDbgRsrcPrePos = ctx.prePos;             /* where rsrc sits in the pushback */
-        SetEOF(rsrcRef, rsrcLen);                /* pre-size the fork */
+        SetEOF(rsrcRef, 0L);                     /* discard FSpCreateResFile's empty map */
+        SetEOF(rsrcRef, rsrcLen);                /* pre-size to the raw fork length */
         serr = StreamToFork(&ctx, rsrcRef, rsrcLen);
         FSClose(rsrcRef);
         if (serr != noErr) return false;
