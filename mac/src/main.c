@@ -101,6 +101,8 @@ static short gLogN    = 0;   /* lines currently stored */
  * ring is flattened into for TESetText (LOG_LINES*LOG_W ~ under TE's 32 KB cap). */
 static TEHandle gLogTE = NULL;
 static ControlHandle gScroll = NULL;   /* vertical scrollbar for the log */
+static short gLineHeight = 11;          /* log line height; a STYLED TERec reports
+                                        * lineHeight as -1, so we keep our own. */
 static char     gTEBuf[LOG_LINES * LOG_W];
 static Boolean gLogDirty = false;  /* redraw the body from ShowAlive's good
                                     * context (drawing from ProcessRequest, right
@@ -261,21 +263,19 @@ void MonitorBodyRect(Rect *r)
 /* Scroll the log so display line `topLine` sits at the top of the view. */
 static void ScrollLogTo(short topLine)
 {
-    short lh, curTop, delta;
+    short curTop, delta;
     if (gLogTE == NULL) return;
-    lh = (**gLogTE).lineHeight; if (lh < 1) lh = 1;
-    curTop = (short)(((**gLogTE).viewRect.top - (**gLogTE).destRect.top) / lh);
-    delta = (short)((curTop - topLine) * lh);
+    curTop = (short)(((**gLogTE).viewRect.top - (**gLogTE).destRect.top) / gLineHeight);
+    delta = (short)((curTop - topLine) * gLineHeight);
     if (delta != 0) TEScroll(0, delta, gLogTE);
 }
 
 /* Max scrollbar value = number of lines that don't fit in the view. */
 static short LogMaxScroll(void)
 {
-    short lh, vis, n;
+    short vis, n;
     if (gLogTE == NULL) return 0;
-    lh = (**gLogTE).lineHeight; if (lh < 1) lh = 1;
-    vis = (short)(((**gLogTE).viewRect.bottom - (**gLogTE).viewRect.top) / lh);
+    vis = (short)(((**gLogTE).viewRect.bottom - (**gLogTE).viewRect.top) / gLineHeight);
     n = (**gLogTE).nLines;
     return (n - vis < 0) ? 0 : (short)(n - vis);
 }
@@ -674,6 +674,12 @@ void OpenMonitor(void)
         TextFont(kLogFontID);
         TextSize(9);
         TextFace(0);                      /* default run = plain; commands get bold per-line */
+        {
+            FontInfo fi;
+            GetFontInfo(&fi);             /* fixed line height (styled TERec reports -1) */
+            gLineHeight = fi.ascent + fi.descent + fi.leading;
+            if (gLineHeight < 1) gLineHeight = 11;
+        }
         gLogTE = TEStyleNew(&body, &body); /* styled record so command lines can be bold */
         if (gLogTE != NULL) {
             TEAutoView(true, gLogTE);     /* let TESelView scroll to the bottom */
