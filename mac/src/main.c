@@ -8,6 +8,7 @@
 #include <Quickdraw.h>
 #include <Fonts.h>
 #include <Windows.h>
+#include <Controls.h>
 #include <Events.h>
 #include <Menus.h>
 #include <TextEdit.h>
@@ -23,6 +24,27 @@
 #include <prefs.h>
 
 QDGlobals qd;
+
+/* Control Manager part codes / scrollbar procID — this SDK's <Controls.h> does
+ * not export them; the values are standard and stable. */
+#ifndef scrollBarProc
+#define scrollBarProc 16
+#endif
+#ifndef inUpButton
+#define inUpButton    20
+#endif
+#ifndef inDownButton
+#define inDownButton  21
+#endif
+#ifndef inPageUp
+#define inPageUp      22
+#endif
+#ifndef inPageDown
+#define inPageDown    23
+#endif
+#ifndef inThumb
+#define inThumb      129
+#endif
 
 /* Loaded from "AppleBridge Prefs" at startup (host IP + chain-launch list).
  * File-scope (not on main's stack) since AppPrefs is ~2 KB. */
@@ -62,6 +84,10 @@ static Boolean gMenuInstalled = false;   /* minimal Apple menu, installed lazily
  * launch. 60*160*2 = ~19 KB of log buffers leaves headroom; 120 did not. */
 #define LOG_LINES 60
 #define LOG_W     160
+/* Max command-output lines echoed to the Verbose console per command. The
+ * rolling log keeps only the last LOG_LINES, but cap the work so a multi-MB
+ * Catenate can't spend forever line-splitting into a 60-line buffer. */
+#define CONSOLE_MAX_LINES 120
 static char  gLog[LOG_LINES][LOG_W];
 /* Per-line kind: 0 = primary ("> command" + its output), 1 = detail (the AE
  * trace). Both are always stored; the monitor can collapse the detail lines. */
@@ -74,6 +100,9 @@ static short gLogN    = 0;   /* lines currently stored */
  * sync). NULL while the window is closed. gTEBuf is the off-stack scratch the
  * ring is flattened into for TESetText (LOG_LINES*LOG_W ~ under TE's 32 KB cap). */
 static TEHandle gLogTE = NULL;
+static ControlHandle gScroll = NULL;   /* vertical scrollbar for the log */
+static short gLineHeight = 11;          /* log line height; a STYLED TERec reports
+                                        * lineHeight as -1, so we keep our own. */
 static char     gTEBuf[LOG_LINES * LOG_W];
 static Boolean gLogDirty = false;  /* redraw the body from ShowAlive's good
                                     * context (drawing from ProcessRequest, right
@@ -111,30 +140,6 @@ static char gActivity[256] = "ready";
  * HOST IP - Change this to your host's IP address!
  */
 #define DEFAULT_HOST_IP "192.168.1.100"
-
-/* Convert number to string */
-static void NumToStr(long num, char *str)
-{
-    long i = 0;
-    long j;
-    char temp[32];
-
-    if (num == 0) {
-        str[0] = '0';
-        str[1] = '\0';
-        return;
-    }
-
-    while (num > 0) {
-        temp[i++] = '0' + (num % 10);
-        num /= 10;
-    }
-
-    for (j = 0; j < i; j++) {
-        str[j] = temp[i - 1 - j];
-    }
-    str[i] = '\0';
-}
 
 /*
  * Top bar: one round green "Active" LED + the current activity (the command/verb
@@ -226,7 +231,29 @@ void MonitorBodyRect(Rect *r)
 {
     short w = gStatusWindow->portRect.right - gStatusWindow->portRect.left;
     short h = gStatusWindow->portRect.bottom - gStatusWindow->portRect.top;
-    SetRect(r, 2, 20, w - 2, h - 17);
+    /* Leave 15px on the right for the scrollbar and 15px at the bottom for the
+     * Alive line + grow box. */
+    SetRect(r, 2, 20, w - 15, h - 15);
+}
+
+/* Scroll the log so display line `topLine` sits at the top of the view. */
+static void ScrollLogTo(short topLine)
+{
+    short curTop, delta;
+    if (gLogTE == NULL) return;
+    curTop = (short)(((**gLogTE).viewRect.top - (**gLogTE).destRect.top) / gLineHeight);
+    delta = (short)((curTop - topLine) * gLineHeight);
+    if (delta != 0) TEScroll(0, delta, gLogTE);
+}
+
+/* Max scrollbar value = number of lines that don't fit in the view. */
+static short LogMaxScroll(void)
+{
+    short vis, n;
+    if (gLogTE == NULL) return 0;
+    vis = (short)(((**gLogTE).viewRect.bottom - (**gLogTE).viewRect.top) / gLineHeight);
+    n = (**gLogTE).nLines;
+    return (n - vis < 0) ? 0 : (short)(n - vis);
 }
 
 /* Flatten the ring into the TextEdit field so its text mirrors the log, then
@@ -238,21 +265,60 @@ void SyncLogTE(void)
 {
     short line, idx, k;
     long n = 0;
+    long cmdS[LOG_LINES], cmdE[LOG_LINES];        /* char ranges of command lines */
+    short nCmd = 0;
+    Boolean wasAtBottom;
 
     if (gLogTE == NULL) return;
 
+    /* If the user has scrolled up to read history, DON'T yank them to the bottom
+     * on new traffic; only auto-follow when they're already at the end. */
+    wasAtBottom = (gScroll == NULL) ||
+                  (GetControlValue(gScroll) >= GetControlMaximum(gScroll));
+
     for (line = 0; line < gLogN; line++) {
+        long lineStart;
         idx = (gLogHead - gLogN + line + 2 * LOG_LINES) % LOG_LINES;
-        if (!gShowDetails && gLogKind[idx]) continue;   /* collapsed: hide details */
+        if (!gShowDetails && gLogKind[idx] == 1) continue;  /* collapsed: hide details only */
+        lineStart = n;
         for (k = 0; gLog[idx][k] && k < LOG_W - 1; k++) gTEBuf[n++] = gLog[idx][k];
+        if (gLogKind[idx] == 2 && nCmd < LOG_LINES) {       /* a command line -> bold */
+            cmdS[nCmd] = lineStart; cmdE[nCmd] = n; nCmd++;
+        }
         gTEBuf[n++] = '\n';                       /* TE line break: MPW C '\n' is
                                                    * 0x0D (CR), the char TextEdit
                                                    * breaks on; '\r' is 0x0A (LF),
                                                    * which TE draws as a box glyph. */
     }
     TESetText(gTEBuf, n, gLogTE);
-    TESetSelect(n, n, gLogTE);                    /* caret at the end ... */
-    TESelView(gLogTE);                            /* ... and scroll it into view */
+
+    /* Style: everything plain, then bold each command line. */
+    {
+        TextStyle ts;
+        short c;
+        ts.tsFace = 0;
+        TESetSelect(0, n, gLogTE);
+        TESetStyle(doFace, &ts, false, gLogTE);
+        ts.tsFace = bold;
+        for (c = 0; c < nCmd; c++) {
+            TESetSelect(cmdS[c], cmdE[c], gLogTE);
+            TESetStyle(doFace, &ts, false, gLogTE);
+        }
+    }
+
+    /* Match the scrollbar to the new line count, then either follow the bottom
+     * (TESelView) or restore the user's scrolled-up position. */
+    {
+        short mx = LogMaxScroll();
+        if (gScroll != NULL) SetControlMaximum(gScroll, mx);
+        if (wasAtBottom) {
+            TESetSelect(n, n, gLogTE);
+            TESelView(gLogTE);
+            if (gScroll != NULL) SetControlValue(gScroll, mx);
+        } else if (gScroll != NULL) {
+            ScrollLogTo(GetControlValue(gScroll));
+        }
+    }
 
     /* TESetText updates the record but does NOT redraw — repaint the body here
      * (we run from ShowAlive's render-safe context). Without this only the very
@@ -318,75 +384,27 @@ void StatusMessage(const char *msg) { AddLogLine(msg, 0); }
 void StatusDetail(const char *msg) { AddLogLine(msg, 1); }
 
 /* Show alive indicator with LEDs */
+/* Periodic monitor-window refresh (kept the name for its call sites): flashes
+ * the LEDs and syncs the log TE. The old "Alive: <uptime>" footer was removed —
+ * the live log and mac_status already convey liveness. */
 void ShowAlive(void)
 {
-    Rect r;
-    char buf[32];
-    Str255 pstr;
-    short i, w, h;
     long ticks;
 
     if (gStatusWindow == NULL) return;
 
     SetPort(gStatusWindow);
-    w = gStatusWindow->portRect.right - gStatusWindow->portRect.left;
-    h = gStatusWindow->portRect.bottom - gStatusWindow->portRect.top;
 
     /* Refresh ~8x/sec so the LED flash is caught and reverts promptly */
     ticks = TickCount();
     if (ticks - gTickCounter < 8) return;
     gTickCounter = ticks;
 
-    /* Draw LEDs at top */
-    DrawLEDs();
+    DrawLEDs();   /* top bar (activity + RX/TX LEDs) */
 
     /* Sync the TE field from the ring if new lines arrived (from this good
      * context — TESetText draws, which doesn't render in the OT-receive path). */
     if (gLogDirty) { SyncLogTE(); gLogDirty = false; }
-
-    /* Draw alive indicator at the bottom (left of the grow box) */
-    SetRect(&r, 10, h - 15, w - 16, h - 1);
-    EraseRect(&r);
-
-    /* Show DAEMON uptime broken into d / h / m / s */
-    {
-        long secs = (ticks - gStartTick) / 60;
-        long days, hours, mins;
-        char nb[16];
-        short p = 0, k;
-
-        days  = secs / 86400L; secs %= 86400L;
-        hours = secs / 3600L;  secs %= 3600L;
-        mins  = secs / 60L;    secs %= 60L;
-
-        if (days > 0) {
-            NumToStr(days, nb);
-            for (k = 0; nb[k]; k++) buf[p++] = nb[k];
-            buf[p++] = 'd'; buf[p++] = ' ';
-        }
-        if (days > 0 || hours > 0) {
-            NumToStr(hours, nb);
-            for (k = 0; nb[k]; k++) buf[p++] = nb[k];
-            buf[p++] = 'h'; buf[p++] = ' ';
-        }
-        NumToStr(mins, nb);
-        for (k = 0; nb[k]; k++) buf[p++] = nb[k];
-        buf[p++] = 'm'; buf[p++] = ' ';
-        NumToStr(secs, nb);
-        for (k = 0; nb[k]; k++) buf[p++] = nb[k];
-        buf[p++] = 's';
-        buf[p] = '\0';
-    }
-
-    pstr[0] = 0;
-    for (i = 0; buf[i] && i < 250; i++) {
-        pstr[i + 1] = buf[i];
-    }
-    pstr[0] = i;
-
-    MoveTo(10, h - 4);
-    DrawString("\pAlive: ");
-    DrawString(pstr);
 }
 
 /*
@@ -580,12 +598,30 @@ void OpenMonitor(void)
         MonitorBodyRect(&body);
         TextFont(kLogFontID);
         TextSize(9);
-        gLogTE = TENew(&body, &body);
+        TextFace(0);                      /* default run = plain; commands get bold per-line */
+        {
+            FontInfo fi;
+            GetFontInfo(&fi);             /* fixed line height (styled TERec reports -1) */
+            gLineHeight = fi.ascent + fi.descent + fi.leading;
+            if (gLineHeight < 1) gLineHeight = 11;
+        }
+        gLogTE = TEStyleNew(&body, &body); /* styled record so command lines can be bold */
         if (gLogTE != NULL) {
             TEAutoView(true, gLogTE);     /* let TESelView scroll to the bottom */
             TEActivate(gLogTE);           /* show selection highlight */
         }
         TextSize(12);
+    }
+
+    /* Vertical scrollbar down the right edge, between the activity bar and the
+     * grow box, so the log history can be scrolled back through. */
+    {
+        Rect sb;
+        short w = gStatusWindow->portRect.right - gStatusWindow->portRect.left;
+        short h = gStatusWindow->portRect.bottom - gStatusWindow->portRect.top;
+        SetRect(&sb, w - 15, 19, w + 1, h - 14);
+        gScroll = NewControl(gStatusWindow, &sb, "\p", true, 0, 0, 0,
+                             scrollBarProc, 0);
     }
 
     StatusMessage("--- Verbose: live bridge traffic ---");
@@ -653,7 +689,8 @@ Boolean CheckUserAbort(void)
                                     TEDispose(gLogTE);
                                     gLogTE = NULL;
                                 }
-                                DisposeWindow(window);
+                                DisposeWindow(window);   /* also disposes gScroll */
+                                gScroll = NULL;
                                 gStatusWindow = NULL;
                             }
                         }
@@ -669,6 +706,15 @@ Boolean CheckUserAbort(void)
                             if (newSize != 0) {
                                 SizeWindow(window, LoWord(newSize),
                                            HiWord(newSize), true);
+                                /* Move the scrollbar to the new right edge/height. */
+                                if (gScroll != NULL) {
+                                    short w2 = window->portRect.right -
+                                               window->portRect.left;
+                                    short h2 = window->portRect.bottom -
+                                               window->portRect.top;
+                                    MoveControl(gScroll, w2 - 15, 19);
+                                    SizeControl(gScroll, 16, (h2 - 14) - 19);
+                                }
                                 /* Reflow the TE field to the new body; the next
                                  * ShowAlive re-wraps + re-pins to the bottom. */
                                 if (gLogTE != NULL) {
@@ -684,15 +730,43 @@ Boolean CheckUserAbort(void)
                         break;
                     case inContent:
                         /* In our window: a click brings it front (if needed) or,
-                         * when already front, starts a TE text selection. */
+                         * when already front, drives the scrollbar or starts a TE
+                         * text selection. */
                         if (window == gStatusWindow) {
-                            if (window != FrontWindow()) {
+                            Point pt = event.where;
+                            Rect sbR;
+                            short w = window->portRect.right - window->portRect.left;
+                            short h = window->portRect.bottom - window->portRect.top;
+                            SetPort(window);
+                            GlobalToLocal(&pt);
+                            SetRect(&sbR, w - 15, 19, w + 1, h - 14);
+                            /* Hit-test the scrollbar GEOMETRICALLY (not FindControl/
+                             * TrackControl, which don't engage for this faceless
+                             * app's window). Top/bottom 16px = arrows (±1 line); the
+                             * rest of the track = proportional jump to that spot. */
+                            if (gScroll != NULL && PtInRect(pt, &sbR)) {
+                                short v    = GetControlValue(gScroll);
+                                short mx   = GetControlMaximum(gScroll);
+                                short relY = pt.v - sbR.top;
+                                short hgt  = sbR.bottom - sbR.top;
+                                if (relY < 16) {
+                                    v -= 1;
+                                } else if (relY > hgt - 16) {
+                                    v += 1;
+                                } else {
+                                    short trackY = relY - 16;
+                                    short trackH = hgt - 32;
+                                    if (trackH > 0)
+                                        v = (short)(((long)trackY * mx) / trackH);
+                                }
+                                if (v < 0) v = 0;
+                                if (v > mx) v = mx;
+                                SetControlValue(gScroll, v);
+                                ScrollLogTo(v);
+                            } else if (window != FrontWindow()) {
                                 SelectWindow(window);
                             } else if (gLogTE != NULL) {
-                                Point pt = event.where;
                                 Rect body;
-                                SetPort(window);
-                                GlobalToLocal(&pt);
                                 MonitorBodyRect(&body);
                                 if (PtInRect(pt, &body)) {
                                     TEClick(pt, (event.modifiers & shiftKey) != 0,
@@ -718,9 +792,15 @@ Boolean CheckUserAbort(void)
                 break;
 
             case activateEvt:
-                if ((WindowPtr)event.message == gStatusWindow && gLogTE != NULL) {
-                    if (event.modifiers & activeFlag) TEActivate(gLogTE);
-                    else                               TEDeactivate(gLogTE);
+                if ((WindowPtr)event.message == gStatusWindow) {
+                    Boolean act = (event.modifiers & activeFlag) != 0;
+                    if (gLogTE != NULL) { if (act) TEActivate(gLogTE);
+                                          else      TEDeactivate(gLogTE); }
+                    /* Keep the scrollbar always active (hilite 0) so it remains
+                     * clickable even while this background app's window is not the
+                     * system-frontmost — a deactivated control is skipped by
+                     * FindControl, which made clicks do nothing. */
+                    if (gScroll != NULL) HiliteControl(gScroll, 0);
                 }
                 break;
 
@@ -729,6 +809,7 @@ Boolean CheckUserAbort(void)
                 DrawLEDs();   /* top bar (activity) */
                 RedrawLog();   /* console body (TEUpdate) — else updates wipe it */
                 if ((WindowPtr)event.message == gStatusWindow) {
+                    DrawControls(gStatusWindow);   /* the scrollbar */
                     DrawGrowIcon(gStatusWindow);   /* size box / bottom frame */
                 }
                 EndUpdate((WindowPtr)event.message);
@@ -1195,35 +1276,47 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         m[0] = '>'; m[1] = ' ';
         for (k = 0; command[k] && k < LOG_W - 3; k++) m[2 + k] = command[k];
         m[2 + k] = '\0';
-        StatusMessage(m);
+        AddLogLine(m, 2);   /* kind 2 = command -> shown bold in the console */
     }
 
     /* Execute command */
     result = ExecuteCommand(command, &cmdResult);
 
-    /* Console body = the command's output (first line of STDOUT, or the error
-     * diagnostics, or a short status). */
+    /* Console body = the command's output — EVERY line, so multi-line listings
+     * (Files, Catenate, ...) show in full in the Verbose window, not just the
+     * first line. Capped so a huge output can't flood the rolling log; the log
+     * buffer itself keeps only the last LOG_LINES anyway. */
     {
-        char o[LOG_W]; short k = 0;
+        char o[LOG_W];
+        short k;
         if (cmdResult.outData && cmdResult.outLen > 0) {
             char *p = *cmdResult.outData;
             long n = cmdResult.outLen;
-            long j;
-            for (j = 0; j < n && k < LOG_W - 1; j++) {
-                if (p[j] == '\r' || p[j] == '\n') break;
-                o[k++] = p[j];
+            long j = 0;
+            short emitted = 0;
+            while (j < n && emitted < CONSOLE_MAX_LINES) {
+                k = 0;
+                while (j < n && p[j] != '\r' && p[j] != '\n' && k < LOG_W - 1)
+                    o[k++] = p[j++];
+                o[k] = '\0';
+                StatusMessage(o);
+                emitted++;
+                /* skip the line terminator (and a paired CR/LF) */
+                if (j < n && (p[j] == '\r' || p[j] == '\n')) {
+                    char t = p[j++];
+                    if (j < n && ((t == '\r' && p[j] == '\n') ||
+                                  (t == '\n' && p[j] == '\r'))) j++;
+                }
             }
-            o[k] = '\0';
-            if (k == 0) { o[0]='('; o[1]='e'; o[2]='m'; o[3]='p'; o[4]='t';
-                          o[5]='y'; o[6]=')'; o[7]='\0'; }
+            if (j < n) StatusMessage("... (more output not logged)");
         } else if (cmdResult.errData[0]) {
             for (k = 0; cmdResult.errData[k] && k < LOG_W - 1; k++)
                 o[k] = cmdResult.errData[k];
             o[k] = '\0';
+            StatusMessage(o);
         } else {
-            o[0]='O'; o[1]='K'; o[2]='\0';
+            StatusMessage("OK");
         }
-        StatusMessage(o);
     }
 
     /* Stream response straight from the (possibly multi-MB) result handle. */
@@ -1360,6 +1453,10 @@ int main(void)
     /* Initialize Mac Toolbox */
     InitApp();
     gStartTick = TickCount();   /* baseline for Alive uptime */
+
+    /* Show the Verbose monitor window at launch. It can be closed (its close box)
+     * and reopened later from the menu-bar LED ("Mitlesen") pick. */
+    OpenMonitor();
 
     /* Cache the menu-bar LED's activity cell: the AppleBridgeMenuLED INIT (if
      * installed) registers Gestalt 'ABrg' returning the address of a system-heap
