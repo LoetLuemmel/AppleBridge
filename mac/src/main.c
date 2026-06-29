@@ -942,6 +942,50 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         return true;
     }
 
+    /* KEY:<charCode>:<keyCode> verb: inject one keystroke into the front app. */
+    if (strncmp(request, PROTO_KEY, strlen(PROTO_KEY)) == 0) {
+        short cc = 0, kc = 0, i = (short)strlen(PROTO_KEY);
+        while (request[i] >= '0' && request[i] <= '9') cc = cc * 10 + (request[i++] - '0');
+        if (request[i] == ':') i++;
+        while (request[i] >= '0' && request[i] <= '9') kc = kc * 10 + (request[i++] - '0');
+        SetActivity("KEY");
+        InjectKey(cc, kc);
+        strcpy(responseBuffer, "STATUS:0\rSTDOUT:3\rKey\rSTDERR:0\r\r");
+        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
+    /* TYPE:<text> verb: inject a run of characters into the front app. */
+    if (strncmp(request, PROTO_TYPE, strlen(PROTO_TYPE)) == 0) {
+        long base = (long)strlen(PROTO_TYPE), n = 0;
+        while (request[base + n] && request[base + n] != '\r' &&
+               request[base + n] != '\n' && (base + n) < requestLen) n++;
+        SetActivity("TYPE");
+        InjectType(request + base, n);
+        strcpy(responseBuffer, "STATUS:0\rSTDOUT:5\rTyped\rSTDERR:0\r\r");
+        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
+    /* CLICK:<h>:<v> verb: move the mouse and post a click to the front app. */
+    if (strncmp(request, PROTO_CLICK, strlen(PROTO_CLICK)) == 0) {
+        short h = 0, v = 0, i = (short)strlen(PROTO_CLICK);
+        while (request[i] >= '0' && request[i] <= '9') h = h * 10 + (request[i++] - '0');
+        if (request[i] == ':') i++;
+        while (request[i] >= '0' && request[i] <= '9') v = v * 10 + (request[i++] - '0');
+        SetActivity("CLICK");
+        InjectClick(h, v);
+        strcpy(responseBuffer, "STATUS:0\rSTDOUT:5\rClick\rSTDERR:0\r\r");
+        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
     /* WRITEFILE: verb: receive a file (both forks + type/creator) and stream it
      * to disk. Binary-clean, length-framed, not COMMAND-wrapped. */
     if (strncmp(request, PROTO_WRITEFILE, strlen(PROTO_WRITEFILE)) == 0) {

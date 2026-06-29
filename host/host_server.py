@@ -639,7 +639,9 @@ def run_control_server(server):
                         else:
                             out = "STATUS:-1\rSTDOUT:0\rSTDERR:14\rREADFILE failed\r\r"
                     elif (cmd == "PING" or cmd == "QUITDAEMON" or cmd == "REBOOT"
-                          or cmd.startswith("LAUNCH:") or cmd.startswith("QUIT:")):
+                          or cmd.startswith("LAUNCH:") or cmd.startswith("QUIT:")
+                          or cmd.startswith("KEY:") or cmd.startswith("TYPE:")
+                          or cmd.startswith("CLICK:")):
                         log(f"verb: {cmd[:60]!r}")
                         resp = server.send_raw(cmd)   # raw, not COMMAND-wrapped
                         out = resp if resp is not None else "No response"
