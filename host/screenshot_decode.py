@@ -37,12 +37,28 @@ def _expand5(v: int) -> int:
 
 
 def raw_to_png(width: int, height: int, depth: int, row_bytes: int,
-               clut: bytes, pixels: bytes) -> bytes:
-    """Decode a raw Mac pixmap into an 8-bit truecolor PNG (bytes)."""
+               clut: bytes, pixels: bytes, region=None) -> bytes:
+    """Decode a raw Mac pixmap into an 8-bit truecolor PNG (bytes).
+
+    `region` optionally crops the output to (x, y, w, h) in screen pixels — so a
+    caller can read one dialog instead of decoding the full 1024x768 frame. The
+    crop is clamped to the image bounds.
+    """
     if width <= 0 or height <= 0:
         raise ValueError(f"bad dimensions {width}x{height}")
     if len(pixels) < height * row_bytes:
         raise ValueError(f"short pixel buffer: {len(pixels)} < {height*row_bytes}")
+
+    if region is not None:
+        rx, ry, rw, rh = region
+        rx = max(0, min(int(rx), width))
+        ry = max(0, min(int(ry), height))
+        rw = max(0, min(int(rw), width - rx))
+        rh = max(0, min(int(rh), height - ry))
+        if rw == 0 or rh == 0:
+            raise ValueError(f"empty crop region {region} on {width}x{height}")
+    else:
+        rx, ry, rw, rh = 0, 0, width, height
 
     pal = _palette(clut)
 
@@ -59,43 +75,43 @@ def raw_to_png(width: int, height: int, depth: int, row_bytes: int,
         return (g, g, g)
 
     raw = bytearray()
-    for y in range(height):
+    for y in range(ry, ry + rh):
         raw.append(0)  # PNG filter: none
         base = y * row_bytes
         if depth == 8:
-            for x in range(width):
+            for x in range(rx, rx + rw):
                 raw += bytes(indexed_rgb(pixels[base + x]))
         elif depth == 4:
-            for x in range(width):
+            for x in range(rx, rx + rw):
                 b = pixels[base + (x >> 1)]
                 idx = (b >> 4) if (x & 1) == 0 else (b & 0x0F)
                 raw += bytes(indexed_rgb(idx))
         elif depth == 2:
-            for x in range(width):
+            for x in range(rx, rx + rw):
                 b = pixels[base + (x >> 2)]
                 idx = (b >> (6 - 2 * (x & 3))) & 0x03
                 raw += bytes(indexed_rgb(idx))
         elif depth == 1:
-            for x in range(width):
+            for x in range(rx, rx + rw):
                 b = pixels[base + (x >> 3)]
                 idx = (b >> (7 - (x & 7))) & 0x01
                 raw += bytes(indexed_rgb(idx))
         elif depth == 16:
-            for x in range(width):
+            for x in range(rx, rx + rw):
                 off = base + x * 2
                 val = (pixels[off] << 8) | pixels[off + 1]
                 raw += bytes((_expand5((val >> 10) & 0x1F),
                               _expand5((val >> 5) & 0x1F),
                               _expand5(val & 0x1F)))
         elif depth == 32:
-            for x in range(width):
+            for x in range(rx, rx + rw):
                 off = base + x * 4
                 # classic stores xRGB big-endian: skip the leading (alpha/unused) byte
                 raw += pixels[off + 1:off + 4]
         else:
             raise ValueError(f"unsupported depth {depth}")
 
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)  # 8-bit truecolor RGB
+    ihdr = struct.pack(">IIBBBBB", rw, rh, 8, 2, 0, 0, 0)  # 8-bit truecolor RGB
     return (b"\x89PNG\r\n\x1a\n"
             + _png_chunk(b"IHDR", ihdr)
             + _png_chunk(b"IDAT", zlib.compress(bytes(raw), 9))

@@ -80,13 +80,15 @@ def timeout_for(command):
     return LONG_TIMEOUT if tok in LONG_CMDS else DEFAULT_TIMEOUT
 
 
-def screenshot_png(shot):
-    """Decode a request_screenshot() dict to PNG bytes (or None)."""
+def screenshot_png(shot, region=None):
+    """Decode a request_screenshot() dict to PNG bytes (or None).
+
+    `region` optionally crops to (x, y, w, h) screen pixels."""
     if not shot:
         return None
     return screenshot_decode.raw_to_png(
         shot["width"], shot["height"], shot["depth"],
-        shot["row_bytes"], shot["clut"], shot["pixels"])
+        shot["row_bytes"], shot["clut"], shot["pixels"], region=region)
 
 
 class AppleBridgeServer:
@@ -593,10 +595,18 @@ def run_control_server(server):
             try:
                 cmd = _recv_control_command(ctrl_conn)
                 if cmd:
-                    if cmd.lower() == "screenshot":
+                    if cmd.lower() == "screenshot" or cmd.lower().startswith("screenshot:"):
+                        # Optional crop: "screenshot:x:y:w:h" decodes only that region.
+                        region = None
+                        if ":" in cmd:
+                            try:
+                                rx, ry, rw, rh = (int(v) for v in cmd.split(":")[1:5])
+                                region = (rx, ry, rw, rh)
+                            except (ValueError, IndexError):
+                                region = None
                         shot = server.request_screenshot()
                         try:
-                            png = screenshot_png(shot)
+                            png = screenshot_png(shot, region=region)
                         except Exception as e:
                             png = None
                             log(f"screenshot decode failed: {e}")
