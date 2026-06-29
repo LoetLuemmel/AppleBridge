@@ -798,6 +798,24 @@ static OSErr RebootMac(void)
     return noErr;            /* only reached if the restart failed to fire */
 }
 
+/* Minimal decimal / string appenders for building the STAT verb payload
+ * without sprintf or NumToString. Each returns the pointer past what it wrote. */
+static char *StatDec(char *p, long v)
+{
+    char tmp[16];
+    short n = 0;
+    if (v < 0) { *p++ = '-'; v = -v; }
+    if (v == 0) { *p++ = '0'; return p; }
+    while (v > 0) { tmp[n++] = (char)('0' + (v % 10)); v /= 10; }
+    while (n > 0) *p++ = tmp[--n];
+    return p;
+}
+static char *StatStr(char *p, const char *s)
+{
+    while (*s) *p++ = *s++;
+    return p;
+}
+
 /*
  * Process a request from the host
  */
@@ -981,6 +999,33 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         InjectClick(h, v);
         strcpy(responseBuffer, "STATUS:0\rSTDOUT:5\rClick\rSTDERR:0\r\r");
         SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
+    /* STAT verb: report daemon liveness counters (uptime, RX/TX totals, whether
+     * ToolServer is running). The host merges its own connection/heartbeat view
+     * and exposes the whole thing as mac_status. */
+    if (strncmp(request, PROTO_STAT, strlen(PROTO_STAT)) == 0 &&
+        (request[4] == '\0' || request[4] == '\r' || request[4] == '\n')) {
+        char frame[256];
+        char body[160];
+        char *b = body;
+        char *f = frame;
+        long now = TickCount();
+        b = StatStr(b, "uptime=");      b = StatDec(b, (now - gStartTick) / 60);
+        b = StatStr(b, ";rx=");         b = StatDec(b, gRXCount);
+        b = StatStr(b, ";tx=");         b = StatDec(b, gTXCount);
+        b = StatStr(b, ";toolserver="); b = StatDec(b, IsAppRunning('MPSX') ? 1 : 0);
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:");
+        f = StatDec(f, (long)(b - body));
+        *f++ = '\r';
+        f = StatStr(f, body);
+        f = StatStr(f, "\rSTDERR:0\r\r");
+        SetActivity("STAT");
+        SendData(endpoint, frame, (long)(f - frame));
         gLastTX = TickCount();
         gTXCount++;
         return true;

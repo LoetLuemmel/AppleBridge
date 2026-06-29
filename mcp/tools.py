@@ -234,6 +234,23 @@ the screen is 1024×768).""",
         }
     },
     {
+        "name": "mac_status",
+        "description": """Report AppleBridge liveness — instead of the opaque "Mac not connected".
+
+Surfaces state the host and daemon already track, and answers even when the
+daemon is down (so you can tell WHICH layer is broken):
+  - host_server_running — is the host control port reachable
+  - daemon_connected     — does the host have a live daemon socket
+  - daemon_responding    — did the daemon answer a STAT this call
+  - toolserver_running   — is ToolServer ('MPSX') alive (mpw_execute needs it)
+  - idle_seconds / missed_heartbeats — link freshness
+  - rx_count / tx_count / uptime_seconds — daemon counters
+
+Diagnostic shortcut: daemon_connected but not toolserver_running => commands
+will come back empty; daemon not connected => the bridge/emulator is down.""",
+        "inputSchema": {"type": "object", "properties": {}, "required": []}
+    },
+    {
         "name": "mac_put_file",
         "description": """Copy a BINARY file from the host to the classic Mac, preserving both forks.
 
@@ -620,6 +637,57 @@ def mac_click(x: int, y: int) -> Dict[str, Any]:
     return _inject(f"CLICK:{int(x)}:{int(y)}", {"x": x, "y": y})
 
 
+def mac_status() -> Dict[str, Any]:
+    """Report bridge liveness. MACSTATUS is answered host-side, so it works even
+    when the daemon is down — letting the caller see WHICH layer is broken."""
+    try:
+        conn = get_connection()
+        status, stdout, stderr = conn.send_command("MACSTATUS", timeout=8.0)
+    except Exception as e:
+        # Control port unreachable => the host server itself is down.
+        return {
+            "success": False,
+            "host_server_running": False,
+            "daemon_connected": False,
+            "error": str(e),
+        }
+
+    f = {}
+    for part in (stdout or "").split(";"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            f[k.strip()] = v.strip()
+
+    def _int(k):
+        try:
+            return int(f[k])
+        except (KeyError, ValueError):
+            return None
+
+    def _bool(k):
+        return (f[k] == "1") if k in f else None
+
+    idle = None
+    try:
+        idle = float(f["idle_seconds"])
+    except (KeyError, ValueError):
+        pass
+
+    return {
+        "success": status == 0,
+        "host_server_running": True,
+        "daemon_connected": _bool("host_connected"),
+        "daemon_responding": _bool("daemon_responding"),
+        "toolserver_running": _bool("toolserver"),
+        "idle_seconds": idle,
+        "missed_heartbeats": _int("missed_heartbeats"),
+        "rx_count": _int("rx"),
+        "tx_count": _int("tx"),
+        "uptime_seconds": _int("uptime"),
+        "raw": stdout,
+    }
+
+
 def mac_put_file(host_path: str, mac_path: str, type: Optional[str] = None,
                  creator: Optional[str] = None,
                  resource_path: Optional[str] = None) -> Dict[str, Any]:
@@ -779,6 +847,7 @@ TOOL_HANDLERS = {
     "mac_type": mac_type,
     "mac_key": mac_key,
     "mac_click": mac_click,
+    "mac_status": mac_status,
     "mac_put_file": mac_put_file,
     "mac_get_file": mac_get_file,
     "mac_restart_toolserver": mac_restart_toolserver,

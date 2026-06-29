@@ -42,6 +42,7 @@
 #define PROTO_KEY "KEY:"               /* host->daemon: inject one keystroke */
 #define PROTO_TYPE "TYPE:"             /* host->daemon: inject a run of characters */
 #define PROTO_CLICK "CLICK:"           /* host->daemon: inject a mouse click */
+#define PROTO_STAT "STAT"              /* host->daemon: report liveness counters */
 
 /* Result codes */
 typedef enum {
@@ -106,6 +107,7 @@ void CleanupCommandResult(CommandResult *result);
 
 /* Send a Quit Apple Event to a running app by creator signature (QUIT: verb) */
 OSErr QuitAppBySignature(OSType signature);
+Boolean IsAppRunning(OSType signature);
 
 /* Screenshot capture */
 BridgeResult CaptureScreenshot(ScreenshotData *screenshot);
