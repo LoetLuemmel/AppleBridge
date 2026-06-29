@@ -141,30 +141,6 @@ static char gActivity[256] = "ready";
  */
 #define DEFAULT_HOST_IP "192.168.1.100"
 
-/* Convert number to string */
-static void NumToStr(long num, char *str)
-{
-    long i = 0;
-    long j;
-    char temp[32];
-
-    if (num == 0) {
-        str[0] = '0';
-        str[1] = '\0';
-        return;
-    }
-
-    while (num > 0) {
-        temp[i++] = '0' + (num % 10);
-        num /= 10;
-    }
-
-    for (j = 0; j < i; j++) {
-        str[j] = temp[i - 1 - j];
-    }
-    str[i] = '\0';
-}
-
 /*
  * Top bar: one round green "Active" LED + the current activity (the command/verb
  * being processed) on a single line. RX/TX always move together, so a single
@@ -408,78 +384,27 @@ void StatusMessage(const char *msg) { AddLogLine(msg, 0); }
 void StatusDetail(const char *msg) { AddLogLine(msg, 1); }
 
 /* Show alive indicator with LEDs */
+/* Periodic monitor-window refresh (kept the name for its call sites): flashes
+ * the LEDs and syncs the log TE. The old "Alive: <uptime>" footer was removed —
+ * the live log and mac_status already convey liveness. */
 void ShowAlive(void)
 {
-    Rect r;
-    char buf[32];
-    Str255 pstr;
-    short i, w, h;
     long ticks;
 
     if (gStatusWindow == NULL) return;
 
     SetPort(gStatusWindow);
-    w = gStatusWindow->portRect.right - gStatusWindow->portRect.left;
-    h = gStatusWindow->portRect.bottom - gStatusWindow->portRect.top;
 
     /* Refresh ~8x/sec so the LED flash is caught and reverts promptly */
     ticks = TickCount();
     if (ticks - gTickCounter < 8) return;
     gTickCounter = ticks;
 
-    /* Draw LEDs at top */
-    DrawLEDs();
+    DrawLEDs();   /* top bar (activity + RX/TX LEDs) */
 
     /* Sync the TE field from the ring if new lines arrived (from this good
      * context — TESetText draws, which doesn't render in the OT-receive path). */
     if (gLogDirty) { SyncLogTE(); gLogDirty = false; }
-
-    /* Draw alive indicator at the bottom (left of the grow box) */
-    SetRect(&r, 10, h - 15, w - 16, h - 1);
-    EraseRect(&r);
-
-    /* Show DAEMON uptime broken into d / h / m / s */
-    {
-        long secs = (ticks - gStartTick) / 60;
-        long days, hours, mins;
-        char nb[16];
-        short p = 0, k;
-
-        days  = secs / 86400L; secs %= 86400L;
-        hours = secs / 3600L;  secs %= 3600L;
-        mins  = secs / 60L;    secs %= 60L;
-
-        if (days > 0) {
-            NumToStr(days, nb);
-            for (k = 0; nb[k]; k++) buf[p++] = nb[k];
-            buf[p++] = 'd'; buf[p++] = ' ';
-        }
-        if (days > 0 || hours > 0) {
-            NumToStr(hours, nb);
-            for (k = 0; nb[k]; k++) buf[p++] = nb[k];
-            buf[p++] = 'h'; buf[p++] = ' ';
-        }
-        NumToStr(mins, nb);
-        for (k = 0; nb[k]; k++) buf[p++] = nb[k];
-        buf[p++] = 'm'; buf[p++] = ' ';
-        NumToStr(secs, nb);
-        for (k = 0; nb[k]; k++) buf[p++] = nb[k];
-        buf[p++] = 's';
-        buf[p] = '\0';
-    }
-
-    pstr[0] = 0;
-    for (i = 0; buf[i] && i < 250; i++) {
-        pstr[i + 1] = buf[i];
-    }
-    pstr[0] = i;
-
-    TextFont(kLogFontID);   /* match the 9pt log so "Alive" isn't oversized */
-    TextSize(9);
-    TextFace(0);
-    MoveTo(10, h - 4);
-    DrawString("\pAlive: ");
-    DrawString(pstr);
 }
 
 /*
