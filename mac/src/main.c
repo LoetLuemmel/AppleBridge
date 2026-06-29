@@ -816,6 +816,23 @@ static char *StatStr(char *p, const char *s)
     return p;
 }
 
+/* Parse exactly 8 hex digits into an OSType (4 bytes), for the AESEND verb. */
+static OSType ParseHexType(const char *s)
+{
+    OSType v = 0;
+    short k;
+    for (k = 0; k < 8; k++) {
+        char c = s[k];
+        short d;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+        else d = 0;
+        v = (v << 4) | d;
+    }
+    return v;
+}
+
 /*
  * Process a request from the host
  */
@@ -1028,6 +1045,50 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         SendData(endpoint, frame, (long)(f - frame));
         gLastTX = TickCount();
         gTXCount++;
+        return true;
+    }
+
+    /* AESEND verb: send an arbitrary Apple Event and harvest its reply.
+     * AESEND:<targetHex8>:<classHex8>:<idHex8>:<doLen>\n<directObjectBytes>
+     * (length-framed; the reply rides the normal command response path). */
+    if (strncmp(request, PROTO_AESEND, strlen(PROTO_AESEND)) == 0) {
+        OSType tgt, cls, eid;
+        long p = (long)strlen(PROTO_AESEND);
+        long doLen = 0, headerEnd, total;
+        SetActivity("AESEND");
+        tgt = ParseHexType(request + p); p += 8;
+        if (request[p] == ':') p++;
+        cls = ParseHexType(request + p); p += 8;
+        if (request[p] == ':') p++;
+        eid = ParseHexType(request + p); p += 8;
+        if (request[p] == ':') p++;
+        while (request[p] >= '0' && request[p] <= '9') doLen = doLen * 10 + (request[p++] - '0');
+        if (request[p] == '\n' || request[p] == '\r') p++;
+        headerEnd = p;
+        total = headerEnd + doLen;
+        /* Top up if the direct object arrived fragmented (bounded by the buffer). */
+        if (total > requestLen && total <= MAX_COMMAND_LENGTH + 256) {
+            unsigned long lastProgress = TickCount();
+            while (requestLen < total) {
+                long chunk = 0;
+                OSStatus rerr = ReceiveData(endpoint, request + requestLen,
+                                            (MAX_COMMAND_LENGTH + 256) - requestLen, &chunk);
+                if (rerr == noErr && chunk > 0) { requestLen += chunk; lastProgress = TickCount(); }
+                else if (rerr == kOTNoDataErr) { if (TickCount() - lastProgress > 600) break; SystemTask(); }
+                else break;
+            }
+        }
+        if (doLen > requestLen - headerEnd) doLen = requestLen - headerEnd;
+        if (doLen < 0) doLen = 0;
+        ExecuteAppleEvent(tgt, cls, eid, request + headerEnd, doLen, &cmdResult);
+        err = SendCommandResult(endpoint, &cmdResult);
+        gLastTX = TickCount();
+        gTXCount++;
+        CleanupCommandResult(&cmdResult);
+        if (err != noErr) {
+            SetActivity("send failed - reconnecting");
+            return false;
+        }
         return true;
     }
 

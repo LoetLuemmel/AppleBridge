@@ -172,17 +172,18 @@ class AppleBridgeServer:
             return None
 
         to = timeout_for(command)
+        return self._read_framed_response(to, label=command)
+
+    def _read_framed_response(self, to, label=""):
+        """Read ONE daemon response (a request must have just been sent).
+
+        The daemon's SendCommandResult streams:
+          STATUS:<code>\\r STDOUT:<olen>\\r <olen bytes>\\r STDERR:<elen>\\r <elen bytes>\\r \\r
+        Reading STDOUT by its DECLARED length avoids stopping early at a blank
+        line inside the output. Non-STATUS responses (IMAGE) fall back to the
+        legacy terminator read. Shared by send_command and send_apple_event."""
         buf = bytearray()
 
-        # --- framed reader -------------------------------------------------
-        # The daemon's SendCommandResult streams:
-        #   STATUS:<code>\r STDOUT:<olen>\r <olen bytes>\r STDERR:<elen>\r <elen bytes>\r \r
-        # The old code stopped at the first \r\r / \n\n in the stream, which
-        # TRUNCATED any output that itself contained a blank line (e.g. C source
-        # via Catenate). Measured root cause: daemon sent the full data, host
-        # quit early. Fix: read STDOUT by its DECLARED length, then read the
-        # (small) STDERR+terminator remainder the old way. Non-STATUS responses
-        # (e.g. IMAGE screenshots) fall back to the legacy terminator read.
         def _fill():
             chunk = self.client_socket.recv(65536)   # large reads for MB-scale stdout
             if not chunk:
@@ -245,7 +246,7 @@ class AppleBridgeServer:
                 raw = _read_until_terminator()
         except socket.timeout:
             outcome = "timeout"
-            log(f"command timeout after {to:.0f}s: {command[:48]!r}")
+            log(f"command timeout after {to:.0f}s: {str(label)[:48]!r}")
             raw = bytes(buf) if buf else None
         except (OSError, ConnectionError) as e:
             outcome = "closed"
@@ -261,8 +262,29 @@ class AppleBridgeServer:
         if raw is None:
             return None
         if len(raw) > 1000 or outcome != "framed":
-            log(f"recv {len(raw)}B outcome={outcome} cmd={command[:32]!r}")
+            log(f"recv {len(raw)}B outcome={outcome} req={str(label)[:32]!r}")
         return bytes(raw).decode("mac_roman", errors="replace")
+
+    def send_apple_event(self, target_hex, class_hex, id_hex, do_bytes):
+        """AESEND: send an arbitrary Apple Event (event class/ID) to the app with
+        the given creator signature, with an optional text direct object, and
+        return the daemon's STATUS reply (the AE reply text rides STDOUT). The
+        OSTypes go as 8-hex; the direct object is length-framed raw bytes."""
+        if not self.connected or not self.client_socket:
+            return None
+        if not self._drain():
+            self._mark_disconnected("drain detected closed socket")
+            return None
+        header = (f"AESEND:{target_hex}:{class_hex}:{id_hex}:"
+                  f"{len(do_bytes)}\n").encode("ascii")
+        try:
+            self.client_socket.sendall(header + do_bytes)
+        except OSError as e:
+            self._mark_disconnected(f"send failed: {e}")
+            return None
+        log(f"AESEND target={target_hex} class={class_hex} id={id_hex} "
+            f"do={len(do_bytes)}B")
+        return self._read_framed_response(LONG_TIMEOUT, label="AESEND")
 
     def send_raw(self, data, timeout=DEFAULT_TIMEOUT):
         """Send a RAW verb (PING / LAUNCH:<path>) — no COMMAND: wrapper.
@@ -653,6 +675,22 @@ def run_control_server(server):
                         payload = ";".join(fields)
                         out = f"STATUS:0\rSTDOUT:{len(payload)}\r{payload}\rSTDERR:0\r\r"
                         log(f"mac_status -> {payload}")
+                    elif cmd.startswith("AESEND:"):
+                        # AESEND:<targetHex8>:<classHex8>:<idHex8>:<directObjB64>
+                        # (direct object base64 so it stays colon/newline-safe on
+                        # the text control hop; the daemon hop length-frames it.)
+                        try:
+                            f = cmd.split(":")
+                            target_hex, class_hex, id_hex = f[1], f[2], f[3]
+                            do_bytes = (base64.b64decode(f[4])
+                                        if len(f) > 4 and f[4] else b"")
+                            resp = server.send_apple_event(target_hex, class_hex,
+                                                           id_hex, do_bytes)
+                            out = resp if resp is not None else "No response"
+                        except Exception as e:
+                            log(f"AESEND parse/send error: {e}")
+                            msg = str(e)
+                            out = f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(msg)}\r{msg}\r\r"
                     elif cmd.startswith("WRITEFILE:"):
                         # WRITEFILE:<pathB64>:<typeHex8>:<creatorHex8>:<dataB64>:<rsrcB64>
                         # (every variable field base64/hex -> colon-free, so split is safe)

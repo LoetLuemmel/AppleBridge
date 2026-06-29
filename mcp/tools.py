@@ -291,6 +291,30 @@ errors. Set `run` to launch the result (foreground) afterwards.""",
         }
     },
     {
+        "name": "mac_send_apple_event",
+        "description": """Send an arbitrary Apple Event to a scriptable app and return its reply.
+
+Generalises the bridge beyond ToolServer: address any running app by 4-char
+creator, with a 4-char event class + event id and an optional text direct
+object, and harvest the reply text. Examples:
+  - DoScript to ToolServer:  target='MPSX', class='misc', id='dosc', direct_object='Files'
+  - Quit an app:             target='ttxt', class='aevt', id='quit'
+  - Run an AppleScript-aware app's custom verb, etc.
+
+4-char codes shorter than 4 are space-padded (Mac convention, e.g. 'MPS '). The
+target app must be running. Returns the reply in `reply`.""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target_creator": {"type": "string", "description": "4-char creator of the target app (e.g. MPSX, ttxt)"},
+                "event_class": {"type": "string", "description": "4-char event class (e.g. misc, aevt, core)"},
+                "event_id": {"type": "string", "description": "4-char event id (e.g. dosc, quit, getd)"},
+                "direct_object": {"type": "string", "description": "Optional text direct object (e.g. a script or property spec)"}
+            },
+            "required": ["target_creator", "event_class", "event_id"]
+        }
+    },
+    {
         "name": "mac_put_file",
         "description": """Copy a BINARY file from the host to the classic Mac, preserving both forks.
 
@@ -721,6 +745,42 @@ def mac_click(x: int, y: int) -> Dict[str, Any]:
     return _inject(f"CLICK:{int(x)}:{int(y)}", {"x": x, "y": y})
 
 
+def _ostype_hex(code: str) -> str:
+    """4-char OSType -> 8 hex chars (space-padded, Mac convention)."""
+    b = code.encode("mac_roman", errors="replace")[:4].ljust(4, b" ")
+    return b.hex()
+
+
+def mac_send_apple_event(target_creator: str, event_class: str, event_id: str,
+                         direct_object: Optional[str] = None) -> Dict[str, Any]:
+    """Send an arbitrary Apple Event to a scriptable app and return its reply."""
+    try:
+        conn = get_connection()
+        if not conn.is_connected():
+            return {"success": False, "error": "Mac not connected"}
+        for label, val in (("target_creator", target_creator),
+                           ("event_class", event_class), ("event_id", event_id)):
+            if not isinstance(val, str) or not (1 <= len(val) <= 4):
+                return {"success": False, "error": f"{label} must be a 1-4 char code"}
+        do_b64 = ""
+        if direct_object:
+            do_b64 = base64.b64encode(
+                direct_object.encode("mac_roman", errors="replace")).decode("ascii")
+        verb = (f"AESEND:{_ostype_hex(target_creator)}:{_ostype_hex(event_class)}:"
+                f"{_ostype_hex(event_id)}:{do_b64}")
+        status, stdout, stderr = conn.send_command(verb, timeout=300.0)
+        return {
+            "success": status == 0,
+            "status": status,
+            "target": target_creator,
+            "event": f"{event_class}/{event_id}",
+            "reply": stdout if stdout else None,
+            "error": stderr if stderr else None,
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def mac_status() -> Dict[str, Any]:
     """Report bridge liveness. MACSTATUS is answered host-side, so it works even
     when the daemon is down — letting the caller see WHICH layer is broken."""
@@ -1050,6 +1110,7 @@ TOOL_HANDLERS = {
     "mac_click": mac_click,
     "mac_status": mac_status,
     "mac_build": mac_build,
+    "mac_send_apple_event": mac_send_apple_event,
     "mac_put_file": mac_put_file,
     "mac_get_file": mac_get_file,
     "mac_restart_toolserver": mac_restart_toolserver,
