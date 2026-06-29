@@ -315,6 +315,30 @@ target app must be running. Returns the reply in `reply`.""",
         }
     },
     {
+        "name": "mac_clipboard_get",
+        "description": """Read the classic Mac's clipboard (the 'TEXT' scrap).
+
+Returns the guest clipboard text. Basilisk II mirrors this scrap with the host
+pasteboard, so it doubles as a host<->guest text side-channel — handy for small
+payloads when a file transfer is overkill.""",
+        "inputSchema": {"type": "object", "properties": {}, "required": []}
+    },
+    {
+        "name": "mac_clipboard_set",
+        "description": """Set the classic Mac's clipboard (the 'TEXT' scrap) to `text`.
+
+After this, the guest can Paste the text anywhere; Basilisk II also mirrors it
+to the host pasteboard. Text only; intended for small payloads (bounded ~8 KB —
+use mac_put_file for anything large).""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Text to place on the Mac clipboard"}
+            },
+            "required": ["text"]
+        }
+    },
+    {
         "name": "mac_put_file",
         "description": """Copy a BINARY file from the host to the classic Mac, preserving both forks.
 
@@ -781,6 +805,41 @@ def mac_send_apple_event(target_creator: str, event_class: str, event_id: str,
         return {"success": False, "error": str(e)}
 
 
+def mac_clipboard_get() -> Dict[str, Any]:
+    """Read the guest TEXT scrap (clipboard)."""
+    try:
+        conn = get_connection()
+        if not conn.is_connected():
+            return {"success": False, "error": "Mac not connected"}
+        status, stdout, stderr = conn.send_command("CLIPGET", timeout=30.0)
+        return {
+            "success": status == 0,
+            "text": stdout if stdout else "",
+            "error": stderr if stderr else None,
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def mac_clipboard_set(text: str) -> Dict[str, Any]:
+    """Set the guest TEXT scrap (clipboard)."""
+    try:
+        conn = get_connection()
+        if not conn.is_connected():
+            return {"success": False, "error": "Mac not connected"}
+        b64 = base64.b64encode(
+            (text or "").encode("mac_roman", errors="replace")).decode("ascii")
+        status, stdout, stderr = conn.send_command("CLIPSET:" + b64, timeout=30.0)
+        return {
+            "success": status == 0,
+            "bytes": len((text or "").encode("mac_roman", errors="replace")),
+            "message": stdout if stdout else None,
+            "error": stderr if stderr else None,
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def mac_status() -> Dict[str, Any]:
     """Report bridge liveness. MACSTATUS is answered host-side, so it works even
     when the daemon is down — letting the caller see WHICH layer is broken."""
@@ -1111,6 +1170,8 @@ TOOL_HANDLERS = {
     "mac_status": mac_status,
     "mac_build": mac_build,
     "mac_send_apple_event": mac_send_apple_event,
+    "mac_clipboard_get": mac_clipboard_get,
+    "mac_clipboard_set": mac_clipboard_set,
     "mac_put_file": mac_put_file,
     "mac_get_file": mac_get_file,
     "mac_restart_toolserver": mac_restart_toolserver,

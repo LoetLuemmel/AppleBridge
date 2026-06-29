@@ -44,6 +44,8 @@
 #define PROTO_CLICK "CLICK:"           /* host->daemon: inject a mouse click */
 #define PROTO_STAT "STAT"              /* host->daemon: report liveness counters */
 #define PROTO_AESEND "AESEND:"         /* host->daemon: send an arbitrary Apple Event */
+#define PROTO_CLIPGET "CLIPGET"        /* host->daemon: read the guest TEXT scrap */
+#define PROTO_CLIPSET "CLIPSET:"       /* host->daemon: set the guest TEXT scrap */
 
 /* Result codes */
 typedef enum {

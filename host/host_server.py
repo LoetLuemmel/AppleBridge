@@ -286,6 +286,36 @@ class AppleBridgeServer:
             f"do={len(do_bytes)}B")
         return self._read_framed_response(LONG_TIMEOUT, label="AESEND")
 
+    def clipboard_get(self):
+        """CLIPGET: return the guest's TEXT scrap (clipboard) reply frame."""
+        if not self.connected or not self.client_socket:
+            return None
+        if not self._drain():
+            self._mark_disconnected("drain detected closed socket")
+            return None
+        try:
+            self.client_socket.sendall("CLIPGET".encode("mac_roman"))
+        except OSError as e:
+            self._mark_disconnected(f"send failed: {e}")
+            return None
+        return self._read_framed_response(DEFAULT_TIMEOUT, label="CLIPGET")
+
+    def clipboard_set(self, data):
+        """CLIPSET: replace the guest TEXT scrap. Length-framed raw bytes."""
+        if not self.connected or not self.client_socket:
+            return None
+        if not self._drain():
+            self._mark_disconnected("drain detected closed socket")
+            return None
+        header = f"CLIPSET:{len(data)}\n".encode("ascii")
+        try:
+            self.client_socket.sendall(header + data)
+        except OSError as e:
+            self._mark_disconnected(f"send failed: {e}")
+            return None
+        log(f"CLIPSET {len(data)}B")
+        return self._read_framed_response(DEFAULT_TIMEOUT, label="CLIPSET")
+
     def send_raw(self, data, timeout=DEFAULT_TIMEOUT):
         """Send a RAW verb (PING / LAUNCH:<path>) — no COMMAND: wrapper.
 
@@ -675,6 +705,19 @@ def run_control_server(server):
                         payload = ";".join(fields)
                         out = f"STATUS:0\rSTDOUT:{len(payload)}\r{payload}\rSTDERR:0\r\r"
                         log(f"mac_status -> {payload}")
+                    elif cmd == "CLIPGET":
+                        resp = server.clipboard_get()
+                        out = resp if resp is not None else "No response"
+                    elif cmd.startswith("CLIPSET:"):
+                        # CLIPSET:<textB64> (base64 keeps it colon/newline-safe here)
+                        try:
+                            b64 = cmd.split(":", 1)[1]
+                            data = base64.b64decode(b64) if b64 else b""
+                            resp = server.clipboard_set(data)
+                            out = resp if resp is not None else "No response"
+                        except Exception as e:
+                            msg = str(e)
+                            out = f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(msg)}\r{msg}\r\r"
                     elif cmd.startswith("AESEND:"):
                         # AESEND:<targetHex8>:<classHex8>:<idHex8>:<directObjB64>
                         # (direct object base64 so it stays colon/newline-safe on
