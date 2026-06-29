@@ -785,8 +785,12 @@ static OSErr RebootMac(void)
     OSErr               err;
     Boolean             found = false;
 
-    /* Quit ToolServer cleanly first so its shutdown can't pop a dialog. */
-    (void)QuitAppBySignature('MPSX');
+    /* NOTE: do NOT quit ToolServer here. Killing it ('MPSX') before the restart
+     * leaves the bridge unable to run commands if the restart doesn't fire — and
+     * the Finder 'rest' event below does NOT reliably trigger a restart from a
+     * background app. This whole restart mechanism needs rework (a working guest
+     * restart that doesn't depend on the Finder honouring 'rest'); until then,
+     * REBOOT is a no-op-ish stub and manual reboots remain the path. */
 
     /* Find the Finder by creator signature. */
     psn.highLongOfPSN = 0;

@@ -212,6 +212,22 @@ data-fork only).""",
         }
     },
     {
+        "name": "mac_restart_toolserver",
+        "description": """(Re)launch ToolServer on the classic Mac.
+
+ToolServer is what actually executes mpw_execute / mac_compile commands; if it
+crashes or is quit, commands come back empty or as 'no-ToolServer/MPW' and the
+bridge looks hung. This relaunches it via the LAUNCH verb (no ToolServer needed
+to do so) and verifies with an Echo. Default path MeinMac:MPW:ToolServer.""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Mac path to ToolServer (default MeinMac:MPW:ToolServer)"}
+            },
+            "required": []
+        }
+    },
+    {
         "name": "mac_reboot",
         "description": """Restart the emulated classic Mac (System 7).
 
@@ -221,6 +237,30 @@ manual reboot. The bridge connection drops; the watchdog brings the daemon back
 up on boot. After calling this, poll mpw_execute (e.g. Echo) until it answers
 again before continuing.""",
         "inputSchema": {"type": "object", "properties": {}, "required": []}
+    },
+    {
+        "name": "run_applescript",
+        "description": """Run AppleScript on the HOST (macOS) via osascript.
+
+This drives the *host*, not the guest — most usefully the BasiliskII emulator
+window: e.g. type the AppleShare password at boot (keystroke "pit" then Return),
+raise/activate the window, etc. It does NOT run AppleScript inside System 7.
+First use may require Accessibility/Automation permission for the MCP process.
+
+Example to type the boot password:
+  tell application "System Events"
+    set frontmost of process "BasiliskII" to true
+    delay 0.5
+    keystroke "pit"
+    key code 36
+  end tell""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "script": {"type": "string", "description": "AppleScript source to run on the host"}
+            },
+            "required": ["script"]
+        }
     }
 ]
 
@@ -544,6 +584,49 @@ def mac_get_file(mac_path: str, host_path: str, format: str = "auto") -> Dict[st
         return {"success": False, "path": mac_path, "error": str(e)}
 
 
+def mac_restart_toolserver(path: str = "MeinMac:MPW:ToolServer") -> Dict[str, Any]:
+    """(Re)launch ToolServer via the LAUNCH verb, then verify with an Echo."""
+    import time
+    try:
+        conn = get_connection()
+        if not conn.is_connected():
+            return {"success": False, "error": "Mac not connected"}
+        status, stdout, stderr = conn.send_command("LAUNCH:" + path, timeout=20.0)
+        launched = (status == 0 and "Launched" in (stdout or ""))
+        verified = False
+        if launched:
+            for _ in range(8):
+                time.sleep(3)
+                _, out, _e = conn.send_command("Echo TSCHECK", timeout=15.0)
+                if "TSCHECK" in (out or "") and "no-ToolServer" not in (out or ""):
+                    verified = True
+                    break
+        return {
+            "success": launched and verified,
+            "launched": launched,
+            "verified": verified,
+            "path": path,
+            "error": (None if launched else (stderr or "LAUNCH failed")),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def run_applescript(script: str) -> Dict[str, Any]:
+    """Run AppleScript on the host (macOS) via osascript (reads from stdin)."""
+    import subprocess
+    try:
+        p = subprocess.run(["osascript", "-"], input=script,
+                           capture_output=True, text=True, timeout=30)
+        return {
+            "success": p.returncode == 0,
+            "stdout": p.stdout.strip(),
+            "stderr": p.stderr.strip() or None,
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def mac_reboot() -> Dict[str, Any]:
     """Restart the emulated Mac via the daemon's REBOOT verb."""
     try:
@@ -572,6 +655,8 @@ TOOL_HANDLERS = {
     "launch_app": launch_app,
     "mac_put_file": mac_put_file,
     "mac_get_file": mac_get_file,
+    "mac_restart_toolserver": mac_restart_toolserver,
+    "run_applescript": run_applescript,
     "mac_reboot": mac_reboot,
 }
 
