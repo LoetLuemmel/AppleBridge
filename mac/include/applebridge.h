@@ -43,6 +43,7 @@
 #define PROTO_TYPE "TYPE:"             /* host->daemon: inject a run of characters */
 #define PROTO_CLICK "CLICK:"           /* host->daemon: inject a mouse click */
 #define PROTO_STAT "STAT"              /* host->daemon: report liveness counters */
+#define PROTO_AESEND "AESEND:"         /* host->daemon: send an arbitrary Apple Event */
 
 /* Result codes */
 typedef enum {
@@ -103,6 +104,8 @@ BridgeResult SendScreenshot(EndpointRef endpoint, const ScreenshotData *screensh
 
 /* Command execution */
 BridgeResult ExecuteCommand(const char *command, CommandResult *result);
+BridgeResult ExecuteAppleEvent(OSType targetSig, OSType evtClass, OSType evtID,
+							   const char *directObj, long doLen, CommandResult *result);
 void CleanupCommandResult(CommandResult *result);
 
 /* Send a Quit Apple Event to a running app by creator signature (QUIT: verb) */

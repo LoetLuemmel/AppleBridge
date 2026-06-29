@@ -337,3 +337,114 @@ void CleanupCommandResult(CommandResult *result)
 	}
 	result->outLen = 0;
 }
+
+/*
+ * Send an ARBITRARY Apple Event (any class/ID) with an optional text direct
+ * object to a process, harvesting the reply text — the generalisation of
+ * SendDoScript behind mac_send_apple_event. Same reply-stealing Handle logic.
+ */
+static OSErr SendGenericAE(ProcessSerialNumber *psn, OSType evtClass, OSType evtID,
+						   const char *directObj, long doLen,
+						   Handle *outH, long *outLen, Boolean *capped)
+{
+	OSErr err;
+	AppleEvent event, reply;
+	AEAddressDesc target;
+	AEDesc dataDesc;
+	long size;
+
+	*outH = NULL;
+	*outLen = 0;
+	*capped = false;
+
+	err = AECreateDesc(typeProcessSerialNumber, psn, sizeof(*psn), &target);
+	if (err != noErr) return err;
+
+	err = AECreateAppleEvent(evtClass, evtID, &target,
+							 kAutoGenerateReturnID, kAnyTransactionID, &event);
+	AEDisposeDesc(&target);
+	if (err != noErr) return err;
+
+	if (directObj != NULL && doLen > 0) {
+		err = AEPutParamPtr(&event, keyDirectObject, typeChar, directObj, doLen);
+		if (err != noErr) { AEDisposeDesc(&event); return err; }
+	}
+
+	err = AESend(&event, &reply, kAEWaitReply | kAECanSwitchLayer,
+				 kAENormalPriority, AE_SCRIPT_TIMEOUT, NULL, NULL);
+	AEDisposeDesc(&event);
+	if (err != noErr) return err;
+
+	dataDesc.descriptorType = typeNull;
+	dataDesc.dataHandle = NULL;
+	err = AEGetParamDesc(&reply, keyDirectObject, typeChar, &dataDesc);
+	if (err == errAEDescNotFound)
+		err = AEGetParamDesc(&reply, '----', typeChar, &dataDesc);
+
+	if (err == noErr && dataDesc.dataHandle != NULL) {
+		size = GetHandleSize(dataDesc.dataHandle);
+		if (size > MAX_DYNAMIC_RESPONSE) {
+			SetHandleSize(dataDesc.dataHandle, MAX_DYNAMIC_RESPONSE);
+			size = MAX_DYNAMIC_RESPONSE;
+			*capped = true;
+		}
+		*outH = dataDesc.dataHandle;   /* steal so it survives AEDisposeDesc */
+		*outLen = size;
+		dataDesc.dataHandle = NULL;
+		AEDisposeDesc(&dataDesc);
+	} else if (err == errAEDescNotFound) {
+		err = noErr;                   /* event sent, no reply parameter */
+	} else {
+		AEDisposeDesc(&dataDesc);
+		AEDisposeDesc(&reply);
+		return err;
+	}
+
+	AEDisposeDesc(&reply);
+	return noErr;
+}
+
+/*
+ * Send an arbitrary Apple Event to the app with the given creator signature and
+ * return its reply text as a CommandResult — reusing the command response path.
+ */
+BridgeResult ExecuteAppleEvent(OSType targetSig, OSType evtClass, OSType evtID,
+							   const char *directObj, long doLen, CommandResult *result)
+{
+	OSErr err;
+	ProcessSerialNumber psn;
+	Handle h;
+	long len;
+	Boolean capped;
+
+	result->exitCode = 0;
+	result->outData = NULL;
+	result->outLen = 0;
+	result->errData[0] = '\0';
+
+	if (InitAppleEvents() != noErr) {
+		strcpy(result->errData, "AE-not-available");
+		result->exitCode = -1;
+		return kBridgeCommandErr;
+	}
+
+	err = FindAppBySignature(targetSig, &psn);
+	if (err != noErr) {
+		strcpy(result->errData, "target app not running");
+		result->exitCode = err;
+		return kBridgeCommandErr;
+	}
+
+	err = SendGenericAE(&psn, evtClass, evtID, directObj, doLen, &h, &len, &capped);
+	if (err != noErr) {
+		strcpy(result->errData, "AESend failed");
+		result->exitCode = err;
+		return kBridgeCommandErr;
+	}
+
+	result->outData = h;
+	result->outLen = len;
+	if (capped)
+		strcpy(result->errData, "output capped at 4194304 bytes (4 MB daemon limit)");
+	return kBridgeNoErr;
+}
