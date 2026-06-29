@@ -803,36 +803,35 @@ Boolean CheckUserAbort(void)
                          * text selection. */
                         if (window == gStatusWindow) {
                             Point pt = event.where;
-                            ControlHandle ctl;
+                            Rect sbR;
+                            short w = window->portRect.right - window->portRect.left;
+                            short h = window->portRect.bottom - window->portRect.top;
                             SetPort(window);
                             GlobalToLocal(&pt);
-                            /* Scrollbar FIRST, regardless of front-window state: a
-                             * faceless (onlyBackground) app's window may not report
-                             * as FrontWindow, so gating on it ate the click. */
-                            FindControl(pt, window, &ctl);
-                            if (ctl != NULL && ctl == gScroll) {
-                                short hit = TrackControl(gScroll, pt, NULL);
-                                if (hit != 0) {
-                                    short v  = GetControlValue(gScroll);
-                                    short mx = GetControlMaximum(gScroll);
-                                    short lh = (gLogTE != NULL) ?
-                                               (**gLogTE).lineHeight : 12;
-                                    short page;
-                                    if (lh < 1) lh = 1;
-                                    page = (gLogTE != NULL) ? (short)
-                                        (((**gLogTE).viewRect.bottom -
-                                          (**gLogTE).viewRect.top) / lh - 1) : 1;
-                                    if (page < 1) page = 1;
-                                    if (hit == inUpButton)        v -= 1;
-                                    else if (hit == inDownButton) v += 1;
-                                    else if (hit == inPageUp)     v -= page;
-                                    else if (hit == inPageDown)   v += page;
-                                    /* inThumb: TrackControl set the value live */
-                                    if (v < 0) v = 0;
-                                    if (v > mx) v = mx;
-                                    SetControlValue(gScroll, v);
-                                    ScrollLogTo(v);
+                            SetRect(&sbR, w - 15, 19, w + 1, h - 14);
+                            /* Hit-test the scrollbar GEOMETRICALLY (not FindControl/
+                             * TrackControl, which don't engage for this faceless
+                             * app's window). Top/bottom 16px = arrows (±1 line); the
+                             * rest of the track = proportional jump to that spot. */
+                            if (gScroll != NULL && PtInRect(pt, &sbR)) {
+                                short v    = GetControlValue(gScroll);
+                                short mx   = GetControlMaximum(gScroll);
+                                short relY = pt.v - sbR.top;
+                                short hgt  = sbR.bottom - sbR.top;
+                                if (relY < 16) {
+                                    v -= 1;
+                                } else if (relY > hgt - 16) {
+                                    v += 1;
+                                } else {
+                                    short trackY = relY - 16;
+                                    short trackH = hgt - 32;
+                                    if (trackH > 0)
+                                        v = (short)(((long)trackY * mx) / trackH);
                                 }
+                                if (v < 0) v = 0;
+                                if (v > mx) v = mx;
+                                SetControlValue(gScroll, v);
+                                ScrollLogTo(v);
                             } else if (window != FrontWindow()) {
                                 SelectWindow(window);
                             } else if (gLogTE != NULL) {
