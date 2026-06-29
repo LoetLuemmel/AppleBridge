@@ -27,7 +27,7 @@ resource 'MBAR' (128) { { 128, 129, 130, 131, 132, 133 } };
 resource 'MENU' (128) {
     128, textMenuProc, allEnabled, enabled, "\0x14",
     {
-        "About IP Scan...", noIcon, noKey, noMark, plain,
+        "About MacNetScan...", noIcon, noKey, noMark, plain,
         "-",                noIcon, noKey, noMark, plain
     }
 };
@@ -100,22 +100,23 @@ resource 'ALRT' (129) {
 /* ---- About box ---- */
 resource 'DITL' (128) {
     {
-        {88, 176, 108, 236}, Button { enabled, "OK" },
-        {12, 20, 80, 300},   StaticText { disabled,
-            "IP Scan - a System 7 LAN scanner.\r"
-            "AppleBridge sibling project.\r"
-            "NetBIOS + mDNS + DNS name resolution." }
+        {156, 300, 176, 370}, Button { enabled, "OK" },
+        {16, 100, 150, 372},  StaticText { disabled,
+            /* MPW Rez: '\n' -> CR (0x0D), the char StaticText breaks lines on;
+               '\r' -> LF (0x0A), which renders as a box glyph. Use '\n'. */
+            "MacNetScan - a System 7 LAN scanner.\n"
+            "AppleBridge sibling project.\n"
+            "NetBIOS + mDNS + DNS name resolution.\n"
+            "Made by Pit with love and Claude's great support.\n"
+            "Free software - no warranty (MIT)." },
+        {16, 16, 88, 88},     UserItem { disabled }
     }
 };
 
-resource 'ALRT' (128) {
-    {60, 60, 184, 380}, 128,
-    {
-        OK, visible, sound1,
-        OK, visible, sound1,
-        OK, visible, sound1,
-        OK, visible, sound1
-    },
+/* About box is a color modal DLOG (not an ALRT) so the logo user-item (item 3)
+   can draw with Color QuickDraw; DrawAboutLogo renders it. */
+resource 'DLOG' (132) {
+    {64, 50, 252, 438}, dBoxProc, invisible, noGoAway, 0, 128, "About MacNetScan",
     noAutoCenter
 };
 

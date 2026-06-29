@@ -78,6 +78,8 @@
 #define iStop    2
 #define iOptions 4
 #define rAboutAlert 128
+#define rAboutDlog  132
+#define kAboutLogoItem 3
 #define rOptDialog  128
 
 /* The QuickDraw globals are not in any library -- an application defines them. */
@@ -137,6 +139,7 @@ static Boolean   gScanning = false;
 static short     gProgress = 0;
 static Boolean   gDone = false;
 static Boolean   gStop = false;
+static Boolean   gHasOutput = false;   /* false until a Scan/View produces output */
 
 /* ---- tiny string helpers ---- */
 static void UToStr(unsigned long n, char *s)
@@ -194,6 +197,37 @@ static void InitPorts(void)
     short i;
     gNPorts = (short)NKNOWN;
     for (i = 0; i < gNPorts; i++) gPorts[i] = gKnown[i].port;
+}
+
+/* ---- crash tracing -------------------------------------------------------
+   Append one flushed line to trace.log per call. open+write+close+FlushVol
+   every time so the LAST line written survives a hard crash (which on 68K
+   takes Basilisk down) and pinpoints the call we died in. Read it back with
+   `mac_read_file MeinMac:MPW:IPScan:trace.log` (or hfsutils if BAII is down). */
+static void Trace(const char *msg)
+{
+    FSSpec spec; OSErr err; short ref; long n; char cr = 0x0D; long one = 1;
+    FSMakeFSSpec(0, 0, "\pMeinMac:MPW:IPScan:trace.log", &spec);
+    err = FSpOpenDF(&spec, fsWrPerm, &ref);
+    if (err == fnfErr) { FSpCreate(&spec, 'ttxt', 'TEXT', 0); err = FSpOpenDF(&spec, fsWrPerm, &ref); }
+    if (err != noErr) return;
+    SetFPos(ref, fsFromLEOF, 0);
+    n = 0; while (msg[n]) n++;
+    FSWrite(ref, &n, (Ptr)msg);
+    FSWrite(ref, &one, (Ptr)&cr);
+    FSClose(ref);
+    FlushVol(NULL, spec.vRefNum);
+}
+static void TraceN(const char *msg, long val)
+{
+    char buf[96], nb[16]; short i = 0, k = 0;
+    while (msg[i] && i < 72) { buf[i] = msg[i]; i++; }
+    buf[i++] = ' ';
+    if (val < 0) { buf[i++] = '-'; val = -val; }
+    UToStr((unsigned long)val, nb);
+    k = 0; while (nb[k]) buf[i++] = nb[k++];
+    buf[i] = 0;
+    Trace(buf);
 }
 
 /* ---- Open Transport: one notifier per slot, context = the slot ---- */
@@ -470,7 +504,7 @@ static char  gTitle[120];
 static short gColX[MAXCOLS], gColMax[MAXCOLS];   /* x position + char cap per col */
 
 static char *Cell(short r, short c) { return gCells + ((long)r * MAXCOLS + c) * CELLW; }
-static void TblBegin(short ncols) { gNRows = 0; gNCols = ncols; }
+static void TblBegin(short ncols) { gNRows = 0; gNCols = ncols; gHasOutput = true; }
 static void TblHdr(short c, const char *s)
 { short k = 0; while (s[k] && k < 19) { gHdr[c][k] = s[k]; k++; } gHdr[c][k] = 0; }
 static short TblRow(void)
@@ -555,6 +589,11 @@ static void DrawMatrix(void)
     SetPort(gWin);
     rc = gWin->portRect;
     EraseRect(&rc);
+    if (!gHasOutput) {                 /* nothing scanned yet -- buttons only */
+        DrawControls(gWin);
+        DrawGrowIcon(gWin);
+        return;
+    }
     TextFont(gMonacoFont); TextSize(9);
     ComputeLayout();
 
@@ -651,15 +690,6 @@ static void DDPToStr(DDPAddress *a, char *out)
     UToStr(a->fNodeID,  nb); StrCat(out, nb); StrCat(out, ":");
     UToStr(a->fSocket,  nb); StrCat(out, nb);
 }
-/* parse an NBP on-wire name (object/type/zone, each a length-prefixed string) */
-static void ParseNBPName(UInt8 *p, short len, char *obj, char *typ, char *zon)
-{
-    short i = 0, k, l;
-    obj[0] = typ[0] = zon[0] = 0;
-    if (i < len) { l = p[i++]; for (k = 0; k < l && i < len && k < 38; k++) obj[k] = (char)p[i++]; obj[k] = 0; }
-    if (i < len) { l = p[i++]; for (k = 0; k < l && i < len && k < 38; k++) typ[k] = (char)p[i++]; typ[k] = 0; }
-    if (i < len) { l = p[i++]; for (k = 0; k < l && i < len && k < 38; k++) zon[k] = (char)p[i++]; zon[k] = 0; }
-}
 
 static void ShowIdentity(void)
 {
@@ -704,10 +734,12 @@ static void FillZones(void)
     long    p;
     short   r, k;
 
+    Trace("FillZones begin");
     gMode = MODE_ZONES; gScrollTop = 0;
     TblBegin(1); TblHdr(0, "Zone");
     gTitle[0] = 0; StrCat(gTitle, "AppleTalk Zones");
-    if (!OpenAT()) { TblSet(TblRow(), 0, "(AppleTalk not available)"); UpdateScrollMax(); DrawMatrix(); return; }
+    if (!OpenAT()) { Trace("FillZones no AppleTalk"); TblSet(TblRow(), 0, "(AppleTalk not available)"); UpdateScrollMax(); DrawMatrix(); return; }
+    Trace("FillZones OpenAT ok");
 
     myzone[0] = 0;
     mz.buf = (UInt8 *)nm; mz.maxlen = sizeof(nm); mz.len = 0;
@@ -736,65 +768,158 @@ static void FillZones(void)
     }
     if (gNRows == 0) TblSet(TblRow(), 0, myzone[0] ? myzone : "(no zones / not on AppleTalk)");
     { char nbs[16]; StrCat(gTitle, "  count="); UToStr((unsigned long)gNRows, nbs); StrCat(gTitle, nbs); }
+    Trace("FillZones DrawMatrix");
     UpdateScrollMax(); DrawMatrix();
+    Trace("FillZones done");
+}
+
+/* One NBP lookup of "=:=@<zone>" through an open NBP mapper; appends a table
+ * row per responding entity. Per Inside Macintosh: OT, OTLookupName is a MAPPER
+ * function -- the old code called it on an ATP *endpoint*, which silently failed
+ * (in straight C every provider ref is void*, so the type error never showed),
+ * leaving the list empty. Zone "*" is only THIS node's zone, so the caller walks
+ * the whole zone list to also find servers reached through another zone. */
+static void NbpLookupZone(MapperRef mapper, const char *zone)
+{
+    UInt8          nameBuf[128];
+    char           nbpStr[80];
+    long           nameLen;
+    Ptr            rbuf;
+    TLookupRequest req;
+    TLookupReply   reply;
+    OSStatus       err;
+
+    Trace("  NLZ enter"); Trace(zone);
+    nbpStr[0] = 0; StrCat(nbpStr, "=:=@"); StrCat(nbpStr, zone);
+    nameLen = OTSetAddressFromNBPString(nameBuf, nbpStr, -1);
+    TraceN("  NLZ nameLen", nameLen);
+
+    rbuf = NewPtr(8192);
+    if (rbuf == NULL) { Trace("  NLZ NewPtr FAIL"); return; }
+    OTMemzero(&req, sizeof(req)); OTMemzero(&reply, sizeof(reply));
+    req.name.buf = nameBuf; req.name.len = nameLen;
+    req.addr.buf = NULL;    req.addr.len = 0;
+    req.maxcnt = 200; req.timeout = 2000; req.flags = 0;
+    reply.names.buf = (UInt8 *)rbuf; reply.names.maxlen = 8192; reply.names.len = 0;
+    Trace("  NLZ OTLookupName...");
+    err = OTLookupName(mapper, &req, &reply);
+    TraceN("  NLZ err", err);
+    if (err == noErr && reply.rspcount > 0) {
+        char *base  = (char *)rbuf;
+        long  avail = (long)reply.names.len;   /* bytes OT actually returned */
+        long  off = 0, n;
+        TraceN("  NLZ rspcount", (long)reply.rspcount);
+        TraceN("  NLZ names.len", avail);
+        for (n = 0; n < (long)reply.rspcount; n++) {
+            TLookupBuffer *lb;
+            UInt8     *ab, *nmp;
+            NBPEntity  ent;
+            char       obj[64], typ[64], zon[64], adr[28];
+            long       alen, nlen, rec;
+            short      r;
+            TraceN("  NLZ entity#", n);
+            /* HARDENING: never read or walk past what OT returned, and never hand
+               the decoder a name longer than an NBPEntity (99 bytes). A malformed
+               or larger-than-expected reply otherwise walks off the 8K buffer /
+               overflows ent -> intermittent crash (the bug we were chasing). */
+            if (off + (long)sizeof(TLookupBuffer) > avail) { Trace("  NLZ trunc-hdr"); break; }
+            lb   = (TLookupBuffer *)(base + off);
+            alen = (long)lb->fAddressLength;
+            nlen = (long)lb->fNameLength;
+            TraceN("  NLZ fAddrLen", alen);
+            TraceN("  NLZ fNameLen", nlen);
+            rec = 4 + alen + nlen;                 /* fAddressBuffer sits at offset 4 */
+            if (alen < 0 || nlen < 0 || nlen > 96 || off + rec > avail) { Trace("  NLZ bad-rec"); break; }
+            ab  = lb->fAddressBuffer;
+            nmp = ab + alen;
+            /* The name is an NBP name STRING ("obj:type@zone") -- let OT decode it. */
+            OTSetNBPEntityFromAddress(&ent, nmp, (OTByteCount)nlen);
+            Trace("  NLZ set-entity ok");
+            obj[0] = typ[0] = zon[0] = 0;
+            OTExtractNBPName(&ent, obj);
+            OTExtractNBPType(&ent, typ);
+            OTExtractNBPZone(&ent, zon);
+            Trace("  NLZ extract ok");
+            DDPToStr((DDPAddress *)ab, adr);
+            r = TblRow();
+            TblSet(r, 0, obj); TblSet(r, 1, typ);
+            TblSet(r, 2, zon[0] ? zon : zone); TblSet(r, 3, adr);
+            off += (rec + 3) & ~3L;                /* bounded OTNextLookupBuffer */
+        }
+    }
+    DisposePtr(rbuf);
+    Trace("  NLZ exit");
 }
 
 static void FillNBP(void)
 {
-    EndpointRef ep;
-    OSStatus    err;
-    UInt8       nameBuf[120];
-    long        nameLen;
-    Ptr         rbuf;
-    TLookupRequest req;
-    TLookupReply   reply;
+    MapperRef mapper;
+    OSStatus  err;
+    Ptr       zbuf;
+    Boolean   didZones = false;
 
+    Trace("FillNBP begin");
     gMode = MODE_NBP; gScrollTop = 0;
     TblBegin(4); TblHdr(0, "Object"); TblHdr(1, "Type"); TblHdr(2, "Zone"); TblHdr(3, "Address");
     gTitle[0] = 0; StrCat(gTitle, "AppleTalk Devices (NBP)");
+    UpdateScrollMax(); DrawMatrix();
 
-    ep = OTOpenEndpoint(OTCreateConfiguration(kATPName), 0, NULL, &err);
-    if (err != noErr || ep == NULL) {
-        TblSet(TblRow(), 0, "(cannot open ATP endpoint)"); UpdateScrollMax(); DrawMatrix(); return;
+    Trace("FillNBP OTOpenMapper...");
+    mapper = OTOpenMapper(OTCreateConfiguration(kNBPName), 0, &err);
+    TraceN("FillNBP mapper err", err);
+    if (err != noErr || mapper == NULL) {
+        Trace("FillNBP mapper FAIL");
+        TblSet(TblRow(), 0, "(cannot open NBP mapper)"); UpdateScrollMax(); DrawMatrix(); return;
     }
-    OTBind(ep, NULL, NULL);
-    nameLen = OTSetAddressFromNBPString(nameBuf, "=:=@*", -1);
 
-    rbuf = NewPtr(8192);
-    if (rbuf) {
-        OTMemzero(&req, sizeof(req)); OTMemzero(&reply, sizeof(reply));
-        req.name.buf = nameBuf; req.name.len = nameLen;
-        req.addr.buf = NULL;    req.addr.len = 0;
-        req.maxcnt = 200; req.timeout = 3000; req.flags = 0;
-        reply.names.buf = (UInt8 *)rbuf; reply.names.maxlen = 8192; reply.names.len = 0;
-        err = OTLookupName(ep, &req, &reply);
-        if (err == noErr && reply.rspcount > 0) {
-            TLookupBuffer *lb = (TLookupBuffer *)rbuf;
-            long n;
-            for (n = 0; n < (long)reply.rspcount; n++) {
-                UInt8 *ab  = lb->fAddressBuffer;
-                UInt8 *nmp = ab + lb->fAddressLength;
-                char obj[40], typ[40], zon[40], adr[28];
-                short r;
-                ParseNBPName(nmp, (short)lb->fNameLength, obj, typ, zon);
-                DDPToStr((DDPAddress *)ab, adr);
-                r = TblRow();
-                TblSet(r, 0, obj); TblSet(r, 1, typ); TblSet(r, 2, zon); TblSet(r, 3, adr);
-                lb = OTNextLookupBuffer(lb);
+    /* Sweep every visible zone (like the Chooser); a flat/non-extended network
+     * returns no list, so fall back to "*" (this node's own zone). */
+    Trace("FillNBP zonelist...");
+    zbuf = NewPtr(8192);
+    if (zbuf && OpenAT()) {
+        TNetbuf zb;
+        zb.buf = (UInt8 *)zbuf; zb.maxlen = 8192; zb.len = 0;
+        if (OTATalkGetZoneList(gAT, &zb) == noErr && zb.len > 0) {
+            long  p = 0; short nz = 0;
+            TraceN("FillNBP zb.len", (long)zb.len);
+            while (p < (long)zb.len && nz < 64) {
+                short len = ((unsigned char *)zbuf)[p];
+                char  zn[40]; short k;
+                if (len == 0) break;
+                for (k = 0; k < len && k < 38; k++) zn[k] = zbuf[p + 1 + k];
+                zn[k] = 0; TrimRight(zn);
+                if (zn[0]) {
+                    NbpLookupZone(mapper, zn);
+                    didZones = true; nz++;
+                    UpdateScrollMax(); DrawMatrix();   /* show results as they arrive */
+                }
+                p += 1 + len;
             }
-        }
-        DisposePtr(rbuf);
+        } else Trace("FillNBP no zonelist");
     }
-    OTCloseProvider(ep);
+    if (zbuf) DisposePtr(zbuf);
+    if (!didZones) { Trace("FillNBP fallback *"); NbpLookupZone(mapper, "*"); }
+
+    Trace("FillNBP close mapper");
+    OTCloseProvider(mapper);
     if (gNRows == 0) TblSet(TblRow(), 0, "(no NBP entities found)");
     { char nbs[16]; StrCat(gTitle, "  found="); UToStr((unsigned long)gNRows, nbs); StrCat(gTitle, nbs); }
+    Trace("FillNBP DrawMatrix");
     UpdateScrollMax(); DrawMatrix();
+    Trace("FillNBP done");
 }
 
 static void ShowIPView(void)
 {
+    Trace("ShowIPView begin");
     gMode = MODE_IP; gScrollTop = 0;
-    FillIPTable(); UpdateScrollMax(); DrawMatrix();
+    FillIPTable();                       /* shows results of the last /24 sweep */
+    Trace("ShowIPView FillIPTable ok");
+    if (gNFound == 0)                    /* nothing scanned yet -- guide the user */
+        TblSet(TblRow(), 0, "(no scan yet -- choose Scan > Rescan)");
+    Trace("ShowIPView DrawMatrix");
+    UpdateScrollMax(); DrawMatrix();
+    Trace("ShowIPView done");
 }
 
 /* ---- report / export ---- */
@@ -806,7 +931,7 @@ static void App(char *buf, long *o, long max, const char *s)
 static long BuildReport(char *buf, long max)
 {
     long o = 0; short i, p; char nb[16], ipb[20], pl[16];
-    App(buf,&o,max,"IPScan  net="); IPToStr(gBase,ipb); App(buf,&o,max,ipb);
+    App(buf,&o,max,"MacNetScan  net="); IPToStr(gBase,ipb); App(buf,&o,max,ipb);
     App(buf,&o,max,"/24  found="); UToStr((unsigned long)gNFound,nb); App(buf,&o,max,nb);
     App(buf,&o,max,"\n");
     App(buf,&o,max,"IP\tStatus\tms\tHost name\tServices\n");
@@ -957,10 +1082,49 @@ static void SetupMenus(void)
     if (am) AppendResMenu(am, 'DRVR');
     DrawMenuBar();
 }
+/* About-box logo: a little "network scanner" emblem -- concentric radar rings,
+   a sweep line, and node blips -- drawn with Color QuickDraw in the user item. */
+static pascal void DrawAboutLogo(DialogPtr d, short item)
+{
+    Rect     box, r;
+    short    cx, cy, k, t;
+    Handle   h;
+    RGBColor blue  = { 0x1800, 0x3800, 0xD000 };
+    RGBColor green = { 0x0000, 0xB000, 0x3800 };
+    RGBColor red   = { 0xD800, 0x1800, 0x1800 };
+    RGBColor black = { 0, 0, 0 };
+
+    GetDialogItem(d, item, &t, &h, &box);
+    cx = (box.left + box.right) / 2;
+    cy = (box.top  + box.bottom) / 2;
+
+    PenSize(2, 2);
+    RGBForeColor(&blue);                              /* radar rings */
+    for (k = 30; k >= 12; k -= 9) {
+        SetRect(&r, cx - k, cy - k, cx + k, cy + k);
+        FrameOval(&r);
+    }
+    RGBForeColor(&green);                             /* sweep + hub */
+    MoveTo(cx, cy); LineTo(cx + 21, cy - 21);
+    SetRect(&r, cx - 3, cy - 3, cx + 4, cy + 4); PaintOval(&r);
+    RGBForeColor(&red);                               /* node blips */
+    SetRect(&r, cx + 15, cy - 21, cx + 22, cy - 14); PaintOval(&r);
+    SetRect(&r, cx - 23, cy + 7,  cx - 16, cy + 14); PaintOval(&r);
+    SetRect(&r, cx + 4,  cy + 19, cx + 11, cy + 26); PaintOval(&r);
+    PenNormal();
+    RGBForeColor(&black);                             /* restore for the text */
+}
+
 static void DoAbout(void)
 {
-    short ignore = Alert(rAboutAlert, NULL);
-    if (ignore) {}
+    DialogPtr d; short hit, t; Handle h; Rect box;
+    d = GetNewDialog(rAboutDlog, NULL, (WindowPtr)-1L);
+    if (d == NULL) return;
+    GetDialogItem(d, kAboutLogoItem, &t, &h, &box);
+    SetDialogItem(d, kAboutLogoItem, t, (Handle)NewUserItemUPP(DrawAboutLogo), &box);
+    ShowWindow(d);
+    for (;;) { ModalDialog(NULL, &hit); if (hit == 1) break; }
+    DisposeDialog(d);
 }
 static void SetField(DialogPtr d, short item, long val)
 {
@@ -1257,9 +1421,11 @@ static void DoMenu(long sel)
             else if (item == iOptions) DoOptions();
             break;
         case mView:
+            TraceN("DoMenu mView item", (long)item);
             if (item == 1) ShowIPView();
             else if (item == 2) FillNBP();
             else if (item == 3) FillZones();
+            Trace("DoMenu mView returned");
             break;
         case mNet:
             if (item == 1) ShowIdentity();
@@ -1375,14 +1541,18 @@ int main(void)
     if (gCells == NULL) return 1;
 
     SetRect(&bounds, 20, 44, 20 + 640, 44 + 420);
-    gWin = NewCWindow(NULL, &bounds, "\pIP Scan", true, zoomDocProc, (WindowPtr)-1L, true, 0);
+    gWin = NewCWindow(NULL, &bounds, "\pMacNetScan", true, zoomDocProc, (WindowPtr)-1L, true, 0);
     SetPort(gWin);
     MakeScrollbar();
     MakeButtons();
 
-    TextFont(gMonacoFont); TextSize(9);
-    MoveTo(COL_IP, TITLE_Y); DrawCStr("Scanning the local /24 ...");
-    RunScan();
+    /* Don't auto-scan on launch -- a full /24 sweep is slow. Start with a blank
+       window (just the buttons); the title + column headers ("info") appear on
+       top of the rows the first time a Scan or View produces output. The user
+       starts a sweep via Scan > Rescan (or the Rescan button). */
+    gMode = MODE_IP; gScrollTop = 0;
+    gHasOutput = false;
+    DrawMatrix();
 
     while (!gDone) {
         if (WaitNextEvent(everyEvent, &ev, 15L, NULL)) {
