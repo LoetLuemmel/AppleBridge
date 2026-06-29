@@ -43,7 +43,6 @@
  * of range". A heap Ptr costs only 4 bytes of A5. Single-connection daemon, so
  * one shared buffer is fine; never freed (negligible) to keep every path simple. */
 static Ptr gChunk = NULL;
-static long gDbgRsrcPrePos = 0;   /* INSTRUMENTATION: rsrc offset within pushback */
 
 /* Allocate the shared chunk buffer on first use; NULL on out-of-memory. */
 static Ptr EnsureChunk(void)
@@ -201,30 +200,6 @@ static Boolean ReplyStatus(EndpointRef endpoint, const char *frame, Boolean heal
     return healthy;
 }
 
-/* Append a C string; returns the pointer past it. */
-static char *AppendStr(char *p, const char *s)
-{
-    while (*s) *p++ = *s++;
-    return p;
-}
-
-/* Send STATUS:0 with an arbitrary (small) STDOUT string. */
-static Boolean SendStatusOut(EndpointRef endpoint, const char *out)
-{
-    char frame[256];
-    char *p = frame;
-    long olen = 0;
-    const char *q;
-    for (q = out; *q; q++) olen++;
-    p = AppendStr(p, "STATUS:0\rSTDOUT:");
-    p = AppendULong(p, (unsigned long)olen);
-    *p++ = '\r';
-    p = AppendStr(p, out);
-    p = AppendStr(p, "\rSTDERR:0\r\r");
-    SendData(endpoint, frame, p - frame);
-    return true;
-}
-
 /* ---- WRITEFILE ----------------------------------------------------------- */
 
 Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
@@ -322,7 +297,6 @@ Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
         if (FSpOpenRF(&spec, fsRdWrPerm, &rsrcRef) != noErr)
             return ReplyStatus(endpoint,
                 "STATUS:-1\rSTDOUT:0\rSTDERR:17\ropen rsrc fork err\r\r", true);
-        gDbgRsrcPrePos = ctx.prePos;             /* where rsrc sits in the pushback */
         SetEOF(rsrcRef, 0L);                     /* discard FSpCreateResFile's empty map */
         SetEOF(rsrcRef, rsrcLen);                /* pre-size to the raw fork length */
         serr = StreamToFork(&ctx, rsrcRef, rsrcLen);
@@ -330,47 +304,7 @@ Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
         if (serr != noErr) return false;
     }
 
-    /* INSTRUMENTATION: read this file's OWN resource fork back from disk at
-     * offset 40..55 and report it as hex, to tell write-corruption (on-disk
-     * wrong) apart from read-corruption (READFILE wrong) in one round trip. */
-    {
-        static const char hx[] = "0123456789abcdef";
-        char  diag[160];
-        char *dp = diag;
-        char  rb[16];
-        char *src;
-        short rref = 0, i;
-        long  cnt = 16;
-        long  srcOff = gDbgRsrcPrePos + 40;      /* pushback offset of rsrc[40] */
-        for (i = 0; i < 16; i++) rb[i] = 0;
-        if (rsrcLen >= 56 && FSpOpenRF(&spec, fsRdPerm, &rref) == noErr) {
-            SetFPos(rref, fsFromStart, 40L);
-            cnt = 16;
-            FSRead(rref, &cnt, rb);
-            FSClose(rref);
-        }
-        dp = AppendStr(dp, "ok rl=");
-        dp = AppendULong(dp, (unsigned long)rsrcLen);
-        dp = AppendStr(dp, " pl=");                /* preLen: was it all one segment? */
-        dp = AppendULong(dp, (unsigned long)requestLen);
-        dp = AppendStr(dp, " src=");               /* what we MEANT to write (pushback) */
-        if (srcOff + 16 <= requestLen) {
-            src = request + srcOff;
-            for (i = 0; i < 16; i++) {
-                *dp++ = hx[((unsigned char)src[i] >> 4) & 0xF];
-                *dp++ = hx[(unsigned char)src[i] & 0xF];
-            }
-        } else {
-            dp = AppendStr(dp, "notinpushback");
-        }
-        dp = AppendStr(dp, " rb40=");              /* what's actually on disk */
-        for (i = 0; i < 16; i++) {
-            *dp++ = hx[(rb[i] >> 4) & 0xF];
-            *dp++ = hx[rb[i] & 0xF];
-        }
-        *dp = '\0';
-        return SendStatusOut(endpoint, diag);
-    }
+    return ReplyStatus(endpoint, "STATUS:0\rSTDOUT:7\rWritten\rSTDERR:0\r\r", true);
 
 badhdr:
     return ReplyStatus(endpoint,
