@@ -1082,46 +1082,13 @@ static void SetupMenus(void)
     if (am) AppendResMenu(am, 'DRVR');
     DrawMenuBar();
 }
-/* About-box logo: a little "network scanner" emblem -- concentric radar rings,
-   a sweep line, and node blips -- drawn with Color QuickDraw in the user item. */
-static pascal void DrawAboutLogo(DialogPtr d, short item)
-{
-    Rect     box, r;
-    short    cx, cy, k, t;
-    Handle   h;
-    RGBColor blue  = { 0x1800, 0x3800, 0xD000 };
-    RGBColor green = { 0x0000, 0xB000, 0x3800 };
-    RGBColor red   = { 0xD800, 0x1800, 0x1800 };
-    RGBColor black = { 0, 0, 0 };
-
-    GetDialogItem(d, item, &t, &h, &box);
-    cx = (box.left + box.right) / 2;
-    cy = (box.top  + box.bottom) / 2;
-
-    PenSize(2, 2);
-    RGBForeColor(&blue);                              /* radar rings */
-    for (k = 30; k >= 12; k -= 9) {
-        SetRect(&r, cx - k, cy - k, cx + k, cy + k);
-        FrameOval(&r);
-    }
-    RGBForeColor(&green);                             /* sweep + hub */
-    MoveTo(cx, cy); LineTo(cx + 21, cy - 21);
-    SetRect(&r, cx - 3, cy - 3, cx + 4, cy + 4); PaintOval(&r);
-    RGBForeColor(&red);                               /* node blips */
-    SetRect(&r, cx + 15, cy - 21, cx + 22, cy - 14); PaintOval(&r);
-    SetRect(&r, cx - 23, cy + 7,  cx - 16, cy + 14); PaintOval(&r);
-    SetRect(&r, cx + 4,  cy + 19, cx + 11, cy + 26); PaintOval(&r);
-    PenNormal();
-    RGBForeColor(&black);                             /* restore for the text */
-}
-
+/* About box: item 3 is a Picture item (PICT 128, the MacNetScan LAN-scan logo);
+   the Dialog Manager draws it, so no user-item draw proc is needed. */
 static void DoAbout(void)
 {
-    DialogPtr d; short hit, t; Handle h; Rect box;
+    DialogPtr d; short hit;
     d = GetNewDialog(rAboutDlog, NULL, (WindowPtr)-1L);
     if (d == NULL) return;
-    GetDialogItem(d, kAboutLogoItem, &t, &h, &box);
-    SetDialogItem(d, kAboutLogoItem, t, (Handle)NewUserItemUPP(DrawAboutLogo), &box);
     ShowWindow(d);
     for (;;) { ModalDialog(NULL, &hit); if (hit == 1) break; }
     DisposeDialog(d);
