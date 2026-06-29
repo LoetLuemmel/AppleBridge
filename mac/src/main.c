@@ -1092,6 +1092,67 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         return true;
     }
 
+    /* CLIPGET verb: return the guest's 'TEXT' scrap (clipboard) as the reply.
+     * Basilisk II mirrors this scrap with the host pasteboard, so it doubles as a
+     * host<->guest text side-channel. */
+    if (strncmp(request, PROTO_CLIPGET, strlen(PROTO_CLIPGET)) == 0 &&
+        (request[7] == '\0' || request[7] == '\r' || request[7] == '\n')) {
+        Handle h;
+        long off = 0, n;
+        SetActivity("CLIPGET");
+        cmdResult.exitCode = 0;
+        cmdResult.outData = NULL;
+        cmdResult.outLen = 0;
+        cmdResult.errData[0] = '\0';
+        h = NewHandle(0);
+        if (h != NULL) {
+            n = GetScrap(h, 'TEXT', &off);     /* >=0 length, or negative error */
+            if (n >= 0) { cmdResult.outData = h; cmdResult.outLen = n; }
+            else { DisposeHandle(h); }         /* no TEXT on the scrap: empty reply */
+        }
+        err = SendCommandResult(endpoint, &cmdResult);
+        gLastTX = TickCount();
+        gTXCount++;
+        CleanupCommandResult(&cmdResult);
+        if (err != noErr) { SetActivity("send failed - reconnecting"); return false; }
+        return true;
+    }
+
+    /* CLIPSET verb: replace the guest 'TEXT' scrap. CLIPSET:<len>\n<textBytes>. */
+    if (strncmp(request, PROTO_CLIPSET, strlen(PROTO_CLIPSET)) == 0) {
+        long p = (long)strlen(PROTO_CLIPSET);
+        long clipLen = 0, headerEnd, total;
+        OSErr serr;
+        SetActivity("CLIPSET");
+        while (request[p] >= '0' && request[p] <= '9') clipLen = clipLen * 10 + (request[p++] - '0');
+        if (request[p] == '\n' || request[p] == '\r') p++;
+        headerEnd = p;
+        total = headerEnd + clipLen;
+        if (total > requestLen && total <= MAX_COMMAND_LENGTH + 256) {
+            unsigned long lastProgress = TickCount();
+            while (requestLen < total) {
+                long chunk = 0;
+                OSStatus rerr = ReceiveData(endpoint, request + requestLen,
+                                            (MAX_COMMAND_LENGTH + 256) - requestLen, &chunk);
+                if (rerr == noErr && chunk > 0) { requestLen += chunk; lastProgress = TickCount(); }
+                else if (rerr == kOTNoDataErr) { if (TickCount() - lastProgress > 600) break; SystemTask(); }
+                else break;
+            }
+        }
+        if (clipLen > requestLen - headerEnd) clipLen = requestLen - headerEnd;
+        if (clipLen < 0) clipLen = 0;
+        ZeroScrap();
+        serr = (OSErr)PutScrap(clipLen, 'TEXT', request + headerEnd);
+        if (serr == noErr)
+            strcpy(responseBuffer, "STATUS:0\rSTDOUT:7\rClipSet\rSTDERR:0\r\r");
+        else
+            strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:13\rPutScrap error\r\r");
+        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
     /* WRITEFILE: verb: receive a file (both forks + type/creator) and stream it
      * to disk. Binary-clean, length-framed, not COMMAND-wrapped. */
     if (strncmp(request, PROTO_WRITEFILE, strlen(PROTO_WRITEFILE)) == 0) {
