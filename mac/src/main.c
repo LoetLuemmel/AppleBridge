@@ -407,47 +407,79 @@ void ShowAlive(void)
     if (gLogDirty) { SyncLogTE(); gLogDirty = false; }
 }
 
+/* About-box logo: PICT 128 (the AppleBridge suspension-bridge icon) with data
+ * packets animated across the deck -- the "bridge" analog of MacNetScan's radar
+ * sweep. The static base is repainted each beat so the packets leave no trail. */
+#define rABLogoPICT    128
+#define AB_NPKT          3
+#define AB_PHASES       24
+#define AB_STEP_TICKS    4
+
+static void DrawABLogo(const Rect *logo, short phase)
+{
+    PicHandle pic;
+    short w   = logo->right  - logo->left;
+    short hh  = logo->bottom - logo->top;
+    short x0  = logo->left + (short)((long)w  * 25 / 100);   /* deck span left  */
+    short x1  = logo->left + (short)((long)w  * 74 / 100);   /* deck span right */
+    short y   = logo->top  + (short)((long)hh * 60 / 100);   /* just above deck */
+    short span = x1 - x0;
+    short sz  = (short)((long)w * 7 / 100);
+    short i, px, off;
+    RGBColor green  = { 0x0000, 0xC000, 0x3000 };
+    RGBColor orange = { 0xF000, 0x9000, 0x0000 };
+    Rect r;
+    if (sz < 3) sz = 3;
+
+    pic = GetPicture(rABLogoPICT);
+    if (pic) DrawPicture(pic, logo);            /* repaint base each beat */
+    for (i = 0; i < AB_NPKT; i++) {
+        off = (short)(((long)span * ((phase + i * AB_PHASES / AB_NPKT) % AB_PHASES)) / AB_PHASES);
+        px  = x0 + off;
+        RGBForeColor((i & 1) ? &orange : &green);
+        SetRect(&r, px, (short)(y - sz / 2), (short)(px + sz), (short)(y + sz / 2));
+        PaintRect(&r);
+    }
+    ForeColor(blackColor);
+}
+
 /*
- * Show About dialog
+ * Show About dialog (animated bridge logo: data packets crossing the bridge)
  */
 void ShowAboutBox(void)
 {
     DialogPtr dialog;
-    Rect bounds;
+    Rect bounds, logo;
+    short phase = 0;
+    long  nextTick = 0;
 
-    SetRect(&bounds, 100, 80, 420, 240);
+    SetRect(&bounds, 90, 80, 480, 280);
     dialog = NewDialog(NULL, &bounds, "\p", true, dBoxProc,
                        (WindowPtr)-1L, false, 0, NULL);
 
     if (dialog != NULL) {
         SetPort(dialog);
+        SetRect(&logo, 20, 45, 120, 145);       /* 100x100 logo on the left */
 
-        MoveTo(20, 30);
-        TextSize(14);
-        TextFace(bold);
+        MoveTo(130, 30); TextSize(14); TextFace(bold);
         DrawString("\pAppleBridge v0.6.0");
-
-        MoveTo(20, 55);
-        TextSize(10);
-        TextFace(0);
+        MoveTo(130, 55); TextSize(10); TextFace(0);
         DrawString("\pBuilt by Pit with Love");
-
-        MoveTo(20, 75);
+        MoveTo(130, 75);
         DrawString("\pfor 68K and Claude");
-
-        MoveTo(20, 100);
-        TextFace(italic);
+        MoveTo(130, 100); TextFace(italic);
         DrawString("\p\"Connecting classic Mac to the future\"");
-
-        MoveTo(20, 120);
-        TextFace(bold);
+        MoveTo(130, 122); TextFace(bold);
         DrawString("\pActive + Console Edition");
-
-        MoveTo(20, 140);
-        TextFace(0);
+        MoveTo(130, 145); TextFace(0);
         DrawString("\pClick to close...");
 
         while (!Button()) {
+            if (TickCount() >= nextTick) {
+                DrawABLogo(&logo, phase);
+                phase = (short)((phase + 1) % AB_PHASES);
+                nextTick = TickCount() + AB_STEP_TICKS;
+            }
             SystemTask();
         }
         while (Button()) {}
