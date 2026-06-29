@@ -126,6 +126,16 @@ static OSErr FindAppBySignature(OSType signature, ProcessSerialNumber *psn)
 }
 
 /*
+ * Is an application with the given creator signature currently running?
+ * Used by the STAT verb to report whether ToolServer ('MPSX') is alive.
+ */
+Boolean IsAppRunning(OSType signature)
+{
+	ProcessSerialNumber psn;
+	return FindAppBySignature(signature, &psn) == noErr;
+}
+
+/*
  * Send a Quit Apple Event (kCoreEventClass / kAEQuitApplication) to the running
  * application with the given creator signature. Lets the QUIT: verb stop a
  * launched GUI app (e.g. a game build) over the bridge — no manual quit needed.

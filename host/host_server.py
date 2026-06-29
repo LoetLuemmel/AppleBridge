@@ -608,6 +608,41 @@ def run_control_server(server):
                             log(f"screenshot -> {len(png)}B PNG ({len(b64)}B base64)")
                         else:
                             out = "STATUS:-1\rSTDOUT:0\rSTDERR:17\rScreenshot failed\r\r"
+                    elif cmd == "MACSTATUS":
+                        # Liveness, answered HOST-side so it never hangs when the
+                        # daemon is down. Reports the host's connection/heartbeat
+                        # view, then merges the daemon's STAT counters if reachable.
+                        now = time.monotonic()
+                        fields = [
+                            f"host_connected={1 if server.connected else 0}",
+                            f"idle_seconds={now - last_io:.1f}",
+                            f"missed_heartbeats={missed}",
+                        ]
+                        daemon_ok = 0
+                        if server.connected:
+                            draw = server.send_raw("STAT", timeout=4.0)
+                            if draw:
+                                # The daemon frames with CR (classic-Mac C maps
+                                # source '\r' -> 0x0A), so read the STDOUT length
+                                # digits and skip ONE separator rather than assume
+                                # which newline byte it is.
+                                k = draw.find("STDOUT:")
+                                if k >= 0:
+                                    d = k + 7
+                                    while d < len(draw) and draw[d].isdigit():
+                                        d += 1
+                                    try:
+                                        n = int(draw[k + 7:d])
+                                        body = draw[d + 1:d + 1 + n]
+                                        if body:
+                                            fields.append(body)
+                                            daemon_ok = 1
+                                    except ValueError:
+                                        pass
+                        fields.append(f"daemon_responding={daemon_ok}")
+                        payload = ";".join(fields)
+                        out = f"STATUS:0\rSTDOUT:{len(payload)}\r{payload}\rSTDERR:0\r\r"
+                        log(f"mac_status -> {payload}")
                     elif cmd.startswith("WRITEFILE:"):
                         # WRITEFILE:<pathB64>:<typeHex8>:<creatorHex8>:<dataB64>:<rsrcB64>
                         # (every variable field base64/hex -> colon-free, so split is safe)
