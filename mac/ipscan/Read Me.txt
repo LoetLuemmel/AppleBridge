@@ -1,0 +1,59 @@
+MacNetScan
+==========
+
+A System 7 LAN scanner for the classic 68K Macintosh. MacNetScan sweeps the
+local network over Open Transport and shows, for every reachable device, a live
+matrix of address, reachability, round-trip time, resolved name, and the
+services it exposes -- plus AppleTalk and TCP/IP diagnostic tools. It is the
+sibling project to AppleBridge and was built, compiled, and deployed through it.
+
+
+What it does
+------------
+- IP discovery: concurrent async TCP-connect sweep of the local /24
+  (open / refused / timeout), with round-trip time and a live results matrix.
+- Service identification: maps open well-known ports to labels (HTTP, HTTPS,
+  SMB, NetBIOS, AFP, SSH, IPP, FTP, Telnet, AppleBridge).
+- Name resolution: NetBIOS (NBSTAT), multicast DNS, and reverse-DNS.
+- AppleTalk: NBP device discovery across all zones, zone listing, node identity.
+- TCP/IP tools: ping, DNS lookup, traceroute.
+- Output: Save As tab-delimited report, or Copy to the clipboard.
+- Configurable sweep: address range, timeout, concurrency, and port list.
+
+
+Requirements
+------------
+- System 7 with Open Transport (e.g. 7.5.3+ / 7.6.1).
+- 68K or PowerPC Macintosh.
+- Built and tested under Basilisk II.
+
+
+Authorized use only
+-------------------
+MacNetScan actively probes hosts on your network (port connects, NBP sweeps,
+ping, traceroute). Use it ONLY on networks you own or are explicitly authorized
+to scan. Scanning networks without permission may violate acceptable-use
+policies or law and can trigger intrusion-detection systems. The author accepts
+no responsibility for misuse.
+
+
+License
+-------
+MIT License -- Copyright (c) 2026 Pit Förster.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

@@ -78,6 +78,7 @@
 #define iStop    2
 #define iOptions 4
 #define rAboutAlert 128
+#define rAboutDlog  132
 #define rOptDialog  128
 
 /* The QuickDraw globals are not in any library -- an application defines them. */
@@ -92,9 +93,9 @@ typedef struct { UInt16 port; char name[12]; } PortDef;
 
 /* known ports -> friendly service label (also the default probe set) */
 static const PortDef gKnown[] = {
-    { 9000, "ABridge" }, {   80, "HTTP" }, {  443, "HTTPS" }, {  445, "SMB" },
-    {  139, "NetBIOS" }, {  548, "AFP"  }, {   22, "SSH"   }, {  631, "IPP" },
-    {   21, "FTP"     }, {   23, "Telnet" }
+    { 9000, "ABridge" }, {  80, "HTTP" }, { 443, "HTTPS" }, { 445, "SMB" },
+    { 139, "NetBIOS" }, { 548, "AFP"  }, {  22, "SSH"   }, { 631, "IPP" },
+    {  21, "FTP"     }, {  23, "Telnet" }
 };
 #define NKNOWN (sizeof(gKnown) / sizeof(gKnown[0]))
 
@@ -137,6 +138,7 @@ static Boolean   gScanning = false;
 static short     gProgress = 0;
 static Boolean   gDone = false;
 static Boolean   gStop = false;
+static Boolean   gHasOutput = false;   /* false until a Scan/View produces output */
 
 /* ---- tiny string helpers ---- */
 static void UToStr(unsigned long n, char *s)
@@ -470,7 +472,7 @@ static char  gTitle[120];
 static short gColX[MAXCOLS], gColMax[MAXCOLS];   /* x position + char cap per col */
 
 static char *Cell(short r, short c) { return gCells + ((long)r * MAXCOLS + c) * CELLW; }
-static void TblBegin(short ncols) { gNRows = 0; gNCols = ncols; }
+static void TblBegin(short ncols) { gNRows = 0; gNCols = ncols; gHasOutput = true; }
 static void TblHdr(short c, const char *s)
 { short k = 0; while (s[k] && k < 19) { gHdr[c][k] = s[k]; k++; } gHdr[c][k] = 0; }
 static short TblRow(void)
@@ -555,6 +557,11 @@ static void DrawMatrix(void)
     SetPort(gWin);
     rc = gWin->portRect;
     EraseRect(&rc);
+    if (!gHasOutput) {                /* nothing scanned yet -- buttons only */
+        DrawControls(gWin);
+        DrawGrowIcon(gWin);
+        return;
+    }
     TextFont(gMonacoFont); TextSize(9);
     ComputeLayout();
 
@@ -651,15 +658,6 @@ static void DDPToStr(DDPAddress *a, char *out)
     UToStr(a->fNodeID,  nb); StrCat(out, nb); StrCat(out, ":");
     UToStr(a->fSocket,  nb); StrCat(out, nb);
 }
-/* parse an NBP on-wire name (object/type/zone, each a length-prefixed string) */
-static void ParseNBPName(UInt8 *p, short len, char *obj, char *typ, char *zon)
-{
-    short i = 0, k, l;
-    obj[0] = typ[0] = zon[0] = 0;
-    if (i < len) { l = p[i++]; for (k = 0; k < l && i < len && k < 38; k++) obj[k] = (char)p[i++]; obj[k] = 0; }
-    if (i < len) { l = p[i++]; for (k = 0; k < l && i < len && k < 38; k++) typ[k] = (char)p[i++]; typ[k] = 0; }
-    if (i < len) { l = p[i++]; for (k = 0; k < l && i < len && k < 38; k++) zon[k] = (char)p[i++]; zon[k] = 0; }
-}
 
 static void ShowIdentity(void)
 {
@@ -739,53 +737,116 @@ static void FillZones(void)
     UpdateScrollMax(); DrawMatrix();
 }
 
-static void FillNBP(void)
+/* One NBP lookup of "=:=@<zone>" through an open NBP mapper; appends a table
+ * row per responding entity. Per Inside Macintosh: OT, OTLookupName is a MAPPER
+ * function -- the old code called it on an ATP *endpoint*, which silently failed
+ * (in straight C every provider ref is void*, so the type error never showed),
+ * leaving the list empty. Zone "*" is only THIS node's zone, so the caller walks
+ * the whole zone list to also find servers reached through another zone. */
+static void NbpLookupZone(MapperRef mapper, const char *zone)
 {
-    EndpointRef ep;
-    OSStatus    err;
-    UInt8       nameBuf[120];
-    long        nameLen;
-    Ptr         rbuf;
+    UInt8          nameBuf[128];
+    char           nbpStr[80];
+    long           nameLen;
+    Ptr            rbuf;
     TLookupRequest req;
     TLookupReply   reply;
+    OSStatus       err;
+
+    nbpStr[0] = 0; StrCat(nbpStr, "=:=@"); StrCat(nbpStr, zone);
+    nameLen = OTSetAddressFromNBPString(nameBuf, nbpStr, -1);
+
+    rbuf = NewPtr(8192);
+    if (rbuf == NULL) { return; }
+    OTMemzero(&req, sizeof(req)); OTMemzero(&reply, sizeof(reply));
+    req.name.buf = nameBuf; req.name.len = nameLen;
+    req.addr.buf = NULL;    req.addr.len = 0;
+    req.maxcnt = 200; req.timeout = 2000; req.flags = 0;
+    reply.names.buf = (UInt8 *)rbuf; reply.names.maxlen = 8192; reply.names.len = 0;
+    err = OTLookupName(mapper, &req, &reply);
+    if (err == noErr && reply.rspcount > 0) {
+        char *base  = (char *)rbuf;
+        long  avail = (long)reply.names.len;   /* bytes OT actually returned */
+        long  off = 0, n;
+        for (n = 0; n < (long)reply.rspcount; n++) {
+            TLookupBuffer *lb;
+            UInt8     *ab, *nmp;
+            NBPEntity  ent;
+            char       obj[64], typ[64], zon[64], adr[28];
+            long       alen, nlen, rec;
+            short      r;
+            /* HARDENING: never read or walk past what OT returned, and never hand
+               the decoder a name longer than an NBPEntity (99 bytes). A malformed
+               or larger-than-expected reply otherwise walks off the 8K buffer /
+               overflows ent -> intermittent crash (the bug we were chasing). */
+            if (off + (long)sizeof(TLookupBuffer) > avail) { break; }
+            lb   = (TLookupBuffer *)(base + off);
+            alen = (long)lb->fAddressLength;
+            nlen = (long)lb->fNameLength;
+            rec = 4 + alen + nlen;                 /* fAddressBuffer sits at offset 4 */
+            if (alen < 0 || nlen < 0 || nlen > 96 || off + rec > avail) { break; }
+            ab  = lb->fAddressBuffer;
+            nmp = ab + alen;
+            /* The name is an NBP name STRING ("obj:type@zone") -- let OT decode it. */
+            OTSetNBPEntityFromAddress(&ent, nmp, (OTByteCount)nlen);
+            obj[0] = typ[0] = zon[0] = 0;
+            OTExtractNBPName(&ent, obj);
+            OTExtractNBPType(&ent, typ);
+            OTExtractNBPZone(&ent, zon);
+            DDPToStr((DDPAddress *)ab, adr);
+            r = TblRow();
+            TblSet(r, 0, obj); TblSet(r, 1, typ);
+            TblSet(r, 2, zon[0] ? zon : zone); TblSet(r, 3, adr);
+            off += (rec + 3) & ~3L;                /* bounded OTNextLookupBuffer */
+        }
+    }
+    DisposePtr(rbuf);
+}
+
+static void FillNBP(void)
+{
+    MapperRef mapper;
+    OSStatus  err;
+    Ptr       zbuf;
+    Boolean   didZones = false;
 
     gMode = MODE_NBP; gScrollTop = 0;
     TblBegin(4); TblHdr(0, "Object"); TblHdr(1, "Type"); TblHdr(2, "Zone"); TblHdr(3, "Address");
     gTitle[0] = 0; StrCat(gTitle, "AppleTalk Devices (NBP)");
+    UpdateScrollMax(); DrawMatrix();
 
-    ep = OTOpenEndpoint(OTCreateConfiguration(kATPName), 0, NULL, &err);
-    if (err != noErr || ep == NULL) {
-        TblSet(TblRow(), 0, "(cannot open ATP endpoint)"); UpdateScrollMax(); DrawMatrix(); return;
+    mapper = OTOpenMapper(OTCreateConfiguration(kNBPName), 0, &err);
+    if (err != noErr || mapper == NULL) {
+        TblSet(TblRow(), 0, "(cannot open NBP mapper)"); UpdateScrollMax(); DrawMatrix(); return;
     }
-    OTBind(ep, NULL, NULL);
-    nameLen = OTSetAddressFromNBPString(nameBuf, "=:=@*", -1);
 
-    rbuf = NewPtr(8192);
-    if (rbuf) {
-        OTMemzero(&req, sizeof(req)); OTMemzero(&reply, sizeof(reply));
-        req.name.buf = nameBuf; req.name.len = nameLen;
-        req.addr.buf = NULL;    req.addr.len = 0;
-        req.maxcnt = 200; req.timeout = 3000; req.flags = 0;
-        reply.names.buf = (UInt8 *)rbuf; reply.names.maxlen = 8192; reply.names.len = 0;
-        err = OTLookupName(ep, &req, &reply);
-        if (err == noErr && reply.rspcount > 0) {
-            TLookupBuffer *lb = (TLookupBuffer *)rbuf;
-            long n;
-            for (n = 0; n < (long)reply.rspcount; n++) {
-                UInt8 *ab  = lb->fAddressBuffer;
-                UInt8 *nmp = ab + lb->fAddressLength;
-                char obj[40], typ[40], zon[40], adr[28];
-                short r;
-                ParseNBPName(nmp, (short)lb->fNameLength, obj, typ, zon);
-                DDPToStr((DDPAddress *)ab, adr);
-                r = TblRow();
-                TblSet(r, 0, obj); TblSet(r, 1, typ); TblSet(r, 2, zon); TblSet(r, 3, adr);
-                lb = OTNextLookupBuffer(lb);
+    /* Sweep every visible zone (like the Chooser); a flat/non-extended network
+     * returns no list, so fall back to "*" (this node's own zone). */
+    zbuf = NewPtr(8192);
+    if (zbuf && OpenAT()) {
+        TNetbuf zb;
+        zb.buf = (UInt8 *)zbuf; zb.maxlen = 8192; zb.len = 0;
+        if (OTATalkGetZoneList(gAT, &zb) == noErr && zb.len > 0) {
+            long  p = 0; short nz = 0;
+            while (p < (long)zb.len && nz < 64) {
+                short len = ((unsigned char *)zbuf)[p];
+                char  zn[40]; short k;
+                if (len == 0) break;
+                for (k = 0; k < len && k < 38; k++) zn[k] = zbuf[p + 1 + k];
+                zn[k] = 0; TrimRight(zn);
+                if (zn[0]) {
+                    NbpLookupZone(mapper, zn);
+                    didZones = true; nz++;
+                    UpdateScrollMax(); DrawMatrix();   /* show results as they arrive */
+                }
+                p += 1 + len;
             }
         }
-        DisposePtr(rbuf);
     }
-    OTCloseProvider(ep);
+    if (zbuf) DisposePtr(zbuf);
+    if (!didZones) { NbpLookupZone(mapper, "*"); }
+
+    OTCloseProvider(mapper);
     if (gNRows == 0) TblSet(TblRow(), 0, "(no NBP entities found)");
     { char nbs[16]; StrCat(gTitle, "  found="); UToStr((unsigned long)gNRows, nbs); StrCat(gTitle, nbs); }
     UpdateScrollMax(); DrawMatrix();
@@ -794,7 +855,10 @@ static void FillNBP(void)
 static void ShowIPView(void)
 {
     gMode = MODE_IP; gScrollTop = 0;
-    FillIPTable(); UpdateScrollMax(); DrawMatrix();
+    FillIPTable();                       /* shows results of the last /24 sweep */
+    if (gNFound == 0)                    /* nothing scanned yet -- guide the user */
+        TblSet(TblRow(), 0, "(no scan yet -- choose Scan > Rescan)");
+    UpdateScrollMax(); DrawMatrix();
 }
 
 /* ---- report / export ---- */
@@ -806,7 +870,7 @@ static void App(char *buf, long *o, long max, const char *s)
 static long BuildReport(char *buf, long max)
 {
     long o = 0; short i, p; char nb[16], ipb[20], pl[16];
-    App(buf,&o,max,"IPScan  net="); IPToStr(gBase,ipb); App(buf,&o,max,ipb);
+    App(buf,&o,max,"MacNetScan  net="); IPToStr(gBase,ipb); App(buf,&o,max,ipb);
     App(buf,&o,max,"/24  found="); UToStr((unsigned long)gNFound,nb); App(buf,&o,max,nb);
     App(buf,&o,max,"\n");
     App(buf,&o,max,"IP\tStatus\tms\tHost name\tServices\n");
@@ -957,10 +1021,16 @@ static void SetupMenus(void)
     if (am) AppendResMenu(am, 'DRVR');
     DrawMenuBar();
 }
+/* About box: item 3 is a Picture item (PICT 128, the MacNetScan LAN-scan logo);
+   the Dialog Manager draws it, so no user-item draw proc is needed. */
 static void DoAbout(void)
 {
-    short ignore = Alert(rAboutAlert, NULL);
-    if (ignore) {}
+    DialogPtr d; short hit;
+    d = GetNewDialog(rAboutDlog, NULL, (WindowPtr)-1L);
+    if (d == NULL) return;
+    ShowWindow(d);
+    for (;;) { ModalDialog(NULL, &hit); if (hit == 1) break; }
+    DisposeDialog(d);
 }
 static void SetField(DialogPtr d, short item, long val)
 {
@@ -1375,14 +1445,18 @@ int main(void)
     if (gCells == NULL) return 1;
 
     SetRect(&bounds, 20, 44, 20 + 640, 44 + 420);
-    gWin = NewCWindow(NULL, &bounds, "\pIP Scan", true, zoomDocProc, (WindowPtr)-1L, true, 0);
+    gWin = NewCWindow(NULL, &bounds, "\pMacNetScan", true, zoomDocProc, (WindowPtr)-1L, true, 0);
     SetPort(gWin);
     MakeScrollbar();
     MakeButtons();
 
-    TextFont(gMonacoFont); TextSize(9);
-    MoveTo(COL_IP, TITLE_Y); DrawCStr("Scanning the local /24 ...");
-    RunScan();
+    /* Don't auto-scan on launch -- a full /24 sweep is slow. Start with a blank
+       window (just the buttons); the title + column headers ("info") appear on
+       top of the rows the first time a Scan or View produces output. The user
+       starts a sweep via Scan > Rescan (or the Rescan button). */
+    gMode = MODE_IP; gScrollTop = 0;
+    gHasOutput = false;
+    DrawMatrix();
 
     while (!gDone) {
         if (WaitNextEvent(everyEvent, &ev, 15L, NULL)) {
