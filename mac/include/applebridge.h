@@ -39,6 +39,9 @@
 #define PROTO_WRITEFILE "WRITEFILE:"   /* host->daemon: write both forks to disk */
 #define PROTO_READFILE "READFILE:"     /* daemon->host: stream both forks back */
 #define PROTO_FILE "FILE:"             /* READFILE response header */
+#define PROTO_KEY "KEY:"               /* host->daemon: inject one keystroke */
+#define PROTO_TYPE "TYPE:"             /* host->daemon: inject a run of characters */
+#define PROTO_CLICK "CLICK:"           /* host->daemon: inject a mouse click */
 
 /* Result codes */
 typedef enum {
@@ -113,6 +116,11 @@ void CleanupScreenshot(ScreenshotData *screenshot);
  * caller must then drop + reconnect, like ProcessRequest's other verbs). */
 Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen);
 Boolean ReadFileVerb(EndpointRef endpoint, char *request, long requestLen);
+
+/* events.c -- synthetic input injection (drive the front GUI app). */
+OSErr InjectKey(short charCode, short keyCode);
+OSErr InjectType(const char *text, long len);
+OSErr InjectClick(short h, short v);
 
 /* Utility functions */
 void LogMessage(const char *message);

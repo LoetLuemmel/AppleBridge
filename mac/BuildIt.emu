@@ -1,3 +1,3 @@
-Link -model far -o :bin:AppleBridge.new :obj:main.c.o :obj:network.c.o :obj:protocol.c.o :obj:command.c.o :obj:screenshot.c.o :obj:fileio.c.o :obj:utils.c.o :obj:mystring.c.o :obj:prefs.c.o "{CLibraries}StdCLib.o" "{Libraries}OpenTransport.o" "{Libraries}OpenTransportApp.o" "{Libraries}OpenTptInet.o" "{Libraries}Interface.o" "{Libraries}MacRuntime.o"
+Link -model far -o :bin:AppleBridge.new :obj:main.c.o :obj:network.c.o :obj:protocol.c.o :obj:command.c.o :obj:screenshot.c.o :obj:fileio.c.o :obj:events.c.o :obj:utils.c.o :obj:mystring.c.o :obj:prefs.c.o "{CLibraries}StdCLib.o" "{Libraries}OpenTransport.o" "{Libraries}OpenTransportApp.o" "{Libraries}OpenTptInet.o" "{Libraries}Interface.o" "{Libraries}MacRuntime.o"
 Rez AppleBridge_res.r -a -o :bin:AppleBridge.new
 SetFile -t APPL -c 'ABrg' :bin:AppleBridge.new

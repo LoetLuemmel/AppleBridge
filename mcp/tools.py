@@ -170,6 +170,70 @@ Path uses : separator and points at the application file, e.g.
         }
     },
     {
+        "name": "mac_type",
+        "description": """Type text into the FRONT application on the classic Mac.
+
+Injects keystrokes (keyDown/keyUp per character) into the OS event queue, which
+the Process Manager delivers to whatever app is frontmost — e.g. one just
+brought up with launch_app. Pairs with mac_screenshot to drive-and-verify a GUI.
+
+Text only (no Command/Option/Shift modifiers — use mac_key for special keys).
+Include a carriage return (\\r) to press Return. Bounded to 1024 chars/call.""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "Characters to type into the front app"
+                }
+            },
+            "required": ["text"]
+        }
+    },
+    {
+        "name": "mac_key",
+        "description": """Press one key in the FRONT application on the classic Mac.
+
+Injects a single keyDown/keyUp into the OS event queue. Use for keys mac_type
+can't express as plain text — Return (char 13), Enter (3), Tab (9), Escape (27),
+Backspace (8), or the arrows (give their key_code with char_code 28-31).
+
+char_code is the ASCII/MacRoman byte; key_code is the virtual key code (0 is
+fine for ordinary characters). No modifier keys in this version.""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "char_code": {
+                    "type": "integer",
+                    "description": "ASCII/MacRoman character code (e.g. 13 = Return, 27 = Escape)"
+                },
+                "key_code": {
+                    "type": "integer",
+                    "description": "Virtual key code (optional; 0 for ordinary characters)"
+                }
+            },
+            "required": ["char_code"]
+        }
+    },
+    {
+        "name": "mac_click",
+        "description": """Click at a point in the FRONT application on the classic Mac.
+
+Moves the emulated mouse to (x, y) in global screen coordinates and posts a
+mouse-down/up there, poking the low-memory button state so tracked controls
+(buttons, menus) register a real press. Pair with mac_screenshot to read a
+dialog, then click its button. Coordinates are screen pixels (origin top-left;
+the screen is 1024×768).""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "Horizontal screen coordinate (pixels)"},
+                "y": {"type": "integer", "description": "Vertical screen coordinate (pixels)"}
+            },
+            "required": ["x", "y"]
+        }
+    },
+    {
         "name": "mac_put_file",
         "description": """Copy a BINARY file from the host to the classic Mac, preserving both forks.
 
@@ -497,6 +561,65 @@ def launch_app(path: str) -> Dict[str, Any]:
         }
 
 
+def _inject(verb: str, label_fields: Dict[str, Any]) -> Dict[str, Any]:
+    """Send a raw input-injection verb (KEY/TYPE/CLICK) via the control port."""
+    try:
+        conn = get_connection()
+        if not conn.is_connected():
+            return {"success": False, "error": "Mac not connected", **label_fields}
+        status, stdout, stderr = conn.send_command(verb, timeout=15.0)
+        return {
+            "success": status == 0,
+            "status": status,
+            "message": stdout if stdout else None,
+            "error": stderr if stderr else None,
+            **label_fields,
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e), **label_fields}
+
+
+def mac_type(text: str) -> Dict[str, Any]:
+    """Type text into the front app via the daemon's TYPE verb.
+
+    Long bursts are split into small chunks with brief gaps: a freshly activated
+    app flushes its event queue and can swallow the first keystrokes of a big
+    burst, so chunking keeps a long string lossless. A bare CR (\\r) inside the
+    text becomes a Return key (KEY:13); other characters ride a TYPE verb.
+    """
+    import time as _time
+    payload = text.replace("\n", "\r")
+    CHUNK = 12
+    last = {"success": True, "text": text}
+    i = 0
+    while i < len(payload):
+        ch = payload[i]
+        if ch == "\r":                       # Return as a real key event
+            last = _inject("KEY:13:36", {"text": text})
+            i += 1
+        else:
+            j = i
+            while j < len(payload) and payload[j] != "\r" and (j - i) < CHUNK:
+                j += 1
+            last = _inject("TYPE:" + payload[i:j], {"text": text})
+            i = j
+        if not last.get("success"):
+            return last
+        _time.sleep(0.12)
+    return last
+
+
+def mac_key(char_code: int, key_code: int = 0) -> Dict[str, Any]:
+    """Press one key in the front app via the daemon's KEY verb."""
+    return _inject(f"KEY:{int(char_code)}:{int(key_code)}",
+                   {"char_code": char_code, "key_code": key_code})
+
+
+def mac_click(x: int, y: int) -> Dict[str, Any]:
+    """Click at (x, y) in the front app via the daemon's CLICK verb."""
+    return _inject(f"CLICK:{int(x)}:{int(y)}", {"x": x, "y": y})
+
+
 def mac_put_file(host_path: str, mac_path: str, type: Optional[str] = None,
                  creator: Optional[str] = None,
                  resource_path: Optional[str] = None) -> Dict[str, Any]:
@@ -653,6 +776,9 @@ TOOL_HANDLERS = {
     "mac_compile": mac_compile,
     "mac_screenshot": mac_screenshot,
     "launch_app": launch_app,
+    "mac_type": mac_type,
+    "mac_key": mac_key,
+    "mac_click": mac_click,
     "mac_put_file": mac_put_file,
     "mac_get_file": mac_get_file,
     "mac_restart_toolserver": mac_restart_toolserver,
