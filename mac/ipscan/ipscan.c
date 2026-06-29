@@ -1021,15 +1021,86 @@ static void SetupMenus(void)
     if (am) AppendResMenu(am, 'DRVR');
     DrawMenuBar();
 }
-/* About box: item 3 is a Picture item (PICT 128, the MacNetScan LAN-scan logo);
-   the Dialog Manager draws it, so no user-item draw proc is needed. */
+/* ---- animated About logo: a live radar sweep over the static PICT ----
+   The base art (PICT 128, item 3 is a user-item rect) is redrawn every beat,
+   then a fading green beam is swept around the CRT in QuickDraw -- an "IP
+   scanner" radar. No per-frame PICTs: endpoints come from a fixed-point
+   cos/sin table, so there is no runtime trig. */
+#define rAboutLogoPICT 128
+#define kAboutLogoItem 3
+#define NBEAMS       24          /* angle steps per revolution                 */
+#define ABOUT_TRAIL   6          /* beams in the fading afterglow              */
+#define BEAM_TICKS    3          /* ticks between beats (~20 fps, ~1.2s/loop)  */
+
+static const short kCos[NBEAMS] = {
+     1024,   989,   887,   724,   512,   265,     0,  -265,
+     -512,  -724,  -887,  -989, -1024,  -989,  -887,  -724,
+     -512,  -265,     0,   265,   512,   724,   887,   989,
+};
+static const short kSin[NBEAMS] = {
+        0,   265,   512,   724,   887,   989,  1024,   989,
+      887,   724,   512,   265,     0,  -265,  -512,  -724,
+     -887,  -989, -1024,  -989,  -887,  -724,  -512,  -265,
+};
+
+static Rect  gAboutLogo;         /* logo item rect (dialog-local coords)       */
+static short gAboutBeam;
+static long  gAboutNext;
+
+static void DrawAboutFrame(const Rect *logo, short beam)
+{
+    PicHandle pic;
+    short w   = logo->right  - logo->left;
+    short hgt = logo->bottom - logo->top;
+    short cx  = logo->left + (short)((long)w   * 127 / 256);   /* CRT centre  */
+    short cy  = logo->top  + (short)((long)hgt * 109 / 256);
+    short rad = (short)((long)w * 19 / 256);                   /* CRT radius  */
+    short s, idx;
+    RGBColor c;
+    if (rad < 4) rad = 4;
+
+    pic = GetPicture(rAboutLogoPICT);
+    if (pic) DrawPicture(pic, logo);            /* repaint base -> no trails  */
+
+    PenSize(1, 1);
+    c.red = 0x1000; c.blue = 0x2800;
+    for (s = ABOUT_TRAIL - 1; s >= 0; s--) {    /* dim tail first, bright head */
+        idx = (short)((beam - s + NBEAMS) % NBEAMS);
+        c.green = (unsigned short)(0x3000 + (long)0xC000 * (ABOUT_TRAIL - 1 - s) / (ABOUT_TRAIL - 1));
+        RGBForeColor(&c);
+        MoveTo(cx, cy);
+        LineTo(cx + (short)(((long)kCos[idx] * rad) >> 10),
+               cy + (short)(((long)kSin[idx] * rad) >> 10));
+    }
+    PenNormal();
+    ForeColor(blackColor);
+}
+
+/* ModalDialog filter: drive the sweep on idle (nullEvent); never eats events */
+static pascal Boolean AboutFilter(DialogPtr d, EventRecord *ev, short *itemHit)
+{
+    if (itemHit) {}
+    if (ev->what == nullEvent && TickCount() >= gAboutNext) {
+        GrafPtr save; GetPort(&save); SetPort(d);
+        DrawAboutFrame(&gAboutLogo, gAboutBeam);
+        SetPort(save);
+        gAboutBeam = (short)((gAboutBeam + 1) % NBEAMS);
+        gAboutNext = TickCount() + BEAM_TICKS;
+    }
+    return false;
+}
+
 static void DoAbout(void)
 {
-    DialogPtr d; short hit;
+    DialogPtr d; short hit, t; Handle h; ModalFilterUPP filt;
     d = GetNewDialog(rAboutDlog, NULL, (WindowPtr)-1L);
     if (d == NULL) return;
+    GetDialogItem(d, kAboutLogoItem, &t, &h, &gAboutLogo);
+    gAboutBeam = 0; gAboutNext = 0;
     ShowWindow(d);
-    for (;;) { ModalDialog(NULL, &hit); if (hit == 1) break; }
+    filt = NewModalFilterUPP(AboutFilter);
+    do { ModalDialog(filt, &hit); } while (hit != 1);
+    DisposeModalFilterUPP(filt);
     DisposeDialog(d);
 }
 static void SetField(DialogPtr d, short item, long val)

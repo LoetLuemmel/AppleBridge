@@ -109,7 +109,7 @@ resource 'DITL' (128) {
             "NetBIOS + mDNS + DNS name resolution.\n"
             "Made by Pit with love and Claude's great support.\n"
             "Free software - no warranty (MIT)." },
-        {12, 12, 108, 108},   Picture { disabled, 128 }
+        {12, 12, 108, 108},   UserItem { disabled }
     }
 };
 
