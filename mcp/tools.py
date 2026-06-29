@@ -139,13 +139,23 @@ Returns success status and any compiler messages.""",
     },
     {
         "name": "mac_screenshot",
-        "description": """Capture a screenshot of the Basilisk II emulator window.
+        "description": """Capture a screenshot of the emulated Mac screen.
 
-Returns the screenshot as a base64-encoded PNG image.
-Useful for seeing the current state of the Mac desktop.""",
+Returns a base64-encoded PNG of the current desktop. Pass `region` as
+[x, y, width, height] (screen pixels, origin top-left, screen is 1024x768) to
+decode only that rectangle — e.g. read a single dialog instead of the whole
+frame, for a smaller, faster image.""",
         "inputSchema": {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "region": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "minItems": 4,
+                    "maxItems": 4,
+                    "description": "Optional crop [x, y, width, height] in screen pixels"
+                }
+            },
             "required": []
         }
     },
@@ -476,22 +486,55 @@ def mac_list_files(path: str) -> Dict[str, Any]:
         status, stdout, stderr = conn.send_command(command, timeout=30.0)
 
         if status == 0 and stdout:
-            # Parse the file listing
-            lines = stdout.strip().split('\n')
+            # Parse `Files -l` by COLUMN BOUNDARIES taken from the dashes row, so
+            # filenames containing spaces ("System Folder") and dates ("12:47 PM")
+            # are not split apart the way a naive whitespace split does.
+            lines = stdout.replace('\r', '\n').split('\n')
             files = []
+            # The separator row is dashes + the spaces BETWEEN columns.
+            dash_idx = next((i for i, l in enumerate(lines)
+                             if l.count('-') > 3 and set(l.strip()) <= {'-', ' '}),
+                            None)
 
-            # Skip header lines (first 2 lines are headers)
-            for line in lines[2:]:
-                if line.strip():
-                    # Parse: Name Type Crtr Size Flags Date Date
-                    parts = line.split()
-                    if len(parts) >= 4:
-                        files.append({
-                            "name": parts[0],
-                            "type": parts[1] if len(parts) > 1 else "",
-                            "creator": parts[2] if len(parts) > 2 else "",
-                            "size": parts[3] if len(parts) > 3 else ""
-                        })
+            if dash_idx is not None and dash_idx >= 1:
+                # Column starts = beginning of each run of '-' in the dashes row.
+                dash = lines[dash_idx]
+                starts, i = [], 0
+                while i < len(dash):
+                    if dash[i] == '-':
+                        starts.append(i)
+                        while i < len(dash) and dash[i] == '-':
+                            i += 1
+                    else:
+                        i += 1
+
+                def col(line, k):
+                    s = starts[k]
+                    e = starts[k + 1] if k + 1 < len(starts) else len(line)
+                    val = line[s:e].strip()
+                    # MPW quotes names that contain spaces; drop the wrapping quotes.
+                    if len(val) >= 2 and val[0] == "'" and val[-1] == "'":
+                        val = val[1:-1]
+                    return val
+
+                for line in lines[dash_idx + 1:]:
+                    if not line.strip():
+                        continue
+                    files.append({
+                        "name": col(line, 0),
+                        "type": col(line, 1) if len(starts) > 1 else "",
+                        "creator": col(line, 2) if len(starts) > 2 else "",
+                        "size": col(line, 3) if len(starts) > 3 else "",
+                        "modified": col(line, 5) if len(starts) > 5 else "",
+                    })
+            else:
+                # No columnar header (e.g. plain output) — fall back to per-line
+                # names, still split on newlines only (never on inner spaces).
+                for line in lines:
+                    name = line.strip()
+                    if name and not name.startswith(('Name', '-')):
+                        files.append({"name": name, "type": "", "creator": "",
+                                      "size": "", "modified": ""})
 
             return {
                 "success": True,
@@ -548,8 +591,11 @@ def mac_compile(source_path: str, output_path: Optional[str] = None,
         }
 
 
-def mac_screenshot() -> Dict[str, Any]:
-    """Capture screenshot via MacintoshBridgeHost."""
+def mac_screenshot(region: Optional[list] = None) -> Dict[str, Any]:
+    """Capture a screenshot, optionally cropped to a region [x, y, w, h].
+
+    A region decodes only that rectangle host-side (read one dialog instead of
+    the full 1024x768 frame)."""
     try:
         conn = get_connection()
         if not conn.is_connected():
@@ -559,8 +605,16 @@ def mac_screenshot() -> Dict[str, Any]:
                     "error": "MacintoshBridgeHost not available"
                 }
 
-        # Send SCREENSHOT command (full-screen pixmap transfer + host PNG decode)
-        status, stdout, stderr = conn.send_command("SCREENSHOT", timeout=30.0)
+        command = "SCREENSHOT"
+        if region is not None:
+            try:
+                x, y, w, h = (int(v) for v in region)
+                command = f"SCREENSHOT:{x}:{y}:{w}:{h}"
+            except (ValueError, TypeError):
+                return {"success": False,
+                        "error": "region must be [x, y, width, height] integers"}
+        # Full-screen (or cropped) pixmap transfer + host PNG decode.
+        status, stdout, stderr = conn.send_command(command, timeout=30.0)
 
         if status == 0 and stdout:
             # stdout already contains base64-encoded PNG
