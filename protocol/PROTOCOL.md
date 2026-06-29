@@ -95,6 +95,36 @@ IMAGE:640:480:BMP:307200\n
 <binary data follows>
 ```
 
+### 3. Fork-aware File Transfer (WRITEFILE / READFILE)
+
+Raw verbs (not `COMMAND:`-wrapped) that move a file's **data fork**, **resource
+fork**, and **type/creator**, streamed to/from disk in chunks (no size cap). On
+the daemon socket the fork bytes are raw and binary-clean (length-framed); the
+host carries them as base64 across its text-only control port. MacBinary
+packaging is host-side only — the wire carries explicit fields.
+
+#### WRITEFILE (host → daemon)
+```
+WRITEFILE:<pathLen>:<typeHex8>:<creatorHex8>:<dataLen>:<rsrcLen>\n<pathBytes><dataBytes><rsrcBytes>
+```
+- `<pathLen>` / `<dataLen>` / `<rsrcLen>` — decimal byte counts (each fork ≤ `MAX_FILE_BYTES`, 8 MB).
+- `<typeHex8>` / `<creatorHex8>` — the 4-byte OSType / creator as 8 hex digits.
+- `<pathBytes>` — the destination HFS colon-path (MacRoman); the daemon `FSpCreate`s the file (stamping type+creator), writes the data fork (`FSpOpenDF`), then the resource fork (`FSpOpenRF`, raw bytes — skipped if `rsrcLen == 0`).
+- Reply: a normal `STATUS:0 …` frame (`Written`), or `STATUS:-1 …` on a File-Manager error.
+
+#### READFILE (daemon → host)
+```
+READFILE:<macPath>          (request; everything after the prefix is the path)
+FILE:<typeHex8>:<creatorHex8>:<dataLen>:<rsrcLen>\n<dataBytes><rsrcBytes>   (response)
+```
+- The daemon `FSpGetFInfo`s type/creator, `GetEOF`s each fork, sends the `FILE:` header, then streams the data fork and resource fork. A missing/empty resource fork is reported as `rsrcLen = 0`.
+- On error (no such file, etc.) the daemon replies with a `STATUS:-1 …` frame instead of `FILE:`.
+
+Both verbs run inside the daemon's request loop on the cooperative scheduler:
+each idle pass yields via `SystemTask()`, a stall deadline bounds a half-sent
+transfer, and any mid-stream failure drops the connection so it cleanly
+reconnects. MCP tools: `mac_put_file`, `mac_get_file`.
+
 ## Error Handling
 
 ### Protocol Errors

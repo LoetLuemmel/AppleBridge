@@ -25,7 +25,7 @@ LDFLAGS = -model far -o {BIN_DIR}AppleBridge
 LIBS_LIST = "{LIBS}CLibraries:StdCLib.o" "{LIBS}Libraries:OpenTransport.o" "{LIBS}Libraries:OpenTransportApp.o" "{LIBS}Libraries:OpenTptInet.o" "{LIBS}Libraries:Interface.o" "{LIBS}Libraries:MacRuntime.o"
 
 # Object files
-OBJS = {OBJ_DIR}main.c.o {OBJ_DIR}network.c.o {OBJ_DIR}protocol.c.o {OBJ_DIR}command.c.o {OBJ_DIR}screenshot.c.o {OBJ_DIR}utils.c.o {OBJ_DIR}mystring.c.o {OBJ_DIR}prefs.c.o
+OBJS = {OBJ_DIR}main.c.o {OBJ_DIR}network.c.o {OBJ_DIR}protocol.c.o {OBJ_DIR}command.c.o {OBJ_DIR}screenshot.c.o {OBJ_DIR}fileio.c.o {OBJ_DIR}utils.c.o {OBJ_DIR}mystring.c.o {OBJ_DIR}prefs.c.o
 
 # Default target
 all ƒ {BIN_DIR}AppleBridge
@@ -54,6 +54,9 @@ all ƒ {BIN_DIR}AppleBridge
 {OBJ_DIR}screenshot.c.o ƒ {SRC_DIR}screenshot.c {INC_DIR}applebridge.h
 	{CC} {CFLAGS} {SRC_DIR}screenshot.c -o {OBJ_DIR}screenshot.c.o
 
+{OBJ_DIR}fileio.c.o ƒ {SRC_DIR}fileio.c {INC_DIR}applebridge.h
+	{CC} {CFLAGS} {SRC_DIR}fileio.c -o {OBJ_DIR}fileio.c.o
+
 {OBJ_DIR}utils.c.o ƒ {SRC_DIR}utils.c {INC_DIR}applebridge.h
 	{CC} {CFLAGS} {SRC_DIR}utils.c -o {OBJ_DIR}utils.c.o
 
@@ -65,7 +68,7 @@ all ƒ {BIN_DIR}AppleBridge
 
 # Clean target
 clean ƒ
-	Delete -i {OBJ_DIR}main.c.o {OBJ_DIR}network.c.o {OBJ_DIR}protocol.c.o {OBJ_DIR}command.c.o {OBJ_DIR}screenshot.c.o {OBJ_DIR}utils.c.o {OBJ_DIR}mystring.c.o || Set Status 0
+	Delete -i {OBJ_DIR}main.c.o {OBJ_DIR}network.c.o {OBJ_DIR}protocol.c.o {OBJ_DIR}command.c.o {OBJ_DIR}screenshot.c.o {OBJ_DIR}fileio.c.o {OBJ_DIR}utils.c.o {OBJ_DIR}mystring.c.o || Set Status 0
 	Delete -i {BIN_DIR}AppleBridge || Set Status 0
 
 # Create directories

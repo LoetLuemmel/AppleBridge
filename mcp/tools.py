@@ -5,9 +5,25 @@ Tool implementations for classic Mac development.
 
 import base64
 import os
+import sys
 from typing import Any, Dict, List, Optional
 
 from .mac_connection import get_connection
+
+# host/ holds the stdlib-only macbinary helper; make it importable regardless of
+# how the MCP server is launched (mirrors how host_server.py imports it flat).
+_HOST_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "host")
+if _HOST_DIR not in sys.path:
+    sys.path.insert(0, _HOST_DIR)
+import macbinary  # noqa: E402
+
+
+def _ostype(value, default="????") -> bytes:
+    """Coerce a 4-char type/creator string to exactly 4 space-padded bytes."""
+    s = value if value else default
+    if isinstance(s, bytes):
+        return s[:4].ljust(4, b" ")
+    return (s.encode("mac_roman", errors="replace") + b"    ")[:4]
 
 # Tool definitions for MCP
 TOOLS = [
@@ -151,6 +167,48 @@ Path uses : separator and points at the application file, e.g.
                 }
             },
             "required": ["path"]
+        }
+    },
+    {
+        "name": "mac_put_file",
+        "description": """Copy a BINARY file from the host to the classic Mac, preserving both forks.
+
+Unlike mac_write_file (text only, via Echo), this streams a real binary file
+including its RESOURCE fork — so it can deploy a runnable 68K application (whose
+CODE lives in the resource fork), an image, or any resource file.
+
+If host_path is a MacBinary file (e.g. a Retro68 .bin), its forks + type/creator
+are used automatically. Otherwise the host file is the data fork; pass type and
+creator (4-char codes, e.g. APPL/Add5) to make a launchable app, and an optional
+resource_path for a separate resource fork.""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "host_path": {"type": "string", "description": "Path to the file on the host"},
+                "mac_path": {"type": "string", "description": "Destination Mac path (: separator)"},
+                "type": {"type": "string", "description": "4-char file type (e.g. APPL, TEXT). Ignored if host_path is MacBinary."},
+                "creator": {"type": "string", "description": "4-char creator code (e.g. Add5). Ignored if host_path is MacBinary."},
+                "resource_path": {"type": "string", "description": "Optional host file whose bytes become the resource fork (flat-input case)."}
+            },
+            "required": ["host_path", "mac_path"]
+        }
+    },
+    {
+        "name": "mac_get_file",
+        "description": """Copy a file FROM the classic Mac to the host, preserving both forks.
+
+Pulls the data fork, resource fork, and type/creator. By default writes the data
+fork to host_path and, when a resource fork is present, also writes a re-deployable
+MacBinary alongside it (format='macbinary' forces a .bin, format='data' forces raw
+data-fork only).""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mac_path": {"type": "string", "description": "Source Mac path (: separator)"},
+                "host_path": {"type": "string", "description": "Destination path on the host"},
+                "format": {"type": "string", "description": "auto | data | macbinary (default: auto)"}
+            },
+            "required": ["mac_path", "host_path"]
         }
     }
 ]
@@ -388,6 +446,93 @@ def launch_app(path: str) -> Dict[str, Any]:
         }
 
 
+def mac_put_file(host_path: str, mac_path: str, type: Optional[str] = None,
+                 creator: Optional[str] = None,
+                 resource_path: Optional[str] = None) -> Dict[str, Any]:
+    """Send a binary file (both forks) to the Mac via the WRITEFILE verb."""
+    try:
+        with open(host_path, "rb") as f:
+            blob = f.read()
+
+        rsrc = b""
+        if macbinary.looks_like_macbinary(blob):
+            mb = macbinary.decode(blob)
+            data = mb["data"]
+            rsrc = mb["rsrc"]
+            type_b = _ostype(type) if type else mb["type"]
+            creator_b = _ostype(creator) if creator else mb["creator"]
+            source = "macbinary"
+        else:
+            data = blob
+            if resource_path:
+                with open(resource_path, "rb") as rf:
+                    rsrc = rf.read()
+            type_b = _ostype(type)
+            creator_b = _ostype(creator)
+            source = "flat"
+
+        conn = get_connection()
+        if not conn.is_connected():
+            return {"success": False, "path": mac_path, "error": "Mac not connected"}
+
+        cmd = "WRITEFILE:" + ":".join((
+            base64.b64encode(mac_path.encode("mac_roman", errors="replace")).decode("ascii"),
+            type_b.hex(),
+            creator_b.hex(),
+            base64.b64encode(data).decode("ascii"),
+            base64.b64encode(rsrc).decode("ascii"),
+        ))
+        status, stdout, stderr = conn.send_command(cmd, timeout=240.0)
+        return {
+            "success": status == 0,
+            "path": mac_path,
+            "source": source,
+            "data_bytes": len(data),
+            "resource_bytes": len(rsrc),
+            "type": type_b.decode("mac_roman", errors="replace"),
+            "creator": creator_b.decode("mac_roman", errors="replace"),
+            "error": stderr if status != 0 else None,
+        }
+    except Exception as e:
+        return {"success": False, "path": mac_path, "error": str(e)}
+
+
+def mac_get_file(mac_path: str, host_path: str, format: str = "auto") -> Dict[str, Any]:
+    """Pull a file (both forks) from the Mac via the READFILE verb."""
+    try:
+        conn = get_connection()
+        if not conn.is_connected():
+            return {"success": False, "path": mac_path, "error": "Mac not connected"}
+
+        status, stdout, stderr = conn.send_command("READFILE:" + mac_path, timeout=240.0)
+        if status != 0:
+            return {"success": False, "path": mac_path,
+                    "error": stderr or f"READFILE failed (status {status})"}
+
+        blob = base64.b64decode(stdout)        # host returns a MacBinary, base64-framed
+        mb = macbinary.decode(blob)
+        wrote_macbinary = (format == "macbinary"
+                           or (format == "auto" and len(mb["rsrc"]) > 0))
+        if wrote_macbinary:
+            with open(host_path, "wb") as f:
+                f.write(blob)
+        else:
+            with open(host_path, "wb") as f:
+                f.write(mb["data"])
+        return {
+            "success": True,
+            "path": mac_path,
+            "host_path": host_path,
+            "format": "macbinary" if wrote_macbinary else "data",
+            "data_bytes": len(mb["data"]),
+            "resource_bytes": len(mb["rsrc"]),
+            "type": mb["type"].decode("mac_roman", errors="replace"),
+            "creator": mb["creator"].decode("mac_roman", errors="replace"),
+        }
+    except Exception as e:
+        return {"success": False, "path": mac_path, "error": str(e)}
+
+
 # Tool dispatcher
 TOOL_HANDLERS = {
     "mpw_execute": mpw_execute,
@@ -396,7 +541,9 @@ TOOL_HANDLERS = {
     "mac_list_files": mac_list_files,
     "mac_compile": mac_compile,
     "mac_screenshot": mac_screenshot,
-    "launch_app": launch_app
+    "launch_app": launch_app,
+    "mac_put_file": mac_put_file,
+    "mac_get_file": mac_get_file,
 }
 
 

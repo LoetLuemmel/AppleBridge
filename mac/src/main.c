@@ -899,6 +899,27 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         return true;
     }
 
+    /* WRITEFILE: verb: receive a file (both forks + type/creator) and stream it
+     * to disk. Binary-clean, length-framed, not COMMAND-wrapped. */
+    if (strncmp(request, PROTO_WRITEFILE, strlen(PROTO_WRITEFILE)) == 0) {
+        Boolean ok;
+        SetActivity("WRITEFILE");
+        ok = WriteFileVerb(endpoint, request, requestLen);
+        gLastTX = TickCount();
+        gTXCount++;
+        return ok;
+    }
+
+    /* READFILE: verb: stream a file's forks back to the host. */
+    if (strncmp(request, PROTO_READFILE, strlen(PROTO_READFILE)) == 0) {
+        Boolean ok;
+        SetActivity("READFILE");
+        ok = ReadFileVerb(endpoint, request, requestLen);
+        gLastTX = TickCount();
+        gTXCount++;
+        return ok;
+    }
+
     /* Parse command */
     result = ParseCommand(request, command, &commandLength);
     if (result != kBridgeNoErr) {
