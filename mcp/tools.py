@@ -251,6 +251,36 @@ will come back empty; daemon not connected => the bridge/emulator is down.""",
         "inputSchema": {"type": "object", "properties": {}, "required": []}
     },
     {
+        "name": "mac_build",
+        "description": """Build a 68K project on the Mac in ONE verified call.
+
+Folds the multi-step MPW recipe — SC compile (each .c, stderr via the safe '≥'
+redirect) -> Link -> optional Rez -> SetFile -> verify-by-artifact — into a
+single tool that returns structured pass/fail and parsed diagnostics. Verifies
+by checking the artifact exists (a long Link can return -1712 yet still succeed),
+not by status code.
+
+project_dir is a Mac path to the folder holding the .c sources (trailing ':'
+optional). By default every .c in it is compiled; pass `sources` to choose. On
+failure the result names the stage (compile/link/rez) and the offending file's
+errors. Set `run` to launch the result (foreground) afterwards.""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_dir": {"type": "string", "description": "Mac path to the project folder (holds the .c files)"},
+                "app_name": {"type": "string", "description": "Output app name (default: last path component of project_dir)"},
+                "sources": {"type": "array", "items": {"type": "string"}, "description": "Specific .c files to compile (names or full paths); default = all .c in project_dir"},
+                "libraries": {"type": "array", "items": {"type": "string"}, "description": "Link libraries (default: Interface.o, MacRuntime.o, StdCLib.o)"},
+                "rez_file": {"type": "string", "description": "Optional .r resource file to Rez onto the output (e.g. a SIZE resource)"},
+                "file_type": {"type": "string", "description": "4-char file type for SetFile (default APPL)"},
+                "creator": {"type": "string", "description": "4-char creator for SetFile (default ????)"},
+                "model": {"type": "string", "description": "Link memory model (default far)"},
+                "run": {"type": "boolean", "description": "Launch the built app (foreground) after a successful build"}
+            },
+            "required": ["project_dir"]
+        }
+    },
+    {
         "name": "mac_put_file",
         "description": """Copy a BINARY file from the host to the classic Mac, preserving both forks.
 
@@ -688,6 +718,123 @@ def mac_status() -> Dict[str, Any]:
     }
 
 
+# Long enough for SC/Link round-trips (host gives these LONG_TIMEOUT=240s daemon-side).
+_BUILD_STEP_TIMEOUT = 250.0
+
+
+def mac_build(project_dir: str, app_name: Optional[str] = None,
+              sources: Optional[list] = None, libraries: Optional[list] = None,
+              rez_file: Optional[str] = None, file_type: str = "APPL",
+              creator: str = "????", model: str = "far",
+              run: bool = False) -> Dict[str, Any]:
+    """One-shot verified build: SC -> Link -> (Rez) -> SetFile -> verify-by-artifact."""
+    conn = get_connection()
+    if not conn.is_connected():
+        return {"success": False, "stage": "connect", "error": "Mac not connected"}
+
+    if not project_dir.endswith(":"):
+        project_dir += ":"
+    if not app_name:
+        parts = project_dir.rstrip(":").split(":")
+        app_name = parts[-1] if parts and parts[-1] else "App"
+
+    def run_cmd(c, timeout=30.0):
+        try:
+            _status, out, _err = conn.send_command(c, timeout=timeout)
+            return out or ""
+        except Exception as e:
+            return f"__SENDERR__:{e}"
+
+    def exists(path):
+        # ToolServer's `Exists` echoes the path to stdout when the file is there,
+        # and "NoDir:-1701" (empty stdout) when it is not.
+        r = run_cmd(f"Exists {path}", timeout=30.0)
+        return bool(r.strip()) and "NoDir" not in r and "__SENDERR__" not in r
+
+    def diag_lines(text):
+        return [l.strip() for l in text.replace("\r", "\n").split("\n") if l.strip()]
+
+    # 1. Discover sources
+    if not sources:
+        listing = run_cmd(f"Files {project_dir}", timeout=30.0)
+        toks = listing.replace("\r", " ").replace("\n", " ").split()
+        sources = [t for t in toks if t.endswith(".c")]
+    if not sources:
+        return {"success": False, "stage": "discover",
+                "error": f"No .c sources found in {project_dir}", "project_dir": project_dir}
+
+    err_file = f"{project_dir}build.err"
+
+    # 2. Compile each source (≥ redirect for stderr; verify the .o by Exists)
+    compile_results = []
+    obj_files = []
+    for c_file in sources:
+        src = c_file if ":" in c_file else f"{project_dir}{c_file}"
+        obj = (src[:-2] + ".o") if src.endswith(".c") else (src + ".o")
+        run_cmd(f"Delete -i {obj}", timeout=30.0)   # clean slate: stale .o must not mask a failure
+        run_cmd(f"SC {src} -o {obj} ≥ {err_file}", timeout=_BUILD_STEP_TIMEOUT)
+        diag = diag_lines(run_cmd(f"Catenate {err_file}", timeout=30.0))
+        ok = exists(obj)
+        compile_results.append({
+            "file": c_file,
+            "ok": ok,
+            "warnings": [l for l in diag if "Warning" in l],
+            "errors": [l for l in diag if "Error" in l],
+        })
+        if ok:
+            obj_files.append(obj)
+
+    if any(not r["ok"] for r in compile_results):
+        return {"success": False, "stage": "compile", "app_path": None,
+                "sources": sources, "compile": compile_results}
+
+    # 3. Link (verify the artifact, not the status — long links return -1712 yet succeed)
+    app_path = f"{project_dir}{app_name}"
+    libs = libraries or ['"{Libraries}Interface.o"', '"{Libraries}MacRuntime.o"',
+                         '"{CLibraries}StdCLib.o"']
+    link_cmd = (f"Link -model {model} {' '.join(obj_files)} {' '.join(libs)} "
+                f"-o {app_path} ≥ {err_file}")
+    run_cmd(f"Delete -i {app_path}", timeout=30.0)   # so Exists can't see a stale artifact
+    run_cmd(link_cmd, timeout=_BUILD_STEP_TIMEOUT)
+    link_diag = diag_lines(run_cmd(f"Catenate {err_file}", timeout=30.0))
+    # "Error 52: File was not needed for link" is a benign over-specified-lib warning;
+    # everything else the linker writes (undefined entry, "Errors prevented...") is fatal.
+    link_errs = [l for l in link_diag if "Error" in l and "Error 52" not in l]
+    # Verify by artifact (a long link returns -1712 yet succeeds, leaving the file
+    # and an empty err) AND by the absence of fatal linker diagnostics (a failed
+    # link can leave a partial file).
+    if (not exists(app_path)) or link_errs:
+        return {"success": False, "stage": "link", "app_path": None,
+                "sources": sources, "compile": compile_results,
+                "link": {"ok": False, "errors": link_errs}}
+
+    result = {
+        "success": True, "stage": "done", "app_path": app_path,
+        "sources": sources, "compile": compile_results,
+        "link": {"ok": True, "errors": link_errs},
+    }
+
+    # 4. Optional Rez (e.g. a SIZE resource for an Apple-Event-aware app)
+    if rez_file:
+        run_cmd(f"Rez -a {rez_file} -o {app_path} ≥ {err_file}", timeout=120.0)
+        rez_errs = [l for l in diag_lines(run_cmd(f"Catenate {err_file}", timeout=30.0))
+                    if "Error" in l]
+        result["rez"] = {"ok": not rez_errs, "errors": rez_errs}
+        if rez_errs:
+            result["success"] = False
+            result["stage"] = "rez"
+            return result
+
+    # 5. SetFile (type/creator) so the artifact is launchable
+    run_cmd(f"SetFile -t {file_type} -c '{creator}' {app_path}", timeout=30.0)
+
+    # 6. Optional run (foreground)
+    if run:
+        result["run"] = launch_app(app_path)
+
+    return result
+
+
 def mac_put_file(host_path: str, mac_path: str, type: Optional[str] = None,
                  creator: Optional[str] = None,
                  resource_path: Optional[str] = None) -> Dict[str, Any]:
@@ -848,6 +995,7 @@ TOOL_HANDLERS = {
     "mac_key": mac_key,
     "mac_click": mac_click,
     "mac_status": mac_status,
+    "mac_build": mac_build,
     "mac_put_file": mac_put_file,
     "mac_get_file": mac_get_file,
     "mac_restart_toolserver": mac_restart_toolserver,
