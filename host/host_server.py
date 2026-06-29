@@ -30,6 +30,7 @@ import sys
 import time
 
 import screenshot_decode  # stdlib-only raw-pixmap -> PNG (runs under /usr/bin/python3)
+import macbinary          # stdlib-only fork split/join for READFILE packaging
 
 HOST_INTERFACE = "192.168.3.154"   # single source of truth; daemon connects here
 HOST_PORT = 9000                   # Mac daemon connects to this
@@ -392,6 +393,125 @@ class AppleBridgeServer:
             except OSError:
                 pass
 
+    def put_file(self, mac_path, type_bytes, creator_bytes, data, rsrc):
+        """WRITEFILE: stream a file (both forks + type/creator) to the Mac.
+
+        Sends the binary-clean, length-framed daemon frame:
+          WRITEFILE:<pathLen>:<typeHex8>:<creatorHex8>:<dataLen>:<rsrcLen>\\n
+                    <pathBytes><dataBytes><rsrcBytes>
+        and returns the daemon's STATUS reply string. The fork bytes go out as
+        RAW bytes (NOT through the lossy mac_roman encode used for commands)."""
+        if not self.connected or not self.client_socket:
+            return None
+        if not self._drain():
+            self._mark_disconnected("drain detected closed socket")
+            return None
+        path_bytes = mac_path.encode("mac_roman", errors="replace")
+        type_hex = bytes(type_bytes[:4].ljust(4, b" ")).hex()
+        creator_hex = bytes(creator_bytes[:4].ljust(4, b" ")).hex()
+        header = (f"WRITEFILE:{len(path_bytes)}:{type_hex}:{creator_hex}:"
+                  f"{len(data)}:{len(rsrc)}\n").encode("ascii")
+        try:
+            self.client_socket.sendall(header + path_bytes + data + rsrc)
+        except OSError as e:
+            self._mark_disconnected(f"send failed: {e}")
+            return None
+        log(f"WRITEFILE {mac_path!r} data={len(data)}B rsrc={len(rsrc)}B")
+        resp = b""
+        try:
+            self.client_socket.settimeout(LONG_TIMEOUT)
+            while True:
+                chunk = self.client_socket.recv(4096)
+                if not chunk:
+                    self._mark_disconnected("recv 0 during WRITEFILE")
+                    break
+                resp += chunk
+                if b"\r\r" in resp or b"\n\n" in resp or b"\r\n\r\n" in resp:
+                    break
+        except socket.timeout:
+            log("WRITEFILE reply timeout")
+        except OSError as e:
+            self._mark_disconnected(f"recv error: {e}")
+        finally:
+            try:
+                if self.client_socket:
+                    self.client_socket.settimeout(None)
+            except OSError:
+                pass
+        return resp.decode("mac_roman", errors="replace") if resp else None
+
+    def get_file(self, mac_path):
+        """READFILE: pull a file's forks back. Returns (type, creator, data, rsrc)
+        or None on failure / error frame."""
+        if not self.connected or not self.client_socket:
+            return None
+        if not self._drain():
+            self._mark_disconnected("drain detected closed socket")
+            return None
+        try:
+            self.client_socket.sendall(("READFILE:" + mac_path).encode("mac_roman",
+                                                                       errors="replace"))
+        except OSError as e:
+            self._mark_disconnected(f"send failed: {e}")
+            return None
+
+        buf = bytearray()
+
+        def _fill():
+            chunk = self.client_socket.recv(65536)
+            if not chunk:
+                raise ConnectionError("peer closed during READFILE")
+            buf.extend(chunk)
+
+        def _read_line():
+            while True:
+                cr = buf.find(b"\r")
+                lf = buf.find(b"\n")
+                idx = min([x for x in (cr, lf) if x >= 0], default=-1)
+                if idx >= 0:
+                    line = bytes(buf[:idx])
+                    del buf[:idx + 1]
+                    return line
+                _fill()
+
+        def _read_exact(n):
+            while len(buf) < n:
+                _fill()
+            data = bytes(buf[:n])
+            del buf[:n]
+            return data
+
+        try:
+            self.client_socket.settimeout(LONG_TIMEOUT)
+            header = _read_line()
+            if not header.startswith(b"FILE:"):
+                log(f"READFILE: non-FILE response {header[:64]!r}")
+                return None
+            parts = header.split(b":")
+            if len(parts) < 5:
+                log(f"READFILE: malformed header {header[:64]!r}")
+                return None
+            type_bytes = bytes.fromhex(parts[1].decode("ascii"))
+            creator_bytes = bytes.fromhex(parts[2].decode("ascii"))
+            data_len = int(parts[3])
+            rsrc_len = int(parts[4])
+            data = _read_exact(data_len)
+            rsrc = _read_exact(rsrc_len)
+            log(f"READFILE {mac_path!r} data={data_len}B rsrc={rsrc_len}B")
+            return (type_bytes, creator_bytes, data, rsrc)
+        except (socket.timeout, ValueError) as e:
+            log(f"READFILE read error: {e}")
+            return None
+        except (OSError, ConnectionError) as e:
+            self._mark_disconnected(f"recv error during READFILE: {e}")
+            return None
+        finally:
+            try:
+                if self.client_socket:
+                    self.client_socket.settimeout(None)
+            except OSError:
+                pass
+
     def close(self):
         if self.client_socket:
             try:
@@ -488,7 +608,37 @@ def run_control_server(server):
                             log(f"screenshot -> {len(png)}B PNG ({len(b64)}B base64)")
                         else:
                             out = "STATUS:-1\rSTDOUT:0\rSTDERR:17\rScreenshot failed\r\r"
-                    elif (cmd == "PING" or cmd == "QUITDAEMON"
+                    elif cmd.startswith("WRITEFILE:"):
+                        # WRITEFILE:<pathB64>:<typeHex8>:<creatorHex8>:<dataB64>:<rsrcB64>
+                        # (every variable field base64/hex -> colon-free, so split is safe)
+                        try:
+                            f = cmd.split(":")
+                            mac_path = base64.b64decode(f[1]).decode("mac_roman",
+                                                                     errors="replace")
+                            type_b = bytes.fromhex(f[2])
+                            creator_b = bytes.fromhex(f[3])
+                            data = base64.b64decode(f[4]) if f[4] else b""
+                            rsrc = base64.b64decode(f[5]) if len(f) > 5 and f[5] else b""
+                            resp = server.put_file(mac_path, type_b, creator_b, data, rsrc)
+                            out = resp if resp is not None else "No response"
+                        except Exception as e:
+                            log(f"WRITEFILE parse/send error: {e}")
+                            msg = str(e)
+                            out = f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(msg)}\r{msg}\r\r"
+                    elif cmd.startswith("READFILE:"):
+                        mac_path = cmd[len("READFILE:"):]
+                        got = server.get_file(mac_path)
+                        if got:
+                            type_b, creator_b, data, rsrc = got
+                            leaf = mac_path.rsplit(":", 1)[-1] or "File"
+                            blob = macbinary.encode(data, rsrc, name=leaf,
+                                                    type_=type_b, creator=creator_b)
+                            b64 = base64.b64encode(blob).decode("ascii")
+                            out = f"STATUS:0\rSTDOUT:{len(b64)}\r{b64}\rSTDERR:0\r\r"
+                            log(f"READFILE -> {len(blob)}B MacBinary ({len(b64)}B base64)")
+                        else:
+                            out = "STATUS:-1\rSTDOUT:0\rSTDERR:14\rREADFILE failed\r\r"
+                    elif (cmd == "PING" or cmd == "QUITDAEMON" or cmd == "REBOOT"
                           or cmd.startswith("LAUNCH:") or cmd.startswith("QUIT:")):
                         log(f"verb: {cmd[:60]!r}")
                         resp = server.send_raw(cmd)   # raw, not COMMAND-wrapped

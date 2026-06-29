@@ -18,6 +18,8 @@
 #include <ToolUtils.h>
 #include <AppleEvents.h>
 #include <Gestalt.h>
+#include <Shutdown.h>
+#include <OSUtils.h>
 #include <prefs.h>
 
 QDGlobals qd;
@@ -769,6 +771,34 @@ static OSErr LaunchAppAtPath(const char *macPath)
 }
 
 /*
+ * Trigger a clean System 7 restart via the Shutdown Manager, in-process. Used by
+ * the REBOOT verb so the host can re-activate a freshly swapped daemon without a
+ * manual reboot. A full OS restart is safe; only quitting the daemon while the
+ * OS keeps running (QUITDAEMON) trips the host OT-teardown crash.
+ *
+ * History: this used to send the Finder ('MACS') a 'rest' Apple Event, but a
+ * faceless background app cannot reliably make the Finder honour it — verified
+ * 2026-06-29 the guest never restarted (ToolServer kept answering through a
+ * REBOOT). ShutDwnStart() runs the shutdown procs then restarts the machine
+ * directly, with no dependency on the Finder. It does not return if it fires.
+ */
+static OSErr RebootMac(void)
+{
+    unsigned long dummy;
+
+    /* The REBOOT ack was already SendData()'d by the caller; give Open Transport
+     * a moment to flush it to the host before the machine restarts (otherwise the
+     * host may never see that the reboot fired). ~0.5s (30 ticks). */
+    SystemTask();
+    Delay(30L, &dummy);
+
+    /* NOTE: do NOT quit ToolServer first — if the restart somehow doesn't fire we
+     * want the bridge still usable. ShutDwnStart tears everything down itself. */
+    ShutDwnStart();          /* restarts the machine; does not return on success */
+    return noErr;            /* only reached if the restart failed to fire */
+}
+
+/*
  * Process a request from the host
  */
 /* Returns true if the connection is still healthy, false if a response send
@@ -837,6 +867,19 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         return true;
     }
 
+    /* REBOOT verb: clean System 7 restart (re-activates a freshly swapped
+     * daemon). Ack first, then trigger the restart; the connection then drops
+     * and the watchdog brings the new daemon up after the reboot. */
+    if (strncmp(request, "REBOOT", 6) == 0) {
+        strcpy(responseBuffer, "STATUS:0\rSTDOUT:6\rReboot\rSTDERR:0\r\r");
+        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        gLastTX = TickCount();
+        gTXCount++;
+        SetActivity("REBOOT");
+        RebootMac();
+        return true;
+    }
+
     /* LAUNCH:<MacPath> verb: bring a GUI app to the foreground */
     if (strncmp(request, "LAUNCH:", 7) == 0) {
         char launchPath[MAX_COMMAND_LENGTH];
@@ -897,6 +940,27 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         gLastTX = TickCount();
         gTXCount++;
         return true;
+    }
+
+    /* WRITEFILE: verb: receive a file (both forks + type/creator) and stream it
+     * to disk. Binary-clean, length-framed, not COMMAND-wrapped. */
+    if (strncmp(request, PROTO_WRITEFILE, strlen(PROTO_WRITEFILE)) == 0) {
+        Boolean ok;
+        SetActivity("WRITEFILE");
+        ok = WriteFileVerb(endpoint, request, requestLen);
+        gLastTX = TickCount();
+        gTXCount++;
+        return ok;
+    }
+
+    /* READFILE: verb: stream a file's forks back to the host. */
+    if (strncmp(request, PROTO_READFILE, strlen(PROTO_READFILE)) == 0) {
+        Boolean ok;
+        SetActivity("READFILE");
+        ok = ReadFileVerb(endpoint, request, requestLen);
+        gLastTX = TickCount();
+        gTXCount++;
+        return ok;
     }
 
     /* Parse command */

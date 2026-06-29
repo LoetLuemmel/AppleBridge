@@ -24,6 +24,7 @@
 #define MAX_COMMAND_LENGTH 8192
 #define MAX_RESPONSE_LENGTH 65536          /* (legacy) — no longer stack-allocated */
 #define MAX_DYNAMIC_RESPONSE (4L*1024L*1024L) /* 4 MB cap for command stdout (heap) */
+#define MAX_FILE_BYTES (8L*1024L*1024L)    /* per-fork cap for WRITEFILE/READFILE (streamed, not buffered) */
 #define SOCKET_BACKLOG 5
 #define RESP_SCRATCH 128                   /* small fixed verb/error replies; replaces the 64 KB stack frame */
 #define AE_SCRIPT_TIMEOUT (18000L)         /* ticks (~5 min) for the 'dosc' AESend; kAEDefaultTimeout (~60 s) gave spurious -1712 on long Link/SC */
@@ -35,6 +36,9 @@
 #define PROTO_STDERR "STDERR:"
 #define PROTO_SCREENSHOT "SCREENSHOT"
 #define PROTO_IMAGE "IMAGE:"
+#define PROTO_WRITEFILE "WRITEFILE:"   /* host->daemon: write both forks to disk */
+#define PROTO_READFILE "READFILE:"     /* daemon->host: stream both forks back */
+#define PROTO_FILE "FILE:"             /* READFILE response header */
 
 /* Result codes */
 typedef enum {
@@ -103,6 +107,12 @@ OSErr QuitAppBySignature(OSType signature);
 /* Screenshot capture */
 BridgeResult CaptureScreenshot(ScreenshotData *screenshot);
 void CleanupScreenshot(ScreenshotData *screenshot);
+
+/* Fork-aware binary file transfer (fileio.c). Each returns true if the
+ * connection is still healthy, false if a transfer desynced the wire (the
+ * caller must then drop + reconnect, like ProcessRequest's other verbs). */
+Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen);
+Boolean ReadFileVerb(EndpointRef endpoint, char *request, long requestLen);
 
 /* Utility functions */
 void LogMessage(const char *message);

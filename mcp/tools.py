@@ -5,9 +5,25 @@ Tool implementations for classic Mac development.
 
 import base64
 import os
+import sys
 from typing import Any, Dict, List, Optional
 
 from .mac_connection import get_connection
+
+# host/ holds the stdlib-only macbinary helper; make it importable regardless of
+# how the MCP server is launched (mirrors how host_server.py imports it flat).
+_HOST_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "host")
+if _HOST_DIR not in sys.path:
+    sys.path.insert(0, _HOST_DIR)
+import macbinary  # noqa: E402
+
+
+def _ostype(value, default="????") -> bytes:
+    """Coerce a 4-char type/creator string to exactly 4 space-padded bytes."""
+    s = value if value else default
+    if isinstance(s, bytes):
+        return s[:4].ljust(4, b" ")
+    return (s.encode("mac_roman", errors="replace") + b"    ")[:4]
 
 # Tool definitions for MCP
 TOOLS = [
@@ -151,6 +167,99 @@ Path uses : separator and points at the application file, e.g.
                 }
             },
             "required": ["path"]
+        }
+    },
+    {
+        "name": "mac_put_file",
+        "description": """Copy a BINARY file from the host to the classic Mac, preserving both forks.
+
+Unlike mac_write_file (text only, via Echo), this streams a real binary file
+including its RESOURCE fork — so it can deploy a runnable 68K application (whose
+CODE lives in the resource fork), an image, or any resource file.
+
+If host_path is a MacBinary file (e.g. a Retro68 .bin), its forks + type/creator
+are used automatically. Otherwise the host file is the data fork; pass type and
+creator (4-char codes, e.g. APPL/Add5) to make a launchable app, and an optional
+resource_path for a separate resource fork.""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "host_path": {"type": "string", "description": "Path to the file on the host"},
+                "mac_path": {"type": "string", "description": "Destination Mac path (: separator)"},
+                "type": {"type": "string", "description": "4-char file type (e.g. APPL, TEXT). Ignored if host_path is MacBinary."},
+                "creator": {"type": "string", "description": "4-char creator code (e.g. Add5). Ignored if host_path is MacBinary."},
+                "resource_path": {"type": "string", "description": "Optional host file whose bytes become the resource fork (flat-input case)."}
+            },
+            "required": ["host_path", "mac_path"]
+        }
+    },
+    {
+        "name": "mac_get_file",
+        "description": """Copy a file FROM the classic Mac to the host, preserving both forks.
+
+Pulls the data fork, resource fork, and type/creator. By default writes the data
+fork to host_path and, when a resource fork is present, also writes a re-deployable
+MacBinary alongside it (format='macbinary' forces a .bin, format='data' forces raw
+data-fork only).""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mac_path": {"type": "string", "description": "Source Mac path (: separator)"},
+                "host_path": {"type": "string", "description": "Destination path on the host"},
+                "format": {"type": "string", "description": "auto | data | macbinary (default: auto)"}
+            },
+            "required": ["mac_path", "host_path"]
+        }
+    },
+    {
+        "name": "mac_restart_toolserver",
+        "description": """(Re)launch ToolServer on the classic Mac.
+
+ToolServer is what actually executes mpw_execute / mac_compile commands; if it
+crashes or is quit, commands come back empty or as 'no-ToolServer/MPW' and the
+bridge looks hung. This relaunches it via the LAUNCH verb (no ToolServer needed
+to do so) and verifies with an Echo. Default path MeinMac:MPW:ToolServer.""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Mac path to ToolServer (default MeinMac:MPW:ToolServer)"}
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "mac_reboot",
+        "description": """Restart the emulated classic Mac (System 7).
+
+Sends the Finder restart Apple Event — the programmatic equivalent of
+Special > Restart. Use it to re-activate a freshly built/swapped daemon without a
+manual reboot. The bridge connection drops; the watchdog brings the daemon back
+up on boot. After calling this, poll mpw_execute (e.g. Echo) until it answers
+again before continuing.""",
+        "inputSchema": {"type": "object", "properties": {}, "required": []}
+    },
+    {
+        "name": "run_applescript",
+        "description": """Run AppleScript on the HOST (macOS) via osascript.
+
+This drives the *host*, not the guest — most usefully the BasiliskII emulator
+window: e.g. type the AppleShare password at boot (keystroke "pit" then Return),
+raise/activate the window, etc. It does NOT run AppleScript inside System 7.
+First use may require Accessibility/Automation permission for the MCP process.
+
+Example to type the boot password:
+  tell application "System Events"
+    set frontmost of process "BasiliskII" to true
+    delay 0.5
+    keystroke "pit"
+    key code 36
+  end tell""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "script": {"type": "string", "description": "AppleScript source to run on the host"}
+            },
+            "required": ["script"]
         }
     }
 ]
@@ -388,6 +497,153 @@ def launch_app(path: str) -> Dict[str, Any]:
         }
 
 
+def mac_put_file(host_path: str, mac_path: str, type: Optional[str] = None,
+                 creator: Optional[str] = None,
+                 resource_path: Optional[str] = None) -> Dict[str, Any]:
+    """Send a binary file (both forks) to the Mac via the WRITEFILE verb."""
+    try:
+        with open(host_path, "rb") as f:
+            blob = f.read()
+
+        rsrc = b""
+        if macbinary.looks_like_macbinary(blob):
+            mb = macbinary.decode(blob)
+            data = mb["data"]
+            rsrc = mb["rsrc"]
+            type_b = _ostype(type) if type else mb["type"]
+            creator_b = _ostype(creator) if creator else mb["creator"]
+            source = "macbinary"
+        else:
+            data = blob
+            if resource_path:
+                with open(resource_path, "rb") as rf:
+                    rsrc = rf.read()
+            type_b = _ostype(type)
+            creator_b = _ostype(creator)
+            source = "flat"
+
+        conn = get_connection()
+        if not conn.is_connected():
+            return {"success": False, "path": mac_path, "error": "Mac not connected"}
+
+        cmd = "WRITEFILE:" + ":".join((
+            base64.b64encode(mac_path.encode("mac_roman", errors="replace")).decode("ascii"),
+            type_b.hex(),
+            creator_b.hex(),
+            base64.b64encode(data).decode("ascii"),
+            base64.b64encode(rsrc).decode("ascii"),
+        ))
+        status, stdout, stderr = conn.send_command(cmd, timeout=240.0)
+        return {
+            "success": status == 0,
+            "path": mac_path,
+            "source": source,
+            "data_bytes": len(data),
+            "resource_bytes": len(rsrc),
+            "type": type_b.decode("mac_roman", errors="replace"),
+            "creator": creator_b.decode("mac_roman", errors="replace"),
+            "error": stderr if status != 0 else None,
+        }
+    except Exception as e:
+        return {"success": False, "path": mac_path, "error": str(e)}
+
+
+def mac_get_file(mac_path: str, host_path: str, format: str = "auto") -> Dict[str, Any]:
+    """Pull a file (both forks) from the Mac via the READFILE verb."""
+    try:
+        conn = get_connection()
+        if not conn.is_connected():
+            return {"success": False, "path": mac_path, "error": "Mac not connected"}
+
+        status, stdout, stderr = conn.send_command("READFILE:" + mac_path, timeout=240.0)
+        if status != 0:
+            return {"success": False, "path": mac_path,
+                    "error": stderr or f"READFILE failed (status {status})"}
+
+        blob = base64.b64decode(stdout)        # host returns a MacBinary, base64-framed
+        mb = macbinary.decode(blob)
+        wrote_macbinary = (format == "macbinary"
+                           or (format == "auto" and len(mb["rsrc"]) > 0))
+        if wrote_macbinary:
+            with open(host_path, "wb") as f:
+                f.write(blob)
+        else:
+            with open(host_path, "wb") as f:
+                f.write(mb["data"])
+        return {
+            "success": True,
+            "path": mac_path,
+            "host_path": host_path,
+            "format": "macbinary" if wrote_macbinary else "data",
+            "data_bytes": len(mb["data"]),
+            "resource_bytes": len(mb["rsrc"]),
+            "type": mb["type"].decode("mac_roman", errors="replace"),
+            "creator": mb["creator"].decode("mac_roman", errors="replace"),
+        }
+    except Exception as e:
+        return {"success": False, "path": mac_path, "error": str(e)}
+
+
+def mac_restart_toolserver(path: str = "MeinMac:MPW:ToolServer") -> Dict[str, Any]:
+    """(Re)launch ToolServer via the LAUNCH verb, then verify with an Echo."""
+    import time
+    try:
+        conn = get_connection()
+        if not conn.is_connected():
+            return {"success": False, "error": "Mac not connected"}
+        status, stdout, stderr = conn.send_command("LAUNCH:" + path, timeout=20.0)
+        launched = (status == 0 and "Launched" in (stdout or ""))
+        verified = False
+        if launched:
+            for _ in range(8):
+                time.sleep(3)
+                _, out, _e = conn.send_command("Echo TSCHECK", timeout=15.0)
+                if "TSCHECK" in (out or "") and "no-ToolServer" not in (out or ""):
+                    verified = True
+                    break
+        return {
+            "success": launched and verified,
+            "launched": launched,
+            "verified": verified,
+            "path": path,
+            "error": (None if launched else (stderr or "LAUNCH failed")),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def run_applescript(script: str) -> Dict[str, Any]:
+    """Run AppleScript on the host (macOS) via osascript (reads from stdin)."""
+    import subprocess
+    try:
+        p = subprocess.run(["osascript", "-"], input=script,
+                           capture_output=True, text=True, timeout=30)
+        return {
+            "success": p.returncode == 0,
+            "stdout": p.stdout.strip(),
+            "stderr": p.stderr.strip() or None,
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def mac_reboot() -> Dict[str, Any]:
+    """Restart the emulated Mac via the daemon's REBOOT verb."""
+    try:
+        conn = get_connection()
+        if not conn.is_connected():
+            return {"success": False, "error": "Mac not connected"}
+        status, stdout, stderr = conn.send_command("REBOOT", timeout=15.0)
+        return {
+            "success": True,
+            "message": stdout or "reboot triggered",
+            "note": "Mac is restarting; poll mpw_execute until it answers again.",
+        }
+    except Exception as e:
+        # The connection dropping mid-restart is expected, not a failure.
+        return {"success": True, "note": f"reboot triggered (connection dropped: {e})"}
+
+
 # Tool dispatcher
 TOOL_HANDLERS = {
     "mpw_execute": mpw_execute,
@@ -396,7 +652,12 @@ TOOL_HANDLERS = {
     "mac_list_files": mac_list_files,
     "mac_compile": mac_compile,
     "mac_screenshot": mac_screenshot,
-    "launch_app": launch_app
+    "launch_app": launch_app,
+    "mac_put_file": mac_put_file,
+    "mac_get_file": mac_get_file,
+    "mac_restart_toolserver": mac_restart_toolserver,
+    "run_applescript": run_applescript,
+    "mac_reboot": mac_reboot,
 }
 
 
