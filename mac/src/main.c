@@ -18,6 +18,8 @@
 #include <ToolUtils.h>
 #include <AppleEvents.h>
 #include <Gestalt.h>
+#include <Shutdown.h>
+#include <OSUtils.h>
 #include <prefs.h>
 
 QDGlobals qd;
@@ -769,52 +771,31 @@ static OSErr LaunchAppAtPath(const char *macPath)
 }
 
 /*
- * Trigger a clean System 7 restart by sending the Finder ('MACS') the restart
- * Apple Event — the programmatic equivalent of Special > Restart. Used by the
- * REBOOT verb so the host can re-activate a freshly swapped daemon without a
+ * Trigger a clean System 7 restart via the Shutdown Manager, in-process. Used by
+ * the REBOOT verb so the host can re-activate a freshly swapped daemon without a
  * manual reboot. A full OS restart is safe; only quitting the daemon while the
  * OS keeps running (QUITDAEMON) trips the host OT-teardown crash.
+ *
+ * History: this used to send the Finder ('MACS') a 'rest' Apple Event, but a
+ * faceless background app cannot reliably make the Finder honour it — verified
+ * 2026-06-29 the guest never restarted (ToolServer kept answering through a
+ * REBOOT). ShutDwnStart() runs the shutdown procs then restarts the machine
+ * directly, with no dependency on the Finder. It does not return if it fires.
  */
 static OSErr RebootMac(void)
 {
-    ProcessSerialNumber psn;
-    ProcessInfoRec      info;
-    Str31               procName;
-    AEAddressDesc       target;
-    AppleEvent          event, reply;
-    OSErr               err;
-    Boolean             found = false;
+    unsigned long dummy;
 
-    /* NOTE: do NOT quit ToolServer here. Killing it ('MPSX') before the restart
-     * leaves the bridge unable to run commands if the restart doesn't fire — and
-     * the Finder 'rest' event below does NOT reliably trigger a restart from a
-     * background app. This whole restart mechanism needs rework (a working guest
-     * restart that doesn't depend on the Finder honouring 'rest'); until then,
-     * REBOOT is a no-op-ish stub and manual reboots remain the path. */
+    /* The REBOOT ack was already SendData()'d by the caller; give Open Transport
+     * a moment to flush it to the host before the machine restarts (otherwise the
+     * host may never see that the reboot fired). ~0.5s (30 ticks). */
+    SystemTask();
+    Delay(30L, &dummy);
 
-    /* Find the Finder by creator signature. */
-    psn.highLongOfPSN = 0;
-    psn.lowLongOfPSN  = kNoProcess;
-    while (GetNextProcess(&psn) == noErr) {
-        info.processInfoLength = sizeof(ProcessInfoRec);
-        info.processName       = procName;
-        info.processAppSpec    = NULL;
-        if (GetProcessInformation(&psn, &info) == noErr &&
-            info.processSignature == 'MACS') { found = true; break; }
-    }
-    if (!found) return -1;
-
-    err = AECreateDesc(typeProcessSerialNumber, &psn, sizeof(psn), &target);
-    if (err != noErr) return err;
-    err = AECreateAppleEvent(kCoreEventClass, 'rest', &target,
-                             kAutoGenerateReturnID, kAnyTransactionID, &event);
-    if (err == noErr) {
-        err = AESend(&event, &reply, kAENoReply | kAECanSwitchLayer,
-                     kAENormalPriority, kAEDefaultTimeout, NULL, NULL);
-        AEDisposeDesc(&event);
-    }
-    AEDisposeDesc(&target);
-    return err;
+    /* NOTE: do NOT quit ToolServer first — if the restart somehow doesn't fire we
+     * want the bridge still usable. ShutDwnStart tears everything down itself. */
+    ShutDwnStart();          /* restarts the machine; does not return on success */
+    return noErr;            /* only reached if the restart failed to fire */
 }
 
 /*
