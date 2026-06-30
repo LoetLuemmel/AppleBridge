@@ -523,13 +523,48 @@ def mac_read_file(path: str) -> Dict[str, Any]:
         }
 
 
+def _parse_listdir(stdout: str) -> list:
+    """Parse the daemon's native LISTDIR output: one tab-separated line per
+    entry — name<TAB>type<TAB>creator<TAB>size<TAB>modSecs (Mac epoch seconds)."""
+    import datetime
+    epoch = datetime.datetime(1904, 1, 1)
+    files = []
+    for line in stdout.replace('\r', '\n').split('\n'):
+        if not line:
+            continue
+        parts = line.split('\t')
+        if len(parts) < 5:
+            continue
+        name, ftype, creator, size, modsecs = parts[:5]
+        try:
+            modified = (epoch + datetime.timedelta(seconds=int(modsecs))).strftime("%Y-%m-%d %H:%M")
+        except (ValueError, OverflowError):
+            modified = modsecs
+        files.append({"name": name, "type": ftype, "creator": creator,
+                      "size": size, "modified": modified})
+    return files
+
+
 def mac_list_files(path: str) -> Dict[str, Any]:
-    """List files in Mac directory."""
+    """List files in a Mac directory.
+
+    Prefers the daemon's native LISTDIR verb (PBGetCatInfo — works with NO
+    ToolServer), and falls back to MPW ``Files -l`` via ToolServer if the daemon
+    is too old to support it.
+    """
     try:
         conn = get_connection()
         if not conn.is_connected():
             return {"success": False, "path": path, "error": "Mac not connected"}
 
+        # 1) Native path — no ToolServer needed. status==0 means the verb ran
+        #    (empty stdout = empty directory, still a valid success).
+        status, stdout, stderr = conn.send_command(f"LISTDIR:{path}", timeout=30.0)
+        if status == 0 and stdout is not None:
+            return {"success": True, "path": path,
+                    "files": _parse_listdir(stdout), "raw": stdout, "via": "listdir"}
+
+        # 2) Fallback — MPW Files -l through ToolServer.
         command = f"Files -l '{path}'"
         status, stdout, stderr = conn.send_command(command, timeout=30.0)
 
@@ -588,7 +623,8 @@ def mac_list_files(path: str) -> Dict[str, Any]:
                 "success": True,
                 "path": path,
                 "files": files,
-                "raw": stdout
+                "raw": stdout,
+                "via": "toolserver"
             }
         else:
             return {

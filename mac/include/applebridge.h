@@ -48,6 +48,7 @@
 #define PROTO_AESEND "AESEND:"         /* host->daemon: send an arbitrary Apple Event */
 #define PROTO_CLIPGET "CLIPGET"        /* host->daemon: read the guest TEXT scrap */
 #define PROTO_CLIPSET "CLIPSET:"       /* host->daemon: set the guest TEXT scrap */
+#define PROTO_LISTDIR "LISTDIR:"       /* host->daemon: native directory listing (no ToolServer) */
 
 /* Result codes */
 typedef enum {
@@ -120,6 +121,11 @@ void CleanupScreenshot(ScreenshotData *screenshot);
  * caller must then drop + reconnect, like ProcessRequest's other verbs). */
 Boolean WriteFileVerb(ABConn *conn, char *request, long requestLen);
 Boolean ReadFileVerb(ABConn *conn, char *request, long requestLen);
+
+/* Native directory listing (fileio.c): enumerate a folder with PBGetCatInfo and
+ * stream a tab-separated listing — works with NO ToolServer (unlike the MPW
+ * `Files` path). One line per entry: name<TAB>type<TAB>creator<TAB>size<TAB>modSecs<CR> */
+Boolean ListDirVerb(ABConn *conn, char *request, long requestLen);
 
 /* events.c -- synthetic input injection (drive the front GUI app). */
 OSErr InjectKey(short charCode, short keyCode);

@@ -395,3 +395,165 @@ Boolean ReadFileVerb(ABConn *conn, char *request, long requestLen)
 
     return ok;   /* false on a mid-stream send failure -> reconnect */
 }
+
+/* ---- LISTDIR: native directory listing (no ToolServer) ------------------ */
+
+static short LD_len(const char *s) { short n = 0; while (s[n]) n++; return n; }
+static void  LD_cpy(char *d, const char *s) { while (*s) *d++ = *s++; *d = '\0'; }
+static void  LD_zero(void *p, long n) { char *c = (char *)p; while (n-- > 0) *c++ = 0; }
+
+static void LD_CtoP(const char *c, Str255 p)
+{
+    short i = 0;
+    while (c[i] && i < 255) { p[i + 1] = c[i]; i++; }
+    p[0] = (unsigned char)i;
+}
+
+/* Append a signed decimal to buf at *pos (advances *pos). */
+static void LD_num(char *buf, short *pos, long n)
+{
+    char tmp[16];
+    short i = 0, j;
+    if (n == 0) { buf[(*pos)++] = '0'; return; }
+    if (n < 0)  { buf[(*pos)++] = '-'; n = -n; }
+    while (n > 0) { tmp[i++] = (char)('0' + (n % 10)); n /= 10; }
+    for (j = i - 1; j >= 0; j--) buf[(*pos)++] = tmp[j];
+}
+
+/* Append an UNSIGNED decimal (Mac dates are unsigned secs-since-1904, which
+ * exceed 2^31 from 2006 on, so a signed print would go negative). */
+static void LD_unum(char *buf, short *pos, unsigned long n)
+{
+    char tmp[16];
+    short i = 0, j;
+    if (n == 0) { buf[(*pos)++] = '0'; return; }
+    while (n > 0) { tmp[i++] = (char)('0' + (n % 10)); n /= 10; }
+    for (j = i - 1; j >= 0; j--) buf[(*pos)++] = tmp[j];
+}
+
+/*
+ * LISTDIR:<path> — enumerate a folder with PBGetCatInfo (File Manager only, no
+ * ToolServer) and stream a tab-separated listing back. One line per entry:
+ *     name<TAB>type<TAB>creator<TAB>dataSize<TAB>modSecs<CR>
+ * Directories report type "fldr", empty creator, size 0. The listing is built
+ * into a Handle and sent via the normal SendCommandResult framing (STATUS:0 +
+ * STDOUT), so the host's length-framed reader handles any size.
+ */
+Boolean ListDirVerb(ABConn *conn, char *request, long requestLen)
+{
+    char          path[256];
+    short          n, i;
+    Str255         pPath, nm;
+    FSSpec         spec;
+    CInfoPBRec     pb;
+    OSErr          err;
+    short          vRefNum;
+    long           dirID;
+    Handle         h;
+    CommandResult  res;
+
+    /* extract the path after the "LISTDIR:" prefix */
+    n = 0;
+    i = LD_len(PROTO_LISTDIR);
+    while (i < requestLen && request[i] != '\r' && request[i] != '\n'
+           && request[i] != '\0' && n < 255) {
+        path[n++] = request[i++];
+    }
+    path[n] = '\0';
+
+    res.exitCode = -1;
+    res.outData  = NULL;
+    res.outLen   = 0;
+    res.errData[0] = '\0';
+
+    LD_CtoP(path, pPath);
+    err = FSMakeFSSpec(0, 0, pPath, &spec);
+    if (err != noErr && err != fnfErr) {
+        LD_cpy(res.errData, "no such path");
+        SendCommandResult(conn, &res);
+        return true;
+    }
+
+    /* resolve the target folder's own dirID + vRefNum. Zero the PB first so no
+     * stale stack bytes leak into the call. */
+    BlockMoveData(spec.name, nm, spec.name[0] + 1);
+    LD_zero(&pb, sizeof(pb));
+    pb.dirInfo.ioNamePtr = nm;
+    pb.dirInfo.ioVRefNum = spec.vRefNum;
+    pb.dirInfo.ioFDirIndex = 0;
+    pb.dirInfo.ioDrDirID = spec.parID;
+    if (PBGetCatInfoSync(&pb) != noErr || !(pb.dirInfo.ioFlAttrib & 0x10)) {
+        LD_cpy(res.errData, "not a directory");
+        SendCommandResult(conn, &res);
+        return true;
+    }
+    vRefNum = pb.dirInfo.ioVRefNum;
+    dirID   = pb.dirInfo.ioDrDirID;
+
+    h = NewHandle(0);
+    if (h == NULL) {
+        LD_cpy(res.errData, "out of memory");
+        SendCommandResult(conn, &res);
+        return true;
+    }
+
+    for (i = 1; ; i++) {
+        char          line[300];
+        short         p = 0, k, nameLen;
+        Boolean       isDir;
+        OSType        t, c;
+        unsigned long mdat;
+
+        LD_zero(&pb, sizeof(pb));         /* fresh PB each call (no stale fields) */
+        pb.dirInfo.ioNamePtr = nm;
+        pb.dirInfo.ioVRefNum = vRefNum;
+        pb.dirInfo.ioFDirIndex = i;
+        pb.dirInfo.ioDrDirID = dirID;     /* the folder to enumerate */
+        if (PBGetCatInfoSync(&pb) != noErr) break;   /* past the last entry */
+
+        isDir   = (pb.hFileInfo.ioFlAttrib & 0x10) != 0;
+        nameLen = nm[0];
+        for (k = 0; k < nameLen; k++) line[p++] = nm[k + 1];   /* name */
+        line[p++] = '\t';
+        if (isDir) {
+            line[p++] = 'f'; line[p++] = 'l'; line[p++] = 'd'; line[p++] = 'r';
+            line[p++] = '\t';                  /* creator empty */
+            line[p++] = '\t';
+            line[p++] = '0';                   /* size 0 */
+            mdat = pb.dirInfo.ioDrMdDat;
+        } else {
+            t = pb.hFileInfo.ioFlFndrInfo.fdType;
+            c = pb.hFileInfo.ioFlFndrInfo.fdCreator;
+            line[p++] = (char)((t >> 24) & 0xFF); line[p++] = (char)((t >> 16) & 0xFF);
+            line[p++] = (char)((t >> 8) & 0xFF);  line[p++] = (char)(t & 0xFF);
+            line[p++] = '\t';
+            line[p++] = (char)((c >> 24) & 0xFF); line[p++] = (char)((c >> 16) & 0xFF);
+            line[p++] = (char)((c >> 8) & 0xFF);  line[p++] = (char)(c & 0xFF);
+            line[p++] = '\t';
+            /* total size = data fork + resource fork (68K apps keep their CODE
+             * in the resource fork, so the data fork is 0 — report both). */
+            LD_num(line, &p, pb.hFileInfo.ioFlLgLen + pb.hFileInfo.ioFlRLgLen);
+            mdat = pb.hFileInfo.ioFlMdDat;
+        }
+        line[p++] = '\t';
+        LD_unum(line, &p, mdat);
+        line[p++] = '\r';
+        {
+            long oldSize = GetHandleSize(h);
+            SetHandleSize(h, oldSize + p);
+            if (MemError() == noErr) {
+                HLock(h);
+                BlockMoveData(line, *h + oldSize, p);
+                HUnlock(h);
+            }
+        }
+    }
+
+    res.exitCode = 0;
+    res.outData  = h;
+    res.outLen   = GetHandleSize(h);
+    res.errData[0] = '\0';
+    SendCommandResult(conn, &res);
+    DisposeHandle(h);
+    return true;
+}

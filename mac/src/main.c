@@ -1288,6 +1288,16 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         return ok;
     }
 
+    /* LISTDIR: verb: native directory listing via PBGetCatInfo (no ToolServer). */
+    if (strncmp(request, PROTO_LISTDIR, strlen(PROTO_LISTDIR)) == 0) {
+        Boolean ok;
+        SetActivity("LISTDIR");
+        ok = ListDirVerb(conn, request, requestLen);
+        gLastTX = TickCount();
+        gTXCount++;
+        return ok;
+    }
+
     /* Parse command */
     result = ParseCommand(request, command, &commandLength);
     if (result != kBridgeNoErr) {
