@@ -28,6 +28,11 @@ typedef struct {
     char    ip[PREFS_IP_LEN];
     Boolean debug;
     short   transport;      /* kTransportOT (default) / kTransportMacTCP — NET= key */
+    char    home[PREFS_PATH_LEN];  /* HOME= : folder holding the AppleBridge binaries.
+                                    * Empty ⇒ fall back to the legacy hardcoded path, so
+                                    * pre-installer setups keep working. Set by the
+                                    * installer; read by the watchdog + config app to
+                                    * locate the daemon/watchdog wherever they live. */
     short   appCount;
     char    apps[PREFS_MAX_APPS][PREFS_PATH_LEN];
 } AppPrefs;

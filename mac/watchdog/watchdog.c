@@ -23,11 +23,13 @@
 #include <Processes.h>
 #include <Files.h>
 #include <AppleEvents.h>
+#include <prefs.h>       /* HOME= install location → relocatable daemon path */
+#include <mystring.h>
 
 QDGlobals qd;
 
 #define kDaemonCreator  'ABrg'
-#define DAEMON_PATH     "MeinMac:MPW:AppleBridge:bin:AppleBridge"
+#define DAEMON_PATH     "MeinMac:MPW:AppleBridge:bin:AppleBridge"   /* legacy fallback */
 #define kCheckInterval  180L     /* ticks between checks (~3 s at 60/s) */
 
 static Boolean gRunning = true;
@@ -37,6 +39,26 @@ static void CtoP(const char *c, Str255 p)
     short i = 0;
     while (c[i] && i < 255) { p[i + 1] = c[i]; i++; }
     p[0] = (unsigned char)i;
+}
+
+/* Build the daemon's path. With HOME set in the prefs the daemon lives at
+ * {HOME}AppleBridge wherever the installer put it; with no HOME (a pre-installer
+ * setup) fall back to the compiled-in dev path. HOME is a folder, so ensure a
+ * trailing ':' before appending the leaf. */
+static void DaemonPath(char *out)
+{
+    AppPrefs p;
+    PrefsDefaults(&p);
+    LoadPrefs(&p);
+    if (p.home[0]) {
+        short n;
+        mystrcpy(out, p.home);
+        n = (short)mystrlen(out);
+        if (n > 0 && out[n - 1] != ':') { out[n] = ':'; out[n + 1] = '\0'; }
+        mystrcat(out, "AppleBridge");
+    } else {
+        mystrcpy(out, DAEMON_PATH);
+    }
 }
 
 /* Is the daemon (creator 'ABrg') currently running? */
@@ -61,12 +83,14 @@ static Boolean DaemonRunning(void)
 /* Launch the daemon from its known path, staying in the background. */
 static OSErr LaunchDaemon(void)
 {
+    char   path[PREFS_PATH_LEN + 16];
     Str255 pPath;
     FSSpec spec;
     LaunchParamBlockRec lpb;
     OSErr err;
 
-    CtoP(DAEMON_PATH, pPath);
+    DaemonPath(path);
+    CtoP(path, pPath);
     err = FSMakeFSSpec(0, 0, pPath, &spec);
     if (err != noErr) return err;
 

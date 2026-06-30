@@ -1,0 +1,9 @@
+# Build the AppleBridge Installer (preflight + relocatable setup app).
+# Run inside MPW from the AppleBridge project folder (MeinMac:MPW:AppleBridge:),
+# after the daemon's :obj:prefs.c.o and :obj:mystring.c.o have been built.
+# installer.c goes in :src: alongside the other sources. Foreground app; reuses
+# prefs.c + mystring.c. NO Open Transport (it only probes the stack via Gestalt).
+SC -i :include: :src:installer.c -o :obj:installer.c.o
+Link -model far -o :bin:AppleBridgeInstaller :obj:installer.c.o :obj:prefs.c.o :obj:mystring.c.o "{CLibraries}StdCLib.o" "{Libraries}Interface.o" "{Libraries}MacRuntime.o"
+Rez installer_res.r -a -o :bin:AppleBridgeInstaller
+SetFile -t APPL -c 'ABis' :bin:AppleBridgeInstaller

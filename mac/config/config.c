@@ -85,11 +85,29 @@ static Boolean DaemonRunning(void)
 
 #define kStartupAliasName "\pAppleBridge Watchdog"
 
+/* Build {HOME}<leaf> when the prefs carry an install location (set by the
+ * installer), else the legacy compiled-in path — so autostart points at the
+ * watchdog wherever it actually lives. HOME is a folder; ensure a trailing ':'. */
+static void HomePath(const char *leaf, const char *legacy, char *out)
+{
+    if (gPrefs.home[0]) {
+        short n;
+        mystrcpy(out, gPrefs.home);
+        n = (short)mystrlen(out);
+        if (n > 0 && out[n - 1] != ':') { out[n] = ':'; out[n + 1] = '\0'; }
+        mystrcat(out, leaf);
+    } else {
+        mystrcpy(out, legacy);
+    }
+}
+
 /* FSSpec of the binary we want launched at boot — the watchdog. */
 static OSErr WatchdogSpec(FSSpec *spec)
 {
+    char   path[PREFS_PATH_LEN + 24];
     Str255 pPath;
-    CtoP(WATCHDOG_PATH, pPath);
+    HomePath("AppleBridgeWatchdog", WATCHDOG_PATH, path);
+    CtoP(path, pPath);
     return FSMakeFSSpec(0, 0, pPath, spec);
 }
 
