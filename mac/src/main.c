@@ -968,6 +968,32 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
 
     request[requestLen] = '\0';
 
+    /* --- Verbose visibility: one choke point ----------------------------
+     * Echo EVERY incoming verb to the console BODY, so the whole Surface-B
+     * surface (input injection, AE, clipboard, file I/O, listdir, launch,
+     * reboot, ...) leaves a persistent trace -- not just the ephemeral status
+     * bar, which only ever shows the LAST verb. Two carve-outs:
+     *   - COMMAND (MPW/ToolServer) has its own richer "> cmd" + per-line
+     *     output logging further down, so skip it here (avoid a double line).
+     *   - Heartbeats (PING / STAT) fire constantly, so log them as kind 1
+     *     (detail), which the console already hides unless gShowDetails is on
+     *     -- full coverage, no flood. Everything else is kind 2 (bold verb),
+     *     matching COMMAND's bold-input style. Logs the first request line
+     *     only (the "VERB:args" header), so payloads stay out of the log. */
+    if (strncmp(request, PROTO_COMMAND, strlen(PROTO_COMMAND)) != 0) {
+        char  vt[LOG_W];
+        short vk;
+        for (vk = 0; vk < LOG_W - 1 && request[vk] &&
+                     request[vk] != '\r' && request[vk] != '\n'; vk++)
+            vt[vk] = request[vk];
+        vt[vk] = '\0';
+        if (strncmp(request, "PING", 4) == 0 ||
+            strncmp(request, PROTO_STAT, strlen(PROTO_STAT)) == 0)
+            AddLogLine(vt, 1);   /* heartbeat -> detail (hidden when collapsed) */
+        else
+            AddLogLine(vt, 2);   /* verb -> bold, like COMMAND's "> ..." */
+    }
+
     /* Check if it's a screenshot request */
     if (strncmp(request, PROTO_SCREENSHOT, strlen(PROTO_SCREENSHOT)) == 0) {
         ScreenshotData screenshot;
