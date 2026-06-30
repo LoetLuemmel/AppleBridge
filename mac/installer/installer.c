@@ -17,8 +17,10 @@
  * AppleBridgeConfig, optional AppleBridgeMenuLED) ship as SIBLINGS of this app
  * in one folder; the installer locates its own folder and copies from there.
  *
- * It only PROBES the TCP stack (Gestalt), never opens it — so it links no Open
- * Transport. Reuses prefs.c + mystring.c from the daemon suite.
+ * It PROBES the TCP stack without linking Open Transport: Gestalt for OT, and
+ * for classic MacTCP (which need not register the 'mtcp' selector) a Device-
+ * Manager OpenDriver(".IPP") — still no OT dependency. Reuses prefs.c +
+ * mystring.c from the daemon suite.
  */
 
 #include <Quickdraw.h>
@@ -38,6 +40,7 @@
 #include <Resources.h>
 #include <Memory.h>
 #include <Gestalt.h>
+#include <Devices.h>     /* OpenDriver -> reliable classic-MacTCP '.IPP' probe */
 #include <prefs.h>
 #include <mystring.h>
 
@@ -155,6 +158,17 @@ static void RunChecks(void)
     /* A TCP stack: Open Transport OR MacTCP */
     gHasOT     = (Gestalt(kGestaltOT, &v) == noErr && v != 0);
     gHasMacTCP = (Gestalt(kGestaltMacTCP, &v) == noErr && v != 0);
+    /* Classic MacTCP (e.g. the SE/30's 2.0.4) does NOT register the 'mtcp'
+     * Gestalt selector -- only Open Transport's MacTCP-compat shim does, which
+     * is why the OT-backed emulator passed preflight while a real machine with
+     * stock MacTCP failed it. Fall back to the reliable probe: open the '.IPP'
+     * driver (Device Manager only -- no OT linkage), exactly as the daemon's
+     * MacTCP backend (transport_mactcp.c) does to bring the stack up. */
+    if (!gHasMacTCP) {
+        short ippRef;
+        if (OpenDriver("\p.IPP", &ippRef) == noErr)
+            gHasMacTCP = true;
+    }
     if (gHasOT || gHasMacTCP)
         AddCheck("TCP stack", ST_PASS, true, gHasOT ? "Open Transport" : "MacTCP");
     else
