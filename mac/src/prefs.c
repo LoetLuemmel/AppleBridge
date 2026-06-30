@@ -21,6 +21,7 @@ void PrefsDefaults(AppPrefs *p)
 {
     strcpy(p->ip, DEFAULT_HOST_IP);
     p->debug = false;
+    p->transport = kTransportOT;   /* Open Transport is the default networking service */
     p->appCount = 0;
 }
 
@@ -55,6 +56,11 @@ static void ParseLine(AppPrefs *p, const char *line)
         CopyValue(p->ip, line + 3, PREFS_IP_LEN);
     } else if (strncmp(line, "DEBUG=", 6) == 0) {
         p->debug = (line[6] == '1');
+    } else if (strncmp(line, "NET=", 4) == 0) {
+        /* Networking service: NET=MacTCP selects the MacTCP backend; anything
+         * else (incl. NET=OT) keeps Open Transport. */
+        p->transport = (strncmp(line + 4, "MacTCP", 6) == 0)
+                           ? kTransportMacTCP : kTransportOT;
     } else if (strncmp(line, "APP=", 4) == 0) {
         if (p->appCount < PREFS_MAX_APPS) {
             CopyValue(p->apps[p->appCount], line + 4, PREFS_PATH_LEN);
@@ -128,6 +134,8 @@ OSErr SavePrefs(const AppPrefs *p)
     strcat(buf, "# AppleBridge preferences\r");
     strcat(buf, "IP=");    strcat(buf, p->ip);                strcat(buf, "\r");
     strcat(buf, "DEBUG="); strcat(buf, p->debug ? "1" : "0"); strcat(buf, "\r");
+    strcat(buf, "NET=");   strcat(buf, p->transport == kTransportMacTCP ? "MacTCP" : "OT");
+    strcat(buf, "\r");
     for (n = 0; n < p->appCount; n++) {
         strcat(buf, "APP="); strcat(buf, p->apps[n]); strcat(buf, "\r");
     }

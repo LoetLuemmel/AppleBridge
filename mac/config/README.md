@@ -15,6 +15,12 @@ to run continuously, so this app is where a human configures and supervises it.
 - **Add Helper App…** — a Standard File picker; the chosen app's full HFS path is
   appended as an `APP=` line in the shared **AppleBridge Prefs** file (in the
   Preferences folder). The daemon chain-launches these on startup.
+- **Networking service** — a radio pair (**Open Transport** / **MacTCP**) that
+  selects which TCP stack the daemon uses, written as `NET=OT` / `NET=MacTCP` in
+  the prefs. Open Transport is the default; MacTCP is the lighter, pre-OT-capable
+  backend (the daemon auto-falls back to OT if the chosen stack can't come up).
+  The change **takes effect on the daemon's next launch** (reboot or relaunch) —
+  there is no live hot-swap, by design.
 - **Quit** — quits the config app.
 
 There are intentionally **no Launch/Stop Daemon buttons**: the daemon is a

@@ -52,15 +52,15 @@ static Ptr EnsureChunk(void)
 }
 
 /* ---- a pushback byte reader: drains bytes already received in `request`,
- *      then pulls more from the endpoint (one ReceiveData per call) ---------- */
+ *      then pulls more from the conn (one ABRecv per call) ---------- */
 typedef struct {
-    EndpointRef ep;
+    ABConn     *ep;
     char       *pre;       /* bytes already in the request buffer */
     long        preLen;
     long        prePos;
 } StreamCtx;
 
-/* One read step. Returns noErr with *got>0, kOTNoDataErr if the endpoint had
+/* One read step. Returns noErr with *got>0, kABNoData if the conn had
  * nothing yet, or a negative OTResult on a real error. */
 static OSStatus StreamRead(StreamCtx *ctx, char *dst, long want, long *got)
 {
@@ -74,7 +74,7 @@ static OSStatus StreamRead(StreamCtx *ctx, char *dst, long want, long *got)
         *got = n;
         return noErr;
     }
-    return ReceiveData(ctx->ep, dst, want, got);
+    return ABRecv(ctx->ep, dst, want, got);
 }
 
 /* Read EXACTLY n bytes into dst, yielding on idle, bounded by the stall clock.
@@ -89,7 +89,7 @@ static OSStatus StreamReadFull(StreamCtx *ctx, char *dst, long n)
         if (err == noErr && got > 0) {
             done += got;
             lastProgress = TickCount();
-        } else if (err == kOTNoDataErr) {
+        } else if (err == kABNoData) {
             if (TickCount() - lastProgress > FILE_STALL_TICKS) return -1;
             SystemTask();
         } else {
@@ -116,7 +116,7 @@ static OSStatus StreamToFork(StreamCtx *ctx, short refNum, long total)
             if (werr != noErr) return werr;     /* disk full / write error */
             done += got;
             lastProgress = TickCount();
-        } else if (err == kOTNoDataErr) {
+        } else if (err == kABNoData) {
             if (TickCount() - lastProgress > FILE_STALL_TICKS) return -1;
             SystemTask();
         } else {
@@ -192,17 +192,17 @@ static OSErr MakeFSSpecFromPath(const char *macPath, FSSpec *spec)
 }
 
 /* Send a fixed STATUS reply (small) and return `healthy`. */
-static Boolean ReplyStatus(EndpointRef endpoint, const char *frame, Boolean healthy)
+static Boolean ReplyStatus(ABConn *conn, const char *frame, Boolean healthy)
 {
     long n = 0;
     while (frame[n]) n++;
-    SendData(endpoint, frame, n);
+    ABSend(conn, frame, n);
     return healthy;
 }
 
 /* ---- WRITEFILE ----------------------------------------------------------- */
 
-Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
+Boolean WriteFileVerb(ABConn *conn, char *request, long requestLen)
 {
     StreamCtx ctx;
     char     *h;
@@ -216,7 +216,7 @@ Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
     short     dataRef = 0, rsrcRef = 0;
 
     if (EnsureChunk() == NULL)
-        return ReplyStatus(endpoint,
+        return ReplyStatus(conn,
             "STATUS:-1\rSTDOUT:0\rSTDERR:13\rout of memory\r\r", true);
 
     /* The header line must be present in the first segment (it is tiny and is
@@ -225,7 +225,7 @@ Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
     { long i; for (i = 10; i < requestLen; i++)
         if (request[i] == '\n' || request[i] == '\r') { nl = request + i; break; } }
     if (nl == NULL)
-        return ReplyStatus(endpoint,
+        return ReplyStatus(conn,
             "STATUS:-1\rSTDOUT:0\rSTDERR:18\rWRITEFILE bad header\r\r", true);
 
     /* Parse: WRITEFILE:<pathLen>:<typeHex8>:<creatorHex8>:<dataLen>:<rsrcLen>\n */
@@ -240,11 +240,11 @@ Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
     if (pathLen <= 0 || pathLen > 511 ||
         dataLen < 0 || dataLen > MAX_FILE_BYTES ||
         rsrcLen < 0 || rsrcLen > MAX_FILE_BYTES)
-        return ReplyStatus(endpoint,
+        return ReplyStatus(conn,
             "STATUS:-1\rSTDOUT:0\rSTDERR:17\rWRITEFILE bad size\r\r", true);
 
     /* Body starts right after the header newline. */
-    ctx.ep = endpoint;
+    ctx.ep = conn;
     ctx.pre = request;
     ctx.preLen = requestLen;
     ctx.prePos = (nl - request) + 1;
@@ -279,13 +279,13 @@ Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
             if (StreamRead(&ctx, gChunk, n, &got) == noErr && got > 0) drop -= got;
             else SystemTask();
         }
-        return ReplyStatus(endpoint,
+        return ReplyStatus(conn,
             "STATUS:-1\rSTDOUT:0\rSTDERR:15\rFSpCreate failed\r\r", true);
     }
 
     /* 3) data fork */
     if (FSpOpenDF(&spec, fsRdWrPerm, &dataRef) != noErr)
-        return ReplyStatus(endpoint,
+        return ReplyStatus(conn,
             "STATUS:-1\rSTDOUT:0\rSTDERR:17\ropen data fork err\r\r", true);
     SetEOF(dataRef, dataLen);                    /* pre-size the fork */
     serr = StreamToFork(&ctx, dataRef, dataLen);
@@ -295,7 +295,7 @@ Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
     /* 4) resource fork (raw bytes via FSpOpenRF; skip if empty) */
     if (rsrcLen > 0) {
         if (FSpOpenRF(&spec, fsRdWrPerm, &rsrcRef) != noErr)
-            return ReplyStatus(endpoint,
+            return ReplyStatus(conn,
                 "STATUS:-1\rSTDOUT:0\rSTDERR:17\ropen rsrc fork err\r\r", true);
         SetEOF(rsrcRef, 0L);                     /* discard FSpCreateResFile's empty map */
         SetEOF(rsrcRef, rsrcLen);                /* pre-size to the raw fork length */
@@ -304,17 +304,17 @@ Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
         if (serr != noErr) return false;
     }
 
-    return ReplyStatus(endpoint, "STATUS:0\rSTDOUT:7\rWritten\rSTDERR:0\r\r", true);
+    return ReplyStatus(conn, "STATUS:0\rSTDOUT:7\rWritten\rSTDERR:0\r\r", true);
 
 badhdr:
-    return ReplyStatus(endpoint,
+    return ReplyStatus(conn,
         "STATUS:-1\rSTDOUT:0\rSTDERR:18\rWRITEFILE bad header\r\r", true);
 }
 
 /* ---- READFILE ------------------------------------------------------------ */
 
 /* Stream one open fork (length `total`) out to the host in FILE_CHUNK pieces. */
-static Boolean SendFork(EndpointRef endpoint, short refNum, long total)
+static Boolean SendFork(ABConn *conn, short refNum, long total)
 {
     long remaining = total;
     while (remaining > 0) {
@@ -322,7 +322,7 @@ static Boolean SendFork(EndpointRef endpoint, short refNum, long total)
         long n = want;
         OSErr rerr = FSRead(refNum, &n, gChunk);    /* n := bytes actually read */
         if (n > 0) {
-            if (SendData(endpoint, gChunk, n) != noErr) return false;
+            if (ABSend(conn, gChunk, n) != noErr) return false;
             remaining -= n;
         }
         if (rerr != noErr && rerr != eofErr) return false;
@@ -331,7 +331,7 @@ static Boolean SendFork(EndpointRef endpoint, short refNum, long total)
     return true;
 }
 
-Boolean ReadFileVerb(EndpointRef endpoint, char *request, long requestLen)
+Boolean ReadFileVerb(ABConn *conn, char *request, long requestLen)
 {
     char    macPath[512];
     FSSpec  spec;
@@ -344,7 +344,7 @@ Boolean ReadFileVerb(EndpointRef endpoint, char *request, long requestLen)
     Boolean ok;
 
     if (EnsureChunk() == NULL)
-        return ReplyStatus(endpoint,
+        return ReplyStatus(conn,
             "STATUS:-1\rSTDOUT:0\rSTDERR:13\rout of memory\r\r", true);
 
     /* Everything after "READFILE:" up to \r/\n/end is the path. */
@@ -354,17 +354,17 @@ Boolean ReadFileVerb(EndpointRef endpoint, char *request, long requestLen)
     macPath[n] = '\0';
 
     if (MakeFSSpecFromPath(macPath, &spec) != noErr)
-        return ReplyStatus(endpoint,
+        return ReplyStatus(conn,
             "STATUS:-1\rSTDOUT:0\rSTDERR:14\rno such file\r\r", true);
 
     if (FSpGetFInfo(&spec, &fndr) != noErr)
-        return ReplyStatus(endpoint,
+        return ReplyStatus(conn,
             "STATUS:-1\rSTDOUT:0\rSTDERR:14\rno such file\r\r", true);
 
     /* Open both forks read-only and measure them. A missing/empty resource
      * fork is normal (data-only files): treat an open failure as length 0. */
     if (FSpOpenDF(&spec, fsRdPerm, &dataRef) != noErr)
-        return ReplyStatus(endpoint,
+        return ReplyStatus(conn,
             "STATUS:-1\rSTDOUT:0\rSTDERR:17\ropen data fork err\r\r", true);
     GetEOF(dataRef, &dataLen);
 
@@ -383,14 +383,14 @@ Boolean ReadFileVerb(EndpointRef endpoint, char *request, long requestLen)
     p = AppendULong(p, (unsigned long)dataLen); *p++ = ':';
     p = AppendULong(p, (unsigned long)rsrcLen); *p++ = '\n';
 
-    if (SendData(endpoint, header, p - header) != noErr) {
+    if (ABSend(conn, header, p - header) != noErr) {
         FSClose(dataRef); if (rsrcRef) FSClose(rsrcRef);
         return false;
     }
 
-    ok = SendFork(endpoint, dataRef, dataLen);
+    ok = SendFork(conn, dataRef, dataLen);
     FSClose(dataRef);
-    if (ok && rsrcRef) ok = SendFork(endpoint, rsrcRef, rsrcLen);
+    if (ok && rsrcRef) ok = SendFork(conn, rsrcRef, rsrcLen);
     if (rsrcRef) FSClose(rsrcRef);
 
     return ok;   /* false on a mid-stream send failure -> reconnect */
