@@ -41,6 +41,7 @@ static Boolean      gRunning = true;
 static WindowPtr    gWin = NULL;
 static AppPrefs     gPrefs;
 static ControlHandle gInstallBtn, gRemoveBtn, gAddBtn, gQuitBtn;
+static ControlHandle gOTRadio, gMacTCPRadio;   /* networking-service selector */
 
 /* ---- small helpers ---------------------------------------------------- */
 
@@ -84,11 +85,29 @@ static Boolean DaemonRunning(void)
 
 #define kStartupAliasName "\pAppleBridge Watchdog"
 
+/* Build {HOME}<leaf> when the prefs carry an install location (set by the
+ * installer), else the legacy compiled-in path — so autostart points at the
+ * watchdog wherever it actually lives. HOME is a folder; ensure a trailing ':'. */
+static void HomePath(const char *leaf, const char *legacy, char *out)
+{
+    if (gPrefs.home[0]) {
+        short n;
+        mystrcpy(out, gPrefs.home);
+        n = (short)mystrlen(out);
+        if (n > 0 && out[n - 1] != ':') { out[n] = ':'; out[n + 1] = '\0'; }
+        mystrcat(out, leaf);
+    } else {
+        mystrcpy(out, legacy);
+    }
+}
+
 /* FSSpec of the binary we want launched at boot — the watchdog. */
 static OSErr WatchdogSpec(FSSpec *spec)
 {
+    char   path[PREFS_PATH_LEN + 24];
     Str255 pPath;
-    CtoP(WATCHDOG_PATH, pPath);
+    HomePath("AppleBridgeWatchdog", WATCHDOG_PATH, path);
+    CtoP(path, pPath);
     return FSMakeFSSpec(0, 0, pPath, spec);
 }
 
@@ -238,9 +257,16 @@ static void DrawContent(void)
     DrawString("\pHost IP: ");
     { Str255 p; CtoP(gPrefs.ip, p); DrawString(p); }
 
+    /* Networking service selector (the two radio controls sit just below). */
     MoveTo(16, 84);
+    DrawString("\pNetworking service:");
+    MoveTo(16, 116);
+    TextFace(0);
+    DrawString("\p(takes effect on the next daemon launch / reboot)");
+
+    MoveTo(16, 140);
     DrawString("\pHelper apps (chain-launched):");
-    y = 100;
+    y = 156;
     for (i = 0; i < gPrefs.appCount; i++) {
         Str255 p;
         MoveTo(28, y);
@@ -269,6 +295,17 @@ static void MakeButtons(void)
     gAddBtn = NewControl(gWin, &r, "\pAdd Helper App...", true, 0, 0, 1, 0 /*pushButProc*/, 0);
     SetRect(&r, 384, top, 444, top + 20);
     gQuitBtn = NewControl(gWin, &r, "\pQuit", true, 0, 0, 1, 0 /*pushButProc*/, 0);
+
+    /* Networking-service radio group (just under the "Networking service:" label).
+     * radioButProc == 2. The pair is mutually exclusive — clicks in HandleClick
+     * set one to 1 and the other to 0 and persist the choice to prefs. */
+    SetRect(&r, 28, 92, 170, 108);
+    gOTRadio = NewControl(gWin, &r, "\pOpen Transport", true, 0, 0, 1, 2 /*radioButProc*/, 0);
+    SetRect(&r, 180, 92, 300, 108);
+    gMacTCPRadio = NewControl(gWin, &r, "\pMacTCP", true, 0, 0, 1, 2 /*radioButProc*/, 0);
+
+    SetControlValue(gOTRadio,    gPrefs.transport == kTransportMacTCP ? 0 : 1);
+    SetControlValue(gMacTCPRadio, gPrefs.transport == kTransportMacTCP ? 1 : 0);
 }
 
 static void HandleClick(EventRecord *ev)
@@ -288,6 +325,17 @@ static void HandleClick(EventRecord *ev)
                 else if (ctl == gRemoveBtn) { RemoveAutostart(); }
                 else if (ctl == gAddBtn)    { AddHelperApp(); }
                 else if (ctl == gQuitBtn)   { gRunning = false; }
+                else if (ctl == gOTRadio || ctl == gMacTCPRadio) {
+                    /* Pick a networking service, reflect it in the radios, and
+                     * persist it. The daemon reads NET= at its next launch. */
+                    gPrefs.transport = (ctl == gMacTCPRadio)
+                                           ? kTransportMacTCP : kTransportOT;
+                    SetControlValue(gOTRadio,
+                                    gPrefs.transport == kTransportMacTCP ? 0 : 1);
+                    SetControlValue(gMacTCPRadio,
+                                    gPrefs.transport == kTransportMacTCP ? 1 : 0);
+                    SavePrefs(&gPrefs);
+                }
                 DrawContent();
             }
         }
@@ -316,7 +364,7 @@ int main(void)
     PrefsDefaults(&gPrefs);
     LoadPrefs(&gPrefs);
 
-    SetRect(&bounds, 40, 60, 500, 320);
+    SetRect(&bounds, 40, 60, 500, 360);
     gWin = NewCWindow(NULL, &bounds, "\pAppleBridge Config", true,
                       documentProc, (WindowPtr)-1L, true, 0);
     SetPort(gWin);

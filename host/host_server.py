@@ -300,6 +300,24 @@ class AppleBridgeServer:
             return None
         return self._read_framed_response(DEFAULT_TIMEOUT, label="CLIPGET")
 
+    def list_dir(self, mac_path):
+        """LISTDIR:<path>: native directory listing from the daemon (PBGetCatInfo,
+        no ToolServer). Returns the STATUS/STDOUT framed reply; STDOUT is one
+        tab-separated line per entry (name\\ttype\\tcreator\\tsize\\tmodSecs)."""
+        if not self.connected or not self.client_socket:
+            return None
+        if not self._drain():
+            self._mark_disconnected("drain detected closed socket")
+            return None
+        try:
+            self.client_socket.sendall(("LISTDIR:" + mac_path).encode("mac_roman",
+                                                                      errors="replace"))
+        except OSError as e:
+            self._mark_disconnected(f"send failed: {e}")
+            return None
+        log(f"LISTDIR {mac_path!r}")
+        return self._read_framed_response(DEFAULT_TIMEOUT, label="LISTDIR")
+
     def clipboard_set(self, data):
         """CLIPSET: replace the guest TEXT scrap. Length-framed raw bytes."""
         if not self.connected or not self.client_socket:
@@ -751,6 +769,11 @@ def run_control_server(server):
                             log(f"WRITEFILE parse/send error: {e}")
                             msg = str(e)
                             out = f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(msg)}\r{msg}\r\r"
+                    elif cmd.startswith("LISTDIR:"):
+                        # LISTDIR:<path> -> native directory listing (no ToolServer)
+                        mac_path = cmd[len("LISTDIR:"):]
+                        resp = server.list_dir(mac_path)
+                        out = resp if resp is not None else "No response"
                     elif cmd.startswith("READFILE:"):
                         mac_path = cmd[len("READFILE:"):]
                         got = server.get_file(mac_path)

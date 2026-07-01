@@ -52,15 +52,15 @@ static Ptr EnsureChunk(void)
 }
 
 /* ---- a pushback byte reader: drains bytes already received in `request`,
- *      then pulls more from the endpoint (one ReceiveData per call) ---------- */
+ *      then pulls more from the conn (one ABRecv per call) ---------- */
 typedef struct {
-    EndpointRef ep;
+    ABConn     *ep;
     char       *pre;       /* bytes already in the request buffer */
     long        preLen;
     long        prePos;
 } StreamCtx;
 
-/* One read step. Returns noErr with *got>0, kOTNoDataErr if the endpoint had
+/* One read step. Returns noErr with *got>0, kABNoData if the conn had
  * nothing yet, or a negative OTResult on a real error. */
 static OSStatus StreamRead(StreamCtx *ctx, char *dst, long want, long *got)
 {
@@ -74,7 +74,7 @@ static OSStatus StreamRead(StreamCtx *ctx, char *dst, long want, long *got)
         *got = n;
         return noErr;
     }
-    return ReceiveData(ctx->ep, dst, want, got);
+    return ABRecv(ctx->ep, dst, want, got);
 }
 
 /* Read EXACTLY n bytes into dst, yielding on idle, bounded by the stall clock.
@@ -89,7 +89,7 @@ static OSStatus StreamReadFull(StreamCtx *ctx, char *dst, long n)
         if (err == noErr && got > 0) {
             done += got;
             lastProgress = TickCount();
-        } else if (err == kOTNoDataErr) {
+        } else if (err == kABNoData) {
             if (TickCount() - lastProgress > FILE_STALL_TICKS) return -1;
             SystemTask();
         } else {
@@ -116,7 +116,7 @@ static OSStatus StreamToFork(StreamCtx *ctx, short refNum, long total)
             if (werr != noErr) return werr;     /* disk full / write error */
             done += got;
             lastProgress = TickCount();
-        } else if (err == kOTNoDataErr) {
+        } else if (err == kABNoData) {
             if (TickCount() - lastProgress > FILE_STALL_TICKS) return -1;
             SystemTask();
         } else {
@@ -192,17 +192,17 @@ static OSErr MakeFSSpecFromPath(const char *macPath, FSSpec *spec)
 }
 
 /* Send a fixed STATUS reply (small) and return `healthy`. */
-static Boolean ReplyStatus(EndpointRef endpoint, const char *frame, Boolean healthy)
+static Boolean ReplyStatus(ABConn *conn, const char *frame, Boolean healthy)
 {
     long n = 0;
     while (frame[n]) n++;
-    SendData(endpoint, frame, n);
+    ABSend(conn, frame, n);
     return healthy;
 }
 
 /* ---- WRITEFILE ----------------------------------------------------------- */
 
-Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
+Boolean WriteFileVerb(ABConn *conn, char *request, long requestLen)
 {
     StreamCtx ctx;
     char     *h;
@@ -216,7 +216,7 @@ Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
     short     dataRef = 0, rsrcRef = 0;
 
     if (EnsureChunk() == NULL)
-        return ReplyStatus(endpoint,
+        return ReplyStatus(conn,
             "STATUS:-1\rSTDOUT:0\rSTDERR:13\rout of memory\r\r", true);
 
     /* The header line must be present in the first segment (it is tiny and is
@@ -225,7 +225,7 @@ Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
     { long i; for (i = 10; i < requestLen; i++)
         if (request[i] == '\n' || request[i] == '\r') { nl = request + i; break; } }
     if (nl == NULL)
-        return ReplyStatus(endpoint,
+        return ReplyStatus(conn,
             "STATUS:-1\rSTDOUT:0\rSTDERR:18\rWRITEFILE bad header\r\r", true);
 
     /* Parse: WRITEFILE:<pathLen>:<typeHex8>:<creatorHex8>:<dataLen>:<rsrcLen>\n */
@@ -240,11 +240,11 @@ Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
     if (pathLen <= 0 || pathLen > 511 ||
         dataLen < 0 || dataLen > MAX_FILE_BYTES ||
         rsrcLen < 0 || rsrcLen > MAX_FILE_BYTES)
-        return ReplyStatus(endpoint,
+        return ReplyStatus(conn,
             "STATUS:-1\rSTDOUT:0\rSTDERR:17\rWRITEFILE bad size\r\r", true);
 
     /* Body starts right after the header newline. */
-    ctx.ep = endpoint;
+    ctx.ep = conn;
     ctx.pre = request;
     ctx.preLen = requestLen;
     ctx.prePos = (nl - request) + 1;
@@ -279,13 +279,13 @@ Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
             if (StreamRead(&ctx, gChunk, n, &got) == noErr && got > 0) drop -= got;
             else SystemTask();
         }
-        return ReplyStatus(endpoint,
+        return ReplyStatus(conn,
             "STATUS:-1\rSTDOUT:0\rSTDERR:15\rFSpCreate failed\r\r", true);
     }
 
     /* 3) data fork */
     if (FSpOpenDF(&spec, fsRdWrPerm, &dataRef) != noErr)
-        return ReplyStatus(endpoint,
+        return ReplyStatus(conn,
             "STATUS:-1\rSTDOUT:0\rSTDERR:17\ropen data fork err\r\r", true);
     SetEOF(dataRef, dataLen);                    /* pre-size the fork */
     serr = StreamToFork(&ctx, dataRef, dataLen);
@@ -295,7 +295,7 @@ Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
     /* 4) resource fork (raw bytes via FSpOpenRF; skip if empty) */
     if (rsrcLen > 0) {
         if (FSpOpenRF(&spec, fsRdWrPerm, &rsrcRef) != noErr)
-            return ReplyStatus(endpoint,
+            return ReplyStatus(conn,
                 "STATUS:-1\rSTDOUT:0\rSTDERR:17\ropen rsrc fork err\r\r", true);
         SetEOF(rsrcRef, 0L);                     /* discard FSpCreateResFile's empty map */
         SetEOF(rsrcRef, rsrcLen);                /* pre-size to the raw fork length */
@@ -304,17 +304,17 @@ Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen)
         if (serr != noErr) return false;
     }
 
-    return ReplyStatus(endpoint, "STATUS:0\rSTDOUT:7\rWritten\rSTDERR:0\r\r", true);
+    return ReplyStatus(conn, "STATUS:0\rSTDOUT:7\rWritten\rSTDERR:0\r\r", true);
 
 badhdr:
-    return ReplyStatus(endpoint,
+    return ReplyStatus(conn,
         "STATUS:-1\rSTDOUT:0\rSTDERR:18\rWRITEFILE bad header\r\r", true);
 }
 
 /* ---- READFILE ------------------------------------------------------------ */
 
 /* Stream one open fork (length `total`) out to the host in FILE_CHUNK pieces. */
-static Boolean SendFork(EndpointRef endpoint, short refNum, long total)
+static Boolean SendFork(ABConn *conn, short refNum, long total)
 {
     long remaining = total;
     while (remaining > 0) {
@@ -322,7 +322,7 @@ static Boolean SendFork(EndpointRef endpoint, short refNum, long total)
         long n = want;
         OSErr rerr = FSRead(refNum, &n, gChunk);    /* n := bytes actually read */
         if (n > 0) {
-            if (SendData(endpoint, gChunk, n) != noErr) return false;
+            if (ABSend(conn, gChunk, n) != noErr) return false;
             remaining -= n;
         }
         if (rerr != noErr && rerr != eofErr) return false;
@@ -331,7 +331,7 @@ static Boolean SendFork(EndpointRef endpoint, short refNum, long total)
     return true;
 }
 
-Boolean ReadFileVerb(EndpointRef endpoint, char *request, long requestLen)
+Boolean ReadFileVerb(ABConn *conn, char *request, long requestLen)
 {
     char    macPath[512];
     FSSpec  spec;
@@ -344,7 +344,7 @@ Boolean ReadFileVerb(EndpointRef endpoint, char *request, long requestLen)
     Boolean ok;
 
     if (EnsureChunk() == NULL)
-        return ReplyStatus(endpoint,
+        return ReplyStatus(conn,
             "STATUS:-1\rSTDOUT:0\rSTDERR:13\rout of memory\r\r", true);
 
     /* Everything after "READFILE:" up to \r/\n/end is the path. */
@@ -354,17 +354,17 @@ Boolean ReadFileVerb(EndpointRef endpoint, char *request, long requestLen)
     macPath[n] = '\0';
 
     if (MakeFSSpecFromPath(macPath, &spec) != noErr)
-        return ReplyStatus(endpoint,
+        return ReplyStatus(conn,
             "STATUS:-1\rSTDOUT:0\rSTDERR:14\rno such file\r\r", true);
 
     if (FSpGetFInfo(&spec, &fndr) != noErr)
-        return ReplyStatus(endpoint,
+        return ReplyStatus(conn,
             "STATUS:-1\rSTDOUT:0\rSTDERR:14\rno such file\r\r", true);
 
     /* Open both forks read-only and measure them. A missing/empty resource
      * fork is normal (data-only files): treat an open failure as length 0. */
     if (FSpOpenDF(&spec, fsRdPerm, &dataRef) != noErr)
-        return ReplyStatus(endpoint,
+        return ReplyStatus(conn,
             "STATUS:-1\rSTDOUT:0\rSTDERR:17\ropen data fork err\r\r", true);
     GetEOF(dataRef, &dataLen);
 
@@ -383,15 +383,177 @@ Boolean ReadFileVerb(EndpointRef endpoint, char *request, long requestLen)
     p = AppendULong(p, (unsigned long)dataLen); *p++ = ':';
     p = AppendULong(p, (unsigned long)rsrcLen); *p++ = '\n';
 
-    if (SendData(endpoint, header, p - header) != noErr) {
+    if (ABSend(conn, header, p - header) != noErr) {
         FSClose(dataRef); if (rsrcRef) FSClose(rsrcRef);
         return false;
     }
 
-    ok = SendFork(endpoint, dataRef, dataLen);
+    ok = SendFork(conn, dataRef, dataLen);
     FSClose(dataRef);
-    if (ok && rsrcRef) ok = SendFork(endpoint, rsrcRef, rsrcLen);
+    if (ok && rsrcRef) ok = SendFork(conn, rsrcRef, rsrcLen);
     if (rsrcRef) FSClose(rsrcRef);
 
     return ok;   /* false on a mid-stream send failure -> reconnect */
+}
+
+/* ---- LISTDIR: native directory listing (no ToolServer) ------------------ */
+
+static short LD_len(const char *s) { short n = 0; while (s[n]) n++; return n; }
+static void  LD_cpy(char *d, const char *s) { while (*s) *d++ = *s++; *d = '\0'; }
+static void  LD_zero(void *p, long n) { char *c = (char *)p; while (n-- > 0) *c++ = 0; }
+
+static void LD_CtoP(const char *c, Str255 p)
+{
+    short i = 0;
+    while (c[i] && i < 255) { p[i + 1] = c[i]; i++; }
+    p[0] = (unsigned char)i;
+}
+
+/* Append a signed decimal to buf at *pos (advances *pos). */
+static void LD_num(char *buf, short *pos, long n)
+{
+    char tmp[16];
+    short i = 0, j;
+    if (n == 0) { buf[(*pos)++] = '0'; return; }
+    if (n < 0)  { buf[(*pos)++] = '-'; n = -n; }
+    while (n > 0) { tmp[i++] = (char)('0' + (n % 10)); n /= 10; }
+    for (j = i - 1; j >= 0; j--) buf[(*pos)++] = tmp[j];
+}
+
+/* Append an UNSIGNED decimal (Mac dates are unsigned secs-since-1904, which
+ * exceed 2^31 from 2006 on, so a signed print would go negative). */
+static void LD_unum(char *buf, short *pos, unsigned long n)
+{
+    char tmp[16];
+    short i = 0, j;
+    if (n == 0) { buf[(*pos)++] = '0'; return; }
+    while (n > 0) { tmp[i++] = (char)('0' + (n % 10)); n /= 10; }
+    for (j = i - 1; j >= 0; j--) buf[(*pos)++] = tmp[j];
+}
+
+/*
+ * LISTDIR:<path> — enumerate a folder with PBGetCatInfo (File Manager only, no
+ * ToolServer) and stream a tab-separated listing back. One line per entry:
+ *     name<TAB>type<TAB>creator<TAB>dataSize<TAB>modSecs<CR>
+ * Directories report type "fldr", empty creator, size 0. The listing is built
+ * into a Handle and sent via the normal SendCommandResult framing (STATUS:0 +
+ * STDOUT), so the host's length-framed reader handles any size.
+ */
+Boolean ListDirVerb(ABConn *conn, char *request, long requestLen)
+{
+    char          path[256];
+    short          n, i;
+    Str255         pPath, nm;
+    FSSpec         spec;
+    CInfoPBRec     pb;
+    OSErr          err;
+    short          vRefNum;
+    long           dirID;
+    Handle         h;
+    CommandResult  res;
+
+    /* extract the path after the "LISTDIR:" prefix */
+    n = 0;
+    i = LD_len(PROTO_LISTDIR);
+    while (i < requestLen && request[i] != '\r' && request[i] != '\n'
+           && request[i] != '\0' && n < 255) {
+        path[n++] = request[i++];
+    }
+    path[n] = '\0';
+
+    res.exitCode = -1;
+    res.outData  = NULL;
+    res.outLen   = 0;
+    res.errData[0] = '\0';
+
+    LD_CtoP(path, pPath);
+    err = FSMakeFSSpec(0, 0, pPath, &spec);
+    if (err != noErr && err != fnfErr) {
+        LD_cpy(res.errData, "no such path");
+        SendCommandResult(conn, &res);
+        return true;
+    }
+
+    /* resolve the target folder's own dirID + vRefNum. Zero the PB first so no
+     * stale stack bytes leak into the call. */
+    BlockMoveData(spec.name, nm, spec.name[0] + 1);
+    LD_zero(&pb, sizeof(pb));
+    pb.dirInfo.ioNamePtr = nm;
+    pb.dirInfo.ioVRefNum = spec.vRefNum;
+    pb.dirInfo.ioFDirIndex = 0;
+    pb.dirInfo.ioDrDirID = spec.parID;
+    if (PBGetCatInfoSync(&pb) != noErr || !(pb.dirInfo.ioFlAttrib & 0x10)) {
+        LD_cpy(res.errData, "not a directory");
+        SendCommandResult(conn, &res);
+        return true;
+    }
+    vRefNum = pb.dirInfo.ioVRefNum;
+    dirID   = pb.dirInfo.ioDrDirID;
+
+    h = NewHandle(0);
+    if (h == NULL) {
+        LD_cpy(res.errData, "out of memory");
+        SendCommandResult(conn, &res);
+        return true;
+    }
+
+    for (i = 1; ; i++) {
+        char          line[300];
+        short         p = 0, k, nameLen;
+        Boolean       isDir;
+        OSType        t, c;
+        unsigned long mdat;
+
+        LD_zero(&pb, sizeof(pb));         /* fresh PB each call (no stale fields) */
+        pb.dirInfo.ioNamePtr = nm;
+        pb.dirInfo.ioVRefNum = vRefNum;
+        pb.dirInfo.ioFDirIndex = i;
+        pb.dirInfo.ioDrDirID = dirID;     /* the folder to enumerate */
+        if (PBGetCatInfoSync(&pb) != noErr) break;   /* past the last entry */
+
+        isDir   = (pb.hFileInfo.ioFlAttrib & 0x10) != 0;
+        nameLen = nm[0];
+        for (k = 0; k < nameLen; k++) line[p++] = nm[k + 1];   /* name */
+        line[p++] = '\t';
+        if (isDir) {
+            line[p++] = 'f'; line[p++] = 'l'; line[p++] = 'd'; line[p++] = 'r';
+            line[p++] = '\t';                  /* creator empty */
+            line[p++] = '\t';
+            line[p++] = '0';                   /* size 0 */
+            mdat = pb.dirInfo.ioDrMdDat;
+        } else {
+            t = pb.hFileInfo.ioFlFndrInfo.fdType;
+            c = pb.hFileInfo.ioFlFndrInfo.fdCreator;
+            line[p++] = (char)((t >> 24) & 0xFF); line[p++] = (char)((t >> 16) & 0xFF);
+            line[p++] = (char)((t >> 8) & 0xFF);  line[p++] = (char)(t & 0xFF);
+            line[p++] = '\t';
+            line[p++] = (char)((c >> 24) & 0xFF); line[p++] = (char)((c >> 16) & 0xFF);
+            line[p++] = (char)((c >> 8) & 0xFF);  line[p++] = (char)(c & 0xFF);
+            line[p++] = '\t';
+            /* total size = data fork + resource fork (68K apps keep their CODE
+             * in the resource fork, so the data fork is 0 — report both). */
+            LD_num(line, &p, pb.hFileInfo.ioFlLgLen + pb.hFileInfo.ioFlRLgLen);
+            mdat = pb.hFileInfo.ioFlMdDat;
+        }
+        line[p++] = '\t';
+        LD_unum(line, &p, mdat);
+        line[p++] = '\r';
+        {
+            long oldSize = GetHandleSize(h);
+            SetHandleSize(h, oldSize + p);
+            if (MemError() == noErr) {
+                HLock(h);
+                BlockMoveData(line, *h + oldSize, p);
+                HUnlock(h);
+            }
+        }
+    }
+
+    res.exitCode = 0;
+    res.outData  = h;
+    res.outLen   = GetHandleSize(h);
+    res.errData[0] = '\0';
+    SendCommandResult(conn, &res);
+    DisposeHandle(h);
+    return true;
 }

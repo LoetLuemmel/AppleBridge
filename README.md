@@ -249,11 +249,12 @@ AppleBridge/
 
 ## Status
 
-**Current daemon:** v0.5.6 ("async connect + heartbeat")
+**Current daemon:** v0.7.0 ("selectable transport: Open Transport + MacTCP")
 **Status:** Production Ready ✅
 
 All core features working:
 - ✅ TCP bridge, NAT-reversed (Mac connects OUT), with async OpenTransport connect
+- ✅ Selectable networking backend — **Open Transport or MacTCP** — behind a transport seam, chosen from the Control Panel (`NET=OT|MacTCP`), auto-falling back to OT
 - ✅ Application-level heartbeat + watchdog (no host-down freeze)
 - ✅ Apple Events command execution (ToolServer returns output)
 - ✅ Remote compilation and linking

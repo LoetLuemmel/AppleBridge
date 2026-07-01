@@ -7,8 +7,10 @@
 #define APPLEBRIDGE_H
 
 #include <Types.h>
-#include <OpenTransport.h>
-#include <OpenTptInternet.h>
+#include <transport.h>     /* the transport seam: opaque ABConn + kABNoData.
+                            * No <OpenTransport.h> here any more — OT is now just
+                            * one backend (transport_ot.c); nothing above the seam
+                            * sees EndpointRef / kOTNoDataErr. */
 
 /* Configuration */
 #define BRIDGE_PORT 9000
@@ -46,6 +48,7 @@
 #define PROTO_AESEND "AESEND:"         /* host->daemon: send an arbitrary Apple Event */
 #define PROTO_CLIPGET "CLIPGET"        /* host->daemon: read the guest TEXT scrap */
 #define PROTO_CLIPSET "CLIPSET:"       /* host->daemon: set the guest TEXT scrap */
+#define PROTO_LISTDIR "LISTDIR:"       /* host->daemon: native directory listing (no ToolServer) */
 
 /* Result codes */
 typedef enum {
@@ -91,18 +94,13 @@ typedef struct {
 
 /* Function declarations */
 
-/* Network functions */
-OSStatus InitializeNetwork(void);
-void ShutdownNetwork(void);
-OSStatus ConnectToHost(EndpointRef *endpoint, unsigned long hostIP, InetPort port);
-OSStatus ReceiveData(EndpointRef endpoint, char *buffer, long bufferSize, long *bytesReceived);
-OSStatus SendData(EndpointRef endpoint, const char *data, long dataSize);
-unsigned long ParseIPAddress(const char *ipStr);
+/* Network: the transport seam (ABConn, ABNetInit/ABConnect/ABRecv/ABSend/ABClose,
+ * ParseIPAddress) lives in <transport.h>, pulled in above. */
 
 /* Protocol functions */
 BridgeResult ParseCommand(const char *request, char *command, long *commandLength);
-BridgeResult SendCommandResult(EndpointRef endpoint, const CommandResult *result);
-BridgeResult SendScreenshot(EndpointRef endpoint, const ScreenshotData *screenshot);
+BridgeResult SendCommandResult(ABConn *conn, const CommandResult *result);
+BridgeResult SendScreenshot(ABConn *conn, const ScreenshotData *screenshot);
 
 /* Command execution */
 BridgeResult ExecuteCommand(const char *command, CommandResult *result);
@@ -121,8 +119,13 @@ void CleanupScreenshot(ScreenshotData *screenshot);
 /* Fork-aware binary file transfer (fileio.c). Each returns true if the
  * connection is still healthy, false if a transfer desynced the wire (the
  * caller must then drop + reconnect, like ProcessRequest's other verbs). */
-Boolean WriteFileVerb(EndpointRef endpoint, char *request, long requestLen);
-Boolean ReadFileVerb(EndpointRef endpoint, char *request, long requestLen);
+Boolean WriteFileVerb(ABConn *conn, char *request, long requestLen);
+Boolean ReadFileVerb(ABConn *conn, char *request, long requestLen);
+
+/* Native directory listing (fileio.c): enumerate a folder with PBGetCatInfo and
+ * stream a tab-separated listing — works with NO ToolServer (unlike the MPW
+ * `Files` path). One line per entry: name<TAB>type<TAB>creator<TAB>size<TAB>modSecs<CR> */
+Boolean ListDirVerb(ABConn *conn, char *request, long requestLen);
 
 /* events.c -- synthetic input injection (drive the front GUI app). */
 OSErr InjectKey(short charCode, short keyCode);

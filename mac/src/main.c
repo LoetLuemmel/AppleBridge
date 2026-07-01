@@ -462,7 +462,7 @@ void ShowAboutBox(void)
         SetRect(&logo, 20, 45, 120, 145);       /* 100x100 logo on the left */
 
         MoveTo(130, 30); TextSize(14); TextFace(bold);
-        DrawString("\pAppleBridge v0.6.0");
+        DrawString("\pAppleBridge v0.7.0");
         MoveTo(130, 55); TextSize(10); TextFace(0);
         DrawString("\pBuilt by Pit with Love");
         MoveTo(130, 75);
@@ -899,7 +899,7 @@ static OSErr RebootMac(void)
 {
     unsigned long dummy;
 
-    /* The REBOOT ack was already SendData()'d by the caller; give Open Transport
+    /* The REBOOT ack was already ABSend()'d by the caller; give Open Transport
      * a moment to flush it to the host before the machine restarts (otherwise the
      * host may never see that the reboot fired). ~0.5s (30 ticks). */
     SystemTask();
@@ -951,7 +951,7 @@ static OSType ParseHexType(const char *s)
  */
 /* Returns true if the connection is still healthy, false if a response send
  * failed partway (the wire is then desynced and the caller must reconnect). */
-Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
+Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
 {
     char responseBuffer[RESP_SCRATCH];   /* small: fixed verb/error strings only (was 64 KB on the stack) */
     char command[MAX_COMMAND_LENGTH];
@@ -968,6 +968,32 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
 
     request[requestLen] = '\0';
 
+    /* --- Verbose visibility: one choke point ----------------------------
+     * Echo EVERY incoming verb to the console BODY, so the whole Surface-B
+     * surface (input injection, AE, clipboard, file I/O, listdir, launch,
+     * reboot, ...) leaves a persistent trace -- not just the ephemeral status
+     * bar, which only ever shows the LAST verb. Two carve-outs:
+     *   - COMMAND (MPW/ToolServer) has its own richer "> cmd" + per-line
+     *     output logging further down, so skip it here (avoid a double line).
+     *   - Heartbeats (PING / STAT) fire constantly, so log them as kind 1
+     *     (detail), which the console already hides unless gShowDetails is on
+     *     -- full coverage, no flood. Everything else is kind 2 (bold verb),
+     *     matching COMMAND's bold-input style. Logs the first request line
+     *     only (the "VERB:args" header), so payloads stay out of the log. */
+    if (strncmp(request, PROTO_COMMAND, strlen(PROTO_COMMAND)) != 0) {
+        char  vt[LOG_W];
+        short vk;
+        for (vk = 0; vk < LOG_W - 1 && request[vk] &&
+                     request[vk] != '\r' && request[vk] != '\n'; vk++)
+            vt[vk] = request[vk];
+        vt[vk] = '\0';
+        if (strncmp(request, "PING", 4) == 0 ||
+            strncmp(request, PROTO_STAT, strlen(PROTO_STAT)) == 0)
+            AddLogLine(vt, 1);   /* heartbeat -> detail (hidden when collapsed) */
+        else
+            AddLogLine(vt, 2);   /* verb -> bold, like COMMAND's "> ..." */
+    }
+
     /* Check if it's a screenshot request */
     if (strncmp(request, PROTO_SCREENSHOT, strlen(PROTO_SCREENSHOT)) == 0) {
         ScreenshotData screenshot;
@@ -980,11 +1006,11 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
             /* Stream the full pixmap (header + CLUT + pixels) — no size cap;
                SendData chunks it over OTSnd. The host decodes it to PNG. A
                partial send here desyncs the wire, so report it as unhealthy. */
-            if (SendScreenshot(endpoint, &screenshot) != kBridgeNoErr) ok = false;
+            if (SendScreenshot(conn, &screenshot) != kBridgeNoErr) ok = false;
             CleanupScreenshot(&screenshot);
         } else {
             strcpy(responseBuffer, "STATUS:-1\nSTDOUT:0\n\nSTDERR:18\nScreenshot failed\n\n");
-            if (SendData(endpoint, responseBuffer, strlen(responseBuffer)) != noErr) ok = false;
+            if (ABSend(conn, responseBuffer, strlen(responseBuffer)) != noErr) ok = false;
         }
 
         /* Mark TX activity */
@@ -997,7 +1023,7 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
     /* PING verb: lightweight heartbeat (sent raw, not COMMAND-wrapped) */
     if (strncmp(request, "PING", 4) == 0) {
         strcpy(responseBuffer, "STATUS:0\rSTDOUT:4\rPONG\rSTDERR:0\r\r");
-        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        ABSend(conn, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();
         gTXCount++;
         return true;
@@ -1008,7 +1034,7 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
      * stopped. Ack first, then signal the main loop to exit. */
     if (strncmp(request, "QUITDAEMON", 10) == 0) {
         strcpy(responseBuffer, "STATUS:0\rSTDOUT:7\rStopped\rSTDERR:0\r\r");
-        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        ABSend(conn, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();
         gTXCount++;
         gRunning = false;   /* while(gRunning) loop exits after this request */
@@ -1020,7 +1046,7 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
      * and the watchdog brings the new daemon up after the reboot. */
     if (strncmp(request, "REBOOT", 6) == 0) {
         strcpy(responseBuffer, "STATUS:0\rSTDOUT:6\rReboot\rSTDERR:0\r\r");
-        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        ABSend(conn, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();
         gTXCount++;
         SetActivity("REBOOT");
@@ -1054,7 +1080,7 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
             strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:13\rLaunch failed\r\r");
             SetActivity("LAUNCH failed");
         }
-        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        ABSend(conn, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();
         gTXCount++;
         return true;
@@ -1084,7 +1110,7 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
             strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:11\rQuit failed\r\r");
             SetActivity("QUIT no such app");
         }
-        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        ABSend(conn, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();
         gTXCount++;
         return true;
@@ -1099,7 +1125,7 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         SetActivity("KEY");
         InjectKey(cc, kc);
         strcpy(responseBuffer, "STATUS:0\rSTDOUT:3\rKey\rSTDERR:0\r\r");
-        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        ABSend(conn, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();
         gTXCount++;
         return true;
@@ -1113,7 +1139,7 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         SetActivity("TYPE");
         InjectType(request + base, n);
         strcpy(responseBuffer, "STATUS:0\rSTDOUT:5\rTyped\rSTDERR:0\r\r");
-        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        ABSend(conn, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();
         gTXCount++;
         return true;
@@ -1128,7 +1154,7 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         SetActivity("CLICK");
         InjectClick(h, v);
         strcpy(responseBuffer, "STATUS:0\rSTDOUT:5\rClick\rSTDERR:0\r\r");
-        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        ABSend(conn, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();
         gTXCount++;
         return true;
@@ -1148,6 +1174,7 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         b = StatStr(b, ";rx=");         b = StatDec(b, gRXCount);
         b = StatStr(b, ";tx=");         b = StatDec(b, gTXCount);
         b = StatStr(b, ";toolserver="); b = StatDec(b, IsAppRunning('MPSX') ? 1 : 0);
+        b = StatStr(b, ";net=");        b = StatStr(b, ABActiveTransport() == kTransportMacTCP ? "MacTCP" : "OT");
         *b = '\0';
         f = StatStr(f, "STATUS:0\rSTDOUT:");
         f = StatDec(f, (long)(b - body));
@@ -1155,7 +1182,7 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
         f = StatStr(f, body);
         f = StatStr(f, "\rSTDERR:0\r\r");
         SetActivity("STAT");
-        SendData(endpoint, frame, (long)(f - frame));
+        ABSend(conn, frame, (long)(f - frame));
         gLastTX = TickCount();
         gTXCount++;
         return true;
@@ -1184,17 +1211,17 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
             unsigned long lastProgress = TickCount();
             while (requestLen < total) {
                 long chunk = 0;
-                OSStatus rerr = ReceiveData(endpoint, request + requestLen,
+                OSStatus rerr = ABRecv(conn, request + requestLen,
                                             (MAX_COMMAND_LENGTH + 256) - requestLen, &chunk);
                 if (rerr == noErr && chunk > 0) { requestLen += chunk; lastProgress = TickCount(); }
-                else if (rerr == kOTNoDataErr) { if (TickCount() - lastProgress > 600) break; SystemTask(); }
+                else if (rerr == kABNoData) { if (TickCount() - lastProgress > 600) break; SystemTask(); }
                 else break;
             }
         }
         if (doLen > requestLen - headerEnd) doLen = requestLen - headerEnd;
         if (doLen < 0) doLen = 0;
         ExecuteAppleEvent(tgt, cls, eid, request + headerEnd, doLen, &cmdResult);
-        err = SendCommandResult(endpoint, &cmdResult);
+        err = SendCommandResult(conn, &cmdResult);
         gLastTX = TickCount();
         gTXCount++;
         CleanupCommandResult(&cmdResult);
@@ -1223,7 +1250,7 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
             if (n >= 0) { cmdResult.outData = h; cmdResult.outLen = n; }
             else { DisposeHandle(h); }         /* no TEXT on the scrap: empty reply */
         }
-        err = SendCommandResult(endpoint, &cmdResult);
+        err = SendCommandResult(conn, &cmdResult);
         gLastTX = TickCount();
         gTXCount++;
         CleanupCommandResult(&cmdResult);
@@ -1245,10 +1272,10 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
             unsigned long lastProgress = TickCount();
             while (requestLen < total) {
                 long chunk = 0;
-                OSStatus rerr = ReceiveData(endpoint, request + requestLen,
+                OSStatus rerr = ABRecv(conn, request + requestLen,
                                             (MAX_COMMAND_LENGTH + 256) - requestLen, &chunk);
                 if (rerr == noErr && chunk > 0) { requestLen += chunk; lastProgress = TickCount(); }
-                else if (rerr == kOTNoDataErr) { if (TickCount() - lastProgress > 600) break; SystemTask(); }
+                else if (rerr == kABNoData) { if (TickCount() - lastProgress > 600) break; SystemTask(); }
                 else break;
             }
         }
@@ -1260,7 +1287,7 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
             strcpy(responseBuffer, "STATUS:0\rSTDOUT:7\rClipSet\rSTDERR:0\r\r");
         else
             strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:13\rPutScrap error\r\r");
-        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        ABSend(conn, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();
         gTXCount++;
         return true;
@@ -1271,7 +1298,7 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
     if (strncmp(request, PROTO_WRITEFILE, strlen(PROTO_WRITEFILE)) == 0) {
         Boolean ok;
         SetActivity("WRITEFILE");
-        ok = WriteFileVerb(endpoint, request, requestLen);
+        ok = WriteFileVerb(conn, request, requestLen);
         gLastTX = TickCount();
         gTXCount++;
         return ok;
@@ -1281,7 +1308,17 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
     if (strncmp(request, PROTO_READFILE, strlen(PROTO_READFILE)) == 0) {
         Boolean ok;
         SetActivity("READFILE");
-        ok = ReadFileVerb(endpoint, request, requestLen);
+        ok = ReadFileVerb(conn, request, requestLen);
+        gLastTX = TickCount();
+        gTXCount++;
+        return ok;
+    }
+
+    /* LISTDIR: verb: native directory listing via PBGetCatInfo (no ToolServer). */
+    if (strncmp(request, PROTO_LISTDIR, strlen(PROTO_LISTDIR)) == 0) {
+        Boolean ok;
+        SetActivity("LISTDIR");
+        ok = ListDirVerb(conn, request, requestLen);
         gLastTX = TickCount();
         gTXCount++;
         return ok;
@@ -1291,7 +1328,7 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
     result = ParseCommand(request, command, &commandLength);
     if (result != kBridgeNoErr) {
         strcpy(responseBuffer, "STATUS:-1\nSTDOUT:0\n\nSTDERR:21\nInvalid command format\n\n");
-        SendData(endpoint, responseBuffer, strlen(responseBuffer));
+        ABSend(conn, responseBuffer, strlen(responseBuffer));
         StatusMessage("Invalid command format");
 
         /* Mark TX activity */
@@ -1352,7 +1389,7 @@ Boolean ProcessRequest(EndpointRef endpoint, char *request, long requestLen)
     }
 
     /* Stream response straight from the (possibly multi-MB) result handle. */
-    err = SendCommandResult(endpoint, &cmdResult);
+    err = SendCommandResult(conn, &cmdResult);
 
     /* Mark TX activity */
     gLastTX = TickCount();
@@ -1427,7 +1464,7 @@ static Boolean WaitForReconnect(void)
  * whole request already arrived in one segment (the common case) the while-loop
  * body never runs, so there is zero behaviour change on the fast path.
  */
-static void TopUpCommand(EndpointRef endpoint, char *buf, long bufSize, long *got)
+static void TopUpCommand(ABConn *conn, char *buf, long bufSize, long *got)
 {
     const char *p;
     long declared = 0;
@@ -1457,11 +1494,11 @@ static void TopUpCommand(EndpointRef endpoint, char *buf, long bufSize, long *go
     lastProgress = TickCount();
     while (*got < need) {
         long chunk = 0;
-        OSStatus rerr = ReceiveData(endpoint, buf + *got, bufSize - *got, &chunk);
+        OSStatus rerr = ABRecv(conn, buf + *got, bufSize - *got, &chunk);
         if (rerr == noErr && chunk > 0) {
             *got += chunk;
             lastProgress = TickCount();          /* progress -> reset the stall timer */
-        } else if (rerr == kOTNoDataErr) {
+        } else if (rerr == kABNoData) {
             if (TickCount() - lastProgress > 600) break;   /* ~10 s with no more data */
             SystemTask();                        /* yield while the rest arrives */
         } else {
@@ -1475,7 +1512,7 @@ static void TopUpCommand(EndpointRef endpoint, char *buf, long bufSize, long *go
  */
 int main(void)
 {
-    EndpointRef endpoint;
+    ABConn *conn = NULL;
     OSStatus err;
     char requestBuffer[MAX_COMMAND_LENGTH + 256];
     long bytesReceived;
@@ -1535,7 +1572,7 @@ int main(void)
     SystemTask();
 
     /* Initialize network */
-    err = InitializeNetwork();
+    err = ABNetInit(gPrefs.transport);
     if (err != noErr) {
         SetActivity("network init FAILED");
         /* Faceless: no mouse to wait for. Exit; Startup Items / the watchdog
@@ -1555,7 +1592,7 @@ int main(void)
             SetActivity("CONNECTING");
             SystemTask();
 
-            err = ConnectToHost(&endpoint, hostIP, BRIDGE_PORT);
+            err = ABConnect(&conn, hostIP, BRIDGE_PORT);
             if (err != noErr) {
                 /* Two separate systems can't synchronise state when no link can
                  * be formed, so each can only ASSUME the other's state. Behind the
@@ -1596,9 +1633,9 @@ int main(void)
         }
 
         /* Try to receive data */
-        err = ReceiveData(endpoint, requestBuffer, sizeof(requestBuffer) - 1, &bytesReceived);
+        err = ABRecv(conn, requestBuffer, sizeof(requestBuffer) - 1, &bytesReceived);
 
-        if (err == kOTNoDataErr) {
+        if (err == kABNoData) {
             /* Idle. Heartbeat watchdog: the host PINGs every HEARTBEAT_INTERVAL
              * while idle, so if we've heard NOTHING (and sent nothing) for longer
              * than HEARTBEAT_WATCHDOG_TICKS the link is dead — even though no
@@ -1610,7 +1647,7 @@ int main(void)
             if (TickCount() - lastIO > HEARTBEAT_WATCHDOG_TICKS) {
                 StatusMessage("host silent - heartbeat lost");
                 SetActivity("host heartbeat lost - reconnecting");
-                OTCloseProvider(endpoint);
+                ABClose(conn); conn = NULL;
                 connected = false;
                 /* Back off like the other reconnect paths: a genuinely down
                  * host would otherwise be hammered with immediate 10 s connect
@@ -1630,7 +1667,7 @@ int main(void)
             SetActivity("connection lost");
 
             /* Close current connection */
-            OTCloseProvider(endpoint);
+            ABClose(conn); conn = NULL;
             connected = false;
 
             /* Wait before reconnecting */
@@ -1642,15 +1679,15 @@ int main(void)
 
         /* Gather a fragmented COMMAND in full before parsing (no-op for verbs
          * and single-segment commands). */
-        TopUpCommand(endpoint, requestBuffer, sizeof(requestBuffer) - 1, &bytesReceived);
+        TopUpCommand(conn, requestBuffer, sizeof(requestBuffer) - 1, &bytesReceived);
 
         /* Each verb handler updates the top-bar activity (SCREENSHOT / LAUNCH /
          * QUIT / the command) and the console body itself. */
         requestBuffer[bytesReceived] = '\0';
-        if (!ProcessRequest(endpoint, requestBuffer, bytesReceived)) {
+        if (!ProcessRequest(conn, requestBuffer, bytesReceived)) {
             /* A streamed response failed mid-send: the wire is desynced. Drop
              * the link and reconnect rather than misframe every later command. */
-            OTCloseProvider(endpoint);
+            ABClose(conn); conn = NULL;
             connected = false;
             if (WaitForReconnect()) {
                 break;   /* user aborted */
@@ -1660,9 +1697,9 @@ int main(void)
 
     /* Cleanup */
     if (connected) {
-        OTCloseProvider(endpoint);
+        ABClose(conn); conn = NULL;
     }
-    ShutdownNetwork();
+    ABNetShutdown();
 
     StatusMessage("Disconnected");
 

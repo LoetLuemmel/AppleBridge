@@ -7,6 +7,7 @@
  *     # AppleBridge preferences
  *     IP=192.168.3.154
  *     DEBUG=0
+ *     NET=OT                 (networking service: OT | MacTCP)
  *     APP=MeinMac:Applications:ToolServer
  *
  * Replaces the formerly hardcoded host IP. A missing or unreadable file is not
@@ -17,6 +18,7 @@
 #define PREFS_H
 
 #include <Types.h>
+#include <transport.h>     /* kTransportOT / kTransportMacTCP for the `transport` field */
 
 #define PREFS_MAX_APPS  8
 #define PREFS_PATH_LEN  256
@@ -25,6 +27,12 @@
 typedef struct {
     char    ip[PREFS_IP_LEN];
     Boolean debug;
+    short   transport;      /* kTransportOT (default) / kTransportMacTCP — NET= key */
+    char    home[PREFS_PATH_LEN];  /* HOME= : folder holding the AppleBridge binaries.
+                                    * Empty ⇒ fall back to the legacy hardcoded path, so
+                                    * pre-installer setups keep working. Set by the
+                                    * installer; read by the watchdog + config app to
+                                    * locate the daemon/watchdog wherever they live. */
     short   appCount;
     char    apps[PREFS_MAX_APPS][PREFS_PATH_LEN];
 } AppPrefs;

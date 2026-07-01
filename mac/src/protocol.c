@@ -119,7 +119,7 @@ BridgeResult ParseCommand(const char *request, char *command, long *commandLengt
  * "STDOUT:0\r"), exactly as the old FormatResponse did, so the host's
  * _read_exact(0) + _read_until_terminator line up.
  */
-BridgeResult SendCommandResult(EndpointRef endpoint, const CommandResult *result)
+BridgeResult SendCommandResult(ABConn *conn, const CommandResult *result)
 {
     char hdr[64];
     char *p;
@@ -134,17 +134,17 @@ BridgeResult SendCommandResult(EndpointRef endpoint, const CommandResult *result
     strcpy(p, PROTO_STDOUT);   p += strlen(PROTO_STDOUT);
     NumToString(result->outLen, p);     while (*p) p++;
     *p++ = '\r';
-    err = SendData(endpoint, hdr, p - hdr);
+    err = ABSend(conn, hdr, p - hdr);
     if (err != noErr) return kBridgeCommandErr;
 
     /* STDOUT payload, streamed from the handle (locked so it can't move). */
     if (result->outLen > 0 && result->outData != NULL) {
         SignedByte hstate = HGetState(result->outData);
         HLock(result->outData);
-        err = SendData(endpoint, *result->outData, result->outLen);
+        err = ABSend(conn, *result->outData, result->outLen);
         HSetState(result->outData, hstate);
         if (err != noErr) return kBridgeCommandErr;
-        err = SendData(endpoint, "\r", 1);
+        err = ABSend(conn, "\r", 1);
         if (err != noErr) return kBridgeCommandErr;
     }
 
@@ -153,17 +153,17 @@ BridgeResult SendCommandResult(EndpointRef endpoint, const CommandResult *result
     strcpy(p, PROTO_STDERR);   p += strlen(PROTO_STDERR);
     NumToString(errLen, p);    while (*p) p++;
     *p++ = '\r';
-    err = SendData(endpoint, hdr, p - hdr);
+    err = ABSend(conn, hdr, p - hdr);
     if (err != noErr) return kBridgeCommandErr;
     if (errLen > 0) {
-        err = SendData(endpoint, result->errData, errLen);
+        err = ABSend(conn, result->errData, errLen);
         if (err != noErr) return kBridgeCommandErr;
-        err = SendData(endpoint, "\r", 1);
+        err = ABSend(conn, "\r", 1);
         if (err != noErr) return kBridgeCommandErr;
     }
 
     /* End marker */
-    err = SendData(endpoint, "\r", 1);
+    err = ABSend(conn, "\r", 1);
     if (err != noErr) return kBridgeCommandErr;
 
     return kBridgeNoErr;
@@ -182,7 +182,7 @@ BridgeResult SendCommandResult(EndpointRef endpoint, const CommandResult *result
  * SendData's OTSnd loop chunks it and rides out kOTFlowErr. The host reads
  * each section by its declared length, so there is no size cap on this path.
  */
-BridgeResult SendScreenshot(EndpointRef endpoint, const ScreenshotData *s)
+BridgeResult SendScreenshot(ABConn *conn, const ScreenshotData *s)
 {
     char hdr[96];
     char *p = hdr;
@@ -196,16 +196,16 @@ BridgeResult SendScreenshot(EndpointRef endpoint, const ScreenshotData *s)
     NumToString(s->clutCount, p);    while (*p) p++; *p++ = ':';
     NumToString(s->dataSize, p);     while (*p) p++; *p++ = '\n';
 
-    err = SendData(endpoint, hdr, p - hdr);
+    err = ABSend(conn, hdr, p - hdr);
     if (err != noErr) return kBridgeCommandErr;
 
     if (s->clutCount > 0) {
-        err = SendData(endpoint, (const char *)s->clut, (long)s->clutCount * 3);
+        err = ABSend(conn, (const char *)s->clut, (long)s->clutCount * 3);
         if (err != noErr) return kBridgeCommandErr;
     }
 
     if (s->dataSize > 0 && s->data != NULL) {
-        err = SendData(endpoint, s->data, s->dataSize);
+        err = ABSend(conn, s->data, s->dataSize);
         if (err != noErr) return kBridgeCommandErr;
     }
 

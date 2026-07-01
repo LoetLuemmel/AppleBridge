@@ -28,7 +28,9 @@ LIBS = ∂
 # Source files
 SRCS = ∂
     {SRC_DIR}main.c ∂
-    {SRC_DIR}network.c ∂
+    {SRC_DIR}transport.c ∂
+    {SRC_DIR}transport_ot.c ∂
+    {SRC_DIR}transport_mactcp.c ∂
     {SRC_DIR}protocol.c ∂
     {SRC_DIR}command.c ∂
     {SRC_DIR}screenshot.c ∂
@@ -37,7 +39,9 @@ SRCS = ∂
 # Object files
 OBJS = ∂
     {OBJ_DIR}main.c.o ∂
-    {OBJ_DIR}network.c.o ∂
+    {OBJ_DIR}transport.c.o ∂
+    {OBJ_DIR}transport_ot.c.o ∂
+    {OBJ_DIR}transport_mactcp.c.o ∂
     {OBJ_DIR}protocol.c.o ∂
     {OBJ_DIR}command.c.o ∂
     {OBJ_DIR}screenshot.c.o ∂
@@ -54,8 +58,14 @@ all ƒ {BIN_DIR}AppleBridge
 {OBJ_DIR}main.c.o ƒ {SRC_DIR}main.c {INC_DIR}applebridge.h
     {CC} {CFLAGS} {SRC_DIR}main.c -o {OBJ_DIR}main.c.o
 
-{OBJ_DIR}network.c.o ƒ {SRC_DIR}network.c {INC_DIR}applebridge.h
-    {CC} {CFLAGS} {SRC_DIR}network.c -o {OBJ_DIR}network.c.o
+{OBJ_DIR}transport.c.o ƒ {SRC_DIR}transport.c {INC_DIR}transport.h {INC_DIR}transport_priv.h
+    {CC} {CFLAGS} {SRC_DIR}transport.c -o {OBJ_DIR}transport.c.o
+
+{OBJ_DIR}transport_ot.c.o ƒ {SRC_DIR}transport_ot.c {INC_DIR}applebridge.h {INC_DIR}transport_priv.h
+    {CC} {CFLAGS} {SRC_DIR}transport_ot.c -o {OBJ_DIR}transport_ot.c.o
+
+{OBJ_DIR}transport_mactcp.c.o ƒ {SRC_DIR}transport_mactcp.c {INC_DIR}applebridge.h {INC_DIR}transport_priv.h
+    {CC} {CFLAGS} {SRC_DIR}transport_mactcp.c -o {OBJ_DIR}transport_mactcp.c.o
 
 {OBJ_DIR}protocol.c.o ƒ {SRC_DIR}protocol.c {INC_DIR}applebridge.h
     {CC} {CFLAGS} {SRC_DIR}protocol.c -o {OBJ_DIR}protocol.c.o
