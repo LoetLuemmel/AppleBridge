@@ -76,19 +76,8 @@ class MCPServer:
         try:
             result = call_tool(tool_name, arguments)
 
-            # Format result as content
-            if isinstance(result, dict):
-                content_text = json.dumps(result, indent=2)
-            else:
-                content_text = str(result)
-
             return self._make_response(req_id, {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": content_text
-                    }
-                ]
+                "content": self._format_content(result)
             })
         except Exception as e:
             return self._make_response(req_id, {
@@ -100,6 +89,30 @@ class MCPServer:
                 ],
                 "isError": True
             })
+
+    def _format_content(self, result: Any) -> list:
+        """Turn a tool result into MCP content blocks.
+
+        A dict carrying a base64 image (e.g. mac_screenshot -> {"image", "format"})
+        becomes a real `image` content block so the model can SEE it, plus a compact
+        text summary with the big blob stripped out. Everything else is JSON/text.
+        """
+        if isinstance(result, dict) and result.get("image") and result.get("format"):
+            meta = {k: v for k, v in result.items() if k != "image"}
+            return [
+                {
+                    "type": "image",
+                    "data": result["image"],                 # already base64
+                    "mimeType": f"image/{result['format']}",  # e.g. image/png
+                },
+                {
+                    "type": "text",
+                    "text": json.dumps(meta, indent=2),       # dims/depth, no base64
+                },
+            ]
+
+        text = json.dumps(result, indent=2) if isinstance(result, dict) else str(result)
+        return [{"type": "text", "text": text}]
 
     def _make_response(self, req_id: Any, result: Any) -> Dict[str, Any]:
         """Create a JSON-RPC response."""
