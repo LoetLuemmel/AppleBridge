@@ -209,7 +209,9 @@ can't express as plain text — Return (char 13), Enter (3), Tab (9), Escape (27
 Backspace (8), or the arrows (give their key_code with char_code 28-31).
 
 char_code is the ASCII/MacRoman byte; key_code is the virtual key code (0 is
-fine for ordinary characters). No modifier keys in this version.""",
+fine for ordinary characters). Pass `modifiers` to hold Command/Shift/Option/
+Control — e.g. ["command"] for Cmd-key shortcuts, ["command","shift"]. For a
+menu command it's usually clearer to call mac_menu.""",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -220,9 +222,43 @@ fine for ordinary characters). No modifier keys in this version.""",
                 "key_code": {
                     "type": "integer",
                     "description": "Virtual key code (optional; 0 for ordinary characters)"
+                },
+                "modifiers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Modifier keys to hold: any of command/cmd, shift, option/alt, control/ctrl, caps (e.g. [\"command\"])"
                 }
             },
             "required": ["char_code"]
+        }
+    },
+    {
+        "name": "mac_menu",
+        "description": """Invoke a menu command by its Command-key equivalent in the FRONT app.
+
+Selecting a menu item is a modal mouse-tracking loop that runs INSIDE the front
+app, so a synthetic click can't drive it — the reachable path is the menu's
+KEYBOARD equivalent. This injects Command+<key> (add Shift/Option via
+`modifiers`), which the front app dispatches through MenuKey.
+
+`key` is the single character shown next to the menu item (read it off a
+screenshot): e.g. "Q" to Quit, "W" to close, "N" for New, "S" to Save. Items
+with NO Command-key equivalent can't be reached this way — use the app's own
+keyboard interface (e.g. a command window) for those.""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "description": "Single character of the menu item's Command-key equivalent (e.g. Q, W, N, S)"
+                },
+                "modifiers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Extra modifiers beyond Command (e.g. [\"shift\"] for a Cmd-Shift item). Command is always included."
+                }
+            },
+            "required": ["key"]
         }
     },
     {
@@ -794,10 +830,75 @@ def mac_type(text: str) -> Dict[str, Any]:
     return last
 
 
-def mac_key(char_code: int, key_code: int = 0) -> Dict[str, Any]:
-    """Press one key in the front app via the daemon's KEY verb."""
-    return _inject(f"KEY:{int(char_code)}:{int(key_code)}",
-                   {"char_code": char_code, "key_code": key_code})
+# Event Manager modifier bits (Inside Macintosh: Toolbox Essentials). The daemon
+# takes the summed mask as the KEY verb's optional 3rd field.
+_MODIFIER_BITS = {
+    "cmd": 256, "command": 256, "apple": 256, "meta": 256,
+    "shift": 512,
+    "caps": 1024, "capslock": 1024, "alpha": 1024, "alphalock": 1024,
+    "option": 2048, "opt": 2048, "alt": 2048,
+    "control": 4096, "ctrl": 4096,
+}
+
+
+def _modifiers_mask(modifiers) -> int:
+    """Turn a list of modifier names (or an int mask) into the Event Manager mask."""
+    if modifiers is None:
+        return 0
+    if isinstance(modifiers, int):
+        return int(modifiers)
+    total = 0
+    for m in modifiers:
+        key = str(m).strip().lower().replace(" ", "").replace("-", "").replace("_", "")
+        if key not in _MODIFIER_BITS:
+            raise ValueError(
+                f"unknown modifier {m!r} (use cmd/command, shift, option, control, caps)")
+        total |= _MODIFIER_BITS[key]
+    return total
+
+
+def mac_key(char_code: int, key_code: int = 0, modifiers=None) -> Dict[str, Any]:
+    """Press one key in the front app via the daemon's KEY verb.
+
+    modifiers is an optional list of names (e.g. ["command"], ["command","shift"])
+    or a raw Event Manager mask; it makes Command-key menu shortcuts and
+    Option/Shift-modified input reachable.
+    """
+    mask = _modifiers_mask(modifiers)
+    verb = f"KEY:{int(char_code)}:{int(key_code)}:{mask}"
+    return _inject(verb, {"char_code": char_code, "key_code": key_code,
+                          "modifiers": modifiers or []})
+
+
+def mac_menu(key: str, modifiers=None) -> Dict[str, Any]:
+    """Invoke a menu command by its Command-key equivalent in the front app.
+
+    Selecting a menu item is a modal mouse-tracking loop that runs inside the
+    front app; a background daemon is not scheduled during it, so a synthetic
+    click can't drive it. The reachable path is the menu's KEYBOARD equivalent:
+    this injects Command+<key> (add Shift/Option via `modifiers`), which the front
+    app dispatches through MenuKey. `key` is the single character printed next to
+    the menu item (e.g. "Q" to Quit, "W" to close, "N" for New). Items with no
+    Command-key equivalent cannot be reached this way -- use the app's own
+    keyboard interface for those.
+    """
+    ch = str(key)
+    if len(ch) != 1:
+        return {"success": False, "error": "key must be a single character",
+                "menu_key": key}
+    try:
+        cc = ord(ch.lower())
+    except TypeError:
+        return {"success": False, "error": "key must be a single character",
+                "menu_key": key}
+    if cc > 255:
+        return {"success": False, "error": "key must be a MacRoman character",
+                "menu_key": key}
+    # Menu equivalents are Command-based; default to Command, always include it.
+    names = list(modifiers) if modifiers else []
+    mask = _modifiers_mask(names) | 256  # cmdKey
+    return _inject(f"KEY:{cc}:0:{mask}",
+                   {"menu_key": key, "modifiers": names or ["command"]})
 
 
 def mac_click(x: int, y: int) -> Dict[str, Any]:
@@ -1202,6 +1303,7 @@ TOOL_HANDLERS = {
     "launch_app": launch_app,
     "mac_type": mac_type,
     "mac_key": mac_key,
+    "mac_menu": mac_menu,
     "mac_click": mac_click,
     "mac_status": mac_status,
     "mac_build": mac_build,

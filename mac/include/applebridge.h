@@ -134,6 +134,7 @@ Boolean ListDirVerb(ABConn *conn, char *request, long requestLen);
 
 /* events.c -- synthetic input injection (drive the front GUI app). */
 OSErr InjectKey(short charCode, short keyCode);
+OSErr InjectKeyMod(short charCode, short keyCode, short modifiers);
 OSErr InjectType(const char *text, long len);
 OSErr InjectClick(short h, short v);
 

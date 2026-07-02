@@ -1,9 +1,36 @@
-# Key Modifiers and Menu Selection — Design
+# Key Modifiers and Menu Selection
 
-Status: **design** (2026-07-02). Companion to the input-injection implementation
+Status: **Phase 1 shipped & verified on-device (2026-07-02)**; Phase 2 (journaling
+menu-by-name) still deferred. Companion to the input-injection implementation
 (`mac/src/events.c`, verbs in `mac/src/main.c`). Motivated live: driving Microsoft
 FoxPro over the bridge, a synthetic click could **not** open a menu — so we could
 reach FoxPro's Command Window (which takes plain keystrokes) but not its menus.
+
+## What shipped (Phase 1)
+
+- Wire: `KEY:<charCode>:<keyCode>:<modifiers>` — the optional 3rd field is the
+  Event Manager modifier mask (cmdKey 256, shiftKey 512, optionKey 2048,
+  controlKey 4096, alphaLock 1024), default 0, so legacy `KEY:cc:kc` is unchanged.
+- Daemon: `InjectKeyMod(charCode, keyCode, modifiers)` in `events.c`
+  (`InjectKey` is now a `mods == 0` wrapper, keeping the PR #55 lossless retry).
+- MCP: `mac_key` gained a `modifiers` list; new **`mac_menu`** tool injects a
+  menu command's Command-key equivalent (Cmd+`key`, plus optional Shift/Option).
+- **Verified live**: launched SimpleText, injected **Cmd-A** → the text selected
+  (proving cmdKey reached the app's `MenuKey`); then a plain key replaced the
+  selection (proving unmodified keys still land and the modifier bits were
+  cleared — no leak). Host-edge tests in `tests/test_input_modifiers.py`.
+
+### How the modifier actually reaches the app (mechanism as built)
+
+The design below reasoned the modifier had to be held in the low-memory `KeyMap`
+so the Event Manager reports it at `GetNextEvent` time. That works, but there is
+a cleaner, more direct lever the daemon **also** uses: `PPostEvent` (the
+queue-element-returning variant of `PostEvent`) hands back the `EvQElPtr`, so we
+stamp `evtQModifiers` **directly** on the queued event. `events.c` does **both**,
+belt-and-suspenders — stamp `evtQModifiers` *and* hold the modifier keys' `KeyMap`
+bits across the app's read, then release — so the modifier lands whether the app
+receives the stored modifiers or the Event Manager recomputes them. This landed
+on the first on-device try (Cmd-A selected text in SimpleText).
 
 ## The gap — two related shortfalls
 
@@ -36,7 +63,7 @@ reading the menu structure — a journaling hook (Phase 2).
 
 The pragmatic, high-value step is therefore **modifier injection**, not a menu verb.
 
-## Phase 1 — Key modifiers (recommended first)
+## Phase 1 — Key modifiers (SHIPPED — original design below)
 
 Expose Command/Option/Shift/Control on key injection. Then *every Cmd-key menu
 shortcut becomes reachable* — Cmd-Q, Cmd-W, Cmd-S, and app-specific ones the agent
@@ -100,8 +127,9 @@ deferred until a real workflow needs a shortcut-less item.
 
 ## Recommended sequence
 
-1. **Phase 1 modifiers** — small, high-leverage, unlocks Cmd-key menu shortcuts.
-   Build + verify on Basilisk (Cmd-Q self-test), then expose in `mac_key`.
+1. **Phase 1 modifiers** — ✅ done (2026-07-02): built + verified on Basilisk
+   (Cmd-A selected text in SimpleText; plain key confirmed no leak), exposed as
+   `mac_key(modifiers=…)` and `mac_menu`.
 2. **Phase 2 journaling menu verb** — only if a needed menu item lacks a shortcut.
 
 This mirrors the project's usual order: design → on-device verify the fiddly low-mem
