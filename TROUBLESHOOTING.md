@@ -101,20 +101,24 @@ if (WaitNextEvent(everyEvent, &event, 1, NULL)) {
    Router: 192.168.x.1
    ```
 
-3. **Verify Mac can reach host**
-   - From Mac: Use MacTCP Ping or similar utility
-   - From host: Check Basilisk II networking mode (SLIRP vs bridged)
+3. **Verify the bridge direction**
+   - The guest is behind MACNAT and is **never pingable** — don't diagnose with ping.
+     Watch the *outbound* connection instead: `/tmp/applebridge_server.log` should show
+     `Mac connected from …`.
+   - Confirm the emulator backend is `ether etherhelper/en8` (not slirp) and that the
+     host's `.154` alias is on the default-route interface (`start_stack.sh` does this).
 
-4. **Check firewall on host**
+4. **Check the host firewall**
    ```bash
-   # macOS: Allow incoming on port 9000
-   sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /path/to/MacintoshBridgeHost.app
+   # The host server runs under system Python; allow it to accept on :9000 if prompted.
+   sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /usr/bin/python3
    ```
+   Note: with the firewall in stealth mode a closed port sends no RST, so "server down"
+   and "wrong NIC" both look like a timeout — diagnose via the log, not a refused connection.
 
-5. **Verify correct IP in src/main.c**
-   ```c
-   char hostIPStr[] = "192.168.3.154";  // Must match host IP
-   ```
+5. **Verify the host IP in prefs**
+   The daemon reads `IP=192.168.3.154` from the `AppleBridge Prefs` file (edit it in place
+   or via AppleBridgeConfig). A compiled-in fallback (`.154`) applies if the file is missing.
 
 ### Daemon hangs on "CONNECTING" and freezes the emulator (100% CPU)
 
@@ -176,7 +180,7 @@ Full write-up: <https://pit.390er.de/applebridge/anatomy-of-a-freeze-macnat-retu
 3. **Restart both sides**
    ```
    Mac: Quit AppleBridge, restart ToolServer, relaunch AppleBridge
-   Host: MacintoshBridgeHost will reconnect automatically
+   Host: host_server.py re-accepts the daemon automatically
    ```
 
 ---
@@ -609,7 +613,7 @@ When things don't work, check in order:
 3. ✅ **ToolServer running** - For command output
 4. ✅ **AppleBridge running** - Shows "Connected to host!"
 5. ✅ **RX/TX LEDs flash** - Activity indicators (v0.3.0+)
-6. ✅ **MCP server responds** - MacintoshBridgeHost logs show activity
+6. ✅ **MCP server responds** - host_server.py logs (`/tmp/applebridge_server.log`) show activity
 7. ✅ **Encoding correct** - Files converted via encoding_convert.py
 8. ✅ **LIBS set** - For Make and Link commands
 
@@ -621,12 +625,12 @@ When things don't work, check in order:
 - [README.md](README.md) - Quick start and overview
 
 **Still stuck?**
-- Check MacintoshBridgeHost console logs
-- Look at AppleBridge status window on Mac
+- Check the host server log: `/tmp/applebridge_server.log`
+- Look at the AppleBridge monitor window (or menu-bar LED) on the Mac
 - Examine RX/TX LED patterns (v0.3.0+)
-- Try the standalone host_server.py for direct testing
+- Try the standalone host_server.py for direct testing (`/usr/bin/python3 host_server.py`)
 
 ---
 
-**Last Updated:** April 12, 2026
-**Version:** AppleBridge 0.3.0
+**Last Updated:** July 2, 2026
+**Version:** AppleBridge v0.7.0 (wire protocol v0.2)

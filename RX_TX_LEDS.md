@@ -5,7 +5,7 @@
 
 ## Overview
 
-Enhanced AppleBridge Client with visual RX/TX activity indicators to diagnose communication breakdowns between MacintoshBridgeHost and the Mac daemon.
+Enhanced AppleBridge Client with visual RX/TX activity indicators to diagnose communication breakdowns between the host server and the Mac daemon.
 
 ## Problem Statement
 
@@ -14,7 +14,7 @@ AppleBridge communication would fail silently with no visibility into:
 - Whether responses were being sent back
 - Where in the communication chain failures occurred
 
-MacintoshBridgeHost logs showed:
+The host server logs showed:
 ```
 Command forwarded to Mac daemon, waiting for response...
 Control connection cancelled
@@ -136,7 +136,7 @@ BuildIt
 **Scenario 2: No command reaches Mac**
 - RX LED stays gray ✗
 - TX LED stays gray ✗
-- **Diagnosis:** Network connection lost or MacintoshBridgeHost not forwarding
+- **Diagnosis:** Network connection lost or the host server not forwarding
 
 **Scenario 3: Normal operation**
 - RX LED flashes green ✓
