@@ -444,6 +444,30 @@ again before continuing.""",
         "inputSchema": {"type": "object", "properties": {}, "required": []}
     },
     {
+        "name": "mac_update_daemon",
+        "description": """Self-update the running AppleBridge daemon, over the bridge.
+
+Replaces the running daemon binary without a manual Shift-boot / Finder swap and
+without ToolServer. The installer can't do this — it copies, and the OS locks the
+running file — but the daemon can RENAME itself (renaming an open file is allowed),
+so this stages the new binary beside it and has it rename the staged copy into
+place. Steps: stage host_path (a fork-aware MacBinary of the new daemon, e.g. from
+mac_get_file) as '<install>/AppleBridge new', then send SWAPSELF.
+
+It does NOT reboot. After it returns success, call mac_reboot so the watchdog
+launches the new binary, then verify the daemon's vers. mac_dir defaults to the
+daemon's reported install folder (mac_status home=).""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "host_path": {"type": "string", "description": "Host path to the new daemon binary (fork-aware MacBinary, e.g. produced by mac_get_file)"},
+                "mac_dir": {"type": "string", "description": "Mac install folder holding the running daemon (default: the daemon's reported home=)"},
+                "staged_name": {"type": "string", "description": "Staging leaf name in that folder (default 'AppleBridge new'); must be '<daemon name> new'"}
+            },
+            "required": ["host_path"]
+        }
+    },
+    {
         "name": "run_applescript",
         "description": """Run AppleScript on the HOST (macOS) via osascript.
 
@@ -1024,6 +1048,7 @@ def mac_status() -> Dict[str, Any]:
         "rx_count": _int("rx"),
         "tx_count": _int("tx"),
         "uptime_seconds": _int("uptime"),
+        "home": f.get("home") or None,   # daemon install folder (for self-update staging)
         "raw": stdout,
     }
 
@@ -1292,6 +1317,46 @@ def mac_reboot() -> Dict[str, Any]:
         return {"success": True, "note": f"reboot triggered (connection dropped: {e})"}
 
 
+def mac_update_daemon(host_path: str, mac_dir: Optional[str] = None,
+                      staged_name: str = "AppleBridge new") -> Dict[str, Any]:
+    """Self-update the running daemon, entirely over the bridge.
+
+    Stages `host_path` (a fork-aware MacBinary of the new daemon — e.g. one pulled
+    with mac_get_file) into the daemon's install folder as `staged_name`, then
+    sends the SWAPSELF verb: the daemon renames itself aside and renames the
+    staged binary into its place (renaming an open file is allowed, unlike
+    overwriting it). This does NOT reboot — call mac_reboot afterward so the
+    watchdog launches the new binary, then verify the vers. `mac_dir` defaults to
+    the daemon's reported install folder (mac_status home=)."""
+    try:
+        conn = get_connection()
+        if not conn.is_connected():
+            return {"success": False, "error": "Mac not connected"}
+        if not mac_dir:
+            mac_dir = mac_status().get("home")
+            if not mac_dir:
+                return {"success": False,
+                        "error": "daemon reported no install folder (home=); pass mac_dir"}
+        if not mac_dir.endswith(":"):
+            mac_dir += ":"
+        staged = mac_dir + staged_name
+        # 1. stage the new binary beside the running daemon (a fresh file: no lock)
+        put = mac_put_file(host_path, staged, type="APPL", creator="ABrg")
+        if not put.get("success"):
+            return {"success": False, "stage": "stage", "staged": staged,
+                    "error": put.get("error") or "staging failed"}
+        # 2. swap it in (daemon renames itself aside, staged -> running name)
+        status, stdout, stderr = conn.send_command("SWAPSELF", timeout=20.0)
+        if status != 0:
+            return {"success": False, "stage": "swapself", "staged": staged,
+                    "status": status, "error": stderr or stdout or "swap failed",
+                    "hint": "err -43 = staged binary missing; other = OS refused the rename"}
+        return {"success": True, "staged": staged, "message": stdout or "Swapped",
+                "next": "call mac_reboot to activate, then verify the daemon's vers"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 # Tool dispatcher
 TOOL_HANDLERS = {
     "mpw_execute": mpw_execute,
@@ -1315,6 +1380,7 @@ TOOL_HANDLERS = {
     "mac_restart_toolserver": mac_restart_toolserver,
     "run_applescript": run_applescript,
     "mac_reboot": mac_reboot,
+    "mac_update_daemon": mac_update_daemon,
 }
 
 
