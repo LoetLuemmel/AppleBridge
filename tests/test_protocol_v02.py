@@ -64,6 +64,75 @@ class ScriptedDaemon:
         return out
 
 
+class MockDaemon:
+    """A faithful in-process mock of the v0.2 daemon's HELLO/AUTH2 handlers,
+    driving negotiate_version() through the full auth handshake. It reproduces the
+    daemon's logic in Python (same ab_digest) so the host's verify+AUTH2 path is
+    exercised for real against a correct — or deliberately adversarial — peer.
+
+    Options model the failure modes: version=1 (legacy), advertise_auth=False (v2
+    but no auth), wrong_proof (daemon can't prove the token), reject_auth2 (daemon
+    refuses the host's proof)."""
+
+    def __init__(self, token=b"", daemon_nonce="aabbccddeeff0011", version=2,
+                 advertise_auth=True, wrong_proof=False, reject_auth2=False):
+        self.token = token
+        self.daemon_nonce = daemon_nonce
+        self.version = version
+        self.advertise_auth = advertise_auth
+        self.wrong_proof = wrong_proof
+        self.reject_auth2 = reject_auth2
+        self.blocking = True
+        self._out = b""
+        self._pos = 0
+        self.auth2_seen = None      # the proof the host sent in AUTH2 (or None)
+
+    def settimeout(self, _):
+        pass
+
+    def setblocking(self, b):
+        self.blocking = b
+
+    def close(self):
+        pass
+
+    def _arm(self, data):
+        self._out, self._pos = bytes(data), 0
+
+    def sendall(self, data):
+        text = data.decode("ascii", "replace")
+        if text.startswith("HELLO:"):
+            if self.version < 2:
+                self._arm(V01_INVALID)          # legacy peer: unknown-verb error
+                return
+            host_nonce = (text.strip().split(":") + ["", "", ""])[2]
+            if self.token and self.advertise_auth:
+                proof = host_server.ab_digest(host_nonce.encode(), self.token)
+                if self.wrong_proof:
+                    proof = "0" * 16
+                body = (f"ABVERSION:{self.version};FEAT=auth;"
+                        f"NONCE={self.daemon_nonce};PROOF={proof}")
+            else:
+                body = f"ABVERSION:{self.version};FEAT=;NONCE=;PROOF="
+            self._arm(_status_frame(0, body.encode()))
+        elif text.startswith("AUTH2:"):
+            self.auth2_seen = text.strip().split(":", 1)[1]
+            want = host_server.ab_digest(self.daemon_nonce.encode(), self.token)
+            if self.reject_auth2 or self.auth2_seen != want:
+                self._arm(_status_frame(-1, b"", b"Auth failed"))
+            else:
+                self._arm(_status_frame(0, b"AuthOK"))
+
+    def recv(self, n):
+        if self._pos >= len(self._out):
+            if not self.blocking:
+                raise BlockingIOError()          # idle drain
+            return b""
+        chunk = self._out[self._pos:self._pos + n]
+        self._pos += len(chunk)
+        return chunk
+
+
 class ListSocket:
     """Dispenses a fixed byte string in <=chunk pieces for _recv_control_command;
     b'' at EOF. No arming — used where the server only reads."""
@@ -194,6 +263,99 @@ def test_negotiate_no_token_sends_empty_nonce():
     srv = _server_with(V01_INVALID)
     srv.negotiate_version()
     assert srv.client_socket.sent == b"HELLO:2:\n"
+
+
+# --- auth handshake (mutual challenge/response) ----------------------------
+
+class _token:
+    """Context manager: set host_server.AUTH_TOKEN for one test, then restore."""
+    def __init__(self, tok):
+        self.tok = tok
+
+    def __enter__(self):
+        self.saved = host_server.AUTH_TOKEN
+        host_server.AUTH_TOKEN = self.tok
+        return self
+
+    def __exit__(self, *a):
+        host_server.AUTH_TOKEN = self.saved
+
+
+def _srv_daemon(daemon):
+    srv = host_server.AppleBridgeServer()
+    srv.client_socket = daemon
+    srv.connected = True
+    return srv
+
+
+def test_auth_success_end_to_end():
+    with _token(b"s3cret"):
+        d = MockDaemon(token=b"s3cret")
+        srv = _srv_daemon(d)
+        srv.negotiate_version()
+        assert srv.authed is True
+        assert srv.connected is True
+        assert srv.peer_version == 2
+        # The host proved the token over the DAEMON's nonce.
+        assert d.auth2_seen == host_server.ab_digest(d.daemon_nonce.encode(), b"s3cret")
+
+
+def test_auth_rejects_daemon_with_wrong_proof():
+    # Daemon can't prove the token -> host drops BEFORE sending AUTH2.
+    with _token(b"s3cret"):
+        d = MockDaemon(token=b"s3cret", wrong_proof=True)
+        srv = _srv_daemon(d)
+        srv.negotiate_version()
+        assert srv.authed is False
+        assert srv.connected is False
+        assert d.auth2_seen is None            # never proved ourselves to a bad peer
+
+
+def test_auth_token_mismatch_fails_closed():
+    # Host token != daemon token: the daemon's PROOF (over the daemon's token)
+    # won't match what the host expects -> drop, no AUTH2.
+    with _token(b"hostkey"):
+        d = MockDaemon(token=b"daemonkey")
+        srv = _srv_daemon(d)
+        srv.negotiate_version()
+        assert srv.authed is False and srv.connected is False
+        assert d.auth2_seen is None
+
+
+def test_auth_daemon_rejects_our_auth2():
+    # Daemon's PROOF is fine, but it refuses our AUTH2 -> drop, authed False.
+    with _token(b"s3cret"):
+        d = MockDaemon(token=b"s3cret", reject_auth2=True)
+        srv = _srv_daemon(d)
+        srv.negotiate_version()
+        assert d.auth2_seen is not None        # we did send AUTH2
+        assert srv.authed is False and srv.connected is False
+
+
+def test_auth_required_but_peer_is_legacy_v1():
+    # Token set but peer only speaks v1 -> fail closed (won't run unauthenticated).
+    with _token(b"s3cret"):
+        d = MockDaemon(token=b"s3cret", version=1)
+        srv = _srv_daemon(d)
+        srv.negotiate_version()
+        assert srv.authed is False and srv.connected is False
+
+
+def test_auth_required_but_peer_offers_no_auth():
+    # Peer is v2 but doesn't advertise FEAT=auth -> fail closed.
+    with _token(b"s3cret"):
+        d = MockDaemon(token=b"s3cret", advertise_auth=False)
+        srv = _srv_daemon(d)
+        srv.negotiate_version()
+        assert srv.authed is False and srv.connected is False
+
+
+def test_no_token_leaves_auth_open():
+    # Default (no token): authed True even against an auth-capable v2 daemon.
+    d = MockDaemon(token=b"")     # AUTH_TOKEN is b"" in the test env
+    srv = _srv_daemon(d)
+    srv.negotiate_version()
+    assert srv.authed is True and srv.connected is True and srv.peer_version == 2
 
 
 # --- bounded reads ---------------------------------------------------------
