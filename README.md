@@ -202,7 +202,7 @@ AppleBridge/
 │   └── Makefile.68k              # MPW makefile
 ├── mcp/                          # Python MCP server (the MCP entry point)
 │   ├── server.py                 # `python -m mcp.server` (see .mcp.json)
-│   ├── tools.py                  # the 7 MCP tools
+│   ├── tools.py                  # the 20 MCP tools
 │   └── mac_connection.py         # talks to host_server.py on :9001
 ├── host/                         # Host server + utilities
 │   ├── host_server.py            # the bridge: :9000 daemon socket + :9001 control
@@ -258,7 +258,7 @@ All core features working:
 - ✅ Application-level heartbeat + watchdog (no host-down freeze)
 - ✅ Apple Events command execution (ToolServer returns output)
 - ✅ Remote compilation and linking
-- ✅ MCP integration with Claude Code (7 tools)
+- ✅ MCP integration with Claude Code (20 tools)
 - ✅ Encoding conversion (UTF-8 ↔ MacRoman)
 - ✅ Screenshot capture (emulated framebuffer → PNG, host-side decode)
 - ✅ Host server auto-start via launchd

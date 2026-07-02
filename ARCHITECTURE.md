@@ -14,8 +14,8 @@ AppleBridge combines two distinct technologies to create a unique capability: **
 ```
 Claude Code (AI/LLM)
     ↓ [MCP Protocol] - AI tool interface
-MacintoshBridgeHost (Swift, modern macOS)
-    ↓ [TCP/IP via OpenTransport] - Network bridge
+MCP server + host_server.py (Python, modern macOS)
+    ↓ [TCP/IP via Open Transport or MacTCP] - Network bridge
 AppleBridge Daemon (C, 68k Mac in Basilisk II emulator)
     ↓ [Apple Events] - Classic Mac IPC
 ToolServer/MPW Shell (classic Mac OS System 7.6.1)
@@ -133,7 +133,7 @@ The MCP layer provides:
 ❌ **MCP Only:**
 - AI has tools defined, but can't reach the Mac
 - No way to execute commands
-- Dead end at the Swift host
+- Dead end at the host bridge
 
 ✅ **Both Together:**
 - AI can develop for classic Mac remotely
@@ -179,12 +179,15 @@ Claude: "Counter app built and tested successfully!"
 
 ## Technical Details
 
-### OpenTransport on Mac Side
+### Transport on Mac Side
 
-**File:** `mac/src/network.c`
+**Files:** `mac/src/transport.c` (backend dispatcher + fallback ladder),
+`mac/src/transport_ot.c` (Open Transport), `mac/src/transport_mactcp.c` (MacTCP).
+The backend is selected by the `NET=` prefs key. (`network.c` was split into these
+in the v0.7.0 transport-seam refactor.)
 
 - CLIENT mode (connects OUT to host)
-- Implements `ConnectToHost()`, `SendData()`, `ReceiveData()`
+- Implements `ConnectToHost()`, `SendData()`, `ReceiveData()` behind an opaque `ABConn`
 - Handles reconnection after failures
 - 30-second retry intervals
 
@@ -192,23 +195,25 @@ Claude: "Counter app built and tested successfully!"
 
 **Files:** `mcp/server.py`, `mcp/tools.py`, `mcp/mac_connection.py`
 
-**MCP Tools Provided:**
-- `mpw_execute` - Execute MPW/ToolServer commands
-- `mac_write_file` - Write text files (with encoding conversion)
-- `mac_read_file` - Read text files (with encoding conversion)
-- `mac_list_files` - Directory listings
-- `mac_compile` - SC compiler wrapper
-- `mac_screenshot` - Capture emulator window
+**MCP Tools Provided:** 20 tools across two surfaces plus lifecycle — driving a
+build and reading output (`mpw_execute`, `mac_compile`, `mac_build`,
+`mac_read_file`, `mac_list_files`, `mac_send_apple_event`), moving bytes /
+running / observing / interacting (`mac_put_file`, `mac_get_file`,
+`mac_write_file`, `launch_app`, `mac_screenshot`, `mac_type`, `mac_key`,
+`mac_click`, `mac_clipboard_get`, `mac_clipboard_set`), and liveness/lifecycle
+(`mac_status`, `mac_reboot`, `mac_restart_toolserver`, `run_applescript`). See
+`CLAUDE.md` for the authoritative, current list.
 
-### The Bridge (MacintoshBridgeHost)
+### The Bridge (host_server.py)
 
-**File:** `MacintoshBridgeHost/MacintoshBridgeHost/LocalControlServer.swift`
+**File:** `host/host_server.py` (Python, stdlib-only, run under `/usr/bin/python3`).
+The retired Swift `MacintoshBridgeHost` was replaced by this Python server.
 
-- TCP server on port 9001 (MCP commands)
-- TCP client to Mac daemon on port 9000 (Mac connection)
+- TCP server on port 9001 (control / MCP commands)
+- TCP server on port 9000 that the Mac daemon connects OUT to (NAT-reversed)
 - Routes commands: MCP client → Mac daemon
 - Routes responses: Mac daemon → MCP client
-- Handles encoding conversion and error cases
+- Length-framed reads, flow control, heap-streams responses > 64 KB
 
 ---
 
@@ -219,7 +224,7 @@ Claude: "Counter app built and tested successfully!"
 ```
 1. Claude Code
    ↓ MCP tool call: mpw_execute("Echo 'Hello'")
-2. MacintoshBridgeHost (LocalControlServer)
+2. host_server.py (control server)
    ↓ Forwards command to Mac daemon via TCP
 3. AppleBridge Daemon
    ↓ Sends Apple Event to ToolServer
@@ -227,7 +232,7 @@ Claude: "Counter app built and tested successfully!"
    ↓ Executes command, returns output via AE
 5. AppleBridge Daemon
    ↓ Formats response: STATUS:0, STDOUT:<data>
-6. MacintoshBridgeHost
+6. host_server.py
    ↓ Forwards response back to MCP client
 7. Claude Code
    ↓ Receives: {success: true, output: "Hello"}
