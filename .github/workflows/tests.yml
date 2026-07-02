@@ -1,0 +1,23 @@
+name: tests
+
+# Runs the stdlib-only host-edge suite (host/ codecs + the length-framed
+# reader). No emulator, no live bridge — pure bytes-in/bytes-out, so it runs
+# on a plain Linux runner. Makes "merge once CI passes" real.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  host-edge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run host-edge test suite
+        env:
+          PYTHON: python3   # run_all.sh honors $PYTHON (else /usr/bin/python3)
+        run: bash tests/run_all.sh
