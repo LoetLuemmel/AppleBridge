@@ -6,4 +6,5 @@
 SC -i :include: -model far :src:installer.c -o :obj:installer.c.o
 Link -model far -o :bin:AppleBridgeInstaller :obj:installer.c.o :obj:prefs.c.o :obj:mystring.c.o "MeinMac:Interfaces&Libraries:Libraries:CLibraries:StdCLib.o" "MeinMac:Interfaces&Libraries:Libraries:Libraries:Interface.o" "MeinMac:Interfaces&Libraries:Libraries:Libraries:MacRuntime.o"
 Rez installer_res.r -a -o :bin:AppleBridgeInstaller
+Rez vers.r -a -o :bin:AppleBridgeInstaller
 SetFile -t APPL -c 'ABis' :bin:AppleBridgeInstaller

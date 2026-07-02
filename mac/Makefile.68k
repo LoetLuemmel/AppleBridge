@@ -41,6 +41,7 @@ all ƒ {BIN_DIR}AppleBridge
 {BIN_DIR}AppleBridge ƒ {OBJS} AppleBridge_res.r
 	{LINK} {LDFLAGS} {OBJS} {LIBS_LIST}
 	Rez AppleBridge_res.r -a -o {BIN_DIR}AppleBridge
+	Rez vers.r -a -o {BIN_DIR}AppleBridge
 	SetFile -t APPL -c 'ABrg' {BIN_DIR}AppleBridge
 
 # Compile rules
