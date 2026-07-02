@@ -27,6 +27,7 @@ already content-agnostic) — no per-response size limit on this side.
 import base64
 import hmac
 import os
+import select
 import socket
 import sys
 import time
@@ -88,7 +89,96 @@ MAX_CTRL_REQUEST = 12 * 1024 * 1024
 # environment, never a file in the TCC-protected repo. Empty -> auth skipped.
 AUTH_TOKEN = os.environ.get("APPLEBRIDGE_TOKEN", "").encode("utf-8")
 
+# --- Serial transport (Phase 5 reach; see docs/SERIAL_TRANSPORT.md) ----------
+# When APPLEBRIDGE_SERIAL names a device, the host serves the daemon over a serial
+# line instead of the TCP :9000 accept — for Ethernet-less machines and the pty
+# test harness. The :9001 control port and all framing/dispatch are unchanged.
+SERIAL_DEVICE = os.environ.get("APPLEBRIDGE_SERIAL") or None
+SERIAL_BAUD = int(os.environ.get("APPLEBRIDGE_BAUD", "57600"))
+
 _logf = open(LOG_PATH, "a", buffering=1)  # line-buffered
+
+
+class SerialConn:
+    """A socket-like wrapper over a raw serial fd, so AppleBridgeServer can drive a
+    serial daemon link with the exact recv / sendall / settimeout / setblocking /
+    close surface it already uses for TCP. Raw 8-N-1 at the chosen baud; select()
+    supplies the timeout and non-blocking semantics the framing readers expect.
+    stdlib-only (os + termios + select), matching the host's no-dependency rule."""
+
+    def __init__(self, device, baud):
+        self.device = device
+        self._timeout = None
+        self._blocking = True
+        self.fd = os.open(device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+        self._configure(baud)
+
+    def _configure(self, baud):
+        import termios
+        speed = getattr(termios, "B%d" % baud, None)
+        if speed is None:
+            raise ValueError("unsupported baud %r" % baud)
+        a = termios.tcgetattr(self.fd)   # [iflag, oflag, cflag, lflag, ispeed, ospeed, cc]
+        a[0] = 0                          # iflag: raw (no CR/LF xlate, no flow ctl)
+        a[1] = 0                          # oflag: raw
+        a[3] = 0                          # lflag: raw (no echo, no canonical mode)
+        cflag = a[2]
+        cflag &= ~(termios.PARENB | termios.CSTOPB | termios.CSIZE)
+        cflag |= termios.CS8 | termios.CREAD | termios.CLOCAL   # 8-N-1, rx on, ignore modem lines
+        a[2] = cflag
+        a[4] = speed                      # ispeed
+        a[5] = speed                      # ospeed
+        a[6][termios.VMIN] = 0
+        a[6][termios.VTIME] = 0
+        termios.tcsetattr(self.fd, termios.TCSANOW, a)
+        try:
+            termios.tcflush(self.fd, termios.TCIOFLUSH)
+        except OSError:
+            pass
+
+    def settimeout(self, t):
+        self._timeout = t
+
+    def setblocking(self, flag):
+        self._blocking = bool(flag)
+
+    def recv(self, n):
+        """Match socket.recv: bytes on data, b'' if the peer/pty closed. Raises
+        BlockingIOError when non-blocking and idle (so _drain sees a healthy idle
+        link) and socket.timeout when a bounded blocking read expires."""
+        if not self._blocking:
+            r, _, _ = select.select([self.fd], [], [], 0)
+            if not r:
+                raise BlockingIOError()
+            return os.read(self.fd, n)
+        deadline = None if self._timeout is None else time.monotonic() + self._timeout
+        while True:
+            wait = None if deadline is None else max(0.0, deadline - time.monotonic())
+            r, _, _ = select.select([self.fd], [], [], wait)
+            if not r:
+                raise socket.timeout()
+            try:
+                return os.read(self.fd, n)
+            except BlockingIOError:
+                continue
+
+    def sendall(self, data):
+        mv = memoryview(data)
+        while mv:
+            _, w, _ = select.select([], [self.fd], [], self._timeout)
+            if not w:
+                raise socket.timeout()
+            try:
+                sent = os.write(self.fd, mv)
+            except BlockingIOError:
+                continue
+            mv = mv[sent:]
+
+    def close(self):
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
 
 
 def fnv1a64(data):
@@ -187,9 +277,12 @@ def screenshot_png(shot, region=None):
 
 
 class AppleBridgeServer:
-    def __init__(self, interface=HOST_INTERFACE, port=HOST_PORT):
+    def __init__(self, interface=HOST_INTERFACE, port=HOST_PORT,
+                 serial_dev=None, serial_baud=SERIAL_BAUD):
         self.interface = interface
         self.port = port
+        self.serial_dev = serial_dev      # None => TCP :9000; else a serial device path
+        self.serial_baud = serial_baud
         self.client_socket = None
         self.server_socket = None
         self.connected = False
@@ -198,7 +291,12 @@ class AppleBridgeServer:
         self.authed = True        # command flow permitted (False only mid-auth-fail)
 
     def bind_listen(self):
-        """Bind and listen on :9000 once (kept open across re-accepts)."""
+        """Bind and listen on :9000 once (kept open across re-accepts). In serial
+        mode there is no TCP listener — the daemon link is the serial device."""
+        if self.serial_dev:
+            log(f"Serial mode: {self.serial_dev} @ {self.serial_baud} baud "
+                f"(no :9000 TCP listener)")
+            return
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((self.interface, self.port))
@@ -206,7 +304,19 @@ class AppleBridgeServer:
         log(f"Listening on {self.interface}:{self.port} (waiting for Mac daemon)")
 
     def accept_mac(self):
-        """Block until a Mac daemon connects; (re)assign client_socket."""
+        """Block until a Mac daemon connects; (re)assign client_socket. Serial has
+        no accept — open the device and treat it as the link, retrying until it
+        opens (mirroring how TCP accept() blocks until a client is present)."""
+        if self.serial_dev:
+            while True:
+                try:
+                    self.client_socket = SerialConn(self.serial_dev, self.serial_baud)
+                    self.connected = True
+                    log(f"Serial link open on {self.serial_dev}")
+                    return self.serial_dev
+                except (OSError, ValueError) as e:
+                    log(f"serial open failed ({e}); retrying in 3s")
+                    time.sleep(3)
         self.client_socket, addr = self.server_socket.accept()
         self.connected = True
         log(f"Mac connected from {addr}")
@@ -1044,7 +1154,7 @@ def interactive_mode(server):
 
 
 def main():
-    server = AppleBridgeServer()
+    server = AppleBridgeServer(serial_dev=SERIAL_DEVICE, serial_baud=SERIAL_BAUD)
     log("=== AppleBridge Host Server (hardened) ===")
     log(build_stamp())
     server.bind_listen()

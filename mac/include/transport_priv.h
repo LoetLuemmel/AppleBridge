@@ -15,10 +15,12 @@
 #include <transport.h>
 
 struct ABConn {
-    short          transport;   /* kTransportOT / kTransportMacTCP */
+    short          transport;   /* kTransportOT / kTransportMacTCP / kTransportSerial */
     void          *ep;          /* OT: EndpointRef                 */
     unsigned long  stream;      /* MacTCP: StreamPtr               */
     Ptr            rcvBuf;       /* MacTCP: driver-owned rcv buffer */
+    short          inRef;       /* Serial: input driver refnum  (.AIn/.BIn)   */
+    short          outRef;      /* Serial: output driver refnum (.AOut/.BOut) */
 };
 
 /* --- Open Transport backend (transport_ot.c) --- */
@@ -36,6 +38,14 @@ OSStatus mt_Connect(ABConn *c, unsigned long hostIP, unsigned short port);
 OSStatus mt_Recv(ABConn *c, char *buf, long bufSize, long *got);
 OSStatus mt_Send(ABConn *c, const char *data, long size);
 void     mt_Close(ABConn *c);
+
+/* --- Serial backend (transport_serial.c) --- */
+OSStatus sr_Init(void);
+void     sr_Shutdown(void);
+OSStatus sr_Connect(ABConn *c, unsigned long hostIP, unsigned short port);
+OSStatus sr_Recv(ABConn *c, char *buf, long bufSize, long *got);
+OSStatus sr_Send(ABConn *c, const char *data, long size);
+void     sr_Close(ABConn *c);
 
 /* UI/liveness helpers from main.c — let the connect poll keep the Mac alive
  * (yield + repaint) instead of freezing the cooperative scheduler. */
