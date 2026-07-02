@@ -59,25 +59,23 @@ is a full-tier test.
 ## Installer adaptation
 
 The shipped installer (`'ABis'`, `mac/installer/installer.c`) already does a
-Gestalt preflight, a fork-aware copy, `HOME=`-relocatable install, and autostart
-(Startup Items alias to the watchdog). Two changes make it a distribution
-installer rather than an on-dev-machine one:
+Gestalt preflight, a fork-aware copy **from its own folder** (it resolves its own
+directory via `GetCurrentProcess` → `GetProcessInformation` → `processAppSpec` and
+copies the sibling binaries), a `HOME=`-relocatable install, and autostart
+(Startup Items alias to the watchdog). So the drag-install payload model is
+*already* supported — the only gap was serial. **One change** (done, this branch):
 
-1. **Install from its own location, not `:bin:`.** Today it copies from the build
-   tree. The distribution installer must resolve its *own* directory (via its
-   `ProcessSerialNumber` → `GetProcessInformation` → `processAppSpec`, i.e. the
-   folder it was launched from) and copy the sibling `AppleBridge` /
-   `AppleBridgeConfig` / `AppleBridgeWatchdog` from there. This makes the package
-   relocatable — it works wherever the user dropped the folder.
-2. **Serial-aware preflight + default.** Add a serial-capability check (a serial
-   port is present — effectively always true on 68k, but confirm the driver opens)
-   and, when the machine has no Open Transport / MacTCP, **default the written
-   prefs to `NET=Serial`** with `PORT=A` / `BAUD=57600`. Offer port A/B and baud
-   as a simple choice (the config app already owns transport selection; the
-   installer just seeds a sensible default).
+- **Serial-aware preflight + default.** The transport preflight was a *critical*
+  "TCP stack" check that **failed** — and disabled Install — on a machine with no
+  Open Transport / MacTCP. It now probes the serial driver (`.AOut`) too and
+  passes as "Serial (modem port)", so an Ethernet-less machine installs. When no
+  TCP stack is detected the seeded prefs default to `NET=Serial` / `PORT=A` /
+  `BAUD=57600`; a detected OT/MacTCP still wins. Everything else (the `HOME=` copy,
+  the autostart alias, the faceless bring-up) is unchanged.
 
-Everything else — the `HOME=` copy, the autostart alias, the "don't require a
-mouse" faceless bring-up — carries over unchanged.
+A follow-up would add a **Serial radio** to AppleBridgeConfig (it currently offers
+OT/MacTCP); until then the serial port/baud are set by the installer default or by
+editing `AppleBridge Prefs`.
 
 ## Getting the folder onto an Ethernet-less machine
 

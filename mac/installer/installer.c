@@ -83,7 +83,7 @@ static ControlHandle gInstallBtn, gQuitBtn;
 static Check   gChecks[MAX_CHECKS];
 static short   gNumChecks = 0;
 static Boolean gCanInstall = false;
-static Boolean gHasOT = false, gHasMacTCP = false;
+static Boolean gHasOT = false, gHasMacTCP = false, gHasSerial = false;
 static Boolean gInstalled = false;
 static char    gDestPath[PREFS_PATH_LEN];   /* "Vol:AppleBridge:" once known */
 static char    gStatus[160];
@@ -169,10 +169,23 @@ static void RunChecks(void)
         if (OpenDriver("\p.IPP", &ippRef) == noErr)
             gHasMacTCP = true;
     }
+    /* Serial is always a viable transport on 68k hardware (modem/printer port);
+     * probe the .AOut driver to confirm. This lets an Ethernet-less machine
+     * (Plus/SE/Classic) pass preflight via the serial backend. */
+    {
+        short serRef;
+        if (OpenDriver("\p.AOut", &serRef) == noErr) {
+            gHasSerial = true;
+            CloseDriver(serRef);
+        }
+    }
+    /* A transport is required, but any of the three satisfies it. */
     if (gHasOT || gHasMacTCP)
-        AddCheck("TCP stack", ST_PASS, true, gHasOT ? "Open Transport" : "MacTCP");
+        AddCheck("Network transport", ST_PASS, true, gHasOT ? "Open Transport" : "MacTCP");
+    else if (gHasSerial)
+        AddCheck("Network transport", ST_PASS, true, "Serial (modem port)");
     else
-        AddCheck("TCP stack", ST_FAIL, true, "none - need OT or MacTCP");
+        AddCheck("Network transport", ST_FAIL, true, "none - need OT/MacTCP or serial");
 
     /* 32-bit addressing (advisory) */
     if (Gestalt(kGestaltAddrMode, &v) == noErr && (v & (1L << 0)))
@@ -434,7 +447,17 @@ static void DoInstall(void)
     LoadPrefs(&gPrefs);
     mystrncpy(gPrefs.home, gDestPath, PREFS_PATH_LEN - 1);
     gPrefs.home[PREFS_PATH_LEN - 1] = '\0';
-    gPrefs.transport = gHasOT ? kTransportOT : kTransportMacTCP;
+    /* Prefer a detected TCP stack; on an Ethernet-less machine fall to serial
+     * (modem port A, 57600), so the daemon can reach the host over a cable. */
+    if (gHasOT)
+        gPrefs.transport = kTransportOT;
+    else if (gHasMacTCP)
+        gPrefs.transport = kTransportMacTCP;
+    else {
+        gPrefs.transport   = kTransportSerial;
+        gPrefs.serialPortB = false;   /* modem port A */
+        gPrefs.serialBaud  = 57600;
+    }
 
     /* Optional: let the user locate ToolServer -> APP= chain-launch entry. */
     StandardGetFile(NULL, -1, NULL, &reply);
