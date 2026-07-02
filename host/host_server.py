@@ -63,7 +63,80 @@ HEARTBEAT_INTERVAL = 10.0   # seconds of link idle before emitting a PING
 HEARTBEAT_TIMEOUT = 4.0     # bounded read for the PONG (must not hang the loop)
 HEARTBEAT_MAX_MISS = 2      # consecutive unanswered PINGs -> declare disconnected
 
+# --- Protocol v0.2 (see docs/PROTOCOL_v0.2.md) -------------------------------
+# Version negotiation + bounded reads ship HOST-side first and are fully
+# backward compatible: the currently deployed v0.1 daemon answers the HELLO
+# probe with an ordinary "Invalid command format" framed error (no ABVERSION),
+# which we read as "legacy peer" and then behave exactly as before.
+#
+# Auth (the token + digest below) is DORMANT in this PR: the plumbing and its
+# unit tests are here, but no daemon verifies it yet, and the host neither
+# checks the daemon's PROOF nor sends AUTH2 — that is PR3. When AUTH_TOKEN is
+# set we do send a real nonce in HELLO so a future v0.2 daemon can prove the
+# token, but nothing gates command flow on it here.
+AB_PROTOCOL_VERSION = 2
+HELLO_TIMEOUT = 4.0
+# Reject any peer-declared payload length above this BEFORE reading/allocating,
+# so a corrupt or hostile length can neither hang a reader nor exhaust memory.
+# Matches the guest's MAX_FILE_BYTES / MAX_DYNAMIC_RESPONSE ceilings.
+MAX_DECLARED = 8 * 1024 * 1024
+# Cap a single control-port (:9001) request; generous enough for a base64'd
+# mac_put_file, bounded so a local client can't stream unbounded into memory.
+MAX_CTRL_REQUEST = 12 * 1024 * 1024
+# Opt-in shared secret: auth runs only when BOTH sides set one. Read from the
+# environment, never a file in the TCC-protected repo. Empty -> auth skipped.
+AUTH_TOKEN = os.environ.get("APPLEBRIDGE_TOKEN", "").encode("utf-8")
+
 _logf = open(LOG_PATH, "a", buffering=1)  # line-buffered
+
+
+def fnv1a64(data):
+    """FNV-1a 64-bit hash -> 16 lowercase hex chars. Small and table-free, so
+    the 68K daemon can compute the identical value in a few lines of C. This is
+    the auth digest primitive (obfuscation-grade, docs/PROTOCOL_v0.2.md §2); the
+    ab_digest() seam lets a compact SHA-1 replace it later with no wire change."""
+    h = 0xcbf29ce484222325
+    for b in bytes(data):
+        h ^= b
+        h = (h * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+    return f"{h:016x}"
+
+
+def ab_digest(nonce, token):
+    """Auth proof = H(nonce || token), nonce/token as bytes -> 16 hex chars."""
+    return fnv1a64(bytes(nonce) + bytes(token))
+
+
+def parse_hello_reply(resp):
+    """Parse a daemon HELLO reply -> (version, feat_set, nonce, proof).
+
+    A v0.2 daemon advertises 'ABVERSION:<n>;FEAT=<csv>;NONCE=<hex>;PROOF=<hex>'
+    inside the STDOUT of an ordinary STATUS frame. Anything without an
+    'ABVERSION:' token -> (1, set(), '', '') i.e. a legacy (v0.1) peer."""
+    if not resp:
+        return (1, set(), "", "")
+    idx = resp.find("ABVERSION:")
+    if idx < 0:
+        return (1, set(), "", "")
+    line = resp[idx:]
+    for term in ("\r", "\n"):
+        c = line.find(term)
+        if c >= 0:
+            line = line[:c]
+    version, feat, nonce, proof = 1, set(), "", ""
+    for f in line.split(";"):
+        if f.startswith("ABVERSION:"):
+            try:
+                version = int(f[len("ABVERSION:"):])
+            except ValueError:
+                version = 1
+        elif f.startswith("FEAT="):
+            feat = set(x for x in f[len("FEAT="):].split(",") if x)
+        elif f.startswith("NONCE="):
+            nonce = f[len("NONCE="):]
+        elif f.startswith("PROOF="):
+            proof = f[len("PROOF="):]
+    return (version, feat, nonce, proof)
 
 
 def log(msg):
@@ -119,6 +192,8 @@ class AppleBridgeServer:
         self.client_socket = None
         self.server_socket = None
         self.connected = False
+        self.peer_version = 1     # negotiated protocol version (1 = legacy v0.1)
+        self.peer_feat = set()    # capability tokens advertised by a v0.2 daemon
 
     def bind_listen(self):
         """Bind and listen on :9000 once (kept open across re-accepts)."""
@@ -255,6 +330,12 @@ class AppleBridgeServer:
                     olen = int(out_hdr.split(b":", 1)[1].strip() or b"0")
                 except (ValueError, IndexError):
                     olen = -1
+                if olen > MAX_DECLARED:
+                    # A corrupt/hostile declared length: drop rather than read it.
+                    log(f"declared STDOUT length {olen} exceeds cap {MAX_DECLARED};"
+                        f" dropping link")
+                    self._mark_disconnected("oversized declared STDOUT length")
+                    return None
                 if olen >= 0:
                     stdout = _read_exact(olen)       # exact — no false early stop
                     rest = _read_until_terminator()  # \r + STDERR hdr + data + end (small)
@@ -407,6 +488,40 @@ class AppleBridgeServer:
         resp = self.send_raw("PING", timeout=HEARTBEAT_TIMEOUT)
         return resp is not None
 
+    def negotiate_version(self):
+        """Best-effort HELLO probe right after (re)connect. Sets self.peer_version
+        (1 or 2) and self.peer_feat from the daemon's ABVERSION advertisement.
+
+        Never fatal to a live link: a v0.1 daemon replies 'Invalid command
+        format' (no ABVERSION) and a silent-but-alive peer simply times out —
+        both fall back to v1 (legacy) with the connection intact. Auth is NOT
+        performed here (PR3): when AUTH_TOKEN is set we send a real nonce so a
+        future v0.2 daemon can prove the token, but this PR neither verifies the
+        daemon's PROOF nor sends AUTH2, and nothing gates command flow on it."""
+        self.peer_version = 1
+        self.peer_feat = set()
+        if not self.connected or not self.client_socket:
+            return
+        nonce_hex = os.urandom(8).hex() if AUTH_TOKEN else ""
+        hello = f"HELLO:{AB_PROTOCOL_VERSION}:{nonce_hex}\n"
+        if not self._drain():
+            self._mark_disconnected("drain detected closed socket")
+            return
+        try:
+            self.client_socket.sendall(hello.encode("ascii"))
+        except OSError as e:
+            self._mark_disconnected(f"HELLO send failed: {e}")
+            return
+        resp = self._read_framed_response(HELLO_TIMEOUT, label="HELLO")
+        version, feat, _nonce, _proof = parse_hello_reply(resp or "")
+        self.peer_version = min(AB_PROTOCOL_VERSION, version)
+        self.peer_feat = feat
+        if self.peer_version >= 2:
+            log(f"HELLO: negotiated protocol v{self.peer_version} "
+                f"feat={sorted(self.peer_feat)}")
+        else:
+            log("HELLO: peer is legacy (v1); proceeding without negotiation")
+
     def request_screenshot(self):
         """Request a screenshot. Returns a dict with the decoded pixmap parts:
 
@@ -468,6 +583,12 @@ class AppleBridgeServer:
                 log(f"screenshot: malformed header {header[:48]!r}")
                 return None
             w, h, depth, rb, cc, ds = (int(parts[i]) for i in range(1, 7))
+            if not (0 <= ds <= MAX_DECLARED) or not (0 <= cc <= 256):
+                # Untrustworthy header: reading it would desync the wire.
+                log(f"screenshot declared out of range data={ds} clut={cc}; "
+                    f"dropping link")
+                self._mark_disconnected("screenshot oversized declared length")
+                return None
             clut = _read_exact(cc * 3) if cc > 0 else b""
             pixels = _read_exact(ds)
             log(f"screenshot {w}x{h} depth={depth} rowBytes={rb} clut={cc} data={ds}B")
@@ -588,6 +709,11 @@ class AppleBridgeServer:
             creator_bytes = bytes.fromhex(parts[2].decode("ascii"))
             data_len = int(parts[3])
             rsrc_len = int(parts[4])
+            if not (0 <= data_len <= MAX_DECLARED) or not (0 <= rsrc_len <= MAX_DECLARED):
+                log(f"READFILE declared length out of range data={data_len} "
+                    f"rsrc={rsrc_len}; dropping link")
+                self._mark_disconnected("READFILE oversized declared length")
+                return None
             data = _read_exact(data_len)
             rsrc = _read_exact(rsrc_len)
             log(f"READFILE {mac_path!r} data={data_len}B rsrc={rsrc_len}B")
@@ -634,6 +760,11 @@ def _recv_control_command(conn):
             if not chunk:
                 break               # EOF (send_command.py)
             data += chunk
+            if len(data) > MAX_CTRL_REQUEST:
+                # Bounded read: a local client can't stream unbounded into memory.
+                # Raised into run_control_server's handler, which replies ERROR.
+                raise ValueError(
+                    f"control request exceeds {MAX_CTRL_REQUEST} bytes")
             if b"\n\n" in data:
                 break               # terminator (MCP / mac_connection)
     except socket.timeout:
@@ -662,6 +793,9 @@ def run_control_server(server):
                 # corrupt; send one priming PING and discard its (possibly
                 # garbled) reply so a real command isn't the one that eats it.
                 server.heartbeat()
+                # Probe the daemon's protocol version (best-effort; a v0.1
+                # daemon or a silent peer falls back to legacy, link intact).
+                server.negotiate_version()
                 last_io = time.monotonic()
                 missed = 0
 
@@ -880,6 +1014,7 @@ def main():
     try:
         if sys.stdin.isatty():
             server.accept_mac()
+            server.negotiate_version()
             interactive_mode(server)
         else:
             run_control_server(server)
