@@ -4,539 +4,267 @@ Complete setup instructions for getting AppleBridge running with Claude Code.
 
 ## Overview
 
-AppleBridge connects Claude Code to a classic Mac System 7.6.1 environment via three layers:
-1. **MCP Layer** - Claude Code ↔ MacintoshBridgeHost (port 9001)
-2. **TCP/OpenTransport Layer** - Mac daemon ↔ MacintoshBridgeHost (port 9000)
-3. **Apple Events Layer** - AppleBridge ↔ ToolServer/MPW Shell
+AppleBridge connects Claude Code to a classic Mac System 7.6.1 environment via four layers:
+
+1. **MCP layer** — Claude Code ↔ `mcp/server.py` (stdio), which exposes the 20 MCP tools.
+2. **Control layer** — `mcp/server.py` ↔ `host_server.py` over `localhost:9001`.
+3. **Bridge layer** — the Mac daemon ↔ `host_server.py` over `:9000`. The architecture is **NAT-reversed**: the emulator sits behind Basilisk II's MACNAT, so the **daemon dials OUT** to the host; the host never connects in.
+4. **Apple Events layer** — the daemon ↔ ToolServer / MPW Shell.
+
+The retired Swift `MacintoshBridgeHost` was replaced long ago by the stdlib-only Python `host_server.py`; if you find references to a Swift app or an Xcode build, they are stale.
 
 ## Prerequisites
 
-### Host System (macOS)
+### Host system (macOS)
 
-- **Operating System**: macOS 12.0+ (tested on Sequoia)
-- **Basilisk II emulator**: Configured and running
-- **Xcode**: For building MacintoshBridgeHost Swift app
-- **Python 3.9+**: For encoding converter and utilities
-- **uv**: Package manager (recommended) - `brew install uv`
-- **Claude Code**: Installed and configured
+- **macOS 12.0+** (developed on Sequoia).
+- **Basilisk II** emulator, configured and running.
+- **System `python3`** (`/usr/bin/python3`) — the host server is stdlib-only and is deliberately run under system Python, because the macOS firewall blocks the un-allowlisted `uv`/venv binary from accepting connections.
+- **uv** — `brew install uv` — used to launch the MCP server (`uv run python -m mcp.server`).
+- **Claude Code**, installed and configured.
 
-### Mac Emulator (Basilisk II)
+### Mac emulator (Basilisk II)
 
-- **System**: Mac OS 7.6.1 (recommended)
-- **OpenTransport**: Version 1.3 or later
-- **MPW**: Golden Master with SC compiler
-- **ToolServer**: Required for command output capture
-- **Networking**: TCP/IP configured (DHCP or manual)
-- **Memory**: 64 MB RAM minimum
+- **System** Mac OS 7.6.1 (recommended).
+- **Open Transport** 1.1.1 or later (MacTCP also works via the transport seam).
+- **MPW** with the SC compiler, and **ToolServer** — ToolServer (`'MPSX'`) is required for command-output capture; MPW Shell (`'MPS '`) runs commands but returns empty AE replies.
+- **Memory** 64 MB RAM minimum.
 
-## Part 1: Basilisk II Setup
+## Part 1: Basilisk II and the host network
 
-### 1.1 Emulator Configuration
+### 1.1 Emulator networking (MACNAT, not slirp)
 
-**Networking** - Use SLIRP (NAT) mode:
+Use Basilisk II's **`etherhelper`** Ethernet backend (MACNAT), not slirp. In `~/.basilisk_ii_prefs`:
+
 ```
-Basilisk II Preferences:
-- Ethernet: slirp
-- Network Interface: en0 (or your primary interface)
+ether etherhelper/en8
 ```
 
-**Shared Folder** - Enable Unix volume:
+The guest sits behind MACNAT: it can only connect **out**, its outbound traffic is NAT'd through the host's **default-route** interface (normally Wi-Fi `en0`), and it is **never pingable**. The daemon dials the hard-coded host address **`192.168.3.154`**.
+
+**The rule that avoids a freeze:** the host's `.154` alias must live on the **same interface the NAT exits** — the default-route interface (`en0`). If `.154` is aliased on a second NIC, the MACNAT return path is split across interfaces, the daemon's connect blocks, and the emulator freezes at 100 % CPU (it looks like a crash; it isn't). Do **not** pre-create a bridge — `etherhelpertool` owns the wired interface directly.
+
+`host/start_stack.sh` sets all of this up for you (see Part 2). Background: <https://pit.390er.de/applebridge/anatomy-of-a-freeze-macnat-return-path/>.
+
+> A **slirp** backend was benchmarked as an alternative but rejected: it improves latency but regresses bulk throughput ~80 % on this Basilisk build's legacy slirp. `etherhelper/en8` stays the default. See the transport benchmark notes.
+
+### 1.2 Shared folder
+
+Enable the Basilisk II Unix volume so files can move between host and guest:
+
 ```
-Basilisk II Preferences:
-- Unix Root: /Users/pitforster/Desktop/Share
+Unix Root: /Users/pitforster/Desktop/Share
 ```
 
-This appears as `Unix:` volume on the Mac (read-only).
-
-**Memory** - Allocate sufficient RAM:
-```
-Basilisk II Preferences:
-- Mac Memory: 64 MB (minimum)
-```
-
-### 1.2 TCP/IP Control Panel
-
-Boot into System 7.6.1 and configure networking:
-
-1. **Open TCP/IP Control Panel**
-   - Apple Menu → Control Panels → TCP/IP
-
-2. **Configure settings:**
-   ```
-   Connect via: Ethernet
-   Configure: Using DHCP Server
-
-   # After DHCP assigns address:
-   IP Address: 192.168.x.x (note this!)
-   Subnet mask: 255.255.255.0
-   Router: 192.168.x.1
-   ```
-
-3. **Test connectivity:**
-   - Note the Mac's IP address
-   - From host: `ping <mac_ip>` should work
+It appears as the `Unix:` volume on the Mac and is **read-only** from the Mac side, so source is copied to local storage before compiling.
 
 ### 1.3 Install MPW and ToolServer
 
-1. **Install MPW Golden Master**
-   - Copy MPW folder to Mac hard drive
-   - Recommended location: `MeinMac:MPW:`
+1. Copy the MPW folder to the Mac's hard drive (e.g. `MeinMac:MPW:`).
+2. Verify MPW Shell launches (a worksheet window appears).
+3. Launch **ToolServer** — it runs in the background with no window, and **must** be running for command output to come back over the bridge.
+4. Verify the libraries are present: `Files "MeinMac:Interfaces&Libraries:Libraries:Libraries:"` should list `Interface.o`, `MacRuntime.o`, `OpenTransport.o`, etc.
 
-2. **Verify MPW Shell launches**
-   - Double-click MPW Shell
-   - You should see a worksheet window
+With autostart installed (Part 3), the daemon **chain-launches ToolServer** itself on boot, so this becomes a one-time verification.
 
-3. **Launch ToolServer** (critical for automation!)
-   - Double-click ToolServer
-   - It runs in background (no visible window)
-   - **Must be running for command output capture**
+## Part 2: The host server and MCP
 
-4. **Verify libraries are present:**
-   ```
-   Files "MeinMac:Interfaces&Libraries:Libraries:"
-   ```
-   Should show: Interface.o, MacRuntime.o, etc.
+There is no host app to build — the host is Python.
 
-## Part 2: Build MacintoshBridgeHost (Swift)
-
-### 2.1 Build the MCP Bridge
+### 2.1 Start the stack
 
 ```bash
-cd /Users/pitforster/Documents/Dev/AppleBridge_Working/MacintoshBridgeHost
-open MacintoshBridgeHost.xcodeproj
+cd host
+./start_stack.sh
 ```
 
-In Xcode:
-1. Select scheme: MacintoshBridgeHost
-2. Product → Build
-3. Product → Archive (for production)
+`start_stack.sh` aliases `.154` onto the default-route interface (the freeze-avoidance rule above, via one admin prompt), (re)starts `host_server.py`, and launches Basilisk II. The host server also **auto-starts via launchd** on login, so on a configured machine the bridge comes up on its own.
 
-**Binary location:**
+> **Order matters:** the host server must be listening on `:9000` *before* Basilisk II / the daemon start, or the daemon's early connects foul the socket. Let `start_stack.sh` launch Basilisk II; don't start it by hand first.
+
+Server log: `/tmp/applebridge_server.log`. Smoke test once the daemon is connected:
+
+```bash
+cd host && /usr/bin/python3 send_command.py 'Echo HELLO'   # -> STATUS:0 ... HELLO
 ```
-Debug: ~/Library/Developer/Xcode/DerivedData/.../Build/Products/Debug/MacintoshBridgeHost.app
-Release: Archive and export
-```
 
-### 2.2 Configure MCP in Claude Code
+### 2.2 Register the MCP server
 
-Edit `~/.claude/.mcp.json` or project `.mcp.json`:
+The repo ships a project `.mcp.json` that registers the server over stdio:
 
 ```json
 {
   "mcpServers": {
     "applebridge": {
-      "command": "/Users/pitforster/Documents/Dev/AppleBridge_Working/MacintoshBridgeHost/build/MacintoshBridgeHost.app/Contents/MacOS/MacintoshBridgeHost",
-      "args": []
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "python", "-m", "mcp.server"],
+      "env": {}
     }
   }
 }
 ```
 
-Verify with:
+Verify Claude Code sees it:
+
 ```bash
-claude mcp list
+claude mcp list      # -> applebridge (20 tools)
 ```
 
-Should show: `applebridge` with 6 tools.
+The 20 tools cover driving builds and reading output (`mpw_execute`, `mac_compile`, `mac_build`, `mac_read_file`, `mac_list_files`, `mac_send_apple_event`), moving bytes and interacting (`mac_put_file` / `mac_get_file`, `mac_write_file`, `launch_app`, `mac_screenshot`, `mac_type` / `mac_key` / `mac_click`, `mac_clipboard_get` / `mac_clipboard_set`), and lifecycle/liveness (`mac_status`, `mac_reboot`, `mac_restart_toolserver`, `run_applescript`). New tools register on the next MCP-server restart.
 
-## Part 3: Build AppleBridge Mac Daemon
+## Part 3: Build and deploy the Mac daemon
 
-### 3.1 Character Encoding Setup
+### 3.1 Transfer the source
 
-**Critical:** Files must be converted from UTF-8 (host) to MacRoman (Mac).
+Convert the daemon source from host UTF-8/LF to Mac MacRoman/CR and copy it over:
 
-Install encoding converter:
 ```bash
-cd /Users/pitforster/Documents/Dev/AppleBridge_Working/host
-uv venv
-source .venv/bin/activate
-uv pip install chardet
+cd host
+uv run python encoding_convert.py to-mac ../mac/src/     /Users/pitforster/Desktop/Share/src/
+uv run python encoding_convert.py to-mac ../mac/include/ /Users/pitforster/Desktop/Share/include/
 ```
 
-### 3.2 Convert and Transfer Source
-
-Convert Mac daemon source to MacRoman:
-```bash
-cd /Users/pitforster/Documents/Dev/AppleBridge_Working/host
-uv run python encoding_convert.py to-share ../mac/
-```
-
-**What this does:**
-- Converts UTF-8 → MacRoman encoding
-- Converts LF → CR line endings
-- Handles special MPW characters: `∂` (continuation), `ƒ` (dependency)
-
-**Result:** Files appear in `/Users/pitforster/Desktop/Share/mac/`
-
-### 3.3 Copy to Mac Local Storage
-
-In Basilisk II (via MPW Shell or Finder):
+On the Mac, copy from the read-only `Unix:` volume to local storage (the `mac_put_file` MCP tool can also stream files directly, type `TEXT` / creator `'MPS '`):
 
 ```
-# Create project directory
-NewFolder MeinMac:MPW:AppleBridge
-
-# Copy from shared Unix volume to local storage
-Duplicate -y Unix:mac: MeinMac:MPW:AppleBridge:
-
-# Verify files copied
-Files MeinMac:MPW:AppleBridge:src:
+Duplicate -y Unix:src:     MeinMac:MPW:AppleBridge:src:
+Duplicate -y Unix:include: MeinMac:MPW:AppleBridge:include:
 ```
 
-**Why local storage?** The Unix: volume is read-only from Mac side. Compilation requires write access.
+### 3.2 Host IP
 
-### 3.4 Configure Host IP
+The host IP is read from the **`AppleBridge Prefs`** file (`IP=192.168.3.154`), editable in-place or via the **AppleBridgeConfig** control app — no source edit needed. A compiled-in fallback (`.154`) keeps a fresh build reachable if the prefs file is missing.
 
-Edit `MeinMac:MPW:AppleBridge:src:main.c`:
+### 3.3 Build
 
-```c
-char hostIPStr[] = "192.168.3.154";  // Change to YOUR host IP
-```
-
-**To find host IP:**
-```bash
-# On macOS:
-ipconfig getifaddr en0
-
-# Should match Mac's gateway/router address
-```
-
-### 3.5 Build the Daemon
-
-In MPW Shell:
+In MPW / ToolServer, with the library path set:
 
 ```
-# Navigate to project
-Directory MeinMac:MPW:AppleBridge:
-
-# Set library path (CRITICAL!)
 Set LIBS "MeinMac:Interfaces&Libraries:Libraries:"
-Export LIBS
-
-# Build
-Make -f Makefile.68k
+Directory MeinMac:MPW:AppleBridge:
+Make -f Makefile.68k > BuildIt; BuildIt
 ```
 
-**Expected output:**
-```
-# Compiling...
-SC src:main.c -o obj:main.c.o
-SC src:network.c -o obj:network.c.o
-...
+`Make` only *prints* the build commands, so write them to `BuildIt` and execute it. The Makefile compiles each source (`main.c`, the `transport.c` / `transport_ot.c` / `transport_mactcp.c` seam that replaced the old `network.c`, `protocol.c`, `command.c`, `fileio.c`, `events.c`, `auth.c`, …), links with `Link -model far`, merges the `SIZE` resource with `Rez AppleBridge_res.r` (required for Apple Events — without it every command fails with `-903`), and sets the type/creator (`APPL` / `'ABrg'`). Result: `:bin:AppleBridge`.
 
-# Linking...
-Link -model far ...
+> Build off the running daemon: link to `:bin:AppleBridge.new` and swap it in, rather than overwriting a running binary.
 
-# Creating resource fork...
-Rez AppleBridge.r -a -o bin:AppleBridge
+### 3.4 Deploy and autostart
 
-# Build complete
-```
+Run the **AppleBridge Installer** to fork-aware-copy the binary to its deployed home (`HOME=` in prefs, e.g. `MeinMac:AppleBridge:`) and install autostart. On a cold boot the **watchdog** (in Startup Items) then launches the daemon, which chain-launches ToolServer — the whole bridge comes up invisibly. See `mac/config/README.md`.
 
-**Result:** `MeinMac:MPW:AppleBridge:bin:AppleBridge`
+## Part 4: Test with Claude Code
 
-### 3.6 Verify Build
+Ask Claude to run a command:
 
 ```
-# Check file exists
-Files bin:
-
-# Check file type
-GetFileInfo bin:AppleBridge
+You: Run 'Directory' on the Mac.
 ```
 
-Should show:
-- Type: APPL
-- Creator: Ptfr (or similar)
+Claude calls `mcp__applebridge__mpw_execute`, which reaches the daemon and returns `MeinMac:MPW:AppleBridge:`. On the daemon's monitor window (or menu-bar LED) you'll see RX/TX activity. Then try a build:
 
-## Part 4: Launch and Test
-
-### 4.1 Start the System
-
-**On Mac (in order):**
-1. Start ToolServer (double-click, runs in background)
-2. Start MPW Shell (optional, for interactive use)
-3. Launch AppleBridge (double-click bin:AppleBridge)
-
-**AppleBridge window should show:**
 ```
-AppleBridge v0.3.0
-
-Status: Connecting to host...
-      ↓
-Status: Connected to host!
-
-RX:0 TX:0
-[  ] [  ]  ← RX/TX LED indicators
+You: Build a Hello World app and run it on System 7.6.1.
 ```
 
-**On Host:**
-MacintoshBridgeHost starts automatically when Claude Code loads MCP.
+Claude writes the C, compiles (`SC`), links, sets the file type, and launches it — a classic Mac window appears in the emulator.
 
-**Check MacintoshBridgeHost logs:**
+Check liveness at any time with the `mac_status` tool, or:
+
 ```bash
-# If running from terminal:
-/path/to/MacintoshBridgeHost.app/Contents/MacOS/MacintoshBridgeHost
-
-# Look for:
-MCP server listening on port 9001
-TCP server listening on port 9000
-Mac client connected from 192.168.x.x
+cd host && /usr/bin/python3 send_command.py 'Echo HELLO'
 ```
 
-### 4.2 Test with Claude Code
+## Reference
 
-Open Claude Code and test:
+### MPW libraries
 
-```
-You: Can you execute 'Directory' on the Mac?
-```
-
-Claude should:
-1. Use `mcp__applebridge__mpw_execute` tool
-2. Send command to MacintoshBridgeHost
-3. Forward to Mac via TCP
-4. Receive response: `MeinMac:MPW:AppleBridge:`
-
-**Watch for:**
-- AppleBridge RX LED flashes GREEN (command received)
-- AppleBridge TX LED flashes RED (response sent)
-- Counter increments: `RX:1 TX:1`
-
-### 4.3 Test Compilation
-
-```
-You: Create a simple Hello World program in MeinMac:MPW:Test
-```
-
-Claude should:
-1. Create source file via `mac_write_file`
-2. Compile via `mpw_execute("SC ...")`
-3. Link via `mpw_execute("Link ...")`
-4. Set file type via `mpw_execute("SetFile ...")`
-5. Launch the app
-
-**Result:** Mac dialog showing "Hello, World!"
-
-## Part 5: Technical Configuration
-
-### 5.1 MPW Libraries
-
-AppleBridge daemon requires these libraries:
+The daemon links against:
 
 | Library | Purpose |
 |---------|---------|
-| **OpenTransport.o** | TCP/IP networking |
-| **OpenTransportApp.o** | OT application support |
-| **OpenTptInet.o** | Internet protocols |
-| **Interface.o** | Toolbox trap definitions |
-| **MacRuntime.o** | C runtime initialization |
+| `OpenTransport.o` | TCP/IP networking (OT backend) |
+| `OpenTransportApp.o` | OT application support |
+| `OpenTptInet.o` | Internet protocols |
+| `Interface.o` | Toolbox trap definitions (also resolves MacTCP driver calls) |
+| `MacRuntime.o` | C runtime initialization |
+| `StdCLib.o` | Standard C library (from `CLibraries:`) |
 
-**Library paths (set LIBS variable):**
+Folder layout: `MeinMac:Interfaces&Libraries:Libraries:` contains `Libraries:` (`Interface.o`, `MacRuntime.o`, `OpenTransport*.o`, …) and `CLibraries:` (`StdCLib.o`, …). Reference them as `"{LIBS}Libraries:Interface.o"` and `"{LIBS}CLibraries:StdCLib.o"` with `Set LIBS "MeinMac:Interfaces&Libraries:Libraries:"`.
+
+### Wire protocol (v0.1 core)
+
+**Request (host → daemon)** — length-framed:
+
 ```
-MeinMac:Interfaces&Libraries:Libraries:
-  Libraries:
-    Interface.o
-    MacRuntime.o
-    ...
-  CLibraries:
-    StdCLib.o (optional, can cause conflicts)
-```
-
-**In Makefile.68k:**
-```makefile
-LIBS = "{LIBS}Libraries:"
-
-Link ... ∂
-    "{LIBS}OpenTransport.o" ∂
-    "{LIBS}OpenTransportApp.o" ∂
-    "{LIBS}OpenTptInet.o" ∂
-    "{LIBS}Interface.o" ∂
-    "{LIBS}MacRuntime.o" ∂
-    -o bin:AppleBridge
+COMMAND:<length>\n<command_text>
 ```
 
-### 5.2 Protocol Specification
+**Response (daemon → host)** — read by declared length; CR-terminated fields:
 
-**Request format (Host → Mac):**
 ```
-COMMAND:<length>\n
-<command_text>
+STATUS:<code>\rSTDOUT:<len>\r<stdout>\rSTDERR:<len>\r<stderr>\r\r
 ```
 
-Example:
+Since v0.2 the session opens with a `HELLO:` version-negotiation handshake (and optional token authentication); a v0.1 peer that doesn't understand it falls back to legacy cleanly. Full detail in [PROTOCOL_v0.2.md](PROTOCOL_v0.2.md).
+
+**Screenshot** — request `SCREENSHOT`; the daemon streams the raw main-GDevice pixmap, which the host decodes to PNG:
+
 ```
-COMMAND:9\n
-Directory
+IMAGE:<width>:<height>:<depth>:<rowBytes>:<clutCount>:<dataSize>\n<CLUT><pixels>
 ```
 
-**Response format (Mac → Host):**
-```
-STATUS:<exit_code>\n
-STDOUT:<length>\n
-<stdout_data>
-STDERR:<length>\n
-<stderr_data>
-\n
-```
+### Character encoding
 
-Example:
-```
-STATUS:0\n
-STDOUT:25\n
-MeinMac:MPW:AppleBridge:\n
-STDERR:0\n
-\n
-```
-
-**Screenshot request:**
-```
-SCREENSHOT
-```
-
-**Screenshot response:**
-```
-IMAGE:<width>:<height>:BMP:<size>\r
-<binary_bitmap_data>
-```
-
-### 5.3 Character Encoding Reference
-
-**MacRoman ↔ UTF-8 conversions:**
+Files crossing between host and Mac are converted by `host/encoding_convert.py` (UTF-8↔MacRoman, LF↔CR):
 
 | Character | UTF-8 | MacRoman | Usage |
 |-----------|-------|----------|-------|
 | ∂ (partial) | E2 88 82 | B6 | MPW line continuation |
-| ƒ (florin) | C6 92 | C4 | MPW dependency marker |
-| ≈ (approx) | E2 89 88 | C7 | MPW wildcard |
-| • (bullet) | E2 80 A2 | A5 | Option-8 |
+| ƒ (florin) | C6 92 | C4 | MPW dependency marker / folder |
+| ≈ (approx) | E2 89 88 | C5 | MPW wildcard |
 | … (ellipsis) | E2 80 A6 | C9 | Option-; |
 
-**Line endings:**
-- **Mac Classic**: CR (0x0D, `\r`)
-- **Unix/macOS**: LF (0x0A, `\n`)
-- **Windows**: CR+LF (`\r\n`)
+Line endings: Mac Classic uses CR (`\r`), Unix/macOS uses LF (`\n`).
 
-**Converter script handles all of this automatically.**
+### MPW Makefile syntax
 
-### 5.4 MPW Makefile Syntax
+- **Dependency marker:** `ƒ` (Option-F), not `::`.
+- **Line continuation:** `∂` (Option-D).
+- **Variables:** `Set LIBS "…"`, referenced as `"{LIBS}Libraries:Interface.o"`.
+- Use **TAB** for command indentation, not spaces.
+- `Make` prints commands; run them with `Make -f Makefile.68k > BuildIt; BuildIt`.
 
-**Dependency marker:** `ƒ` (Option-F)
-```makefile
-main.o  ƒ  main.c
-    SC main.c -o main.o
-```
+## Advanced
 
-**Line continuation:** `∂` (Option-D)
-```makefile
-Link -o MyApp ∂
-    main.o ∂
-    "{LIBS}Interface.o" ∂
-    -t APPL
-```
+### Standalone / interactive host server
 
-**Variables:**
-```makefile
-Set LIBS "MeinMac:Interfaces&Libraries:Libraries:"
-OBJS = main.o network.o
-
-# Reference:
-"{LIBS}Interface.o"
-{OBJS}
-```
-
-**Critical:** Use TAB characters for command indentation, not spaces!
-
-## Troubleshooting
-
-For common issues and solutions, see **[TROUBLESHOOTING.md](../TROUBLESHOOTING.md)**:
-
-- Apple Events errors
-- Connection problems
-- Compilation/linking issues
-- Encoding problems
-- ToolServer vs MPW Shell
-
-## Advanced Configuration
-
-### Screenshot Capture
-
-System 7.6.1 has no native screenshot tool, so the **daemon** captures the
-emulated screen and streams it to the host, which decodes it to PNG.
+For debugging without MCP, run the server from a TTY (system Python):
 
 ```bash
-# via the control port (:9001) — same path the mac_screenshot MCP tool uses
-printf 'screenshot\n\n' | nc localhost 9001    # returns a base64 PNG frame
-```
-
-**How it works:**
-1. The daemon reads the main GDevice PixMap (pixels + depth + colour table).
-2. It streams `IMAGE:<w>:<h>:<depth>:<rowBytes>:<clutCount>:<dataSize>` + CLUT + pixels over the bridge.
-3. `host/screenshot_decode.py` (pure stdlib) decodes the raw pixmap to a PNG.
-
-### Standalone TCP Server (Development)
-
-For testing without MCP:
-
-```bash
-cd host/
-python3 host_server.py
-```
-
-Interactive mode allows direct command testing:
-```
+cd host && /usr/bin/python3 host_server.py
 Command> Directory
-Response:
-STATUS:0
-STDOUT:25
-MeinMac:MPW:AppleBridge:
 ```
 
-### Python MCP Server Alternative
-
-Alternative to MacintoshBridgeHost Swift app:
+### Screenshot over the control port
 
 ```bash
-cd mcp/
-uv run python server.py
+printf 'screenshot\n\n' | nc localhost 9001   # returns a base64-PNG frame
 ```
 
-Configure in `.mcp.json`:
-```json
-{
-  "mcpServers": {
-    "applebridge": {
-      "command": "uv",
-      "args": ["run", "python", "mcp/server.py"]
-    }
-  }
-}
-```
+`host/screenshot_decode.py` (pure stdlib) decodes the raw pixmap to PNG.
 
-## Next Steps
+## See also
 
-- **[README.md](../README.md)** - Quick start and overview
-- **[ARCHITECTURE.md](../ARCHITECTURE.md)** - System design and paradigms
-- **[TROUBLESHOOTING.md](../TROUBLESHOOTING.md)** - Problem solving
-- **[ASSEMBLY_TEMPLATE.md](../ASSEMBLY_TEMPLATE.md)** - 68k assembly guide
-
-## Production Checklist
-
-Before using for serious work:
-
-- ✅ Basilisk II networking configured and tested
-- ✅ OpenTransport installed on Mac
-- ✅ MPW and ToolServer installed
-- ✅ MacintoshBridgeHost built and MCP configured
-- ✅ AppleBridge daemon built with correct host IP
-- ✅ ToolServer running (for output capture)
-- ✅ AppleBridge shows "Connected to host!"
-- ✅ RX/TX LEDs flash when testing commands
-- ✅ Test compilation and linking work
-- ✅ encoding_convert.py available for file transfers
+- [README.md](../README.md) — intro and examples
+- [ARCHITECTURE.md](../ARCHITECTURE.md) — full design
+- [PROTOCOL_v0.2.md](PROTOCOL_v0.2.md) — the wire protocol and its v0.2 revision
+- [TROUBLESHOOTING.md](../TROUBLESHOOTING.md) — failure modes and fixes
+- [ASSEMBLY_TEMPLATE.md](../ASSEMBLY_TEMPLATE.md) — 68k assembly guide
+- Build recipes, trap defs, encoding tables — the user's global `~/.claude/CLAUDE.md`
 
 ---
 
-**Setup Version:** 1.0
-**Last Updated:** April 12, 2026
-**Target:** AppleBridge 0.3.0 with MCP
+**Last Updated:** July 2, 2026
+**Target:** AppleBridge v0.7.0+ (protocol v0.2), Python host via launchd, 20 MCP tools

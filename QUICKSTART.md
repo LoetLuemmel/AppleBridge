@@ -87,14 +87,26 @@ You have a shared folder configured at `/Users/pitforster/Desktop/Share`
 HD:MPW:AppleBridge:
   :include:
     applebridge.h
+    transport.h
+    transport_priv.h
+    prefs.h
+    auth.h
+    mystring.h
   :src:
     main.c
-    network.c
+    transport.c        # the transport seam (replaced network.c)
+    transport_ot.c     #   Open Transport backend
+    transport_mactcp.c #   MacTCP backend
     protocol.c
     command.c
+    fileio.c
+    events.c
+    auth.c
     screenshot.c
+    prefs.c
+    mystring.c
     utils.c
-  Makefile
+  Makefile.68k
 ```
 
 ## Step 3: Check Open Transport
