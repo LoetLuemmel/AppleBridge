@@ -260,6 +260,11 @@ host (no HELLO before the first real request ⇒ run legacy, no auth).
      handshake with `AUTH2`, so a PR2 daemon would negotiate auth and then block
      every command (except `PING`) waiting for a proof that never comes. The host
      verifier + `AUTH2` sender land in **PR3**; enable auth only after that.
+   - ⚠️ **The PR3 host fails closed.** Once `APPLEBRIDGE_TOKEN` is set, the host
+     *drops* any peer that is v0.1 or does not offer `FEAT=auth`, and any peer
+     whose `PROOF` doesn't verify — it will not run unauthenticated. So set the
+     host token only when every daemon it serves is a v0.2 build with a matching
+     `TOKEN=`. Clearing the env var reverts to open (zero-config) operation.
 4. **Persistent control sessions + arbitration** (host-only), any time after §1.
 
 ### Rollback
@@ -318,5 +323,13 @@ Recorded byte-exact transcripts as executable specs (stdlib only, no emulator):
      golden-transcript tests (no emulator needed).
    - **PR2 (daemon):** `HELLO:`/`AUTH2:` responder, `TOKEN=` pref, `AB_Digest()`,
      daemon-side length rejects. Build → `:bin:AppleBridge.new` → swap → installer.
-   - **PR3 (host):** enable auth end-to-end + persistent `:9001` sessions +
-     multi-client arbitration.
+   - **PR3 (host):** complete the auth handshake end-to-end — verify the daemon's
+     `PROOF` over the host nonce, send `AUTH2` = `H(daemonNonce || token)`, and
+     **fail closed** (drop the link) on any mismatch, missing capability, or
+     rejected `AUTH2`. Gated on `APPLEBRIDGE_TOKEN`; no token ⇒ unchanged.
+   - **Deferred (a later PR):** persistent `:9001` sessions + multi-client
+     arbitration. The single-threaded control server already *serialises* clients
+     (one command in flight at a time), and the MCP client opens a socket per
+     command — so persistent sessions give no benefit without a coordinated client
+     change and would add head-of-line blocking to a working server. Not bundled
+     into the security PR; revisit only if a measured need appears.

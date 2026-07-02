@@ -25,6 +25,7 @@ allocated handle and read here by their declared STDOUT:<len> (length-framing,
 already content-agnostic) — no per-response size limit on this side.
 """
 import base64
+import hmac
 import os
 import socket
 import sys
@@ -194,6 +195,7 @@ class AppleBridgeServer:
         self.connected = False
         self.peer_version = 1     # negotiated protocol version (1 = legacy v0.1)
         self.peer_feat = set()    # capability tokens advertised by a v0.2 daemon
+        self.authed = True        # command flow permitted (False only mid-auth-fail)
 
     def bind_listen(self):
         """Bind and listen on :9000 once (kept open across re-accepts)."""
@@ -489,21 +491,29 @@ class AppleBridgeServer:
         return resp is not None
 
     def negotiate_version(self):
-        """Best-effort HELLO probe right after (re)connect. Sets self.peer_version
-        (1 or 2) and self.peer_feat from the daemon's ABVERSION advertisement.
+        """HELLO probe right after (re)connect: agree a protocol version and,
+        when a token is configured, complete the mutual auth handshake. Sets
+        self.peer_version, self.peer_feat and self.authed.
 
-        Never fatal to a live link: a v0.1 daemon replies 'Invalid command
-        format' (no ABVERSION) and a silent-but-alive peer simply times out —
-        both fall back to v1 (legacy) with the connection intact. Auth is NOT
-        performed here (PR3): when AUTH_TOKEN is set we send a real nonce so a
-        future v0.2 daemon can prove the token, but this PR neither verifies the
-        daemon's PROOF nor sends AUTH2, and nothing gates command flow on it."""
+        No token (AUTH_TOKEN empty) -> auth is skipped; a v0.1 daemon ('Invalid
+        command format', no ABVERSION) or a silent peer falls back to v1 with the
+        link intact. This is the default zero-config behaviour, unchanged.
+
+        Token configured (opt-in auth, docs/PROTOCOL_v0.2.md §2) -> we FAIL CLOSED:
+          1. Require peer v2 with FEAT=auth, else drop (won't run unauthenticated).
+          2. Verify the daemon's PROOF = H(hostNonce || token) — proves the daemon
+             knows the token (stops a rogue daemon feeding us bad data).
+          3. Send AUTH2 = H(daemonNonce || token) — proves WE know it (unlocks the
+             daemon's command gate). Drop unless the daemon acks STATUS:0.
+        Any mismatch drops the link (the daemon then reconnects and retries); a
+        genuinely wrong token loops, which is the correct fail-closed posture."""
         self.peer_version = 1
         self.peer_feat = set()
+        self.authed = not AUTH_TOKEN     # no token => auth not required => open
         if not self.connected or not self.client_socket:
             return
-        nonce_hex = os.urandom(8).hex() if AUTH_TOKEN else ""
-        hello = f"HELLO:{AB_PROTOCOL_VERSION}:{nonce_hex}\n"
+        host_nonce = os.urandom(8).hex() if AUTH_TOKEN else ""
+        hello = f"HELLO:{AB_PROTOCOL_VERSION}:{host_nonce}\n"
         if not self._drain():
             self._mark_disconnected("drain detected closed socket")
             return
@@ -513,14 +523,41 @@ class AppleBridgeServer:
             self._mark_disconnected(f"HELLO send failed: {e}")
             return
         resp = self._read_framed_response(HELLO_TIMEOUT, label="HELLO")
-        version, feat, _nonce, _proof = parse_hello_reply(resp or "")
+        version, feat, daemon_nonce, daemon_proof = parse_hello_reply(resp or "")
         self.peer_version = min(AB_PROTOCOL_VERSION, version)
         self.peer_feat = feat
-        if self.peer_version >= 2:
-            log(f"HELLO: negotiated protocol v{self.peer_version} "
-                f"feat={sorted(self.peer_feat)}")
-        else:
-            log("HELLO: peer is legacy (v1); proceeding without negotiation")
+
+        if not AUTH_TOKEN:
+            if self.peer_version >= 2:
+                log(f"HELLO: negotiated protocol v{self.peer_version} "
+                    f"feat={sorted(self.peer_feat)}")
+            else:
+                log("HELLO: peer is legacy (v1); proceeding without negotiation")
+            return
+
+        # --- auth required (a token is configured): fail closed on any problem.
+        if self.peer_version < 2 or "auth" not in feat:
+            self._mark_disconnected("auth required but peer lacks it")
+            log("auth required but peer does not offer it; link dropped")
+            return
+        want = ab_digest(host_nonce.encode("ascii"), AUTH_TOKEN)
+        if not daemon_proof or not hmac.compare_digest(daemon_proof, want):
+            self._mark_disconnected("daemon auth proof mismatch")
+            log("daemon PROOF mismatch (wrong token / rogue daemon); link dropped")
+            return
+        our_proof = ab_digest(daemon_nonce.encode("ascii"), AUTH_TOKEN)
+        try:
+            self.client_socket.sendall(f"AUTH2:{our_proof}\n".encode("ascii"))
+        except OSError as e:
+            self._mark_disconnected(f"AUTH2 send failed: {e}")
+            return
+        ack = self._read_framed_response(HELLO_TIMEOUT, label="AUTH2")
+        if not ack or not ack.startswith("STATUS:0"):
+            self._mark_disconnected("daemon rejected AUTH2")
+            log("daemon rejected AUTH2 (wrong token?); link dropped")
+            return
+        self.authed = True
+        log(f"HELLO: negotiated protocol v{self.peer_version} + auth OK")
 
     def request_screenshot(self):
         """Request a screenshot. Returns a dict with the decoded pixmap parts:
