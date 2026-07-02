@@ -43,6 +43,24 @@ static void ShortDelay(long ticks)
     Delay(ticks, &t);
 }
 
+/* Post one event, RETRYING while the OS event queue is full so a keystroke is
+ * never silently dropped when the front app is momentarily busy (opening a file,
+ * rendering a list). The ~20-deep queue overflows if we post faster than the app
+ * drains it; on failure we yield (let the app run) and retry the same event.
+ * Bounded (~1 s of retries) so a wedged front app can't hang the daemon. */
+static OSErr PostEventRetry(short what, long msg)
+{
+    OSErr e;
+    short tries;
+    for (tries = 0; tries < 48; tries++) {
+        e = PostEvent(what, msg);
+        if (e == noErr) return noErr;   /* queued */
+        SystemTask();                   /* give the front app a slice to drain */
+        ShortDelay(2L);                 /* ...then retry the same event */
+    }
+    return e;                           /* still full after the retry budget */
+}
+
 /* Post one keystroke (keyDown then keyUp) to the front app. keyCode is the
  * virtual key code (0 is fine for plain characters; supply it for keys an app
  * distinguishes by position). charCode is the ASCII/MacRoman byte. */
@@ -50,9 +68,9 @@ OSErr InjectKey(short charCode, short keyCode)
 {
     long  msg = (((long)(keyCode & 0x7F)) << 8) | (long)(charCode & 0xFF);
     OSErr e1, e2;
-    e1 = PostEvent(keyDown, msg);
+    e1 = PostEventRetry(keyDown, msg);
     ShortDelay(2L);
-    e2 = PostEvent(keyUp, msg);
+    e2 = PostEventRetry(keyUp, msg);
     return (e1 != noErr) ? e1 : e2;
 }
 
