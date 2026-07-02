@@ -141,6 +141,24 @@ host ← "STATUS:0 …"   (daemon verified the host; now authenticated)
   reconnect/backoff loop (an attacker gets no oracle beyond "rejected").
 - Mismatch on the host side: drop, log `auth failed from <addr>`, re-accept.
 
+### Nonce hashing convention (pinned)
+
+The nonce is hashed **as its ASCII-hex string exactly as it travels on the wire**
+— neither side decodes it to raw bytes first. So:
+
+```
+proof = H( <nonce-hex-ascii-bytes> concatenated with <token-ascii-bytes> )
+```
+
+This keeps the 68K side trivial (it hashes the received `hostNonce` characters
+directly) and removes any endian/decoding ambiguity. Cross-implementation golden
+vectors (host `ab_digest` == daemon `ABDigestHex`), for regression pinning:
+
+| nonce (hex ascii) | token | proof |
+|---|---|---|
+| `1122334455667788` | `s3cret` | `cfcf7d300083ee67` |
+| `deadbeefcafef00d` | `hunter2` | `0b16a20e04ade276` |
+
 ### Digest function `H(msg)`
 
 Constraint: must be implementable in plain C on a 68K Mac (no crypto toolbox in
@@ -231,9 +249,17 @@ host (no HELLO before the first real request ⇒ run legacy, no auth).
    capability advertisement, and daemon-side length rejects. Build to
    `:bin:AppleBridge.new`, swap, redeploy via the installer, reboot. It speaks
    v0.2 to the new host and legacy to an old host.
-3. **Turn on auth.** Set `TOKEN=` in guest prefs *and* `APPLEBRIDGE_TOKEN` on the
-   host. Unauthenticated connections are now rejected. (Until this step, a token on
-   only one side ⇒ auth skipped, so a half-configured rollout never locks you out.)
+3. **Turn on auth — only once the PR3 host is deployed.** Set `TOKEN=` in guest
+   prefs *and* `APPLEBRIDGE_TOKEN` on the host. Unauthenticated connections are
+   now rejected. Two safety rails and one sharp edge:
+   - A token on **only one side** ⇒ auth skipped (the daemon engages auth only
+     when the host's HELLO carries a *non-empty* nonce **and** the daemon holds a
+     token). A half-configured rollout never locks you out.
+   - ⚠️ **Do not set a token on BOTH sides while the host is still PR1.** The PR1
+     host sends a nonce (when `APPLEBRIDGE_TOKEN` is set) but never completes the
+     handshake with `AUTH2`, so a PR2 daemon would negotiate auth and then block
+     every command (except `PING`) waiting for a proof that never comes. The host
+     verifier + `AUTH2` sender land in **PR3**; enable auth only after that.
 4. **Persistent control sessions + arbitration** (host-only), any time after §1.
 
 ### Rollback

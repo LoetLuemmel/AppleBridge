@@ -49,6 +49,11 @@
 #define PROTO_CLIPGET "CLIPGET"        /* host->daemon: read the guest TEXT scrap */
 #define PROTO_CLIPSET "CLIPSET:"       /* host->daemon: set the guest TEXT scrap */
 #define PROTO_LISTDIR "LISTDIR:"       /* host->daemon: native directory listing (no ToolServer) */
+#define PROTO_HELLO "HELLO:"           /* host->daemon: version negotiation + auth challenge (v0.2) */
+#define PROTO_AUTH2 "AUTH2:"           /* host->daemon: host's proof of the shared token (v0.2) */
+
+/* Wire protocol version advertised in the HELLO reply (see docs/PROTOCOL_v0.2.md). */
+#define AB_PROTOCOL_VERSION 2
 
 /* Result codes */
 typedef enum {

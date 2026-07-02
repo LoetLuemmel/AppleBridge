@@ -22,6 +22,7 @@
 #include <Shutdown.h>
 #include <OSUtils.h>
 #include <prefs.h>
+#include <auth.h>
 
 QDGlobals qd;
 
@@ -49,6 +50,14 @@ QDGlobals qd;
 /* Loaded from "AppleBridge Prefs" at startup (host IP + chain-launch list).
  * File-scope (not on main's stack) since AppPrefs is ~2 KB. */
 static AppPrefs gPrefs;
+
+/* Per-connection auth state (protocol v0.2, see docs/PROTOCOL_v0.2.md). Auth is
+ * opt-in: it engages only when THIS session's HELLO carried a host nonce AND we
+ * hold a TOKEN=. gAuthed gates command flow — true (open) unless auth is needed
+ * and AUTH2 has not yet proven the host. Reset on every (re)connect. */
+static Boolean gNeedAuth = false;   /* this session negotiated auth */
+static Boolean gAuthed   = true;    /* command flow permitted */
+static char    gDaemonNonceHex[17] = "";  /* nonce we handed the host; AUTH2 proves over it */
 
 /* Menu IDs */
 #define APPLE_MENU_ID   128
@@ -994,6 +1003,95 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
             AddLogLine(vt, 2);   /* verb -> bold, like COMMAND's "> ..." */
     }
 
+    /* --- Protocol v0.2: version negotiation + auth handshake -------------
+     * HELLO/AUTH2 are handled first and always pass the auth gate below (as
+     * does PING, the heartbeat). A v0.1 host never sends HELLO, so a v0.2
+     * daemon facing an old host never sets gNeedAuth and behaves as legacy.
+     * See docs/PROTOCOL_v0.2.md. */
+    if (strncmp(request, PROTO_HELLO, strlen(PROTO_HELLO)) == 0) {
+        char frame[256], body[160];
+        char *bp = body, *fp = frame;
+        long p = (long)strlen(PROTO_HELLO);
+        char hostNonce[64];
+        short hn = 0;
+
+        SetActivity("HELLO");
+        /* HELLO:<ver>:<hostNonceHex> — skip the version digits, take the nonce. */
+        while (request[p] >= '0' && request[p] <= '9') p++;
+        if (request[p] == ':') p++;
+        while (request[p] && request[p] != '\r' && request[p] != '\n' && hn < 63)
+            hostNonce[hn++] = request[p++];
+        hostNonce[hn] = '\0';
+
+        /* Auth engages only when the host supplied a nonce AND we hold a token
+         * (the opt-in "both sides" rule); else this is a version-only HELLO. */
+        gNeedAuth = (hn > 0 && gPrefs.token[0] != '\0');
+        gAuthed = !gNeedAuth;
+        gDaemonNonceHex[0] = '\0';
+
+        bp = StatStr(bp, "ABVERSION:");
+        bp = StatDec(bp, AB_PROTOCOL_VERSION);
+        if (gNeedAuth) {
+            char proof[17];
+            ABMakeNonce(gDaemonNonceHex);   /* our nonce; host proves over it via AUTH2 */
+            ABDigestHex((const unsigned char *)hostNonce, (long)hn,
+                        gPrefs.token, (long)strlen(gPrefs.token), proof);
+            bp = StatStr(bp, ";FEAT=auth;NONCE=");
+            bp = StatStr(bp, gDaemonNonceHex);
+            bp = StatStr(bp, ";PROOF=");
+            bp = StatStr(bp, proof);
+        } else {
+            bp = StatStr(bp, ";FEAT=;NONCE=;PROOF=");
+        }
+        *bp = '\0';
+
+        fp = StatStr(fp, "STATUS:0\rSTDOUT:");
+        fp = StatDec(fp, (long)(bp - body));
+        *fp++ = '\r';
+        fp = StatStr(fp, body);
+        fp = StatStr(fp, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(fp - frame));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+
+    /* AUTH2:<hostProofHex> — the host proves it knows the token over OUR nonce. */
+    if (strncmp(request, PROTO_AUTH2, strlen(PROTO_AUTH2)) == 0) {
+        long p = (long)strlen(PROTO_AUTH2);
+        char hostProof[64], want[17];
+        short hp = 0;
+
+        SetActivity("AUTH2");
+        while (request[p] && request[p] != '\r' && request[p] != '\n' && hp < 63)
+            hostProof[hp++] = request[p++];
+        hostProof[hp] = '\0';
+
+        ABDigestHex((const unsigned char *)gDaemonNonceHex,
+                    (long)strlen(gDaemonNonceHex),
+                    gPrefs.token, (long)strlen(gPrefs.token), want);
+        if (gNeedAuth && gDaemonNonceHex[0] != '\0' && strcmp(hostProof, want) == 0) {
+            gAuthed = true;
+            strcpy(responseBuffer, "STATUS:0\rSTDOUT:6\rAuthOK\rSTDERR:0\r\r");
+        } else {
+            gAuthed = false;
+            strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:11\rAuth failed\r\r");
+        }
+        ABSend(conn, responseBuffer, strlen(responseBuffer));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+
+    /* Auth gate: once a session needs auth, refuse every request until AUTH2
+     * succeeds — except PING (heartbeat) and the handshake verbs above, which
+     * have already returned. Keeps an unauthenticated peer from driving the Mac
+     * or reading files while the link stays alive for the handshake to finish. */
+    if (gNeedAuth && !gAuthed && strncmp(request, "PING", 4) != 0) {
+        strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:17\rNot authenticated\r\r");
+        ABSend(conn, responseBuffer, strlen(responseBuffer));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+
     /* Check if it's a screenshot request */
     if (strncmp(request, PROTO_SCREENSHOT, strlen(PROTO_SCREENSHOT)) == 0) {
         ScreenshotData screenshot;
@@ -1617,6 +1715,9 @@ int main(void)
             }
 
             connected = true;
+            /* Fresh link -> fresh auth state: a new host must re-negotiate
+             * (HELLO) and, if a token is set, re-prove (AUTH2) before commands. */
+            gNeedAuth = false; gAuthed = true; gDaemonNonceHex[0] = '\0';
             /* Seed the heartbeat clock so the watchdog measures silence from NOW,
              * not from the daemon's launch (gLastRX/gLastTX start at 0). */
             gLastRX = gLastTX = TickCount();

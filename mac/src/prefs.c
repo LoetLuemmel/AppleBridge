@@ -23,6 +23,7 @@ void PrefsDefaults(AppPrefs *p)
     p->debug = false;
     p->transport = kTransportOT;   /* Open Transport is the default networking service */
     p->home[0] = '\0';             /* empty ⇒ legacy hardcoded path (pre-installer setups) */
+    p->token[0] = '\0';            /* empty ⇒ auth disabled (opt-in; see docs/PROTOCOL_v0.2.md) */
     p->appCount = 0;
 }
 
@@ -64,6 +65,8 @@ static void ParseLine(AppPrefs *p, const char *line)
                            ? kTransportMacTCP : kTransportOT;
     } else if (strncmp(line, "HOME=", 5) == 0) {
         CopyValue(p->home, line + 5, PREFS_PATH_LEN);
+    } else if (strncmp(line, "TOKEN=", 6) == 0) {
+        CopyValue(p->token, line + 6, PREFS_TOKEN_LEN);
     } else if (strncmp(line, "APP=", 4) == 0) {
         if (p->appCount < PREFS_MAX_APPS) {
             CopyValue(p->apps[p->appCount], line + 4, PREFS_PATH_LEN);
@@ -141,6 +144,9 @@ OSErr SavePrefs(const AppPrefs *p)
     strcat(buf, "\r");
     if (p->home[0]) {
         strcat(buf, "HOME="); strcat(buf, p->home); strcat(buf, "\r");
+    }
+    if (p->token[0]) {
+        strcat(buf, "TOKEN="); strcat(buf, p->token); strcat(buf, "\r");
     }
     for (n = 0; n < p->appCount; n++) {
         strcat(buf, "APP="); strcat(buf, p->apps[n]); strcat(buf, "\r");
