@@ -32,6 +32,7 @@
 #include <Errors.h>
 #include <Events.h>     /* TickCount, SystemTask */
 #include <Memory.h>     /* NewPtr */
+#include <Processes.h>  /* GetCurrentProcess / GetProcessInformation (SwapSelf) */
 
 #define FILE_CHUNK      8192L            /* per-transfer buffer */
 #define FILE_STALL_TICKS 1800L           /* ~30 s with no progress -> give up */
@@ -556,4 +557,86 @@ Boolean ListDirVerb(ABConn *conn, char *request, long requestLen)
     SendCommandResult(conn, &res);
     DisposeHandle(h);
     return true;
+}
+
+/* Build `out` = a file named (base's name + suffix) in base's SAME folder.
+ * suffix is a C string; the combined leaf is bounded to a Str63. */
+static OSErr MakeSibling(const FSSpec *base, const char *suffix, FSSpec *out)
+{
+    short n = base->name[0];
+    short s = 0, i;
+    while (suffix[s]) s++;
+    if (n + s > 63) return bdNamErr;
+    out->vRefNum = base->vRefNum;
+    out->parID   = base->parID;
+    for (i = 1; i <= n; i++)  out->name[i] = base->name[i];
+    for (i = 0; i < s; i++)   out->name[n + 1 + i] = (unsigned char)suffix[i];
+    out->name[0] = (unsigned char)(n + s);
+    return noErr;
+}
+
+/*
+ * SwapSelf -- replace the RUNNING daemon binary with a staged sibling, entirely
+ * over the bridge, so updating the daemon needs no manual Shift-boot + Finder
+ * rename (the OS 9 case) or ToolServer (the 68K case).
+ *
+ * The installer's fork-aware COPY can't do this: opening the running daemon's
+ * file for write fails with fBsyErr. But RENAMING an open file is permitted by
+ * the File Manager -- it edits the catalog entry, not the open forks -- so the
+ * daemon renames ITSELF aside and renames the staged binary into its place. The
+ * running process keeps executing from its now-renamed file; the caller then
+ * reboots and the watchdog launches the current "<name>", i.e. the new binary.
+ *
+ * Convention: the host first stages the new binary next to the daemon as
+ * "<selfName> new" (via mac_put_file -- a fresh file, so no lock). Then:
+ *   1. resolve own FSSpec (GetCurrentProcess -> processAppSpec)
+ *   2. require the "<selfName> new" sibling to exist
+ *   3. delete any stale "<selfName> old" backup
+ *   4. rename self          -> "<selfName> old"   (rename the OPEN running file)
+ *   5. rename "<selfName> new" -> "<selfName>"
+ *   6. on step-5 failure, roll back (rename "old" back) so the daemon still
+ *      relaunches, and report the error.
+ * One rollback copy ("<selfName> old") is left behind on success.
+ */
+OSErr SwapSelf(void)
+{
+    ProcessSerialNumber psn;
+    ProcessInfoRec      info;
+    FSSpec              self, staged, backup;
+    Str255              selfName;
+    FInfo               fi;
+    OSErr               err;
+
+    /* 1. this process's own file */
+    err = GetCurrentProcess(&psn);
+    if (err != noErr) return err;
+    info.processInfoLength = sizeof(ProcessInfoRec);
+    info.processName       = selfName;
+    info.processAppSpec    = &self;
+    err = GetProcessInformation(&psn, &info);
+    if (err != noErr) return err;
+
+    /* sibling specs in the daemon's folder */
+    err = MakeSibling(&self, " new", &staged);
+    if (err != noErr) return err;
+    err = MakeSibling(&self, " old", &backup);
+    if (err != noErr) return err;
+
+    /* 2. the staged binary must be present (host put it there first) */
+    if (FSpGetFInfo(&staged, &fi) != noErr) return fnfErr;
+
+    /* 3. clear a stale backup (not the running file -> deletable) */
+    FSpDelete(&backup);                         /* ignore error if absent */
+
+    /* 4. rename the running daemon aside */
+    err = FSpRename(&self, backup.name);
+    if (err != noErr) return err;               /* OS refused to rename the open app */
+
+    /* 5. move the staged binary into the daemon's original name */
+    err = FSpRename(&staged, self.name);
+    if (err != noErr) {                         /* roll back so a reboot still finds a daemon */
+        FSpRename(&backup, self.name);
+        return err;
+    }
+    return noErr;
 }

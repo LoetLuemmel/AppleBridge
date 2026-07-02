@@ -51,6 +51,7 @@
 #define PROTO_LISTDIR "LISTDIR:"       /* host->daemon: native directory listing (no ToolServer) */
 #define PROTO_HELLO "HELLO:"           /* host->daemon: version negotiation + auth challenge (v0.2) */
 #define PROTO_AUTH2 "AUTH2:"           /* host->daemon: host's proof of the shared token (v0.2) */
+#define PROTO_SWAPSELF "SWAPSELF"      /* host->daemon: rename the staged '<name> new' binary over the running daemon (self-update) */
 
 /* Wire protocol version advertised in the HELLO reply (see docs/PROTOCOL_v0.2.md). */
 #define AB_PROTOCOL_VERSION 2
@@ -131,6 +132,7 @@ Boolean ReadFileVerb(ABConn *conn, char *request, long requestLen);
  * stream a tab-separated listing — works with NO ToolServer (unlike the MPW
  * `Files` path). One line per entry: name<TAB>type<TAB>creator<TAB>size<TAB>modSecs<CR> */
 Boolean ListDirVerb(ABConn *conn, char *request, long requestLen);
+OSErr SwapSelf(void);   /* self-update: rename '<name> new' over the running daemon */
 
 /* events.c -- synthetic input injection (drive the front GUI app). */
 OSErr InjectKey(short charCode, short keyCode);

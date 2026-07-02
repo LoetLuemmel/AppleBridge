@@ -1152,6 +1152,40 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         return true;
     }
 
+    /* SWAPSELF verb: self-update. The host first stages the new binary next to
+     * the daemon as "<name> new" (mac_put_file); this renames the running daemon
+     * aside and renames the staged binary into its place (renaming an open file
+     * is allowed, unlike overwriting it). The caller then REBOOTs so the watchdog
+     * launches the now-current binary. The File Manager error code is reported on
+     * failure so the host can tell "no staged binary" (fnfErr -43) from a
+     * rename the OS refused. */
+    if (strncmp(request, PROTO_SWAPSELF, strlen(PROTO_SWAPSELF)) == 0 &&
+        (request[8] == '\0' || request[8] == '\r' || request[8] == '\n')) {
+        OSErr se;
+        SetActivity("SWAPSELF");
+        se = SwapSelf();
+        if (se == noErr) {
+            strcpy(responseBuffer, "STATUS:0\rSTDOUT:7\rSwapped\rSTDERR:0\r\r");
+        } else {
+            char msg[48];
+            char *m = msg;
+            char *p = responseBuffer;
+            m = StatStr(m, "swap err ");
+            m = StatDec(m, (long)se);
+            *m = '\0';
+            p = StatStr(p, "STATUS:-1\rSTDOUT:0\rSTDERR:");
+            p = StatDec(p, (long)(m - msg));
+            *p++ = '\r';
+            p = StatStr(p, msg);
+            p = StatStr(p, "\r\r");
+            *p = '\0';
+        }
+        ABSend(conn, responseBuffer, strlen(responseBuffer));
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
     /* LAUNCH:<MacPath> verb: bring a GUI app to the foreground */
     if (strncmp(request, "LAUNCH:", 7) == 0) {
         char launchPath[MAX_COMMAND_LENGTH];
@@ -1269,8 +1303,8 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
      * and exposes the whole thing as mac_status. */
     if (strncmp(request, PROTO_STAT, strlen(PROTO_STAT)) == 0 &&
         (request[4] == '\0' || request[4] == '\r' || request[4] == '\n')) {
-        char frame[256];
-        char body[160];
+        char frame[448];
+        char body[384];   /* holds the counters + net= + the install path (home=) */
         char *b = body;
         char *f = frame;
         long now = TickCount();
@@ -1279,6 +1313,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         b = StatStr(b, ";tx=");         b = StatDec(b, gTXCount);
         b = StatStr(b, ";toolserver="); b = StatDec(b, IsAppRunning('MPSX') ? 1 : 0);
         b = StatStr(b, ";net=");        b = StatStr(b, ABActiveTransport() == kTransportMacTCP ? "MacTCP" : "OT");
+        b = StatStr(b, ";home=");       b = StatStr(b, gPrefs.home);   /* install folder; empty on legacy setups */
         *b = '\0';
         f = StatStr(f, "STATUS:0\rSTDOUT:");
         f = StatDec(f, (long)(b - body));
