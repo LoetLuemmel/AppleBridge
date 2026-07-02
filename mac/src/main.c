@@ -1669,7 +1669,8 @@ int main(void)
 
     SystemTask();
 
-    /* Initialize network */
+    /* Initialize network. ABSerialConfig is a no-op unless NET=Serial. */
+    ABSerialConfig(gPrefs.serialPortB, gPrefs.serialBaud);
     err = ABNetInit(gPrefs.transport);
     if (err != noErr) {
         SetActivity("network init FAILED");

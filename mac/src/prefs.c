@@ -22,6 +22,8 @@ void PrefsDefaults(AppPrefs *p)
     strcpy(p->ip, DEFAULT_HOST_IP);
     p->debug = false;
     p->transport = kTransportOT;   /* Open Transport is the default networking service */
+    p->serialPortB = false;        /* modem port A by default (Serial backend only) */
+    p->serialBaud = 57600;         /* default serial line rate */
     p->home[0] = '\0';             /* empty ⇒ legacy hardcoded path (pre-installer setups) */
     p->token[0] = '\0';            /* empty ⇒ auth disabled (opt-in; see docs/PROTOCOL_v0.2.md) */
     p->appCount = 0;
@@ -59,10 +61,18 @@ static void ParseLine(AppPrefs *p, const char *line)
     } else if (strncmp(line, "DEBUG=", 6) == 0) {
         p->debug = (line[6] == '1');
     } else if (strncmp(line, "NET=", 4) == 0) {
-        /* Networking service: NET=MacTCP selects the MacTCP backend; anything
-         * else (incl. NET=OT) keeps Open Transport. */
-        p->transport = (strncmp(line + 4, "MacTCP", 6) == 0)
-                           ? kTransportMacTCP : kTransportOT;
+        /* Networking service: NET=MacTCP / NET=Serial select those backends;
+         * anything else (incl. NET=OT) keeps Open Transport. */
+        if (strncmp(line + 4, "MacTCP", 6) == 0)      p->transport = kTransportMacTCP;
+        else if (strncmp(line + 4, "Serial", 6) == 0) p->transport = kTransportSerial;
+        else                                          p->transport = kTransportOT;
+    } else if (strncmp(line, "PORT=", 5) == 0) {
+        /* Serial port select: PORT=B = printer port; anything else = modem (A). */
+        p->serialPortB = (line[5] == 'B' || line[5] == 'b');
+    } else if (strncmp(line, "BAUD=", 5) == 0) {
+        long b = 0; short k = 5;
+        while (line[k] >= '0' && line[k] <= '9') b = b * 10 + (line[k++] - '0');
+        if (b > 0) p->serialBaud = b;
     } else if (strncmp(line, "HOME=", 5) == 0) {
         CopyValue(p->home, line + 5, PREFS_PATH_LEN);
     } else if (strncmp(line, "TOKEN=", 6) == 0) {
@@ -140,8 +150,21 @@ OSErr SavePrefs(const AppPrefs *p)
     strcat(buf, "# AppleBridge preferences\r");
     strcat(buf, "IP=");    strcat(buf, p->ip);                strcat(buf, "\r");
     strcat(buf, "DEBUG="); strcat(buf, p->debug ? "1" : "0"); strcat(buf, "\r");
-    strcat(buf, "NET=");   strcat(buf, p->transport == kTransportMacTCP ? "MacTCP" : "OT");
+    strcat(buf, "NET=");
+    if (p->transport == kTransportMacTCP)      strcat(buf, "MacTCP");
+    else if (p->transport == kTransportSerial) strcat(buf, "Serial");
+    else                                       strcat(buf, "OT");
     strcat(buf, "\r");
+    if (p->transport == kTransportSerial) {
+        char bs[16], t[16];
+        long v = (p->serialBaud > 0) ? p->serialBaud : 57600;
+        short i = 0, j;
+        strcat(buf, "PORT="); strcat(buf, p->serialPortB ? "B" : "A"); strcat(buf, "\r");
+        while (v > 0) { t[i++] = (char)('0' + (v % 10)); v /= 10; }
+        for (j = 0; j < i; j++) bs[j] = t[i - 1 - j];
+        bs[i] = '\0';
+        strcat(buf, "BAUD="); strcat(buf, bs); strcat(buf, "\r");
+    }
     if (p->home[0]) {
         strcat(buf, "HOME="); strcat(buf, p->home); strcat(buf, "\r");
     }

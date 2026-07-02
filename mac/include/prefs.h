@@ -28,7 +28,9 @@
 typedef struct {
     char    ip[PREFS_IP_LEN];
     Boolean debug;
-    short   transport;      /* kTransportOT (default) / kTransportMacTCP — NET= key */
+    short   transport;      /* kTransportOT (default) / kTransportMacTCP / kTransportSerial — NET= key */
+    Boolean serialPortB;    /* PORT= : false = modem port A (default), true = printer port B. Serial only. */
+    long    serialBaud;     /* BAUD= : serial line rate, default 57600. Serial only. */
     char    token[PREFS_TOKEN_LEN];  /* TOKEN= : opt-in shared secret for the v0.2
                                       * auth handshake. Empty ⇒ auth disabled (the
                                       * default), so zero-config setups are unchanged.

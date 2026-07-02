@@ -19,9 +19,10 @@
 
 #include <Types.h>
 
-/* Networking service selector (stored in prefs as NET=OT|MacTCP). */
+/* Networking service selector (stored in prefs as NET=OT|MacTCP|Serial). */
 #define kTransportOT      0
 #define kTransportMacTCP  1
+#define kTransportSerial  2   /* Serial Manager (reaches Ethernet-less machines) */
 
 /* Neutral "link is idle, no data yet" sentinel returned by ABRecv. Replaces the
  * OT-specific kOTNoDataErr that used to leak into the main loop; each backend
@@ -60,5 +61,10 @@ void ABClose(ABConn *conn);
 
 /* Dotted-quad string -> 32-bit host-order address (transport-neutral). */
 unsigned long ParseIPAddress(const char *ipStr);
+
+/* Configure the serial backend (port + baud) from prefs, before ABNetInit().
+ * portIsB: 0 = modem port A (default), non-zero = printer port B. baud: a decimal
+ * rate (e.g. 57600). No-op for the OT/MacTCP backends. See docs/SERIAL_TRANSPORT.md. */
+void ABSerialConfig(short portIsB, long baud);
 
 #endif /* TRANSPORT_H */

@@ -15,10 +15,12 @@ INC_DIR = :include:
 OBJ_DIR = :obj:
 BIN_DIR = :bin:
 
-# Compiler flags
-CFLAGS = -i {INC_DIR}
+# Compiler flags. -model far is REQUIRED (not just at link): the combined CODE
+# grew past the 68K near-model 32 KB PC-relative limit (Link "Error 48: PC-relative
+# edit, offset out of range"), so inter-module calls must use 32-bit (far) refs.
+CFLAGS = -i {INC_DIR} -model far
 
-# Linker flags - IMPORTANT: -model far!
+# Linker flags - IMPORTANT: -model far (must match the compile model above)!
 LDFLAGS = -model far -o {BIN_DIR}AppleBridge
 
 # Libraries - use {LIBS} variable set in shell
@@ -28,7 +30,7 @@ LIBS_LIST = "{LIBS}CLibraries:StdCLib.o" "{LIBS}Libraries:OpenTransport.o" "{LIB
 # The transport seam: transport.c (dispatcher) + transport_ot.c (Open Transport
 # backend, was network.c) + transport_mactcp.c (MacTCP backend). MacTCP needs no
 # extra library — its driver calls (PBControl/OpenDriver) resolve via Interface.o.
-OBJS = {OBJ_DIR}main.c.o {OBJ_DIR}transport.c.o {OBJ_DIR}transport_ot.c.o {OBJ_DIR}transport_mactcp.c.o {OBJ_DIR}protocol.c.o {OBJ_DIR}command.c.o {OBJ_DIR}screenshot.c.o {OBJ_DIR}fileio.c.o {OBJ_DIR}events.c.o {OBJ_DIR}utils.c.o {OBJ_DIR}mystring.c.o {OBJ_DIR}prefs.c.o {OBJ_DIR}auth.c.o
+OBJS = {OBJ_DIR}main.c.o {OBJ_DIR}transport.c.o {OBJ_DIR}transport_ot.c.o {OBJ_DIR}transport_mactcp.c.o {OBJ_DIR}transport_serial.c.o {OBJ_DIR}protocol.c.o {OBJ_DIR}command.c.o {OBJ_DIR}screenshot.c.o {OBJ_DIR}fileio.c.o {OBJ_DIR}events.c.o {OBJ_DIR}utils.c.o {OBJ_DIR}mystring.c.o {OBJ_DIR}prefs.c.o {OBJ_DIR}auth.c.o
 
 # Default target
 all ƒ {BIN_DIR}AppleBridge
@@ -53,6 +55,9 @@ all ƒ {BIN_DIR}AppleBridge
 
 {OBJ_DIR}transport_mactcp.c.o ƒ {SRC_DIR}transport_mactcp.c {INC_DIR}transport.h {INC_DIR}transport_priv.h {INC_DIR}applebridge.h
 	{CC} {CFLAGS} {SRC_DIR}transport_mactcp.c -o {OBJ_DIR}transport_mactcp.c.o
+
+{OBJ_DIR}transport_serial.c.o ƒ {SRC_DIR}transport_serial.c {INC_DIR}transport.h {INC_DIR}transport_priv.h
+	{CC} {CFLAGS} {SRC_DIR}transport_serial.c -o {OBJ_DIR}transport_serial.c.o
 
 {OBJ_DIR}protocol.c.o ƒ {SRC_DIR}protocol.c {INC_DIR}applebridge.h {INC_DIR}mystring.h
 	{CC} {CFLAGS} {SRC_DIR}protocol.c -o {OBJ_DIR}protocol.c.o
@@ -83,7 +88,7 @@ all ƒ {BIN_DIR}AppleBridge
 
 # Clean target
 clean ƒ
-	Delete -i {OBJ_DIR}main.c.o {OBJ_DIR}transport.c.o {OBJ_DIR}transport_ot.c.o {OBJ_DIR}transport_mactcp.c.o {OBJ_DIR}protocol.c.o {OBJ_DIR}command.c.o {OBJ_DIR}screenshot.c.o {OBJ_DIR}fileio.c.o {OBJ_DIR}utils.c.o {OBJ_DIR}mystring.c.o {OBJ_DIR}prefs.c.o {OBJ_DIR}auth.c.o || Set Status 0
+	Delete -i {OBJ_DIR}main.c.o {OBJ_DIR}transport.c.o {OBJ_DIR}transport_ot.c.o {OBJ_DIR}transport_mactcp.c.o {OBJ_DIR}transport_serial.c.o {OBJ_DIR}protocol.c.o {OBJ_DIR}command.c.o {OBJ_DIR}screenshot.c.o {OBJ_DIR}fileio.c.o {OBJ_DIR}utils.c.o {OBJ_DIR}mystring.c.o {OBJ_DIR}prefs.c.o {OBJ_DIR}auth.c.o || Set Status 0
 	Delete -i {BIN_DIR}AppleBridge || Set Status 0
 
 # Create directories

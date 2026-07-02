@@ -25,6 +25,13 @@ static Boolean gMacTcpProven = false;
  */
 OSStatus ABNetInit(short want)
 {
+    if (want == kTransportSerial) {
+        /* No global stack to bring up, and no fall-back to OT — a machine chosen
+         * for serial has no OpenTransport to fall back to. The port itself opens
+         * at connect time (sr_Connect). */
+        gActive = kTransportSerial;
+        return sr_Init();
+    }
     if (want == kTransportMacTCP) {
         if (mt_Init() == noErr) {
             gActive = kTransportMacTCP;
@@ -80,6 +87,8 @@ OSStatus ABConnect(ABConn **conn, unsigned long hostIP, unsigned short port)
             c->transport = kTransportOT;
             if (ot_Init() == noErr) err = ot_Connect(c, hostIP, port);
         }
+    } else if (gActive == kTransportSerial) {
+        err = sr_Connect(c, hostIP, port);
     } else {
         err = ot_Connect(c, hostIP, port);
     }
@@ -95,20 +104,23 @@ OSStatus ABConnect(ABConn **conn, unsigned long hostIP, unsigned short port)
 OSStatus ABRecv(ABConn *c, char *buf, long bufSize, long *got)
 {
     if (c->transport == kTransportMacTCP) return mt_Recv(c, buf, bufSize, got);
+    if (c->transport == kTransportSerial) return sr_Recv(c, buf, bufSize, got);
     return ot_Recv(c, buf, bufSize, got);
 }
 
 OSStatus ABSend(ABConn *c, const char *data, long size)
 {
     if (c->transport == kTransportMacTCP) return mt_Send(c, data, size);
+    if (c->transport == kTransportSerial) return sr_Send(c, data, size);
     return ot_Send(c, data, size);
 }
 
 void ABClose(ABConn *c)
 {
     if (c == NULL) return;
-    if (c->transport == kTransportMacTCP) mt_Close(c);
-    else                                 ot_Close(c);
+    if (c->transport == kTransportMacTCP)      mt_Close(c);
+    else if (c->transport == kTransportSerial) sr_Close(c);
+    else                                       ot_Close(c);
     DisposePtr((Ptr)c);
 }
 

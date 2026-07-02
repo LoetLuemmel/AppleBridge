@@ -255,6 +255,21 @@ printf 'screenshot\n\n' | nc localhost 9001   # returns a base64-PNG frame
 
 `host/screenshot_decode.py` (pure stdlib) decodes the raw pixmap to PNG.
 
+### Serial transport (experimental — reaches Ethernet-less Macs)
+
+For a Mac with no Ethernet (Plus, SE, Classic), the daemon can run over a serial
+line instead of TCP. Set `NET=Serial` (optionally `PORT=A|B`, `BAUD=`) in the
+daemon prefs, and start the host server in serial mode:
+
+```bash
+APPLEBRIDGE_SERIAL=/dev/tty.usbserial-XXXX APPLEBRIDGE_BAUD=57600 /usr/bin/python3 host/host_server.py
+```
+
+To test it with **no hardware**, `host/serial_harness.py` creates a lossless pty
+bridge: point Basilisk's `seriala` at one path it prints and
+`APPLEBRIDGE_SERIAL` at the other. Full design, framing, and the reliability
+caveats for real hardware are in [SERIAL_TRANSPORT.md](SERIAL_TRANSPORT.md).
+
 ## See also
 
 - [README.md](../README.md) — intro and examples
