@@ -25,6 +25,7 @@ allocated handle and read here by their declared STDOUT:<len> (length-framing,
 already content-agnostic) — no per-response size limit on this side.
 """
 import base64
+import os
 import socket
 import sys
 import time
@@ -72,6 +73,26 @@ def log(msg):
         _logf.write(line + "\n")
     except Exception:
         pass
+
+
+def build_stamp():
+    """Identify the running copy, so drift between the repo and the deployed
+    launchd copy is visible in the log (the repo lives under ~/Documents, which
+    is TCC-protected, so launchd must run a deployed copy — deploy_host.sh keeps
+    it in sync and writes the .deploy_stamp read here)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    try:
+        mtime = time.strftime("%Y-%m-%d %H:%M:%S",
+                              time.localtime(os.path.getmtime(os.path.abspath(__file__))))
+    except OSError:
+        mtime = "?"
+    stamp = ""
+    try:
+        with open(os.path.join(here, ".deploy_stamp")) as f:
+            stamp = " deploy=" + f.read().strip()
+    except OSError:
+        pass
+    return f"running from {here} (mtime {mtime}){stamp}"
 
 
 def timeout_for(command):
@@ -854,6 +875,7 @@ def interactive_mode(server):
 def main():
     server = AppleBridgeServer()
     log("=== AppleBridge Host Server (hardened) ===")
+    log(build_stamp())
     server.bind_listen()
     try:
         if sys.stdin.isatty():

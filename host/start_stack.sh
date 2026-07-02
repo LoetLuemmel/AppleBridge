@@ -71,9 +71,21 @@ if ifconfig "$STALE_BRIDGE" >/dev/null 2>&1; then
 fi
 
 echo "[2/4] (Re)starting host server…"
-pkill -f host_server.py 2>/dev/null && sleep 1
-( cd "$SERVER_DIR" && nohup ./run_server.sh > /tmp/applebridge_server.log 2>&1 & )
-sleep 2
+LABEL="de.390er.applebridge-host"
+if [ -f "$HOME/Library/LaunchAgents/$LABEL.plist" ]; then
+    # Preferred path: the launchd agent owns the server. deploy_host.sh syncs the
+    # repo runtime to the deployed copy (repo is TCC-protected, launchd can't read
+    # it) and kickstarts the agent — so the ONE running server is always the fresh
+    # deployed copy. No pkill/nohup here, or it would race the agent's KeepAlive.
+    "$SERVER_DIR/deploy_host.sh"
+    sleep 2
+else
+    # No agent installed — run straight from the repo (system python, firewall).
+    echo "      (LaunchAgent not installed; running repo copy directly — see install_host_service.sh)"
+    pkill -f host_server.py 2>/dev/null && sleep 1
+    ( cd "$SERVER_DIR" && nohup ./run_server.sh > /tmp/applebridge_server.log 2>&1 & )
+    sleep 2
+fi
 
 echo "[3/4] Verifying host server is listening on $HOST_IP:9000…"
 if lsof -nP -iTCP:9000 -sTCP:LISTEN 2>/dev/null | grep -q "${HOST_IP}:9000"; then
