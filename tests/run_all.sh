@@ -11,7 +11,8 @@ cd "$(dirname "$0")"
 PY="${PYTHON:-/usr/bin/python3}"
 
 files=(test_macbinary.py test_screenshot_decode.py test_encoding_convert.py
-       test_framing.py test_parse_response.py test_protocol_v02.py test_serial.py)
+       test_framing.py test_parse_response.py test_protocol_v02.py test_serial.py
+       test_input_modifiers.py)
 
 fail=0
 for f in "${files[@]}"; do

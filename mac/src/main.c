@@ -1214,14 +1214,20 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         return true;
     }
 
-    /* KEY:<charCode>:<keyCode> verb: inject one keystroke into the front app. */
+    /* KEY:<charCode>:<keyCode>[:<modifiers>] verb: inject one keystroke into the
+     * front app. The optional 3rd field is the Event Manager modifier mask
+     * (cmdKey 256, shiftKey 512, optionKey 2048, controlKey 4096); it defaults to
+     * 0, so legacy KEY:<cc>:<kc> callers are unchanged. Modifiers make Command-key
+     * menu shortcuts reachable (mac_menu / modified mac_key). */
     if (strncmp(request, PROTO_KEY, strlen(PROTO_KEY)) == 0) {
-        short cc = 0, kc = 0, i = (short)strlen(PROTO_KEY);
+        short cc = 0, kc = 0, mods = 0, i = (short)strlen(PROTO_KEY);
         while (request[i] >= '0' && request[i] <= '9') cc = cc * 10 + (request[i++] - '0');
         if (request[i] == ':') i++;
         while (request[i] >= '0' && request[i] <= '9') kc = kc * 10 + (request[i++] - '0');
+        if (request[i] == ':') i++;
+        while (request[i] >= '0' && request[i] <= '9') mods = mods * 10 + (request[i++] - '0');
         SetActivity("KEY");
-        InjectKey(cc, kc);
+        InjectKeyMod(cc, kc, mods);
         strcpy(responseBuffer, "STATUS:0\rSTDOUT:3\rKey\rSTDERR:0\r\r");
         ABSend(conn, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();

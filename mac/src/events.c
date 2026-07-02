@@ -20,11 +20,15 @@
  * rather than via <LowMem.h> accessors, to avoid Universal-Headers version
  * differences on the build host.
  *
- * Modifiers (Command/Option/Shift) are NOT faked here -- PostEvent records the
- * modifier flags from the live keyboard state, which this path does not drive.
- * mac_type / unmodified mac_key cover text entry, Return/Enter, Tab, Escape and
- * the arrows; Command-key menu shortcuts are a follow-up (would need KeyMap
- * poking). See the ledger note.
+ * Modifiers (Command/Option/Shift) ARE faked here (added for menu shortcuts).
+ * PostEvent alone can't carry them -- it supplies only (what, message) and the
+ * modifier flags are otherwise taken from the live keyboard state. So we drive
+ * BOTH mechanisms belt-and-suspenders: PPostEvent hands back the queued event
+ * element so we stamp its evtQModifiers directly, AND we hold the modifier keys'
+ * bits down in the low-memory KeyMap across the front app's read, so whether the
+ * Event Manager delivers the stored modifiers or recomputes them at
+ * GetNextEvent time, the app sees e.g. cmdKey and dispatches MenuKey. This is
+ * what makes Command-key menu shortcuts reachable (mac_menu / modified mac_key).
  */
 #include <applebridge.h>
 #include <Events.h>
@@ -37,41 +41,102 @@
 #define LM_Mouse     (*(volatile Point *)0x0830L)         /* processed mouse location */
 #define LM_CrsrNew   (*(volatile signed char *)0x08CEL)   /* nonzero => cursor needs redraw */
 
+/* Low-memory KeyMap: 16-byte bitmap of the current keyboard state, one bit per
+ * virtual key code (byte keyCode>>3, bit keyCode&7 -- the documented GetKeys
+ * layout). GetNextEvent reads this to build EventRecord.modifiers. */
+#define LM_KeyMap    ((volatile unsigned char *)0x0174L)
+
+/* Modifier virtual key codes (Inside Macintosh: Toolbox/keyboard). */
+#define VK_CMD       0x37
+#define VK_SHIFT     0x38
+#define VK_CAPS      0x39
+#define VK_OPTION    0x3A
+#define VK_CONTROL   0x3B
+
 static void ShortDelay(long ticks)
 {
     unsigned long t;
     Delay(ticks, &t);
 }
 
+/* Set (down=true) or clear one virtual key's bit in the low-memory KeyMap. */
+static void KeyMapBit(short vkey, Boolean down)
+{
+    volatile unsigned char *p = LM_KeyMap + (vkey >> 3);
+    unsigned char mask = (unsigned char)(1 << (vkey & 7));
+    if (down) *p = (unsigned char)(*p | mask);
+    else      *p = (unsigned char)(*p & ~mask);
+}
+
+/* Press (down=true) or release every modifier key present in the Event Manager
+ * modifier mask, by poking its KeyMap bit. Mirrors the mask bits back to the
+ * physical modifier keys the KeyMap tracks. */
+static void ApplyModifierKeys(short mods, Boolean down)
+{
+    if (mods & cmdKey)     KeyMapBit(VK_CMD,     down);
+    if (mods & shiftKey)   KeyMapBit(VK_SHIFT,   down);
+    if (mods & alphaLock)  KeyMapBit(VK_CAPS,    down);
+    if (mods & optionKey)  KeyMapBit(VK_OPTION,  down);
+    if (mods & controlKey) KeyMapBit(VK_CONTROL, down);
+}
+
 /* Post one event, RETRYING while the OS event queue is full so a keystroke is
  * never silently dropped when the front app is momentarily busy (opening a file,
  * rendering a list). The ~20-deep queue overflows if we post faster than the app
  * drains it; on failure we yield (let the app run) and retry the same event.
- * Bounded (~1 s of retries) so a wedged front app can't hang the daemon. */
-static OSErr PostEventRetry(short what, long msg)
+ * Bounded (~1 s of retries) so a wedged front app can't hang the daemon.
+ *
+ * Uses PPostEvent (the queue-element-returning variant of PostEvent) so we can
+ * stamp evtQModifiers directly on the queued event -- carrying Command/Shift/etc.
+ * that PostEvent's (what,message)-only interface can't express. */
+static OSErr PPostEventRetry(short what, long msg, short modifiers)
 {
-    OSErr e;
-    short tries;
+    OSErr     e;
+    short     tries;
+    EvQElPtr  qEl;
     for (tries = 0; tries < 48; tries++) {
-        e = PostEvent(what, msg);
-        if (e == noErr) return noErr;   /* queued */
-        SystemTask();                   /* give the front app a slice to drain */
-        ShortDelay(2L);                 /* ...then retry the same event */
+        qEl = 0L;
+        e = PPostEvent((EventKind)what, (unsigned long)msg, &qEl);
+        if (e == noErr) {
+            if (qEl) qEl->evtQModifiers = (EventModifiers)modifiers;
+            return noErr;                /* queued (modifiers stamped) */
+        }
+        SystemTask();                    /* give the front app a slice to drain */
+        ShortDelay(2L);                  /* ...then retry the same event */
     }
-    return e;                           /* still full after the retry budget */
+    return e;                            /* still full after the retry budget */
 }
 
-/* Post one keystroke (keyDown then keyUp) to the front app. keyCode is the
- * virtual key code (0 is fine for plain characters; supply it for keys an app
- * distinguishes by position). charCode is the ASCII/MacRoman byte. */
-OSErr InjectKey(short charCode, short keyCode)
+/* Post one keystroke (keyDown then keyUp) with modifiers to the front app.
+ * keyCode is the virtual key code (0 is fine for plain characters); charCode is
+ * the ASCII/MacRoman byte; modifiers is the Event Manager mask (cmdKey 256,
+ * shiftKey 512, optionKey 2048, controlKey 4096, alphaLock 1024).
+ *
+ * Both mechanisms run so the modifier lands regardless of how the front app's
+ * event read resolves it: we stamp evtQModifiers on the queued event AND hold
+ * the modifier keys down in the KeyMap across the app's read, then release. */
+OSErr InjectKeyMod(short charCode, short keyCode, short modifiers)
 {
     long  msg = (((long)(keyCode & 0x7F)) << 8) | (long)(charCode & 0xFF);
+    short m   = (short)(modifiers | btnState);   /* btnState = mouse up, as real key events carry */
     OSErr e1, e2;
-    e1 = PostEventRetry(keyDown, msg);
+
+    ApplyModifierKeys(modifiers, true);          /* hold the modifiers down */
+    e1 = PPostEventRetry(keyDown, msg, m);
+    SystemTask();                                /* let the app read keyDown while held */
     ShortDelay(2L);
-    e2 = PostEventRetry(keyUp, msg);
+    e2 = PPostEventRetry(keyUp, msg, m);
+    ShortDelay(2L);
+    ApplyModifierKeys(modifiers, false);         /* release: restore keyboard state */
+
     return (e1 != noErr) ? e1 : e2;
+}
+
+/* Post one unmodified keystroke -- the common text-entry path (kept lossless via
+ * the retry loop). Thin wrapper over InjectKeyMod with no modifiers. */
+OSErr InjectKey(short charCode, short keyCode)
+{
+    return InjectKeyMod(charCode, keyCode, 0);
 }
 
 /* Type a run of characters. Yields between keys so the front app drains the OS
