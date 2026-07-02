@@ -15,10 +15,12 @@ INC_DIR = :include:
 OBJ_DIR = :obj:
 BIN_DIR = :bin:
 
-# Compiler flags
-CFLAGS = -i {INC_DIR}
+# Compiler flags. -model far is REQUIRED (not just at link): the combined CODE
+# grew past the 68K near-model 32 KB PC-relative limit (Link "Error 48: PC-relative
+# edit, offset out of range"), so inter-module calls must use 32-bit (far) refs.
+CFLAGS = -i {INC_DIR} -model far
 
-# Linker flags - IMPORTANT: -model far!
+# Linker flags - IMPORTANT: -model far (must match the compile model above)!
 LDFLAGS = -model far -o {BIN_DIR}AppleBridge
 
 # Libraries - use {LIBS} variable set in shell

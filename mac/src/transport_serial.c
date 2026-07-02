@@ -14,7 +14,6 @@
 #include <Devices.h>      /* OpenDriver, CloseDriver */
 #include <Files.h>        /* FSRead, FSWrite */
 #include <Errors.h>       /* eofErr */
-#include <Desk.h>         /* SystemTask */
 
 /* Line/port config, set from prefs by main.c via ABSerialConfig() before
  * ABNetInit(). Defaults: modem port (A), 57600 baud, 8-N-1. */
@@ -95,11 +94,13 @@ OSStatus sr_Send(ABConn *c, const char *data, long size)
 
     while (off < size) {
         long chunk = size - off;
-        if (chunk > 256) chunk = 256;            /* chunk so a slow UART can't wedge the loop */
+        if (chunk > 256) chunk = 256;            /* chunk so one FSWrite can't wedge the loop */
         err = FSWrite(c->outRef, &chunk, (Ptr)(data + off));
         if (err != noErr) return err;
         off += chunk;
-        SystemTask();                            /* yield between chunks */
+        /* NB: no cooperative yield between chunks in v1 — a large serial send
+         * blocks the loop for its duration (bounded by baud). Add a yield when
+         * bulk-over-serial (screenshots/large files) proves painful. */
     }
     return noErr;
 }
