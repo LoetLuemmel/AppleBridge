@@ -23,11 +23,16 @@
 #define PREFS_MAX_APPS  8
 #define PREFS_PATH_LEN  256
 #define PREFS_IP_LEN    64
+#define PREFS_TOKEN_LEN 64
 
 typedef struct {
     char    ip[PREFS_IP_LEN];
     Boolean debug;
     short   transport;      /* kTransportOT (default) / kTransportMacTCP — NET= key */
+    char    token[PREFS_TOKEN_LEN];  /* TOKEN= : opt-in shared secret for the v0.2
+                                      * auth handshake. Empty ⇒ auth disabled (the
+                                      * default), so zero-config setups are unchanged.
+                                      * See docs/PROTOCOL_v0.2.md. */
     char    home[PREFS_PATH_LEN];  /* HOME= : folder holding the AppleBridge binaries.
                                     * Empty ⇒ fall back to the legacy hardcoded path, so
                                     * pre-installer setups keep working. Set by the

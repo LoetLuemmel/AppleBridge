@@ -132,6 +132,14 @@ def test_ab_digest_is_nonce_then_token():
     assert host_server.ab_digest(b"AB", b"CD") != host_server.ab_digest(b"CD", b"AB")
 
 
+def test_ab_digest_cross_impl_golden_vectors():
+    # Pinned so the daemon's ABDigestHex (auth.c) and this host verifier can never
+    # silently diverge. Convention: the nonce is hashed as its ASCII-hex string
+    # exactly as sent on the wire — not decoded (docs/PROTOCOL_v0.2.md §2).
+    assert host_server.ab_digest(b"1122334455667788", b"s3cret") == "cfcf7d300083ee67"
+    assert host_server.ab_digest(b"deadbeefcafef00d", b"hunter2") == "0b16a20e04ade276"
+
+
 # --- HELLO reply parsing ---------------------------------------------------
 
 def test_parse_hello_v02_full():
