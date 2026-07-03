@@ -42,11 +42,15 @@ GREEN, RED, YELLOW, DIM = "32", "31", "33", "2"
 # --- control-port transport (mirror of send_command.py) ----------------------
 def ctrl(cmd, host, port, timeout=20.0):
     """Send one control command; return the decoded reply (or raise)."""
+    # When a control-port token is configured, lead with an "AUTH:<token>\n" line
+    # so the smoke works against a guarded server (unset -> guard off, no prefix).
+    token = os.environ.get("APPLEBRIDGE_CTRL_TOKEN", "")
+    auth = f"AUTH:{token}\n" if token else ""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(timeout)
     try:
         sock.connect((host, port))
-        sock.sendall(cmd.encode("utf-8"))
+        sock.sendall((auth + cmd).encode("utf-8"))
         sock.shutdown(socket.SHUT_WR)
         buf = b""
         while True:

@@ -13,6 +13,7 @@ Features:
     - Sets file type for executable
     - Optionally runs the built application
 """
+import os
 import socket
 import sys
 import re
@@ -22,10 +23,12 @@ from pathlib import Path
 
 def send_command(command: str, host: str = '127.0.0.1', port: int = 9001) -> str:
     """Send command to AppleBridge server"""
+    token = os.environ.get("APPLEBRIDGE_CTRL_TOKEN", "")
+    auth = f"AUTH:{token}\n" if token else ""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         sock.connect((host, port))
-        sock.sendall(command.encode('utf-8'))
+        sock.sendall((auth + command).encode('utf-8'))
         sock.shutdown(socket.SHUT_WR)
 
         response = b""

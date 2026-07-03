@@ -14,6 +14,11 @@ DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 9001
 SHARE_FOLDER = "/Users/pitforster/Desktop/Share"
 
+# Opt-in control-port secret. When set (and the host server has a matching
+# APPLEBRIDGE_CTRL_TOKEN), each request is prefixed with an "AUTH:<token>\n" line;
+# empty (default) means the guard is off and behaviour is unchanged.
+CTRL_TOKEN = os.environ.get("APPLEBRIDGE_CTRL_TOKEN", "")
+
 
 class MacConnection:
     """
@@ -94,8 +99,10 @@ class MacConnection:
             # Send raw command terminated by \n\n. The :9001 control server
             # (hardened host_server.py, or the Swift MacintoshBridgeHost)
             # forwards it to the Mac daemon, which re-encodes to MacRoman.
-            # Use UTF-8 to match the control-port decoder (utf-8).
-            message = f"{command}\n\n"
+            # Use UTF-8 to match the control-port decoder (utf-8). When a
+            # control-port token is configured, lead with an "AUTH:<token>\n" line.
+            auth = f"AUTH:{CTRL_TOKEN}\n" if CTRL_TOKEN else ""
+            message = f"{auth}{command}\n\n"
             sock.sendall(message.encode('utf-8'))
 
             # Receive until the control server closes the socket (the normal
