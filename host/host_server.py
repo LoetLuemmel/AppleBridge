@@ -89,6 +89,14 @@ MAX_CTRL_REQUEST = 12 * 1024 * 1024
 # environment, never a file in the TCC-protected repo. Empty -> auth skipped.
 AUTH_TOKEN = os.environ.get("APPLEBRIDGE_TOKEN", "").encode("utf-8")
 
+# Opt-in guard for the LOCAL control port (:9001) — a separate trust boundary from
+# the wire auth above (which guards the daemon<->host link). The port is loopback-
+# only, so this defends against *other local processes/users* on the same host. When
+# APPLEBRIDGE_CTRL_TOKEN is set, a control client must prefix its request with an
+# "AUTH:<token>\n" line; when unset (default) the port is open and behaviour is
+# unchanged. Independent of APPLEBRIDGE_TOKEN so either boundary can be guarded alone.
+CTRL_TOKEN = os.environ.get("APPLEBRIDGE_CTRL_TOKEN", "").encode("utf-8")
+
 # --- Serial transport (Phase 5 reach; see docs/SERIAL_TRANSPORT.md) ----------
 # When APPLEBRIDGE_SERIAL names a device, the host serves the daemon over a serial
 # line instead of the TCP :9000 accept — for Ethernet-less machines and the pty
@@ -892,6 +900,35 @@ class AppleBridgeServer:
         self.connected = False
 
 
+def split_ctrl_auth(request):
+    """Strip an optional leading 'AUTH:<token>' line from a control request.
+
+    Returns (command, token) where token is the presented secret (str) or None if
+    no AUTH line was sent. The AUTH line is always stripped when present, so a
+    client configured with a token works whether or not the server enforces one.
+    """
+    if request.startswith("AUTH:"):
+        nl = request.find("\n")
+        if nl < 0:
+            return "", request[len("AUTH:"):]        # auth line only, no command
+        return request[nl + 1:].lstrip("\n"), request[len("AUTH:"):nl]
+    return request, None
+
+
+def ctrl_authorized(token):
+    """Whether a control request bearing `token` (str or None) may proceed.
+
+    Open by default (no CTRL_TOKEN configured). When a token IS configured the
+    check is fail-closed: a missing or mismatched token is rejected, compared in
+    constant time to avoid leaking the secret by timing.
+    """
+    if not CTRL_TOKEN:
+        return True
+    if token is None:
+        return False
+    return hmac.compare_digest(token.encode("utf-8"), CTRL_TOKEN)
+
+
 def _recv_control_command(conn):
     """Read one command from a control client.
 
@@ -966,6 +1003,17 @@ def run_control_server(server):
 
             try:
                 cmd = _recv_control_command(ctrl_conn)
+                # Optional control-port auth (loopback boundary). Strip any leading
+                # AUTH: line, then gate: with a token configured, an absent/wrong one
+                # is rejected before the command ever reaches the daemon.
+                cmd, ctrl_token = split_ctrl_auth(cmd)
+                if not ctrl_authorized(ctrl_token):
+                    log("control auth: rejected (missing/invalid token)")
+                    msg = "control auth required"
+                    ctrl_conn.sendall(
+                        f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(msg)}\r{msg}\r\r".encode(
+                            "utf-8"))
+                    continue          # finally: closes the conn
                 if cmd:
                     if cmd.lower() == "screenshot" or cmd.lower().startswith("screenshot:"):
                         # Optional crop: "screenshot:x:y:w:h" decodes only that region.

@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """Send a single command to AppleBridge server via localhost"""
+import os
 import socket
 import sys
+
+
+def _auth_prefix():
+    """'AUTH:<token>\\n' when APPLEBRIDGE_CTRL_TOKEN is set, else '' (guard off)."""
+    token = os.environ.get("APPLEBRIDGE_CTRL_TOKEN", "")
+    return f"AUTH:{token}\n" if token else ""
+
 
 def send_command(command, host='127.0.0.1', port=9001):
     """Send command to the bridge's local control port"""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         sock.connect((host, port))
-        sock.sendall(command.encode('utf-8'))
+        sock.sendall((_auth_prefix() + command).encode('utf-8'))
         sock.shutdown(socket.SHUT_WR)
 
         response = b""
