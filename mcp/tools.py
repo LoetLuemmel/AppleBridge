@@ -444,6 +444,21 @@ again before continuing.""",
         "inputSchema": {"type": "object", "properties": {}, "required": []}
     },
     {
+        "name": "mac_shutdown",
+        "description": """Cleanly power off the emulated classic Mac (System 7).
+
+The daemon triggers the Shutdown Manager (ShutDwnPower) in-process — the equivalent
+of Special > Shut Down. It flushes the disk volumes and powers the machine off, so
+under Basilisk II the emulator then quits on its own. Use this to stop the guest —
+NEVER hard-kill the emulator process, which risks an unclean HFS unmount and a
+corrupted disk image.
+
+Unlike mac_reboot, the daemon does NOT come back: the machine is off, and the bridge
+connection drops for good until the emulator is launched again. The connection
+dropping mid-shutdown is expected, not an error.""",
+        "inputSchema": {"type": "object", "properties": {}, "required": []}
+    },
+    {
         "name": "mac_update_daemon",
         "description": """Self-update the running AppleBridge daemon, over the bridge.
 
@@ -1317,6 +1332,29 @@ def mac_reboot() -> Dict[str, Any]:
         return {"success": True, "note": f"reboot triggered (connection dropped: {e})"}
 
 
+def mac_shutdown() -> Dict[str, Any]:
+    """Cleanly power off the emulated Mac via the daemon's SHUTDOWN verb.
+
+    The safe alternative to hard-killing the emulator process (which risks a
+    corrupted guest disk image): the daemon calls the Shutdown Manager's
+    ShutDwnPower, which flushes volumes and powers the machine off.
+    """
+    try:
+        conn = get_connection()
+        if not conn.is_connected():
+            return {"success": False, "error": "Mac not connected"}
+        status, stdout, stderr = conn.send_command("SHUTDOWN", timeout=15.0)
+        return {
+            "success": True,
+            "message": stdout or "shutdown triggered",
+            "note": "Mac is powering off; the emulator will quit and the bridge "
+                    "connection will stay down until it is launched again.",
+        }
+    except Exception as e:
+        # The connection dropping mid-shutdown is expected, not a failure.
+        return {"success": True, "note": f"shutdown triggered (connection dropped: {e})"}
+
+
 def mac_update_daemon(host_path: str, mac_dir: Optional[str] = None,
                       staged_name: str = "AppleBridge new") -> Dict[str, Any]:
     """Self-update the running daemon, entirely over the bridge.
@@ -1380,6 +1418,7 @@ TOOL_HANDLERS = {
     "mac_restart_toolserver": mac_restart_toolserver,
     "run_applescript": run_applescript,
     "mac_reboot": mac_reboot,
+    "mac_shutdown": mac_shutdown,
     "mac_update_daemon": mac_update_daemon,
 }
 
