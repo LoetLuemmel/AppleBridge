@@ -920,6 +920,27 @@ static OSErr RebootMac(void)
     return noErr;            /* only reached if the restart failed to fire */
 }
 
+/*
+ * Trigger a clean System 7 power-off via the Shutdown Manager, in-process. Used by
+ * the SHUTDOWN verb — the SAFE way to stop the guest (and, under Basilisk II, let the
+ * emulator quit) WITHOUT hard-killing the host process. A hard kill leaves the guest
+ * HFS volume unflushed -> a corrupted disk image; ShutDwnPower() runs the shutdown
+ * procs, flushes the volumes, then powers the machine off. Unlike REBOOT, nothing
+ * brings the daemon back — the machine is off. It does not return if it fires.
+ */
+static OSErr ShutdownMac(void)
+{
+    unsigned long dummy;
+
+    /* The SHUTDOWN ack was already ABSend()'d by the caller; give Open Transport a
+     * moment to flush it to the host before the machine powers off. ~0.5s (30 ticks). */
+    SystemTask();
+    Delay(30L, &dummy);
+
+    ShutDwnPower();          /* powers the machine off; does not return on success */
+    return noErr;            /* only reached if the power-off failed to fire */
+}
+
 /* Minimal decimal / string appenders for building the STAT verb payload
  * without sprintf or NumToString. Each returns the pointer past what it wrote. */
 static char *StatDec(char *p, long v)
@@ -1149,6 +1170,21 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         gTXCount++;
         SetActivity("REBOOT");
         RebootMac();
+        return true;
+    }
+
+    /* SHUTDOWN verb: clean System 7 power-off via the Shutdown Manager. This is the
+     * SAFE way to stop the guest / let Basilisk II quit — a hard process kill risks an
+     * unclean HFS unmount and a corrupted disk image. Ack first, then power off; the
+     * connection drops and, unlike REBOOT, the daemon does NOT come back (machine off). */
+    if (strncmp(request, PROTO_SHUTDOWN, strlen(PROTO_SHUTDOWN)) == 0 &&
+        (request[8] == '\0' || request[8] == '\r' || request[8] == '\n')) {
+        strcpy(responseBuffer, "STATUS:0\rSTDOUT:8\rShutdown\rSTDERR:0\r\r");
+        ABSend(conn, responseBuffer, strlen(responseBuffer));
+        gLastTX = TickCount();
+        gTXCount++;
+        SetActivity("SHUTDOWN");
+        ShutdownMac();
         return true;
     }
 
