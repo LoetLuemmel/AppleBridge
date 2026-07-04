@@ -137,6 +137,12 @@ static long gLastRX = 0;     /* Tick count of last receive */
 static long gLastTX = 0;     /* Tick count of last transmit */
 static long gRXCount = 0;    /* Total commands received */
 static long gTXCount = 0;    /* Total responses sent */
+static long gErrCount = 0;   /* Total error responses (STATUS != 0) */
+static long gLastLat = 0;    /* Last REAL command's RX->TX latency, in ticks */
+static Boolean gLastWasReal = false;  /* was the last request a real command (not a
+                                       * PING/STAT heartbeat)? gates the latency capture
+                                       * so ~0-tick heartbeats don't clobber gLastLat. */
+static char gLastErr[48] = "";        /* short tag of the most recent error (for id) */
 
 /* Current activity shown on the top bar next to the green "Active" LED
  * (the command/verb being processed). */
@@ -144,6 +150,10 @@ static char gActivity[256] = "ready";
 
 /* LED flash duration in ticks (~0.66 seconds, long enough to be seen) */
 #define LED_FLASH_DURATION  40
+
+/* Footer telemetry line (defined after the StatDec/StatStr number helpers it
+ * uses; called from ShowAlive above them). */
+static void DrawTelemetry(void);
 
 /*
  * HOST IP - Change this to your host's IP address!
@@ -409,7 +419,8 @@ void ShowAlive(void)
     if (ticks - gTickCounter < 8) return;
     gTickCounter = ticks;
 
-    DrawLEDs();   /* top bar (activity + RX/TX LEDs) */
+    DrawLEDs();       /* top bar (activity + RX/TX LEDs) */
+    DrawTelemetry();  /* footer strip (RX/TX/ERR counters + last latency) */
 
     /* Sync the TE field from the ring if new lines arrived (from this good
      * context — TESetText draws, which doesn't render in the OT-receive path). */
@@ -959,6 +970,99 @@ static char *StatStr(char *p, const char *s)
     return p;
 }
 
+/* Record an error: bump the counter AND remember a short identifying tag, so the
+ * monitor/STAT can say WHAT failed, not just how often. Called at each error site. */
+static void NoteErr(const char *tag)
+{
+    short i;
+    gErrCount++;
+    for (i = 0; tag[i] && i < (short)sizeof(gLastErr) - 1; i++) gLastErr[i] = tag[i];
+    gLastErr[i] = '\0';
+}
+
+/*
+ * Footer telemetry: a one-line diagnostic strip drawn in the empty 15px band
+ * below the log body (MonitorBodyRect reserves it) and left of the grow box —
+ * so it needs no layout change. Shows the running RX / TX / error totals, the
+ * last real command's round-trip latency (RX->TX) as a number AND a colour-coded
+ * analog health bar, and the last error's tag. gLastLat is maintained in
+ * ProcessRequest (heartbeat-gated), so this only READS it — recomputing here would
+ * clobber it with the ~0-tick heartbeat latency on every 8x/sec refresh.
+ * (Full application, not a code resource — divide/format/GetPen glue is fine.)
+ */
+static void DrawTelemetry(void)
+{
+    Rect     foot, bar;
+    Str255   s;
+    char     buf[96];
+    char    *b = buf;
+    short    w, h, i;
+    long     ms, barw;
+    Point    pen;
+    RGBColor cBlack = { 0, 0, 0 };
+    RGBColor cWhite = { 0xFFFF, 0xFFFF, 0xFFFF };
+    RGBColor saveF, cHealth;
+
+    if (gStatusWindow == NULL) return;
+    SetPort(gStatusWindow);
+    GetForeColor(&saveF);
+    w = gStatusWindow->portRect.right - gStatusWindow->portRect.left;
+    h = gStatusWindow->portRect.bottom - gStatusWindow->portRect.top;
+
+    ms = gLastLat * 1000 / 60;      /* ticks -> ms (read-only; set in ProcessRequest) */
+
+    SetRect(&foot, 0, (short)(h - 15), (short)(w - 15), h);
+    RGBBackColor(&cWhite);
+    RGBForeColor(&cBlack);
+    EraseRect(&foot);
+
+    /* --- counters + latency number --- */
+    b = StatStr(b, "RX ");     b = StatDec(b, gRXCount);
+    b = StatStr(b, "  TX ");   b = StatDec(b, gTXCount);
+    b = StatStr(b, "  ERR ");  b = StatDec(b, gErrCount);
+    b = StatStr(b, "  last "); b = StatDec(b, ms);
+    b = StatStr(b, "ms ");
+    *b = '\0';
+    for (i = 0; buf[i] && i < 250; i++) s[i + 1] = buf[i];
+    s[0] = (unsigned char)i;
+    TextSize(9);
+    MoveTo(6, (short)(h - 4));
+    DrawString(s);
+    GetPen(&pen);                   /* where the text ended -> bar starts here */
+
+    /* --- analog health bar: colour by latency band, length scaled + capped --- */
+    if (ms < 200)       { cHealth.red = 0x1000; cHealth.green = 0xC000; cHealth.blue = 0x1000; } /* green: healthy */
+    else if (ms < 1000) { cHealth.red = 0xF000; cHealth.green = 0xB000; cHealth.blue = 0x0000; } /* amber: slow    */
+    else                { cHealth.red = 0xE000; cHealth.green = 0x1000; cHealth.blue = 0x1000; } /* red: unhealthy */
+    barw = ms / 25;                 /* 1200ms -> 48px full scale */
+    if (barw > 48) barw = 48;
+    if (barw < 3)  barw = 3;        /* a small stub even at ~0ms (idle = green/healthy) */
+    bar.left   = (short)(pen.h + 2);
+    bar.top    = (short)(h - 12);
+    bar.right  = (short)(pen.h + 2 + barw);
+    bar.bottom = (short)(h - 4);
+    RGBForeColor(&cHealth);
+    PaintRect(&bar);
+    RGBForeColor(&cBlack);
+    FrameRect(&bar);
+
+    /* --- last error tag (identification), only once something has failed --- */
+    if (gErrCount > 0 && gLastErr[0]) {
+        char  eb[80];
+        char *ep = eb;
+        ep = StatStr(ep, "  err:");
+        ep = StatStr(ep, gLastErr);
+        *ep = '\0';
+        for (i = 0; eb[i] && i < 250; i++) s[i + 1] = eb[i];
+        s[0] = (unsigned char)i;
+        MoveTo((short)(bar.right + 4), (short)(h - 4));
+        DrawString(s);
+    }
+
+    RGBForeColor(&saveF);
+    TextSize(12);
+}
+
 /* Parse exactly 8 hex digits into an OSType (4 bytes), for the AESEND verb. */
 static OSType ParseHexType(const char *s)
 {
@@ -990,9 +1094,18 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
     CommandResult cmdResult;
     OSStatus err;
 
+    /* Capture the just-finished command's latency (its RX->TX) before this new RX
+     * overwrites gLastRX, so `lat` is right even with the monitor closed. Only for
+     * REAL commands: heartbeats (PING/STAT) fire every few seconds with ~0-tick
+     * round-trips and would otherwise clobber the last real command's figure.
+     * (gLastTX < gLastRX = a command mid-flight, so the last value holds.) */
+    if (gLastWasReal && gLastTX >= gLastRX) gLastLat = gLastTX - gLastRX;
+
     /* Mark RX activity */
     gLastRX = TickCount();
     gRXCount++;
+    gLastWasReal = (strncmp(request, "PING", 4) != 0 &&
+                    strncmp(request, PROTO_STAT, strlen(PROTO_STAT)) != 0);
     if (gMenuLED) *gMenuLED = gLastRX;   /* flash the menu-bar LED (if installed) */
     DrawLEDs();   /* light RX immediately */
 
@@ -1095,7 +1208,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
             strcpy(responseBuffer, "STATUS:0\rSTDOUT:6\rAuthOK\rSTDERR:0\r\r");
         } else {
             gAuthed = false;
-            strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:11\rAuth failed\r\r");
+            strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:11\rAuth failed\r\r"); NoteErr("auth");
         }
         ABSend(conn, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount(); gTXCount++;
@@ -1107,7 +1220,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
      * have already returned. Keeps an unauthenticated peer from driving the Mac
      * or reading files while the link stays alive for the handshake to finish. */
     if (gNeedAuth && !gAuthed && strncmp(request, "PING", 4) != 0) {
-        strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:17\rNot authenticated\r\r");
+        strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:17\rNot authenticated\r\r"); NoteErr("noauth");
         ABSend(conn, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount(); gTXCount++;
         return true;
@@ -1128,7 +1241,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
             if (SendScreenshot(conn, &screenshot) != kBridgeNoErr) ok = false;
             CleanupScreenshot(&screenshot);
         } else {
-            strcpy(responseBuffer, "STATUS:-1\nSTDOUT:0\n\nSTDERR:18\nScreenshot failed\n\n");
+            strcpy(responseBuffer, "STATUS:-1\nSTDOUT:0\n\nSTDERR:18\nScreenshot failed\n\n"); NoteErr("screenshot");
             if (ABSend(conn, responseBuffer, strlen(responseBuffer)) != noErr) ok = false;
         }
 
@@ -1206,6 +1319,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
             char msg[48];
             char *m = msg;
             char *p = responseBuffer;
+            NoteErr("swap");
             m = StatStr(m, "swap err ");
             m = StatDec(m, (long)se);
             *m = '\0';
@@ -1245,7 +1359,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         if (lerr == noErr) {
             strcpy(responseBuffer, "STATUS:0\rSTDOUT:8\rLaunched\rSTDERR:0\r\r");
         } else {
-            strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:13\rLaunch failed\r\r");
+            strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:13\rLaunch failed\r\r"); NoteErr("launch");
             SetActivity("LAUNCH failed");
         }
         ABSend(conn, responseBuffer, strlen(responseBuffer));
@@ -1275,7 +1389,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         if (qerr == noErr) {
             strcpy(responseBuffer, "STATUS:0\rSTDOUT:7\rQuit OK\rSTDERR:0\r\r");
         } else {
-            strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:11\rQuit failed\r\r");
+            strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:11\rQuit failed\r\r"); NoteErr("quit");
             SetActivity("QUIT no such app");
         }
         ABSend(conn, responseBuffer, strlen(responseBuffer));
@@ -1347,6 +1461,9 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         b = StatStr(b, "uptime=");      b = StatDec(b, (now - gStartTick) / 60);
         b = StatStr(b, ";rx=");         b = StatDec(b, gRXCount);
         b = StatStr(b, ";tx=");         b = StatDec(b, gTXCount);
+        b = StatStr(b, ";err=");        b = StatDec(b, gErrCount);
+        b = StatStr(b, ";lat=");        b = StatDec(b, gLastLat * 1000 / 60);   /* last RX->TX, ms */
+        b = StatStr(b, ";lasterr=");    b = StatStr(b, gLastErr);               /* tag of most recent error */
         b = StatStr(b, ";toolserver="); b = StatDec(b, IsAppRunning('MPSX') ? 1 : 0);
         b = StatStr(b, ";net=");        b = StatStr(b, ABActiveTransport() == kTransportMacTCP ? "MacTCP" : "OT");
         b = StatStr(b, ";home=");       b = StatStr(b, gPrefs.home);   /* install folder; empty on legacy setups */
@@ -1397,6 +1514,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         if (doLen < 0) doLen = 0;
         ExecuteAppleEvent(tgt, cls, eid, request + headerEnd, doLen, &cmdResult);
         err = SendCommandResult(conn, &cmdResult);
+    if (cmdResult.exitCode != 0) NoteErr("cmd fail");
         gLastTX = TickCount();
         gTXCount++;
         CleanupCommandResult(&cmdResult);
@@ -1426,6 +1544,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
             else { DisposeHandle(h); }         /* no TEXT on the scrap: empty reply */
         }
         err = SendCommandResult(conn, &cmdResult);
+    if (cmdResult.exitCode != 0) NoteErr("cmd fail");
         gLastTX = TickCount();
         gTXCount++;
         CleanupCommandResult(&cmdResult);
@@ -1461,7 +1580,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         if (serr == noErr)
             strcpy(responseBuffer, "STATUS:0\rSTDOUT:7\rClipSet\rSTDERR:0\r\r");
         else
-            strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:13\rPutScrap error\r\r");
+            strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:13\rPutScrap error\r\r"); NoteErr("clipboard");
         ABSend(conn, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();
         gTXCount++;
@@ -1502,7 +1621,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
     /* Parse command */
     result = ParseCommand(request, command, &commandLength);
     if (result != kBridgeNoErr) {
-        strcpy(responseBuffer, "STATUS:-1\nSTDOUT:0\n\nSTDERR:21\nInvalid command format\n\n");
+        strcpy(responseBuffer, "STATUS:-1\nSTDOUT:0\n\nSTDERR:21\nInvalid command format\n\n"); NoteErr("badreq");
         ABSend(conn, responseBuffer, strlen(responseBuffer));
         StatusMessage("Invalid command format");
 
@@ -1565,6 +1684,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
 
     /* Stream response straight from the (possibly multi-MB) result handle. */
     err = SendCommandResult(conn, &cmdResult);
+    if (cmdResult.exitCode != 0) NoteErr("cmd fail");
 
     /* Mark TX activity */
     gLastTX = TickCount();
