@@ -152,14 +152,55 @@ During testing on 2026-04-11, the LEDs revealed:
 
 This saved significant debugging time by pinpointing the exact failure point.
 
+## Telemetry footer (0.8d6, 2026-07-04)
+
+> The window shown above has since evolved: the two-LED pair became a single
+> green **Active** indicator on the top bar (RX and TX always move together), the
+> body became a scrolling **Verbose** console, and the previously-empty 15px band
+> below the log is now a **telemetry footer** that turns the monitor into a
+> diagnostic instrument. Most of the "Future Enhancements" below shipped here.
+
+The footer (drawn in `DrawTelemetry()`, in the band `MonitorBodyRect` already
+reserves, so no layout change) reads:
+
+```
+RX 35  TX 35  ERR 1  last 83ms ▮  err:launch
+```
+
+- **RX / TX / ERR** — running totals. `ERR` counts **bridge/verb-level** error
+  responses (`STATUS != 0`): a failed `LAUNCH`, an auth rejection, a malformed
+  request, a non-zero command `exitCode`. A guest command that itself fails (e.g.
+  MPW "command not found") is **not** an error here — it is a successful bridge
+  round-trip that returned the guest's output.
+- **last `<n>`ms** — the last **real** command's round-trip latency (daemon
+  `RX → TX`), a number *and* a colour-coded **analog health bar**: green
+  (< 200 ms), amber (< 1 s), red (≥ 1 s); the bar length scales with latency
+  (capped). Heartbeats are excluded (see below) so the figure reflects real work.
+- **err:`<tag>`** — a short identifier for the most recent error
+  (`auth` / `launch` / `quit` / `clipboard` / `badreq` / `swap` / `cmd fail` / …),
+  set by a `NoteErr(tag)` helper at each error site — so the monitor says *what*
+  failed, not just how often.
+
+**Heartbeat gating (a subtle bug, twice).** The host PINGs every ~10 s and STATs
+on demand; both are ~0-tick round-trips. Measuring "last latency" naively lets
+those clobber the real figure to 0. The fix captures latency in `ProcessRequest`
+only when the *previous* request was a real command (`gLastWasReal`), and — the
+second half — `DrawTelemetry()` must only **read** `gLastLat`, never recompute it
+(it runs 8×/sec off the *latest*, i.e. heartbeat, timestamps). Both were caught in
+live on-device verification.
+
+**Also exposed off-screen.** The `STAT` verb reports `err=` / `lat=` / `lasterr=`,
+and `mac_status` surfaces `err_count` / `last_latency_ms` / `last_error` — so the
+same telemetry is available without opening the window.
+
 ## Future Enhancements
 
 Possible improvements:
-1. **Heartbeat/Ping**: Periodic health check command
-2. **Error counter**: Track failed commands separately
-3. **Last command display**: Show most recent command text
-4. **Response time**: Display average command latency
-5. **Connection quality meter**: Visual indicator of health
+1. **Heartbeat/Ping**: Periodic health check command — ✅ shipped (v0.5.x app-level heartbeat)
+2. **Error counter**: Track failed commands separately — ✅ shipped (0.8d6, with a last-error tag)
+3. **Last command display**: Show most recent command text — ✅ shipped (the top-bar activity line)
+4. **Response time**: Display average command latency — ✅ shipped (0.8d6 last-command latency + health bar)
+5. **Connection quality meter**: Visual indicator of health — ✅ shipped (0.8d6 colour-coded latency bar)
 
 ## Version History
 
@@ -167,6 +208,12 @@ Possible improvements:
   - Visual activity indicators
   - RX/TX counters
   - Color-coded LEDs (green/red simulation)
+- **0.8d6** (2026-07-04): Telemetry footer
+  - Single **Active** indicator + scrolling Verbose console (prior evolution)
+  - Footer: RX/TX/**ERR** counters, last-command **latency** (number + colour-coded
+    health bar), and an **err:tag** last-error identifier
+  - Heartbeat-gated latency (real commands only)
+  - `STAT` `err=`/`lat=`/`lasterr=`; `mac_status` `err_count`/`last_latency_ms`/`last_error`
 
 ## Credits
 

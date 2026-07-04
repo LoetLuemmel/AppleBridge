@@ -290,7 +290,8 @@ daemon is down (so you can tell WHICH layer is broken):
   - daemon_responding    — did the daemon answer a STAT this call
   - toolserver_running   — is ToolServer ('MPSX') alive (mpw_execute needs it)
   - idle_seconds / missed_heartbeats — link freshness
-  - rx_count / tx_count / uptime_seconds — daemon counters
+  - rx_count / tx_count / err_count — daemon counters (err = STATUS != 0 responses)
+  - last_latency_ms / uptime_seconds — last command's RX->TX time; daemon uptime
 
 Diagnostic shortcut: daemon_connected but not toolserver_running => commands
 will come back empty; daemon not connected => the bridge/emulator is down.""",
@@ -1062,6 +1063,9 @@ def mac_status() -> Dict[str, Any]:
         "missed_heartbeats": _int("missed_heartbeats"),
         "rx_count": _int("rx"),
         "tx_count": _int("tx"),
+        "err_count": _int("err"),              # error responses (STATUS != 0); None on pre-telemetry daemons
+        "last_latency_ms": _int("lat"),        # last real command's RX->TX round-trip, ms
+        "last_error": (f.get("lasterr") or None),   # short tag of the most recent error (auth/launch/cmd fail/...)
         "uptime_seconds": _int("uptime"),
         "home": f.get("home") or None,   # daemon install folder (for self-update staging)
         "raw": stdout,
