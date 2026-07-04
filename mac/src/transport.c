@@ -57,6 +57,13 @@ short ABActiveTransport(void)
     return gActive;
 }
 
+const char *ABTransportName(void)
+{
+    if (gActive == kTransportMacTCP) return "MacTCP";
+    if (gActive == kTransportSerial) return "Serial";
+    return "OT";
+}
+
 /*
  * Open a connection. The dispatcher allocates the (zeroed) ABConn so each
  * backend only fills in its own handle fields.

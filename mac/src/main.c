@@ -1016,7 +1016,8 @@ static void DrawTelemetry(void)
     RGBForeColor(&cBlack);
     EraseRect(&foot);
 
-    /* --- counters + latency number --- */
+    /* --- active transport + counters + latency number --- */
+    b = StatStr(b, "NET ");    b = StatStr(b, ABTransportName());  b = StatStr(b, "  ");
     b = StatStr(b, "RX ");     b = StatDec(b, gRXCount);
     b = StatStr(b, "  TX ");   b = StatDec(b, gTXCount);
     b = StatStr(b, "  ERR ");  b = StatDec(b, gErrCount);
@@ -1476,7 +1477,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         b = StatStr(b, ";lat=");        b = StatDec(b, gLastLat * 1000 / 60);   /* last RX->TX, ms */
         b = StatStr(b, ";lasterr=");    b = StatStr(b, gLastErr);               /* tag of most recent error */
         b = StatStr(b, ";toolserver="); b = StatDec(b, IsAppRunning('MPSX') ? 1 : 0);
-        b = StatStr(b, ";net=");        b = StatStr(b, ABActiveTransport() == kTransportMacTCP ? "MacTCP" : "OT");
+        b = StatStr(b, ";net=");        b = StatStr(b, ABTransportName());
         b = StatStr(b, ";home=");       b = StatStr(b, gPrefs.home);   /* install folder; empty on legacy setups */
         *b = '\0';
         f = StatStr(f, "STATUS:0\rSTDOUT:");
@@ -1737,7 +1738,6 @@ static Boolean WaitForReconnect(void)
 {
     long startTicks = TickCount();
     long elapsed;
-    char buf[64];
 
     SetActivity("reconnecting in 30s");
 
