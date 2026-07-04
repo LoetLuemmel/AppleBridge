@@ -15,6 +15,9 @@
 #include <Scrap.h>
 #include <Dialogs.h>
 #include <Files.h>
+#include <Resources.h>
+#include <Devices.h>
+#include <LowMem.h>
 #include <Processes.h>
 #include <ToolUtils.h>
 #include <AppleEvents.h>
@@ -1530,6 +1533,60 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         ABSend(conn, hdr, (long)(h - hdr));
         if (n > 0) ABSend(conn, gTEBuf, n);
         ABSend(conn, "\rSTDERR:0\r\r", 11);
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
+    /* JGATE verb: daemon-side journaling gate (step-3 part 2). Installs the
+     * journal DRVR from the daemon's OWN faceless process, arms playback, and
+     * checks that Button() returns the driver's injected value -- proving the
+     * Event Manager consults a driver a BACKGROUND daemon installed. Reads
+     * "ABJournalDRVR" from the daemon's home folder. The armed window is a single
+     * synchronous Button() with no yield; the driver also auto-disarms on the
+     * first jcEvent, so playback can never stick. Diagnostic/experimental. */
+    if (strncmp(request, "JGATE", 5) == 0 &&
+        (request[5] == '\0' || request[5] == '\r' || request[5] == '\n')) {
+        Str255      pPath;
+        short       resRef, drvRef = 0, jref, i, n = 0;
+        OSErr       oe;
+        Boolean     bIdle, bArmed;
+        long        calls = -1;
+        DCtlHandle  dh;
+        char        body[176];
+        char        frame[224];
+        char       *b = body;
+        char       *f = frame;
+        const char *fn = "ABJournalDRVR";
+        SetActivity("JGATE");
+        for (i = 0; gPrefs.home[i] && n < 254; i++) pPath[1 + n++] = gPrefs.home[i];
+        for (i = 0; fn[i] && n < 254; i++)          pPath[1 + n++] = fn[i];
+        pPath[0] = (unsigned char)n;
+        resRef = OpenResFile(pPath);
+        oe = OpenDriver("\p.ABJournal", &drvRef);
+        jref = LMGetJournalRef();
+        bIdle = Button();
+        *(volatile short *)0x08DEL = -1;    /* arm playback (JournalFlag < 0) */
+        bArmed = Button();
+        *(volatile short *)0x08DEL = 0;     /* disarm immediately (no yield above) */
+        dh = (DCtlHandle)GetDCtlEntry(drvRef);
+        if (dh) calls = (long)(**dh).dCtlStorage;
+        b = StatStr(b, "jgate resRef="); b = StatDec(b, (long)resRef);
+        b = StatStr(b, " openErr=");     b = StatDec(b, (long)oe);
+        b = StatStr(b, " drvRef=");      b = StatDec(b, (long)drvRef);
+        b = StatStr(b, " jref=");        b = StatDec(b, (long)jref);
+        b = StatStr(b, " idle=");        b = StatDec(b, (long)(unsigned char)bIdle);
+        b = StatStr(b, " armed=");       b = StatDec(b, (long)(unsigned char)bArmed);
+        b = StatStr(b, " calls=");       b = StatDec(b, calls);
+        b = StatStr(b, " result=");
+        b = StatStr(b, (bArmed && !bIdle) ? "PASS" : "FAIL");
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:");
+        f = StatDec(f, (long)(b - body));
+        *f++ = '\r';
+        f = StatStr(f, body);
+        f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));
         gLastTX = TickCount();
         gTXCount++;
         return true;

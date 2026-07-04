@@ -30,16 +30,16 @@
 
 resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
-    development, 0x11,   /* development stage, non-release revision 11 (BCD) */
+    development, 0x12,   /* development stage, non-release revision 12 (BCD) */
     verUS,
-    "0.8d11",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d11 - LOG verb: read the Verbose console over the bridge"  /* long -> Get Info */
+    "0.8d12",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d12 - JGATE: daemon-side journaling install self-test"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
-    development, 0x11,
+    development, 0x12,
     verUS,
-    "0.8d11",
+    "0.8d12",
     "AppleBridge"        /* the shared/suite version line */
 };
