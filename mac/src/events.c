@@ -155,20 +155,48 @@ OSErr InjectType(const char *text, long len)
     return last;
 }
 
-/* Move the emulated mouse to (h,v) and post a click there. Pokes the button
- * state low-memory so TrackControl-style polling sees a genuine press. */
-OSErr InjectClick(short h, short v)
+/* Move the emulated mouse to (h,v) and post `count` clicks there with modifiers.
+ * Pokes the button-state low-memory so TrackControl-style polling sees a genuine
+ * press. count>1 posts successive mouseDown/Up pairs at the SAME point within a
+ * few ticks (< GetDblTime) so the front app's own double-click detection (which
+ * compares consecutive mouseDown time+location) fires -- there is no double-click
+ * event flag on classic Mac. Modifiers (shift/cmd/option for extend/multi-select)
+ * are stamped on the queued mouseDown via PPostEvent AND held in the KeyMap across
+ * the app's read, mirroring the keystroke path. */
+OSErr InjectClickMod(short h, short v, short count, short modifiers)
 {
     Point p;
+    short c;
+
     p.h = h; p.v = v;
     LM_MTemp    = p;
     LM_RawMouse = p;
     LM_Mouse    = p;
     LM_CrsrNew  = 1;                           /* force the cursor to follow */
-    LM_MBState  = 0x00;                        /* button DOWN */
-    PostEvent(mouseDown, 0L);
-    ShortDelay(4L);                            /* hold ~1/15 s for tracking loops */
-    LM_MBState  = (signed char)0x80;           /* button UP */
-    PostEvent(mouseUp, 0L);
+
+    if (count < 1) count = 1;
+    if (count > 3) count = 3;                  /* single / double / triple */
+
+    /* Modifiers ride ONLY the low-memory KeyMap here (shift-/command-click),
+     * never PPostEvent's queue-element stamping: a first attempt at stamping
+     * evtQModifiers on POSTED MOUSE events crashed the guest on the second click
+     * (0.8d7). Real double-clicks are just repeated plain PostEvent presses at
+     * the same point within GetDblTime, so that is exactly what we do. */
+    if (modifiers) ApplyModifierKeys(modifiers, true);
+    for (c = 0; c < count; c++) {
+        LM_MBState = 0x00;                     /* button DOWN */
+        PostEvent(mouseDown, 0L);              /* plain PostEvent (proven safe) */
+        ShortDelay(4L);                        /* hold ~1/15 s for tracking loops */
+        LM_MBState = (signed char)0x80;        /* button UP */
+        PostEvent(mouseUp, 0L);
+        if (c + 1 < count) ShortDelay(6L);     /* let the app process; gap < GetDblTime */
+    }
+    if (modifiers) ApplyModifierKeys(modifiers, false);
     return noErr;
+}
+
+/* Single unmodified click -- the common path (CLICK:<h>:<v>). */
+OSErr InjectClick(short h, short v)
+{
+    return InjectClickMod(h, v, 1, 0);
 }

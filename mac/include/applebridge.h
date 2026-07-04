@@ -140,6 +140,7 @@ OSErr InjectKey(short charCode, short keyCode);
 OSErr InjectKeyMod(short charCode, short keyCode, short modifiers);
 OSErr InjectType(const char *text, long len);
 OSErr InjectClick(short h, short v);
+OSErr InjectClickMod(short h, short v, short count, short modifiers);
 
 /* Utility functions */
 void LogMessage(const char *message);
