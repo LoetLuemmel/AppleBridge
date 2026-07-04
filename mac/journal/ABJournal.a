@@ -1,138 +1,152 @@
 *-------------------------------------------------------------------------------------------
 *
 * NAME
-*       ABJournal.a -- AppleBridge journaling playback DRVR (skeleton, step 2)
+*       ABJournal.a -- AppleBridge journaling playback DRVR (menu-driving build)
 *
 * DESCRIPTION
-*       A minimal, playback-only journaling device driver for the classic Toolbox
-*       Event Manager. When JournalFlag ($08DE) is negative, the Event Manager issues
-*       a Control call (csCode = jPlayCtl = 16) to the driver whose refNum is in
-*       JournalRef ($08E8), asking it to synthesize the next input. This skeleton
-*       registers itself into JournalRef on Open and, on each playback Control call,
-*       writes a FIXED canned value into the caller's buffer:
-*           jcGetMouse (1) -> a canned Point
-*           jcButton   (2) -> FALSE (button up)
-*           jcEvent    (4) -> a null event (what = 0)
-*       Step 4 replaces the canned values with a daemon-loaded scripted sequence.
+*       A playback-only Event Manager journaling device driver. When JournalFlag
+*       ($08DE) is negative, the ROM Event Manager issues a Control call
+*       (csCode = jPlayCtl = 16) to the driver in JournalRef ($08E8) asking it to
+*       synthesize the next input. The routine is identified by a WORD journal code
+*       at csParam+4 (param-block offset 32); csParam+0 (offset 28) is a pointer to
+*       the caller's buffer to fill.
 *
-*       All offsets/flags verified against MPW Universal Interfaces 3.4
-*       (Devices.h / Files.h) -- see docs/JOURNALING_MENU_BY_NAME.md.
+*       This build is SCRIPT-DRIVEN for menu tracking: it feeds a fixed mouse Point
+*       (jcGetMouse) and holds the button DOWN (jcButton) for a threshold number of
+*       polls then releases it -- exactly what MenuSelect / PopUpMenuSelect need to
+*       walk to an item and select it. All parameters + per-code call counters live
+*       in a state block the driver allocates in Open and stores in dCtlStorage; the
+*       daemon sets the target point + threshold and reads the counters back.
 *
-* COPYRIGHT
-*       AppleBridge project, 2026. Pit Foerster.
+*       Step-3 part 2b of docs/JOURNALING_MENU_BY_NAME.md.
 *-------------------------------------------------------------------------------------------
 
         CASE    OBJ
-        STRING  ASIS                    ; store string literals verbatim (no auto length byte)
+        STRING  ASIS
 
-; ---- low-memory globals (hardcoded: SysEqu.a is absent from this MPW) ----
+; ---- low-memory globals (SysEqu.a absent from this MPW) ----
 JournalFlag     EQU     $08DE           ; word: 0 = off, negative = playback
-JournalRef      EQU     $08E8           ; word: driver refNum of the journal device
+JournalRef      EQU     $08E8           ; word: refNum of the journal device
 
 ; ---- DCtlEntry (DCE) field offsets (Devices.h) ----
-dCtlPosition    EQU     16              ; long: unused by us -> diag capture (csParam@28)
-dCtlStorage     EQU     20              ; Handle: unused by us -> call counter
-dCtlWindow      EQU     30              ; GrafPtr: unused by us -> diag capture (csParam@32)
+dCtlStorage     EQU     20              ; Handle/Ptr: our state block lives here
 dCtlRefNum      EQU     24              ; short: our own driver refNum
 
 ; ---- CntrlParam field offsets (Files.h) ----
 ioResult        EQU     16              ; word (OSErr)
 csCode          EQU     26              ; word: control code
-csParam         EQU     28              ; csParam[0]: caller's buffer ptr (long)
-                                        ; csParam+4 : journal code (long)
+csParam         EQU     28              ; csParam[0] (long) = caller buffer ptr
+                                        ; csParam[2] (WORD @ +4) = journal code
 
-; ---- journal control code (IM Vol I "The Journal") ----
 jPlayCtl        EQU     16              ; csCode for playback
 
-; ---- journal codes @ csParam+4 ----
-jcTickCount     EQU     0
+; journal codes @ csParam+4 (a WORD)
 jcGetMouse      EQU     1
 jcButton        EQU     2
-jcGetKeys       EQU     3
 jcEvent         EQU     4
+
+; ---- state block layout (allocated in Open, ptr kept in dCtlStorage) ----
+oItemPt         EQU     0               ; Point (v,h) fed for jcGetMouse
+oThresh         EQU     4               ; long: jcButton down-count before release
+oPoll           EQU     8               ; long: jcButton poll counter
+oCntMouse       EQU     12              ; long: # jcGetMouse calls
+oCntBtn         EQU     16              ; long: # jcButton calls
+oCntEvt         EQU     20              ; long: # jcEvent calls
+oCntOth         EQU     24              ; long: # other-code calls
+oBlkSize        EQU     32
+
+_NewPtr         OPWORD  $A11E           ; D0=size -> A0=ptr, D0=err
 
 ABJournal       MAIN
 ;-------------------------------------------------------------------------------
-; DRVR header -- must be at offset 0 of the resource
+; DRVR header (offset 0 of the resource)
 ;-------------------------------------------------------------------------------
         DC.W    $4400                   ; drvrFlags: dCtlEnableMask|dNeedLockMask
         DC.W    0                       ; drvrDelay
         DC.W    0                       ; drvrEMask
         DC.W    0                       ; drvrMenu
-        DC.W    DOpen-ABJournal         ; drvrOpen  offset
-        DC.W    DDummy-ABJournal        ; drvrPrime offset (no-op)
-        DC.W    DControl-ABJournal      ; drvrCtl   offset
-        DC.W    DDummy-ABJournal        ; drvrStatus offset (no-op)
-        DC.W    DClose-ABJournal        ; drvrClose offset
-        DC.B    10,'.ABJournal'         ; driver name (Pascal string)
+        DC.W    DOpen-ABJournal         ; drvrOpen
+        DC.W    DDummy-ABJournal        ; drvrPrime (no-op)
+        DC.W    DControl-ABJournal      ; drvrCtl
+        DC.W    DDummy-ABJournal        ; drvrStatus (no-op)
+        DC.W    DClose-ABJournal        ; drvrClose
+        DC.B    10,'.ABJournal'         ; driver name (Pascal)
         ALIGN
 
 ;-------------------------------------------------------------------------------
-; Open -- A0 = ptr to param block, A1 = ptr to DCE.  Self-register as the
-;         journaling device by putting our own refNum into JournalRef.
+; Open (A0=param block, A1=DCE): self-register into JournalRef + allocate state.
 ;-------------------------------------------------------------------------------
 DOpen
-        MOVE.W  dCtlRefNum(A1),D0       ; D0 = our refNum
-        MOVE.W  D0,JournalRef           ; JournalRef := refNum
-        CLR.L   dCtlStorage(A1)         ; diag: zero the Control-call counter
-        CLR.L   dCtlPosition(A1)        ; diag: zero the last-call capture
+        MOVE.W  dCtlRefNum(A1),D0       ; our refNum
+        MOVE.W  D0,JournalRef           ; register as the journal device
+        MOVE.L  #oBlkSize,D0            ; allocate the state block
+        _NewPtr
+        MOVE.L  A0,dCtlStorage(A1)      ; keep it in the DCE (nil on failure)
         MOVEQ   #0,D0                   ; noErr
         RTS
 
 ;-------------------------------------------------------------------------------
-; Control -- A0 = ptr to param block, A1 = ptr to DCE.
-;            On playback (csCode = 16) fill the caller's buffer with a canned value.
+; Control (A0=param block, A1=DCE): playback feed.
 ;-------------------------------------------------------------------------------
 DControl
-        ADDQ.L  #1,dCtlStorage(A1)      ; diag: count EVERY Control call to us
-        MOVE.L  csParam(A0),dCtlPosition(A1)     ; diag: raw long @ csParam+0 (pb offset 28)
-        MOVE.L  csParam+4(A0),dCtlWindow(A1)     ; diag: raw long @ csParam+4 (pb offset 32)
+        MOVEA.L dCtlStorage(A1),A3      ; A3 = state block
+        MOVE.L  A3,D0
+        BEQ.S   CtlDone                 ; no block -> nothing to do
         MOVE.W  csCode(A0),D0
-        CMP.W   #jPlayCtl,D0            ; is this a playback request?
+        CMP.W   #jPlayCtl,D0
         BNE.S   CtlDone
-        MOVE.L  A2,-(SP)               ; preserve A2 across the call
-        MOVE.W  csParam+4(A0),D1        ; D1.w = journal code -- it is csParam[2],
-                                        ; a WORD at pb offset 32 (NOT a long)
-        MOVEA.L csParam(A0),A2          ; A2 = caller's buffer (long @ pb offset 28)
+        MOVE.L  A2,-(SP)
+        MOVE.W  csParam+4(A0),D1        ; journal code (WORD)
+        MOVEA.L csParam(A0),A2          ; caller buffer
         CMP.W   #jcGetMouse,D1
-        BEQ.S   FeedMouse
+        BEQ.S   JM_Mouse
         CMP.W   #jcButton,D1
-        BEQ.S   FeedButton
+        BEQ.S   JM_Btn
         CMP.W   #jcEvent,D1
-        BEQ.S   FeedEvent
-        BRA.S   CtlPop                 ; TickCount / GetKeys: leave buffer as-is
-FeedMouse
-        MOVE.W  #100,(A2)              ; canned Point.v = 100
-        MOVE.W  #100,2(A2)            ; canned Point.h = 100
-        BRA.S   CtlPop
-FeedButton
-        MOVE.B  #$FF,(A2)             ; button DOWN (TRUE) -- distinctive: a real
-                                      ; idle system reads FALSE, so a TRUE here
-                                      ; proves the Event Mgr consulted this driver
-        BRA.S   CtlPop
-FeedEvent
-        CLR.W   (A2)                  ; EventRecord.what = nullEvent (0)
-        CLR.W   JournalFlag           ; AUTO-DISARM safety: the first GetNextEvent
-                                      ; (the daemon polls one within a cycle) ends
-                                      ; playback, so it can never get stuck armed
-CtlPop
-        MOVE.L  (SP)+,A2               ; restore A2
+        BEQ.S   JM_Evt
+        ADDQ.L  #1,oCntOth(A3)
+        BRA.S   JM_Pop
+JM_Mouse
+        ADDQ.L  #1,oCntMouse(A3)
+        MOVE.L  oItemPt(A3),(A2)        ; copy the scripted Point (v,h)
+        BRA.S   JM_Pop
+JM_Btn
+        ADDQ.L  #1,oCntBtn(A3)
+        ADDQ.L  #1,oPoll(A3)
+        MOVE.L  oPoll(A3),D2
+        CMP.L   oThresh(A3),D2
+        BLE.S   JM_Down
+        CLR.B   (A2)                    ; release: button UP (FALSE)
+        BRA.S   JM_Pop
+JM_Down
+        MOVE.B  #$FF,(A2)              ; hold: button DOWN (TRUE)
+        BRA.S   JM_Pop
+JM_Evt
+        ADDQ.L  #1,oCntEvt(A3)
+        CLR.W   (A2)                    ; EventRecord.what = nullEvent
+JM_Pop
+        ; runaway safety: after too many polls, disarm so nothing can hang
+        MOVE.L  oCntBtn(A3),D2
+        ADD.L   oCntEvt(A3),D2
+        ADD.L   oCntMouse(A3),D2
+        CMP.L   #40000,D2
+        BLE.S   JM_NoDisarm
+        CLR.W   JournalFlag
+JM_NoDisarm
+        MOVE.L  (SP)+,A2
 CtlDone
-        CLR.W   ioResult(A0)          ; noErr
+        CLR.W   ioResult(A0)
         MOVEQ   #0,D0
         RTS
 
 ;-------------------------------------------------------------------------------
-; Close -- disarm playback on the way out (belt-and-suspenders).
+; Close: disarm playback on the way out.
 ;-------------------------------------------------------------------------------
 DClose
-        CLR.W   JournalFlag           ; JournalFlag := 0 (playback off)
+        CLR.W   JournalFlag
         MOVEQ   #0,D0
         RTS
 
-;-------------------------------------------------------------------------------
-; Prime / Status -- unused, return noErr.
-;-------------------------------------------------------------------------------
 DDummy
         MOVEQ   #0,D0
         RTS

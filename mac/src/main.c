@@ -1592,6 +1592,73 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         return true;
     }
 
+    /* JMENU verb: step-3 part 2b -- drive a menu TRACKING LOOP via journaling.
+     * Pops up a test menu and lets the journal driver walk the mouse to a target
+     * item (item 3) and release, then reports the selected (menuID,item) plus the
+     * driver's per-journal-code call counts -- reconnaissance for which input
+     * calls the Menu Manager's tracking loop actually polls. Experimental. */
+    if (strncmp(request, "JMENU", 5) == 0 &&
+        (request[5] == '\0' || request[5] == '\r' || request[5] == '\n')) {
+        Str255      pPath;
+        short       resRef, ref = 0, i, n = 0;
+        OSErr       oe;
+        long        res;
+        MenuHandle  m;
+        DCtlHandle  dh;
+        Ptr         blk = NULL;
+        char        body[240];
+        char        frame[300];
+        char       *b = body, *f = frame;
+        const char *fn = "ABJournalDRVR";
+        SetActivity("JMENU");
+        m = NewMenu(900, "\pJ");
+        if (m) {
+            AppendMenu(m, "\pAlpha;Beta;Gamma;Delta");
+            InsertMenu(m, -1);              /* -1 = popup/hierarchical portion */
+            CalcMenuSize(m);
+        }
+        for (i = 0; gPrefs.home[i] && n < 254; i++) pPath[1 + n++] = gPrefs.home[i];
+        for (i = 0; fn[i] && n < 254; i++)          pPath[1 + n++] = fn[i];
+        pPath[0] = (unsigned char)n;
+        resRef = OpenResFile(pPath);
+        oe = OpenDriver("\p.ABJournal", &ref);
+        dh = (DCtlHandle)GetDCtlEntry(ref);
+        if (dh) blk = (Ptr)(**dh).dCtlStorage;
+        if (blk) {
+            *(short *)(blk + 0)  = 160;    /* itemPt.v (aim at item 3) */
+            *(short *)(blk + 2)  = 150;    /* itemPt.h */
+            *(long  *)(blk + 4)  = 400;    /* threshold: jcButton down-count */
+            *(long  *)(blk + 8)  = 0;      /* pollCount */
+            *(long  *)(blk + 12) = 0;      /* cntMouse */
+            *(long  *)(blk + 16) = 0;      /* cntBtn   */
+            *(long  *)(blk + 20) = 0;      /* cntEvt   */
+            *(long  *)(blk + 24) = 0;      /* cntOth   */
+        }
+        *(volatile short *)0x08DEL = -1;   /* arm playback */
+        res = PopUpMenuSelect(m, 120, 120, 1);
+        *(volatile short *)0x08DEL = 0;    /* disarm */
+        b = StatStr(b, "jmenu openErr="); b = StatDec(b, (long)oe);
+        b = StatStr(b, " ref=");     b = StatDec(b, (long)ref);
+        b = StatStr(b, " blk=");     b = StatDec(b, blk ? 1 : 0);
+        b = StatStr(b, " menuID=");  b = StatDec(b, (long)((res >> 16) & 0xFFFF));
+        b = StatStr(b, " item=");    b = StatDec(b, (long)(res & 0xFFFF));
+        if (blk) {
+            b = StatStr(b, " mouse="); b = StatDec(b, *(long *)(blk + 12));
+            b = StatStr(b, " btn=");   b = StatDec(b, *(long *)(blk + 16));
+            b = StatStr(b, " evt=");   b = StatDec(b, *(long *)(blk + 20));
+            b = StatStr(b, " oth=");   b = StatDec(b, *(long *)(blk + 24));
+        }
+        *b = '\0';
+        if (m) { DeleteMenu(900); DisposeMenu(m); }
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body));
+        *f++ = '\r';
+        f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
     /* AESEND verb: send an arbitrary Apple Event and harvest its reply.
      * AESEND:<targetHex8>:<classHex8>:<idHex8>:<doLen>\n<directObjectBytes>
      * (length-framed; the reply rides the normal command response path). */

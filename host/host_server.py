@@ -1249,7 +1249,8 @@ def run_control_server(server):
                             out = f"STATUS:0\rSTDOUT:{len(body)}\r{body}\rSTDERR:0\r\r"
                             log(f"LOG -> {len(body)}B")
                     elif (cmd == "PING" or cmd == "QUITDAEMON" or cmd == "REBOOT"
-                          or cmd == "SWAPSELF" or cmd == "SHUTDOWN" or cmd == "JGATE"
+                          or cmd == "SWAPSELF" or cmd == "SHUTDOWN"
+                          or cmd == "JGATE" or cmd == "JMENU"
                           or cmd.startswith("LAUNCH:") or cmd.startswith("QUIT:")
                           or cmd.startswith("KEY:") or cmd.startswith("TYPE:")
                           or cmd.startswith("CLICK:")):
