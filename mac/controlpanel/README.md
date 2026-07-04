@@ -1,9 +1,10 @@
-# AppleBridge Control Panel (cdev) — proof of concept
+# AppleBridge Control Panel (cdev)
 
-A System 7 Control Panel (`'cdev'`, creator `'ABcp'`) that proves the toolchain and
-approach for porting `AppleBridgeConfig` from an app into a Control Panel (see the CMS
-article *"Settings Belong in a Control Panel"*). It does nothing useful yet — it's a
-PoC for the cdev mechanics.
+A System 7 Control Panel (`'cdev'`, creator `'ABcp'`) that ports `AppleBridgeConfig` from
+an application into a Control Panel (see the CMS article *"Settings Belong in a Control
+Panel"*). **Functionally complete as of 2026-07-04** — see *Status* below. The sections
+below are the on-device development log, PoC step by PoC step, and are worth reading as a
+field guide to what a code resource can and cannot do in MPW.
 
 **Step 1 — proven on-device (2026-06-27):** `macDev`/`initDev` + a `statText`. Built
 via MPW over the bridge, installed into `System Folder:Control Panels:`, opened from
@@ -102,6 +103,36 @@ Two findings from 4c:
   *proc pointers*. (The param-block forms `PBReadSync`/`PBWriteSync`/`PBCloseSync` aren't even
   declared inline in this older MPW, so they're not an option anyway.)
 
+## Polish — proven on-device (2026-07-04)
+
+The one-line `Helpers: a, b` statText became a **real, self-drawn list `userItem`**, and a
+**Remove** button now deletes the selected helper. Both verified live over the bridge: the
+list drew `ToolServer` on its own framed row; a synthetic click selected the row (light-blue
+hilite); **Remove** rewrote the prefs — the `APP=` line vanished, every other line intact,
+the file truncated with `SetEOF` (no garbage tail) — and the list redrew `(none)`.
+
+- **The List Manager is *glue* in this MPW, so it stays out of the cdev.** `Lists.h` has no
+  `ONEWORDINLINE`/`TWOWORDINLINE` — `LNew`/`LClick`/`LAddRow`/… are library glue, not inline
+  traps. A4-dependent glue faults a code resource (→ crashes the Control-Panel host), so the
+  list is rendered with the **inline QuickDraw bank only** (`FrameRect`/`PaintRect`/`EraseRect`/
+  `DrawText`/`DrawString`, colours from immediate `RGBColor` constants) and clicks are
+  hit-tested geometrically with `PtInRect` + `GlobalToLocal` — the same discipline the verbose
+  console's scrollbar used. Selection is stored in the `cdevValue` handle (`selRow`); drawing is
+  idempotent (a light-blue background for the selected row, **never** `InvertRect`, which would
+  blink on every idle poll) and driven by `updateDev` + a dirty flag rather than per-poll.
+- **No integer divide or multiply in a code resource — it pulls a runtime helper.** MPW C's
+  `int` is 32-bit and the 68000 has no 32-bit `DIVS`, so `row = dy / kRowHeight` linked with
+  `### Link: Error: Undefined entry … "LDIVT"` (the same class as `NumToString`/`LMODT` from
+  step 2). Both the row-hit math and the row layout were rewritten to **add `kRowHeight` in a
+  loop** instead of dividing/multiplying (array indexing by 32 is a power-of-two shift, so that
+  stays inline). Watch for `LDIVT`/`LMODT`/`LMUL` in the link diagnostics.
+- **See the link diagnostics with `≥`.** MPW writes tool errors to its *diagnostic* (stderr)
+  stream, which ToolServer does **not** return over the bridge — a failing `Link` looks silent
+  and `(no output)`. Redirect with `≥ file.err`, then read the file back (in a *separate* call —
+  a command line containing `≥` returns no stdout over this bridge, but the file is still
+  written). A relative link/Rez output path also needs a **leading colon** (`:bin:Foo`, not
+  `bin:Foo`, which MPW reads as a *volume* name → `Error 132 No such volume`).
+
 ## Why this matters
 
 Unlike the presence INIT (which C couldn't build — see `../init/README.md`), a cdev
@@ -120,9 +151,13 @@ is tractable in MPW because the architecture sidesteps the code-resource traps:
 - `abcp.c` — the cdev: `pascal long CDevMain(msg, item, numItems, id, event, cdevValue, dp)`.
   Answers `macDev` (return 1), `initDev` (`NewHandle` → `cdevValue`), `closeDev`
   (dispose), default (carry `cdevValue` forward). No globals, no strings, A4-free.
-- `abcp.r` — `DITL` (one statText), `nrct` (the panel rectangle), `mach` (`FFFF 0000`
-  = "ask macDev"). The `nrct`/`mach` formats were lifted from a working sample cdev
-  on the AppleShare dev server.
+- `abcp.r` — `DITL` (label + status/autostart/IP statTexts + the helper-list **userItem**
+  + the **Add Helper App…** and **Remove** buttons), `nrct` (the panel rectangle), `mach`
+  (`FFFF 0000` = "ask macDev"). The `nrct`/`mach` formats were lifted from a working sample
+  cdev on the AppleShare dev server. (Gotchas: a button's label must fit its frame — "Remove
+  Helper" overran an 86px button and clipped, so the label is just "Remove"; and a StaticText
+  must fit its box *height* — the system font is Chicago 12, so the 34px label box holds only
+  two lines, and a longer instruction overruns to a clipped third line.)
 - `gen_icon.py` — host-side generator for the Finder icon family + `BNDL`/`FREF`/
   signature; run it (`python3 gen_icon.py`) to regenerate `abcp_icon.r` and an ASCII preview.
 - `abcp_icon.r` — GENERATED icon resources; `Rez … -a` it onto the cdev, then
@@ -132,19 +167,31 @@ is tractable in MPW because the architecture sidesteps the code-resource traps:
 
 ```mpw
 Directory MeinMac:MPW:AppleBridge:
-SC -model far -i :include: :src:abcp.c -o :obj:abcp.c.o
-Link -rt cdev=-4064 -m CDEVMAIN :obj:abcp.c.o "{Libraries}Interface.o" -o :bin:"AppleBridge CP"
-Rez abcp.r -a -o :bin:"AppleBridge CP"
-SetFile -t cdev -c 'ABcp' :bin:"AppleBridge CP"
+# -model near (NOT far): a multi-function code resource; far makes intra-resource
+# C->C calls 32-bit absolute refs the linker can't relocate ("Error: Linker does
+# not edit 32-bit instructions"). See step 4a.
+SC -model near -i :include: :src:abcp.c -o :obj:abcp.c.o
+# Build off the running installed panel: link/Rez to a ".new", then swap it in.
+# Redirect diagnostics with ≥ (ToolServer won't return stderr) and read the .err
+# back in a SEPARATE call. Note the LEADING COLON on :bin: (else MPW reads "bin:"
+# as a volume name -> Error 132).
+Link -rt cdev=-4064 -m CDEVMAIN :obj:abcp.c.o "{Libraries}Interface.o" -o ":bin:AppleBridge CP.new" ≥ lk.err
+Rez abcp.r      -a -o ":bin:AppleBridge CP.new" ≥ rz.err
+Rez abcp_icon.r -a -o ":bin:AppleBridge CP.new" ≥ rzi.err
+SetFile -t cdev -c 'ABcp' -a B ":bin:AppleBridge CP.new"
+# Install with the panel CLOSED (an open cdev locks its file -> Duplicate silently
+# no-ops); verify the copy by mod-date, not STATUS:0.
+Duplicate -y ":bin:AppleBridge CP.new" "MeinMac:System Folder:Control Panels:AppleBridge CP"
 ```
 
 Note: `CDevMain` is `pascal`, so its linker symbol is **uppercased** to `CDEVMAIN`
-(`-m CDEVMAIN`). Install by copying into `System Folder:Control Panels:`.
+(`-m CDEVMAIN`).
 
 ## Status
 
-Steps 1–4 are all proven on-device. The cdev now does **everything `AppleBridgeConfig`
-does** — live daemon status, live autostart status, the helper-app list, and Add Helper
-App (Standard File → prefs) — entirely from inside an A4-free code resource. The port is
-functionally complete; what's left is polish (e.g. a real list `userItem` instead of a
-one-line statText, a Remove-helper affordance) rather than unknowns.
+**Complete (2026-07-04).** Steps 1–4 and the polish pass are all proven on-device. The cdev
+does **everything `AppleBridgeConfig` does** — live daemon status, live autostart status, the
+host IP, a real **self-drawn helper list** (click to select), **Add Helper App** (Standard
+File → prefs) and **Remove** — entirely from inside an A4-free code resource. The functional
+port of `AppleBridgeConfig` to a Control Panel is done; the only deliberate omission is a
+scrollbar (the list shows up to 5 rows and clips beyond — real helper counts are 1–3).
