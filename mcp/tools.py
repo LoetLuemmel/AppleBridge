@@ -448,6 +448,24 @@ to do so) and verifies with an Echo. Default path MeinMac:MPW:ToolServer.""",
         }
     },
     {
+        "name": "mac_verbose_log",
+        "description": """Read the daemon's on-screen Verbose console log over the bridge.
+
+Returns the monitor window's rolling text ring (the last ~60 lines: command lines,
+their output, and the AE trace) as plain text — the reliable way to see what the
+daemon logged. Prefer this over mac_screenshot for reading the log: the monitor
+window is fragile to scroll and a screenshot only catches one screen-full. Pass
+max_bytes (>0) to fetch only the last N bytes.""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "max_bytes": {"type": "integer",
+                              "description": "If >0, return only the last N bytes of the log (default: whole ring)"}
+            },
+            "required": []
+        }
+    },
+    {
         "name": "mac_reboot",
         "description": """Restart the emulated classic Mac (System 7).
 
@@ -1384,6 +1402,27 @@ def run_applescript(script: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+def mac_verbose_log(max_bytes: int = 0) -> Dict[str, Any]:
+    """Read the daemon's Verbose console ring over the bridge (LOG verb).
+
+    Returns the on-screen monitor's rolling text buffer (the last ~60 lines of
+    command lines + output + AE trace) as text, so the log can be read WITHOUT
+    screenshotting or scrolling the fragile monitor window. `max_bytes` (>0)
+    returns only the last N bytes of the buffer."""
+    try:
+        conn = get_connection()
+        if not conn.is_connected():
+            return {"success": False, "error": "Mac not connected"}
+        verb = f"LOG:{int(max_bytes)}" if max_bytes else "LOG"
+        status, stdout, stderr = conn.send_command(verb, timeout=15.0)
+        if status != 0:
+            return {"success": False, "status": status,
+                    "error": stderr or stdout or "LOG failed"}
+        return {"success": True, "log": stdout, "bytes": len(stdout)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def mac_reboot() -> Dict[str, Any]:
     """Restart the emulated Mac via the daemon's REBOOT verb."""
     try:
@@ -1486,6 +1525,7 @@ TOOL_HANDLERS = {
     "mac_get_file": mac_get_file,
     "mac_restart_toolserver": mac_restart_toolserver,
     "run_applescript": run_applescript,
+    "mac_verbose_log": mac_verbose_log,
     "mac_reboot": mac_reboot,
     "mac_shutdown": mac_shutdown,
     "mac_update_daemon": mac_update_daemon,

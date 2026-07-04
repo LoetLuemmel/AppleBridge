@@ -1492,6 +1492,49 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         return true;
     }
 
+    /* LOG verb: return the Verbose console ring as text so the host can READ the
+     * log over the bridge instead of screenshotting/scrolling the (fragile)
+     * monitor window. Flattens the gLog ring (oldest -> newest, CR between lines)
+     * into gTEBuf and streams it STATUS/STDOUT framed. The body is read BY
+     * DECLARED LENGTH on the host (it contains CR separators, so a terminator
+     * read would truncate it). "LOG:<maxbytes>" returns only the last <maxbytes>.
+     * Reusing gTEBuf is safe: it is only otherwise touched by SyncLogTE, which
+     * runs in the same cooperative main loop and rebuilds it from scratch. */
+    if (strncmp(request, "LOG", 3) == 0 &&
+        (request[3] == '\0' || request[3] == '\r' || request[3] == '\n' || request[3] == ':')) {
+        long n = 0, line, idx, k;
+        long cap = (long)sizeof(gTEBuf);
+        long maxBytes = 0;                  /* 0 => whole buffer */
+        char hdr[32];
+        char *h = hdr;
+        SetActivity("LOG");
+        if (request[3] == ':') {
+            long p = 4;
+            while (request[p] >= '0' && request[p] <= '9')
+                maxBytes = maxBytes * 10 + (request[p++] - '0');
+        }
+        for (line = 0; line < gLogN; line++) {
+            idx = (gLogHead - gLogN + line + 2 * LOG_LINES) % LOG_LINES;
+            for (k = 0; gLog[idx][k] && k < LOG_W - 1; k++)
+                if (n < cap - 1) gTEBuf[n++] = gLog[idx][k];
+            if (n < cap - 1) gTEBuf[n++] = '\r';
+        }
+        if (maxBytes > 0 && n > maxBytes) {  /* keep only the tail */
+            long start = n - maxBytes, j;
+            for (j = 0; j < maxBytes; j++) gTEBuf[j] = gTEBuf[start + j];
+            n = maxBytes;
+        }
+        h = StatStr(h, "STATUS:0\rSTDOUT:");
+        h = StatDec(h, n);
+        *h++ = '\r';
+        ABSend(conn, hdr, (long)(h - hdr));
+        if (n > 0) ABSend(conn, gTEBuf, n);
+        ABSend(conn, "\rSTDERR:0\r\r", 11);
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
     /* AESEND verb: send an arbitrary Apple Event and harvest its reply.
      * AESEND:<targetHex8>:<classHex8>:<idHex8>:<doLen>\n<directObjectBytes>
      * (length-framed; the reply rides the normal command response path). */

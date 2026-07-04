@@ -627,6 +627,71 @@ class AppleBridgeServer:
                 pass
         return response.decode("mac_roman", errors="replace") if response else None
 
+    def request_log(self, max_bytes=0, timeout=DEFAULT_TIMEOUT):
+        """Fetch the daemon's Verbose console ring as text via the LOG verb.
+
+        Reads the reply BY DECLARED LENGTH rather than by terminator: the log body
+        carries CR line separators (and blank lines), so send_raw's ``\\r\\r`` /
+        ``\\n\\n`` terminator scan would truncate it. Parses ``STDOUT:<n><sep>``,
+        then reads exactly ``n`` body bytes. Returns the log text, or None.
+        ``max_bytes`` (>0) asks the daemon for only the last N bytes.
+        """
+        if not self.connected or not self.client_socket:
+            return None
+        if not self._drain():
+            self._mark_disconnected("drain detected closed socket")
+            return None
+        verb = f"LOG:{int(max_bytes)}" if max_bytes else "LOG"
+        self._note_command(verb)
+        try:
+            self.client_socket.sendall(verb.encode("mac_roman", errors="replace"))
+        except OSError as e:
+            self._mark_disconnected(f"send failed: {e}")
+            return None
+
+        buf = bytearray()
+        n = None            # declared STDOUT length, once parsed
+        body_start = None   # index of the first body byte
+        try:
+            self.client_socket.settimeout(timeout)
+            while True:
+                if n is None:                       # still hunting the header
+                    k = buf.find(b"STDOUT:")
+                    if k >= 0:
+                        d = k + 7
+                        while d < len(buf) and 0x30 <= buf[d] <= 0x39:
+                            d += 1
+                        if d < len(buf):            # the separator byte has arrived
+                            try:
+                                n = int(buf[k + 7:d])
+                                body_start = d + 1  # skip exactly ONE separator
+                            except ValueError:
+                                n = None
+                if (n is not None and body_start is not None
+                        and len(buf) >= body_start + n):
+                    break
+                chunk = self.client_socket.recv(4096)
+                if not chunk:
+                    self._mark_disconnected("recv 0 (peer closed mid-LOG)")
+                    break
+                buf += chunk
+        except socket.timeout:
+            log(f"LOG verb timeout: got {len(buf)}B")
+        except OSError as e:
+            self._mark_disconnected(f"recv error during LOG: {e}")
+            return None
+        finally:
+            try:
+                if self.client_socket:
+                    self.client_socket.settimeout(None)
+            except OSError:
+                pass
+
+        if n is None or body_start is None:
+            return None
+        return bytes(buf[body_start:body_start + n]).decode("mac_roman",
+                                                            errors="replace")
+
     def heartbeat(self):
         """Send one liveness PING with a short bounded read. Returns True if the
         daemon answered with ANY bytes — content is deliberately not validated, so
@@ -1167,6 +1232,22 @@ def run_control_server(server):
                             log(f"READFILE -> {len(blob)}B MacBinary ({len(b64)}B base64)")
                         else:
                             out = "STATUS:-1\rSTDOUT:0\rSTDERR:14\rREADFILE failed\r\r"
+                    elif cmd == "LOG" or cmd.startswith("LOG:"):
+                        # Verbose console ring as text (read by declared length —
+                        # the body has CR separators). "LOG:<n>" = last n bytes.
+                        mx = 0
+                        if cmd.startswith("LOG:"):
+                            try:
+                                mx = int(cmd.split(":", 1)[1])
+                            except ValueError:
+                                mx = 0
+                        body = server.request_log(mx)
+                        if body is None:
+                            msg = "LOG failed (daemon down or timed out)"
+                            out = f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(msg)}\r{msg}\r\r"
+                        else:
+                            out = f"STATUS:0\rSTDOUT:{len(body)}\r{body}\rSTDERR:0\r\r"
+                            log(f"LOG -> {len(body)}B")
                     elif (cmd == "PING" or cmd == "QUITDAEMON" or cmd == "REBOOT"
                           or cmd == "SWAPSELF" or cmd == "SHUTDOWN"
                           or cmd.startswith("LAUNCH:") or cmd.startswith("QUIT:")
