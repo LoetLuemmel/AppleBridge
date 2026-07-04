@@ -1433,14 +1433,25 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         return true;
     }
 
-    /* CLICK:<h>:<v> verb: move the mouse and post a click to the front app. */
+    /* CLICK:<h>:<v>[:<count>[:<modifiers>]] verb: move the mouse and post
+     * click(s) to the front app. count>1 = double/triple-click; modifiers =
+     * shift/cmd-click for extend/multi-select. The two extra fields are optional,
+     * so the legacy CLICK:<h>:<v> form still works (count 1, no modifiers). */
     if (strncmp(request, PROTO_CLICK, strlen(PROTO_CLICK)) == 0) {
-        short h = 0, v = 0, i = (short)strlen(PROTO_CLICK);
+        short h = 0, v = 0, count = 1, mods = 0, i = (short)strlen(PROTO_CLICK);
         while (request[i] >= '0' && request[i] <= '9') h = h * 10 + (request[i++] - '0');
         if (request[i] == ':') i++;
         while (request[i] >= '0' && request[i] <= '9') v = v * 10 + (request[i++] - '0');
+        if (request[i] == ':') {               /* optional count */
+            i++; count = 0;
+            while (request[i] >= '0' && request[i] <= '9') count = count * 10 + (request[i++] - '0');
+        }
+        if (request[i] == ':') {               /* optional modifiers */
+            i++;
+            while (request[i] >= '0' && request[i] <= '9') mods = mods * 10 + (request[i++] - '0');
+        }
         SetActivity("CLICK");
-        InjectClick(h, v);
+        InjectClickMod(h, v, count, mods);
         strcpy(responseBuffer, "STATUS:0\rSTDOUT:5\rClick\rSTDERR:0\r\r");
         ABSend(conn, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();

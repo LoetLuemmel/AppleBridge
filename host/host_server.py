@@ -297,6 +297,24 @@ class AppleBridgeServer:
         self.peer_version = 1     # negotiated protocol version (1 = legacy v0.1)
         self.peer_feat = set()    # capability tokens advertised by a v0.2 daemon
         self.authed = True        # command flow permitted (False only mid-auth-fail)
+        # Crash black-box: the last verb/command handed to the daemon + when. If the
+        # daemon drops right after (a guest fault killing the emulator), we log which
+        # command preceded it -> the prime suspect. Cleared on a clean response.
+        self.last_command = None
+        self.last_command_time = 0.0
+
+    def _note_command(self, desc):
+        """Record the command about to be sent, for crash correlation. Heartbeats
+        (PING/STAT) are skipped so the black-box keeps the last REAL command even
+        when a ping fires between it and the drop."""
+        if desc and desc[:4] in ("PING", "STAT"):
+            return
+        self.last_command = (desc[:120] if desc else desc)
+        self.last_command_time = time.time()
+
+    def _clear_command(self):
+        """A clean response arrived -> the last command did not crash the daemon."""
+        self.last_command = None
 
     def bind_listen(self):
         """Bind and listen on :9000 once (kept open across re-accepts). In serial
@@ -332,6 +350,16 @@ class AppleBridgeServer:
 
     def _mark_disconnected(self, reason):
         log(f"Mac disconnected: {reason}")
+        # Crash correlation: if a command was in flight, name it. A drop within a
+        # couple of seconds of sending is the classic "this verb faulted the guest
+        # and took the emulator down" signature — the single most useful clue.
+        if self.last_command is not None:
+            dt = time.time() - self.last_command_time
+            if dt < 5.0:
+                log(f"  >> last command before drop ({dt:.2f}s ago): {self.last_command!r} "
+                    f"— PRIME SUSPECT for the disconnect/crash")
+            else:
+                log(f"  (last command was {dt:.1f}s ago: {self.last_command!r})")
         self.connected = False
         if self.client_socket:
             try:
@@ -381,6 +409,7 @@ class AppleBridgeServer:
 
         encoded = command.encode("mac_roman", errors="replace")
         header = f"COMMAND:{len(encoded)}\n".encode("ascii")
+        self._note_command(command)
         try:
             self.client_socket.sendall(header + encoded)
         except OSError as e:
@@ -568,6 +597,7 @@ class AppleBridgeServer:
         if not self._drain():
             self._mark_disconnected("drain detected closed socket")
             return None
+        self._note_command(data)
         try:
             self.client_socket.sendall(data.encode("mac_roman", errors="replace"))
         except OSError as e:

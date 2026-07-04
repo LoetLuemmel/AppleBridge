@@ -204,20 +204,24 @@ Include a carriage return (\\r) to press Return. Bounded to 1024 chars/call.""",
         "name": "mac_key",
         "description": """Press one key in the FRONT application on the classic Mac.
 
-Injects a single keyDown/keyUp into the OS event queue. Use for keys mac_type
-can't express as plain text — Return (char 13), Enter (3), Tab (9), Escape (27),
-Backspace (8), or the arrows (give their key_code with char_code 28-31).
+Injects a single keyDown/keyUp into the OS event queue — for keys mac_type can't
+express as plain text (Return, Tab, Escape, the arrows, Delete, ...).
 
-char_code is the ASCII/MacRoman byte; key_code is the virtual key code (0 is
-fine for ordinary characters). Pass `modifiers` to hold Command/Shift/Option/
-Control — e.g. ["command"] for Cmd-key shortcuts, ["command","shift"]. For a
-menu command it's usually clearer to call mac_menu.""",
+Give EITHER `key` (recommended) — a named special key or a single character — OR
+the raw `char_code` (+ optional `key_code`). Named keys: return, enter, tab,
+escape, space, delete, forwarddelete, left, right, up, down, home, end, pageup,
+pagedown, help, f1..f12. Pass `modifiers` to hold Command/Shift/Option/Control —
+e.g. ["command"]. For a menu command it's usually clearer to call mac_menu.""",
         "inputSchema": {
             "type": "object",
             "properties": {
+                "key": {
+                    "type": "string",
+                    "description": "Named special key (return/tab/escape/left/right/up/down/delete/home/end/pageup/pagedown/f1..f12/...) or a single character. Preferred over char_code."
+                },
                 "char_code": {
                     "type": "integer",
-                    "description": "ASCII/MacRoman character code (e.g. 13 = Return, 27 = Escape)"
+                    "description": "Raw ASCII/MacRoman character code (alternative to `key`; e.g. 13 = Return)"
                 },
                 "key_code": {
                     "type": "integer",
@@ -229,7 +233,7 @@ menu command it's usually clearer to call mac_menu.""",
                     "description": "Modifier keys to hold: any of command/cmd, shift, option/alt, control/ctrl, caps (e.g. [\"command\"])"
                 }
             },
-            "required": ["char_code"]
+            "required": []
         }
     },
     {
@@ -269,12 +273,22 @@ Moves the emulated mouse to (x, y) in global screen coordinates and posts a
 mouse-down/up there, poking the low-memory button state so tracked controls
 (buttons, menus) register a real press. Pair with mac_screenshot to read a
 dialog, then click its button. Coordinates are screen pixels (origin top-left;
-the screen is 1024×768).""",
+the screen is 1024×768).
+
+Pass `count` = 2 for a double-click (open a Finder item, select a word) or 3 for
+a triple-click. Pass `modifiers` for a shift-click (extend a selection) or
+command-click (multi-select).""",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "x": {"type": "integer", "description": "Horizontal screen coordinate (pixels)"},
-                "y": {"type": "integer", "description": "Vertical screen coordinate (pixels)"}
+                "y": {"type": "integer", "description": "Vertical screen coordinate (pixels)"},
+                "count": {"type": "integer", "description": "Click count: 1 (default), 2 = double-click, 3 = triple-click"},
+                "modifiers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Modifier keys to hold during the click: command/cmd, shift, option/alt, control/ctrl (e.g. [\"shift\"])"
+                }
             },
             "required": ["x", "y"]
         }
@@ -897,16 +911,55 @@ def _modifiers_mask(modifiers) -> int:
     return total
 
 
-def mac_key(char_code: int, key_code: int = 0, modifiers=None) -> Dict[str, Any]:
+# Named special keys -> (charCode, virtual keyCode). Classic-Mac codes (Inside
+# Macintosh: Toolbox Essentials / keyboard). Saves the caller memorising numeric
+# codes for the non-typable keys that drive dialogs, forms and lists.
+_NAMED_KEYS = {
+    "return": (13, 36), "enter": (3, 76), "tab": (9, 48),
+    "escape": (27, 53), "esc": (27, 53), "space": (32, 49),
+    "delete": (8, 51), "backspace": (8, 51), "bksp": (8, 51),
+    "forwarddelete": (127, 117), "fwddelete": (127, 117), "del": (127, 117),
+    "left": (28, 123), "leftarrow": (28, 123),
+    "right": (29, 124), "rightarrow": (29, 124),
+    "up": (30, 126), "uparrow": (30, 126),
+    "down": (31, 125), "downarrow": (31, 125),
+    "home": (1, 115), "end": (4, 119),
+    "pageup": (11, 116), "pgup": (11, 116),
+    "pagedown": (12, 121), "pgdn": (12, 121), "help": (5, 114),
+    "f1": (16, 122), "f2": (16, 120), "f3": (16, 99), "f4": (16, 118),
+    "f5": (16, 96), "f6": (16, 97), "f7": (16, 98), "f8": (16, 100),
+    "f9": (16, 101), "f10": (16, 109), "f11": (16, 103), "f12": (16, 111),
+}
+
+
+def mac_key(char_code: Optional[int] = None, key_code: int = 0,
+            modifiers=None, key=None) -> Dict[str, Any]:
     """Press one key in the front app via the daemon's KEY verb.
 
-    modifiers is an optional list of names (e.g. ["command"], ["command","shift"])
-    or a raw Event Manager mask; it makes Command-key menu shortcuts and
-    Option/Shift-modified input reachable.
+    Give EITHER `key` (recommended) — a named special key (return, enter, tab,
+    escape, space, delete, forwarddelete, left/right/up/down, home, end, pageup,
+    pagedown, help, f1..f12) or a single character — OR the raw `char_code`
+    (+ optional `key_code`) for full control. `modifiers` is a list of names
+    (e.g. ["command"], ["command","shift"]) or a raw Event Manager mask, making
+    Command-key shortcuts and Option/Shift-modified input reachable.
     """
     mask = _modifiers_mask(modifiers)
-    verb = f"KEY:{int(char_code)}:{int(key_code)}:{mask}"
-    return _inject(verb, {"char_code": char_code, "key_code": key_code,
+    if key is not None:
+        norm = str(key).strip().lower().replace(" ", "").replace("-", "").replace("_", "")
+        if norm in _NAMED_KEYS:
+            cc, kc = _NAMED_KEYS[norm]
+        elif len(str(key)) == 1:
+            cc, kc = ord(str(key)), 0
+        else:
+            return {"success": False, "key": key,
+                    "error": f"unknown key {key!r}; use a single character or one of: "
+                             + ", ".join(sorted(_NAMED_KEYS))}
+    elif char_code is not None:
+        cc, kc = int(char_code), int(key_code)
+    else:
+        return {"success": False, "error": "provide either `key` (name/char) or `char_code`"}
+    verb = f"KEY:{cc}:{kc}:{mask}"
+    return _inject(verb, {"char_code": cc, "key_code": kc, "key": key,
                           "modifiers": modifiers or []})
 
 
@@ -941,9 +994,21 @@ def mac_menu(key: str, modifiers=None) -> Dict[str, Any]:
                    {"menu_key": key, "modifiers": names or ["command"]})
 
 
-def mac_click(x: int, y: int) -> Dict[str, Any]:
-    """Click at (x, y) in the front app via the daemon's CLICK verb."""
-    return _inject(f"CLICK:{int(x)}:{int(y)}", {"x": x, "y": y})
+def mac_click(x: int, y: int, count: int = 1, modifiers=None) -> Dict[str, Any]:
+    """Click at (x, y) in the front app via the daemon's CLICK verb.
+
+    `count` = 2 for a double-click (open a Finder item, select a word), 3 for a
+    triple-click; the daemon posts the presses within the double-click interval at
+    the same point so the app's own detection fires. `modifiers` (list of names or
+    a mask) gives a shift-click (extend a selection) or command-click (multi-select).
+    """
+    n = max(1, min(3, int(count)))
+    mask = _modifiers_mask(modifiers)
+    if n == 1 and mask == 0:
+        verb = f"CLICK:{int(x)}:{int(y)}"                 # legacy short form
+    else:
+        verb = f"CLICK:{int(x)}:{int(y)}:{n}:{mask}"
+    return _inject(verb, {"x": x, "y": y, "count": n, "modifiers": modifiers or []})
 
 
 def _ostype_hex(code: str) -> str:
