@@ -1658,6 +1658,64 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         return true;
     }
 
+    /* JABOUT[:<thresh>:<v>:<h>] verb: the last-mile demo -- drive the daemon's OWN
+     * Apple menu on the real menu BAR via journaling (MenuSelect, not a popup) to
+     * choose "About AppleBridge" (item 1), then open the About box. The current menu
+     * list belongs to the calling process, so MenuSelect tracks the daemon's menus.
+     * Reports the selection first, THEN shows the About box (which blocks on its own
+     * click-to-close loop with the journal already disarmed). Freeze-safe (same
+     * daemon-owned block + mouseUp feed + in-driver safety as JMENU). */
+    if (strncmp(request, "JABOUT", 6) == 0 &&
+        (request[6] == '\0' || request[6] == '\r' || request[6] == '\n' || request[6] == ':')) {
+        static long ablk[8];           /* daemon-owned journal state block */
+        Str255      pPath;
+        short       resRef, ref = 0, i, n = 0;
+        OSErr       oe;
+        long        res, thresh = 200, iv = 28, ih = 40, p;
+        Point       startPt;
+        DCtlHandle  dh;
+        char        body[220];
+        char        frame[280];
+        char       *b = body, *f = frame;
+        const char *fn = "ABJournalDRVR";
+        SetActivity("JABOUT");
+        if (request[6] == ':') {       /* optional JABOUT:<thresh>:<v>:<h> */
+            p = 7; thresh = 0;
+            while (request[p] >= '0' && request[p] <= '9') thresh = thresh * 10 + (request[p++] - '0');
+            if (request[p] == ':') { p++; iv = 0; while (request[p] >= '0' && request[p] <= '9') iv = iv * 10 + (request[p++] - '0'); }
+            if (request[p] == ':') { p++; ih = 0; while (request[p] >= '0' && request[p] <= '9') ih = ih * 10 + (request[p++] - '0'); }
+        }
+        for (i = 0; gPrefs.home[i] && n < 254; i++) pPath[1 + n++] = gPrefs.home[i];
+        for (i = 0; fn[i] && n < 254; i++)          pPath[1 + n++] = fn[i];
+        pPath[0] = (unsigned char)n;
+        resRef = OpenResFile(pPath);
+        oe = OpenDriver("\p.ABJournal", &ref);
+        dh = (DCtlHandle)GetDCtlEntry(ref);
+        ablk[0] = (iv << 16) | (ih & 0xFFFF);  /* itemPt = the About item's location */
+        ablk[1] = thresh;
+        ablk[2] = 0; ablk[3] = 0; ablk[4] = 0; ablk[5] = 0; ablk[6] = 0;
+        if (dh) (**dh).dCtlStorage = (Handle)ablk;
+        startPt.v = 10; startPt.h = 12;        /* Apple menu title in the menu bar */
+        *(volatile short *)0x08DEL = -1;       /* arm playback */
+        res = MenuSelect(startPt);
+        *(volatile short *)0x08DEL = 0;        /* disarm before the About box's Button() loop */
+        b = StatStr(b, "jabout openErr="); b = StatDec(b, (long)oe);
+        b = StatStr(b, " ref=");     b = StatDec(b, (long)ref);
+        b = StatStr(b, " menuID=");  b = StatDec(b, (long)((res >> 16) & 0xFFFF));
+        b = StatStr(b, " item=");    b = StatDec(b, (long)(res & 0xFFFF));
+        b = StatStr(b, " thr=");     b = StatDec(b, thresh);
+        b = StatStr(b, " poll=");    b = StatDec(b, ablk[2]);
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body));
+        *f++ = '\r';
+        f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));   /* report the selection immediately */
+        gLastTX = TickCount();
+        gTXCount++;
+        HandleMenuCommand(res);        /* item 1 -> ShowAboutBox (click-to-close) */
+        return true;
+    }
+
     /* AESEND verb: send an arbitrary Apple Event and harvest its reply.
      * AESEND:<targetHex8>:<classHex8>:<idHex8>:<doLen>\n<directObjectBytes>
      * (length-framed; the reply rides the normal command response path). */
