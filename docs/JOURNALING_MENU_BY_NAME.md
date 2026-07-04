@@ -212,7 +212,23 @@ inside a front-app `MenuSelect`).
 1. ~~Confirm the protocol~~ — ✅ **done** (resolved above from IM Vol I: `Control`
    call, `csCode=16` for playback, journal codes 0–4, driver fills `csParam`'s
    buffer). No longer a blocker.
-2. **Playback DRVR skeleton** — a minimal `DRVR` (`drvrFlags = 0x4400`) whose
+2. ~~**Playback DRVR skeleton**~~ — ✅ **built & verified 2026-07-04** (`mac/journal/ABJournal.a`).
+   Pure MPW asm; assembles clean and links into a valid `'DRVR' (128, ".ABJournal")`
+   resource whose header/code DeRez byte-for-byte to spec (`$4400` flags; Open@30 →
+   `dCtlRefNum`→`JournalRef`; Ctl@42 tests `csCode`==16, fills the caller's buffer per
+   journal code; Close@116 clears `JournalFlag`). **Build recipe (verified):**
+   ```
+   Asm  ABJournal.a -o ABJournal.a.o
+   Link -rt DRVR=128 -sn Main=.ABJournal -o ABJournalDRVR ABJournal.a.o
+   ```
+   Two gotchas learned: **(a)** put `STRING ASIS` at the top or the header's Pascal
+   name literal gets a *second* auto length byte (`0A 0A 2E…`); **(b)** `-sn Main=.ABJournal`
+   renames the segment so the **resource** is named `".ABJournal"` (else it defaults to
+   `"Main"` and `OpenDriver(".ABJournal")` can't find it). `-m` names an *entry*, not a
+   module — omit it; a single `MAIN`-flagged module is the entry automatically.
+   *(Original skeleton spec below, for reference.)*
+
+   A minimal `DRVR` (`drvrFlags = 0x4400`) whose
    `Control` routine reads `csCode` (word `@26(A0)`); on `== 16` it reads the journal
    code (long `@32(A0)`) and the caller's buffer ptr (long `@28(A0)`) and writes a
    **fixed** value there — a canned `Point` for `jcGetMouse (1)`, `FALSE` for

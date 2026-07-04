@@ -1,0 +1,127 @@
+*-------------------------------------------------------------------------------------------
+*
+* NAME
+*       ABJournal.a -- AppleBridge journaling playback DRVR (skeleton, step 2)
+*
+* DESCRIPTION
+*       A minimal, playback-only journaling device driver for the classic Toolbox
+*       Event Manager. When JournalFlag ($08DE) is negative, the Event Manager issues
+*       a Control call (csCode = jPlayCtl = 16) to the driver whose refNum is in
+*       JournalRef ($08E8), asking it to synthesize the next input. This skeleton
+*       registers itself into JournalRef on Open and, on each playback Control call,
+*       writes a FIXED canned value into the caller's buffer:
+*           jcGetMouse (1) -> a canned Point
+*           jcButton   (2) -> FALSE (button up)
+*           jcEvent    (4) -> a null event (what = 0)
+*       Step 4 replaces the canned values with a daemon-loaded scripted sequence.
+*
+*       All offsets/flags verified against MPW Universal Interfaces 3.4
+*       (Devices.h / Files.h) -- see docs/JOURNALING_MENU_BY_NAME.md.
+*
+* COPYRIGHT
+*       AppleBridge project, 2026. Pit Foerster.
+*-------------------------------------------------------------------------------------------
+
+        CASE    OBJ
+        STRING  ASIS                    ; store string literals verbatim (no auto length byte)
+
+; ---- low-memory globals (hardcoded: SysEqu.a is absent from this MPW) ----
+JournalFlag     EQU     $08DE           ; word: 0 = off, negative = playback
+JournalRef      EQU     $08E8           ; word: driver refNum of the journal device
+
+; ---- DCtlEntry (DCE) field offset (Devices.h) ----
+dCtlRefNum      EQU     24              ; short: our own driver refNum
+
+; ---- CntrlParam field offsets (Files.h) ----
+ioResult        EQU     16              ; word (OSErr)
+csCode          EQU     26              ; word: control code
+csParam         EQU     28              ; csParam[0]: caller's buffer ptr (long)
+                                        ; csParam+4 : journal code (long)
+
+; ---- journal control code (IM Vol I "The Journal") ----
+jPlayCtl        EQU     16              ; csCode for playback
+
+; ---- journal codes @ csParam+4 ----
+jcTickCount     EQU     0
+jcGetMouse      EQU     1
+jcButton        EQU     2
+jcGetKeys       EQU     3
+jcEvent         EQU     4
+
+ABJournal       MAIN
+;-------------------------------------------------------------------------------
+; DRVR header -- must be at offset 0 of the resource
+;-------------------------------------------------------------------------------
+        DC.W    $4400                   ; drvrFlags: dCtlEnableMask|dNeedLockMask
+        DC.W    0                       ; drvrDelay
+        DC.W    0                       ; drvrEMask
+        DC.W    0                       ; drvrMenu
+        DC.W    DOpen-ABJournal         ; drvrOpen  offset
+        DC.W    DDummy-ABJournal        ; drvrPrime offset (no-op)
+        DC.W    DControl-ABJournal      ; drvrCtl   offset
+        DC.W    DDummy-ABJournal        ; drvrStatus offset (no-op)
+        DC.W    DClose-ABJournal        ; drvrClose offset
+        DC.B    10,'.ABJournal'         ; driver name (Pascal string)
+        ALIGN
+
+;-------------------------------------------------------------------------------
+; Open -- A0 = ptr to param block, A1 = ptr to DCE.  Self-register as the
+;         journaling device by putting our own refNum into JournalRef.
+;-------------------------------------------------------------------------------
+DOpen
+        MOVE.W  dCtlRefNum(A1),D0       ; D0 = our refNum
+        MOVE.W  D0,JournalRef           ; JournalRef := refNum
+        MOVEQ   #0,D0                   ; noErr
+        RTS
+
+;-------------------------------------------------------------------------------
+; Control -- A0 = ptr to param block, A1 = ptr to DCE.
+;            On playback (csCode = 16) fill the caller's buffer with a canned value.
+;-------------------------------------------------------------------------------
+DControl
+        MOVE.W  csCode(A0),D0
+        CMP.W   #jPlayCtl,D0            ; is this a playback request?
+        BNE.S   CtlDone
+        MOVE.L  A2,-(SP)               ; preserve A2 across the call
+        MOVE.L  csParam+4(A0),D1        ; D1 = journal code (long)
+        MOVEA.L csParam(A0),A2          ; A2 = caller's buffer
+        CMP.L   #jcGetMouse,D1
+        BEQ.S   FeedMouse
+        CMP.L   #jcButton,D1
+        BEQ.S   FeedButton
+        CMP.L   #jcEvent,D1
+        BEQ.S   FeedEvent
+        BRA.S   CtlPop                 ; TickCount / GetKeys: leave buffer as-is
+FeedMouse
+        MOVE.W  #100,(A2)              ; canned Point.v = 100
+        MOVE.W  #100,2(A2)            ; canned Point.h = 100
+        BRA.S   CtlPop
+FeedButton
+        CLR.B   (A2)                  ; button up (FALSE)
+        BRA.S   CtlPop
+FeedEvent
+        CLR.W   (A2)                  ; EventRecord.what = nullEvent (0)
+CtlPop
+        MOVE.L  (SP)+,A2               ; restore A2
+CtlDone
+        CLR.W   ioResult(A0)          ; noErr
+        MOVEQ   #0,D0
+        RTS
+
+;-------------------------------------------------------------------------------
+; Close -- disarm playback on the way out (belt-and-suspenders).
+;-------------------------------------------------------------------------------
+DClose
+        CLR.W   JournalFlag           ; JournalFlag := 0 (playback off)
+        MOVEQ   #0,D0
+        RTS
+
+;-------------------------------------------------------------------------------
+; Prime / Status -- unused, return noErr.
+;-------------------------------------------------------------------------------
+DDummy
+        MOVEQ   #0,D0
+        RTS
+
+        ENDPROC
+        END
