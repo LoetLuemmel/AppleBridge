@@ -17,11 +17,12 @@
 resource 'DITL' (-4064, purgeable) {
     {
         /* 1: label / instructions */
+        /* Label fits the 34px box in exactly two lines of the system font
+         * (Chicago 12); a longer string overruns to a clipped third line. */
         {6, 92, 40, 318},
         StaticText {
             disabled,
-            "AppleBridge status, host IP, and helper apps. "
-            "Click a helper, then Remove."
+            "AppleBridge status, host IP, and helper apps."
         };
         /* 2: the daemon status, updated via SetDialogItemText on nulDev.
          *    Left edge indented to 114 so the LED (x 94..106) drawn by the cdev

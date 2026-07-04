@@ -154,8 +154,10 @@ is tractable in MPW because the architecture sidesteps the code-resource traps:
 - `abcp.r` — `DITL` (label + status/autostart/IP statTexts + the helper-list **userItem**
   + the **Add Helper App…** and **Remove** buttons), `nrct` (the panel rectangle), `mach`
   (`FFFF 0000` = "ask macDev"). The `nrct`/`mach` formats were lifted from a working sample
-  cdev on the AppleShare dev server. (Gotcha: a button's label must fit its frame — "Remove
-  Helper" overran an 86px button and clipped, so the label is just "Remove".)
+  cdev on the AppleShare dev server. (Gotchas: a button's label must fit its frame — "Remove
+  Helper" overran an 86px button and clipped, so the label is just "Remove"; and a StaticText
+  must fit its box *height* — the system font is Chicago 12, so the 34px label box holds only
+  two lines, and a longer instruction overruns to a clipped third line.)
 - `gen_icon.py` — host-side generator for the Finder icon family + `BNDL`/`FREF`/
   signature; run it (`python3 gen_icon.py`) to regenerate `abcp_icon.r` and an ASCII preview.
 - `abcp_icon.r` — GENERATED icon resources; `Rez … -a` it onto the cdev, then
