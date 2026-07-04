@@ -161,10 +161,32 @@ Link -o jtest -t MPST -c 'MPS ' jtest.c.o "{LIBS}CLibraries:StdCLib.o" \
      "{LIBS}Libraries:IntEnv.o" "{LIBS}Libraries:Interface.o" "{LIBS}Libraries:MacRuntime.o"
 ```
 
-**What remains (was part 2 of the gate, now much lower risk):** prove it works when
-the DRVR is installed by the *faceless daemon* (not a ToolServer tool) and reaches
-inside a real front-app `MenuSelect` (not just `Button()`), then build the scripted
-mouse path + `MENU:<title>:<item>` verb (prototype-plan steps 4–5).
+**Part 2a — daemon-side install: ✅ PASSED (2026-07-04, daemon 0.8d12).** The
+**faceless daemon** now installs the driver from its own process context via a
+`JGATE` wire verb (`OpenResFile` `ABJournalDRVR` from the daemon home →
+`OpenDriver` → self-register `JournalRef` → arm → `Button()`), verified live:
+`jgate resRef=3574 openErr=0 drvRef=-96 jref=-96 idle=0 armed=255 calls=1 PASS`.
+So a driver a *background daemon* installs is consulted by the ROM, not just one an
+interactive/ToolServer process installs. (Deploy note: `ABJournalDRVR` must be
+staged in the daemon home, `MeinMac:AppleBridge:`.)
+
+**Part 2b — menu-driving: ✅ WORKS (2026-07-04, daemon 0.8d14, commit 4b58854).**
+The daemon drives `PopUpMenuSelect` to **any** chosen item via journaling, freeze-safe:
+`JMENU:200:128:150` → item 1, `:144` → 2, `:160` → 3, `:176` → 4 (item N at global
+`v = 112 + 16*N`). The driver feeds `jcGetMouse` the target `Point` and, after
+`<thresh>` playback calls, a synthesized **`mouseUp` `EventRecord`** via `jcEvent` to
+end tracking. Two fixes made it work + safe: (1) the state block is **daemon-owned**
+(a static, pointed at via `dCtlStorage`) — a self-allocating driver that bailed on a
+nil block was the real hard-freeze cause; (2) release is a real `mouseUp` **event**,
+not a `jcButton`-up. Reconnaissance: the tracking loop polls **all three** per
+iteration (`jcGetMouse`/`jcButton`/`jcEvent`); the `mouseUp` ends it. With a valid
+block the in-driver call-count safety works (self-recovers <1s), so no hard freeze —
+no Time Manager needed.
+
+**What remains for the shipping feature:** drive a real front-app menu **bar** via
+`MenuSelect` — feed a `mouseDown` at the menu title via `jcEvent` first (so the app
+calls `MenuSelect`), then track to the item — behind a `MENU:<title>:<item>` wire
+verb + `mac_menu(by_name=…)`, resolving titles/items to coordinates.
 
 ## The DRVR mechanics (RESOLVED — MPW Universal Interfaces 3.4, verified on-device 2026-07-04)
 
