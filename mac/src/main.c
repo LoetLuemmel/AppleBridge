@@ -1016,7 +1016,8 @@ static void DrawTelemetry(void)
     RGBForeColor(&cBlack);
     EraseRect(&foot);
 
-    /* --- counters + latency number --- */
+    /* --- active transport + counters + latency number --- */
+    b = StatStr(b, "NET ");    b = StatStr(b, ABTransportName());  b = StatStr(b, "  ");
     b = StatStr(b, "RX ");     b = StatDec(b, gRXCount);
     b = StatStr(b, "  TX ");   b = StatDec(b, gTXCount);
     b = StatStr(b, "  ERR ");  b = StatDec(b, gErrCount);
@@ -1476,7 +1477,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         b = StatStr(b, ";lat=");        b = StatDec(b, gLastLat * 1000 / 60);   /* last RX->TX, ms */
         b = StatStr(b, ";lasterr=");    b = StatStr(b, gLastErr);               /* tag of most recent error */
         b = StatStr(b, ";toolserver="); b = StatDec(b, IsAppRunning('MPSX') ? 1 : 0);
-        b = StatStr(b, ";net=");        b = StatStr(b, ABActiveTransport() == kTransportMacTCP ? "MacTCP" : "OT");
+        b = StatStr(b, ";net=");        b = StatStr(b, ABTransportName());
         b = StatStr(b, ";home=");       b = StatStr(b, gPrefs.home);   /* install folder; empty on legacy setups */
         *b = '\0';
         f = StatStr(f, "STATUS:0\rSTDOUT:");
@@ -1723,6 +1724,12 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
  * (60 ticks/sec.) */
 #define HEARTBEAT_WATCHDOG_TICKS  1800
 
+/* NET= hot-swap poll interval: how often the main loop re-reads the transport
+ * pref to notice a Control-Panel radio flip / prefs edit. 300 ticks = 5 s — a
+ * live switch within a few seconds, at the cost of one small prefs-file read
+ * every 5 s while the daemon is otherwise idle. */
+#define NET_POLL_TICKS  300
+
 /*
  * Wait for reconnection delay, checking for user abort
  * Returns true if user aborted
@@ -1731,7 +1738,6 @@ static Boolean WaitForReconnect(void)
 {
     long startTicks = TickCount();
     long elapsed;
-    char buf[64];
 
     SetActivity("reconnecting in 30s");
 
@@ -1753,6 +1759,56 @@ static Boolean WaitForReconnect(void)
     }
 
     return false;
+}
+
+/*
+ * NET= hot-swap. Re-read the transport pref (throttled to NET_POLL_TICKS) and,
+ * if it differs from what's running, tear down the active networking stack and
+ * bring up the new one — so flipping the Control-Panel radio (or editing NET= in
+ * the prefs file over the bridge) switches OT / MacTCP / Serial *live*, with no
+ * daemon relaunch. Drops any current link and clears *connectedP so the main
+ * loop re-dials on the new backend; STAT's net= then reports it automatically
+ * (it reads ABActiveTransport()). Returns true if a swap happened.
+ *
+ * Only the transport-selecting fields are adopted from the re-read (transport +
+ * serial port/baud); IP, token, apps and home are left as loaded at startup, so
+ * this is a surgical transport switch and never disturbs the rest of the config.
+ * Called at the top of the main loop, i.e. only between commands — never mid-send.
+ */
+static long gLastNetPoll = 0;   /* TickCount of the last prefs re-read (0 => poll on first pass) */
+
+static Boolean MaybeHotSwapTransport(ABConn **connP, Boolean *connectedP)
+{
+    static AppPrefs np;         /* static: avoid a ~2 KB stack frame in the hot loop */
+    long now = TickCount();
+
+    if (now - gLastNetPoll < NET_POLL_TICKS) return false;
+    gLastNetPoll = now;
+
+    PrefsDefaults(&np);
+    if (!LoadPrefs(&np))              return false;   /* no file / unreadable: keep running */
+    if (np.transport == gPrefs.transport) return false;   /* NET= unchanged */
+
+    /* NET= changed -> hot-swap the stack. */
+    SetActivity("NET= changed - hot-swapping transport");
+    StatusMessage("NET= changed - hot-swapping transport");
+
+    if (*connP) { ABClose(*connP); *connP = NULL; }   /* drop the current link */
+    *connectedP = false;
+    ABNetShutdown();                                   /* tear down the old stack */
+
+    gPrefs.transport   = np.transport;                 /* adopt the new selection */
+    gPrefs.serialPortB = np.serialPortB;
+    gPrefs.serialBaud  = np.serialBaud;
+
+    ABSerialConfig(gPrefs.serialPortB, gPrefs.serialBaud);   /* no-op unless Serial */
+    if (ABNetInit(gPrefs.transport) != noErr) {
+        /* The new stack couldn't come up. ABNetInit already falls back to OT for
+         * a bad MacTCP; if even that failed, leave *connectedP false and let the
+         * reconnect loop keep retrying rather than exit the daemon. */
+        SetActivity("hot-swap: new stack init FAILED - retrying");
+    }
+    return true;
 }
 
 /*
@@ -1894,6 +1950,11 @@ int main(void)
 
     /* Main connection loop with auto-reconnect */
     while (gRunning) {
+        /* Pick up a live NET= change (Control-Panel radio flip or a prefs edit
+         * over the bridge) and switch OT/MacTCP/Serial without a relaunch. Runs
+         * only between commands; throttled internally to one prefs read / 5 s. */
+        MaybeHotSwapTransport(&conn, &connected);
+
         /* Connect to host if not connected */
         if (!connected) {
             SetActivity("CONNECTING");

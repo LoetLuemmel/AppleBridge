@@ -44,6 +44,10 @@ void ABNetShutdown(void);
 /* Which stack is actually active (after any fallback). */
 short ABActiveTransport(void);
 
+/* Human-readable name of the active stack ("OT" / "MacTCP" / "Serial"), for the
+ * monitor footer and STAT's net= field. Never NULL. */
+const char *ABTransportName(void);
+
 /* Open a connection to host:port. Allocates an ABConn (freed by ABClose).
  * On the very first MacTCP connect failure the dispatcher falls back to OT for
  * the rest of the session. *conn is NULL on failure. */
