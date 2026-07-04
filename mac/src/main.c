@@ -1592,25 +1592,32 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         return true;
     }
 
-    /* JMENU verb: step-3 part 2b -- drive a menu TRACKING LOOP via journaling.
-     * Pops up a test menu and lets the journal driver walk the mouse to a target
-     * item (item 3) and release, then reports the selected (menuID,item) plus the
-     * driver's per-journal-code call counts -- reconnaissance for which input
-     * calls the Menu Manager's tracking loop actually polls. Experimental. */
+    /* JMENU[:<thresh>:<v>:<h>] verb: step-3 part 2b -- drive a menu tracking loop
+     * via journaling. Pops a test menu and has the journal driver hold the mouse
+     * over item 3 (global v,h) then feed a mouseUp after <thresh> playback calls to
+     * end tracking; reports the selected (menuID,item) + per-code counts. The state
+     * block is DAEMON-owned (a static here) and dCtlStorage is pointed at it -- a
+     * self-allocating driver could bail on a nil block and hard-freeze the guest. */
     if (strncmp(request, "JMENU", 5) == 0 &&
-        (request[5] == '\0' || request[5] == '\r' || request[5] == '\n')) {
+        (request[5] == '\0' || request[5] == '\r' || request[5] == '\n' || request[5] == ':')) {
+        static long jblk[8];           /* daemon-owned journal state block */
         Str255      pPath;
         short       resRef, ref = 0, i, n = 0;
         OSErr       oe;
-        long        res;
+        long        res, thresh = 200, iv = 160, ih = 150, p;
         MenuHandle  m;
         DCtlHandle  dh;
-        Ptr         blk = NULL;
         char        body[240];
         char        frame[300];
         char       *b = body, *f = frame;
         const char *fn = "ABJournalDRVR";
         SetActivity("JMENU");
+        if (request[5] == ':') {       /* optional JMENU:<thresh>:<v>:<h> */
+            p = 6; thresh = 0;
+            while (request[p] >= '0' && request[p] <= '9') thresh = thresh * 10 + (request[p++] - '0');
+            if (request[p] == ':') { p++; iv = 0; while (request[p] >= '0' && request[p] <= '9') iv = iv * 10 + (request[p++] - '0'); }
+            if (request[p] == ':') { p++; ih = 0; while (request[p] >= '0' && request[p] <= '9') ih = ih * 10 + (request[p++] - '0'); }
+        }
         m = NewMenu(900, "\pJ");
         if (m) {
             AppendMenu(m, "\pAlpha;Beta;Gamma;Delta");
@@ -1623,31 +1630,23 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         resRef = OpenResFile(pPath);
         oe = OpenDriver("\p.ABJournal", &ref);
         dh = (DCtlHandle)GetDCtlEntry(ref);
-        if (dh) blk = (Ptr)(**dh).dCtlStorage;
-        if (blk) {
-            *(short *)(blk + 0)  = 160;    /* itemPt.v (aim at item 3) */
-            *(short *)(blk + 2)  = 150;    /* itemPt.h */
-            *(long  *)(blk + 4)  = 400;    /* threshold: jcButton down-count */
-            *(long  *)(blk + 8)  = 0;      /* pollCount */
-            *(long  *)(blk + 12) = 0;      /* cntMouse */
-            *(long  *)(blk + 16) = 0;      /* cntBtn   */
-            *(long  *)(blk + 20) = 0;      /* cntEvt   */
-            *(long  *)(blk + 24) = 0;      /* cntOth   */
-        }
+        jblk[0] = (iv << 16) | (ih & 0xFFFF);  /* itemPt (v,h) */
+        jblk[1] = thresh;                      /* release after this many calls */
+        jblk[2] = 0; jblk[3] = 0; jblk[4] = 0; jblk[5] = 0; jblk[6] = 0;
+        if (dh) (**dh).dCtlStorage = (Handle)jblk;   /* point the driver at our block */
         *(volatile short *)0x08DEL = -1;   /* arm playback */
         res = PopUpMenuSelect(m, 120, 120, 1);
         *(volatile short *)0x08DEL = 0;    /* disarm */
         b = StatStr(b, "jmenu openErr="); b = StatDec(b, (long)oe);
         b = StatStr(b, " ref=");     b = StatDec(b, (long)ref);
-        b = StatStr(b, " blk=");     b = StatDec(b, blk ? 1 : 0);
+        b = StatStr(b, " dh=");      b = StatDec(b, dh ? 1 : 0);
         b = StatStr(b, " menuID=");  b = StatDec(b, (long)((res >> 16) & 0xFFFF));
         b = StatStr(b, " item=");    b = StatDec(b, (long)(res & 0xFFFF));
-        if (blk) {
-            b = StatStr(b, " mouse="); b = StatDec(b, *(long *)(blk + 12));
-            b = StatStr(b, " btn=");   b = StatDec(b, *(long *)(blk + 16));
-            b = StatStr(b, " evt=");   b = StatDec(b, *(long *)(blk + 20));
-            b = StatStr(b, " oth=");   b = StatDec(b, *(long *)(blk + 24));
-        }
+        b = StatStr(b, " thr=");     b = StatDec(b, thresh);
+        b = StatStr(b, " poll=");    b = StatDec(b, jblk[2]);
+        b = StatStr(b, " mouse=");   b = StatDec(b, jblk[3]);
+        b = StatStr(b, " btn=");     b = StatDec(b, jblk[4]);
+        b = StatStr(b, " evt=");     b = StatDec(b, jblk[5]);
         *b = '\0';
         if (m) { DeleteMenu(900); DisposeMenu(m); }
         f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body));

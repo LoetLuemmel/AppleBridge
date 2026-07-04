@@ -30,16 +30,16 @@
 
 resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
-    development, 0x13,   /* development stage, non-release revision 13 (BCD) */
+    development, 0x14,   /* development stage, non-release revision 14 (BCD) */
     verUS,
-    "0.8d13",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d13 - JMENU: drive a menu tracking loop via journaling"  /* long -> Get Info */
+    "0.8d14",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d14 - JMENU: daemon-owned block + mouseUp feed (freeze-safe)"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
-    development, 0x13,
+    development, 0x14,
     verUS,
-    "0.8d13",
+    "0.8d14",
     "AppleBridge"        /* the shared/suite version line */
 };

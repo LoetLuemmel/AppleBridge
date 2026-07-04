@@ -1251,6 +1251,7 @@ def run_control_server(server):
                     elif (cmd == "PING" or cmd == "QUITDAEMON" or cmd == "REBOOT"
                           or cmd == "SWAPSELF" or cmd == "SHUTDOWN"
                           or cmd == "JGATE" or cmd == "JMENU"
+                          or cmd.startswith("JMENU:")
                           or cmd.startswith("LAUNCH:") or cmd.startswith("QUIT:")
                           or cmd.startswith("KEY:") or cmd.startswith("TYPE:")
                           or cmd.startswith("CLICK:")):
