@@ -29,7 +29,10 @@
 JournalFlag     EQU     $08DE           ; word: 0 = off, negative = playback
 JournalRef      EQU     $08E8           ; word: driver refNum of the journal device
 
-; ---- DCtlEntry (DCE) field offset (Devices.h) ----
+; ---- DCtlEntry (DCE) field offsets (Devices.h) ----
+dCtlPosition    EQU     16              ; long: unused by us -> diag capture (csParam@28)
+dCtlStorage     EQU     20              ; Handle: unused by us -> call counter
+dCtlWindow      EQU     30              ; GrafPtr: unused by us -> diag capture (csParam@32)
 dCtlRefNum      EQU     24              ; short: our own driver refNum
 
 ; ---- CntrlParam field offsets (Files.h) ----
@@ -71,6 +74,8 @@ ABJournal       MAIN
 DOpen
         MOVE.W  dCtlRefNum(A1),D0       ; D0 = our refNum
         MOVE.W  D0,JournalRef           ; JournalRef := refNum
+        CLR.L   dCtlStorage(A1)         ; diag: zero the Control-call counter
+        CLR.L   dCtlPosition(A1)        ; diag: zero the last-call capture
         MOVEQ   #0,D0                   ; noErr
         RTS
 
@@ -79,17 +84,21 @@ DOpen
 ;            On playback (csCode = 16) fill the caller's buffer with a canned value.
 ;-------------------------------------------------------------------------------
 DControl
+        ADDQ.L  #1,dCtlStorage(A1)      ; diag: count EVERY Control call to us
+        MOVE.L  csParam(A0),dCtlPosition(A1)     ; diag: raw long @ csParam+0 (pb offset 28)
+        MOVE.L  csParam+4(A0),dCtlWindow(A1)     ; diag: raw long @ csParam+4 (pb offset 32)
         MOVE.W  csCode(A0),D0
         CMP.W   #jPlayCtl,D0            ; is this a playback request?
         BNE.S   CtlDone
         MOVE.L  A2,-(SP)               ; preserve A2 across the call
-        MOVE.L  csParam+4(A0),D1        ; D1 = journal code (long)
-        MOVEA.L csParam(A0),A2          ; A2 = caller's buffer
-        CMP.L   #jcGetMouse,D1
+        MOVE.W  csParam+4(A0),D1        ; D1.w = journal code -- it is csParam[2],
+                                        ; a WORD at pb offset 32 (NOT a long)
+        MOVEA.L csParam(A0),A2          ; A2 = caller's buffer (long @ pb offset 28)
+        CMP.W   #jcGetMouse,D1
         BEQ.S   FeedMouse
-        CMP.L   #jcButton,D1
+        CMP.W   #jcButton,D1
         BEQ.S   FeedButton
-        CMP.L   #jcEvent,D1
+        CMP.W   #jcEvent,D1
         BEQ.S   FeedEvent
         BRA.S   CtlPop                 ; TickCount / GetKeys: leave buffer as-is
 FeedMouse
@@ -97,10 +106,15 @@ FeedMouse
         MOVE.W  #100,2(A2)            ; canned Point.h = 100
         BRA.S   CtlPop
 FeedButton
-        CLR.B   (A2)                  ; button up (FALSE)
+        MOVE.B  #$FF,(A2)             ; button DOWN (TRUE) -- distinctive: a real
+                                      ; idle system reads FALSE, so a TRUE here
+                                      ; proves the Event Mgr consulted this driver
         BRA.S   CtlPop
 FeedEvent
         CLR.W   (A2)                  ; EventRecord.what = nullEvent (0)
+        CLR.W   JournalFlag           ; AUTO-DISARM safety: the first GetNextEvent
+                                      ; (the daemon polls one within a cycle) ends
+                                      ; playback, so it can never get stuck armed
 CtlPop
         MOVE.L  (SP)+,A2               ; restore A2
 CtlDone

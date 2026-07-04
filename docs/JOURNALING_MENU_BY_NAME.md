@@ -115,6 +115,57 @@ since `MenuSelect`'s tracking loop is built on `GetMouse`/`Button`/`GetNextEvent
 (Primary source, if a re-check is ever needed: IM Vol I "The Journal", ≈ p. I-259;
 also on the AppleShare dev-docs volume, [[applebridge-appleshare-cdev-source]].)
 
+## ✅ Step-3 gate PASSED (2026-07-04) — journaling works on this ROM
+
+The key feasibility gate is **cleared**: a playback journal DRVR *is* consulted by
+the Event Manager on Basilisk II (System 7.6.1). Proven with a ToolServer test tool
+(`mac/journal/jtest.c`) that installs `ABJournalDRVR`, arms playback, and reads
+`Button()`:
+
+```
+Button() idle  = 0      (real: no mouse pressed)
+Button() armed = 255    (driver injected TRUE via jcButton)
+driver Control calls while armed = 1..2   (Event Mgr called us; csCode = 16)
+RESULT: PASS - Event Manager consulted the playback journal DRVR
+```
+
+End-to-end chain proven: DRVR installs (unit 95, refNum −96) → Open self-registers
+`JournalRef` → `JournalFlag < 0` makes the ROM call our Control routine with
+`csCode=16` → we write the caller's buffer → `Button()` returns the injected value.
+
+**Three empirical corrections to the paper design (all cost a build cycle):**
+
+1. **The DRVR resource ID *is* the unit-table slot number.** System 7 `OpenDriver`
+   installs the driver at `unit = resourceID`; if that ID ≥ `UnitNtryCnt`
+   (`$01D2`; **96** on this machine) it returns `badUnitErr (-21)` before ever
+   calling Open. Fix: give the DRVR a resource ID that is a *free* unit slot. We
+   scan `UTableBase` (`$011C`) for a free high slot and use **95** →
+   `Link -rt DRVR=95`. (A production install should pick the free slot at runtime.)
+2. **The journal code is a WORD, not a long.** It is `csParam[2]` — a single word at
+   param-block **offset 32** (`csParam+4`), value `0x0002` = `jcButton` etc. The
+   earlier "long at csParam+4" made every `CMP.L` miss, so the driver never injected.
+   Read it with `MOVE.W csParam+4(A0),Dn` + `CMP.W`. The buffer pointer *is* a long at
+   `csParam+0` (offset 28) as documented.
+3. **The DRVR resource needs `sysheap,locked,preload` attributes** (non-purgeable),
+   set at link time with `-ra .ABJournal=$54`; `Link -rt` defaults to `purgeable`.
+
+Verified build recipe for the driver:
+```
+Asm  ABJournal.a -o ABJournal.a.o
+Link -rt DRVR=95 -sn Main=.ABJournal -ra .ABJournal=$54 -o ABJournalDRVR ABJournal.a.o
+```
+Test tool (MPW tool; note IntEnv.o for the integrated-environment/stdio glue):
+```
+SC   jtest.c -o jtest.c.o
+Link -o jtest -t MPST -c 'MPS ' jtest.c.o "{LIBS}CLibraries:StdCLib.o" \
+     "{LIBS}Libraries:IntEnv.o" "{LIBS}Libraries:Interface.o" "{LIBS}Libraries:MacRuntime.o"
+```
+
+**What remains (was part 2 of the gate, now much lower risk):** prove it works when
+the DRVR is installed by the *faceless daemon* (not a ToolServer tool) and reaches
+inside a real front-app `MenuSelect` (not just `Button()`), then build the scripted
+mouse path + `MENU:<title>:<item>` verb (prototype-plan steps 4–5).
+
 ## The DRVR mechanics (RESOLVED — MPW Universal Interfaces 3.4, verified on-device 2026-07-04)
 
 The remaining IM-research blocker — *how to actually write and install the `DRVR`* —
@@ -239,11 +290,13 @@ inside a front-app `MenuSelect`).
    (`LMSetJournalRef`); the daemon `OpenDriver`s it by name, then pokes `JournalFlag`
    (`$08DE`) negative to start and back to 0 to stop. (All offsets header-verified —
    see "The DRVR mechanics" above.)
-3. **Prove the hook fires in the background** — from the faceless daemon, install
-   the DRVR and verify the Event Manager actually calls it (e.g. the driver bumps a
-   counter on each `jcGetMouse`, read back over the bridge). This is the **key
-   feasibility gate**: does a background-installed journal driver get consulted, and
-   does it reach inside a `MenuSelect` opened in the front app?
+3. ~~**Prove the hook fires**~~ — ✅ **PASSED 2026-07-04** (see "Step-3 gate PASSED"
+   above). A playback DRVR *is* consulted by the Event Manager on this ROM: a
+   ToolServer tool armed playback and `Button()` returned the driver's injected
+   value; the driver's own Control-call counter confirmed the ROM called it
+   (`csCode=16`). Still TODO within this step: prove it from the **faceless daemon**
+   (not a ToolServer tool) and reaching inside a real front-app **`MenuSelect`**
+   (not just `Button()`).
 4. **Scripted menu path** — replace the canned values with a small state machine the
    daemon loads: feed `jcGetMouse`/`jcButton`/`jcEvent` a real sequence —
    `mouseDown` at the menu title's screen point → `jcGetMouse` walking down the item
