@@ -1,23 +1,29 @@
 /*
- * AppleBridge Control Panel - cdev proof of concept.
+ * AppleBridge Control Panel - cdev.
  *
- * Steps 1-3 proved the cdev mechanics. Step 4 ports AppleBridgeConfig's real
- * logic into the cdev, in on-device-proven sub-steps:
- *   4a:        live DAEMON status via the Process Manager.
- *   4b-detect: live AUTOSTART status via the Folder Manager.
- *   4c (this file): the HELPER-APP list + an "Add Helper App..." button. The
- *      button pops Standard File (SFGetFile, from hitDev - proven in step 3),
- *      turns the choice into an HFS path (FSMakeFSSpec + walking parents with
- *      PBGetCatInfo), and APPENDS an "APP=" line to the shared prefs file; the
- *      list then re-reads and shows the helper leaf names. (Autostart
- *      Install/Remove buttons are intentionally dropped - that toggle is the
- *      Finder's job via Startup Items - so autostart is shown read-only.)
+ * Steps 1-3 proved the cdev mechanics; step 4 ported AppleBridgeConfig's real
+ * logic (live daemon status via the Process Manager, live autostart status via
+ * the Folder Manager, the helper-app list + Add Helper App). This file is the
+ * POLISH pass:
+ *   - the helper list is now a real, self-drawn userItem (multi-row, click to
+ *     select a row) instead of a one-line "Helpers: a, b" statText;
+ *   - a "Remove Helper" button deletes the selected helper's APP= line from the
+ *     shared prefs file;
+ *   - list drawing is driven by updateDev / a dirty flag (no per-poll flicker).
+ *
+ * Why self-drawn and not the List Manager: LNew/LClick/... are GLUE in this MPW
+ * (no ONEWORDINLINE in Lists.h), and A4-dependent glue would fault a code
+ * resource -> crash the whole Control Panel host. The list is therefore rendered
+ * with inline QuickDraw traps only (the DrawLED bank), and clicks are hit-tested
+ * geometrically with PtInRect - exactly the discipline the verbose console
+ * scrollbar used. See README.
  *
  * Discipline unchanged: A4-free (state in the cdevValue handle; no globals; no
  * string literals - labels/prefs-name built on the stack from char constants,
- * helper paths come from the file system and the prefs file); only inline
- * Toolbox traps (glue fails the LINK, caught before install); CDevMain FIRST
- * (offset 0); cdevValue re-dereferenced AFTER any heap-moving trap.
+ * helper paths come from the file system and the prefs file; QuickDraw colours
+ * set from immediate constants); only inline Toolbox traps (glue fails the LINK,
+ * caught before install); CDevMain FIRST (offset 0); cdevValue re-dereferenced
+ * AFTER any heap-moving trap.
  */
 
 #include <Types.h>
@@ -27,7 +33,7 @@
 #include <Events.h>
 #include <Memory.h>
 #include <Processes.h>      /* GetNextProcess / GetProcessInformation */
-#include <Files.h>          /* FSSpec, FSMakeFSSpec, FSpOpenDF/Create, FSRead/Write, PBGetCatInfo */
+#include <Files.h>          /* FSSpec, FSMakeFSSpec, FSpOpenDF/Create, FSRead/Write, SetEOF, PBGetCatInfo */
 #include <Folders.h>        /* FindFolder, kStartupFolderType, kPreferencesFolderType */
 #include <StandardFile.h>   /* SFGetFile, SFReply (inline-trap form) */
 
@@ -36,20 +42,29 @@
 #define hitDev    1
 #define closeDev  2
 #define nulDev    3
+#define updateDev 4
 #define activDev  5
 
 #define kDaemonCreator    'ABrg'
 #define kPrefsBufSize     512
 #define kPathBufSize      256
 
+#define kMaxHelpers       10        /* cached helper leaves */
+#define kLeafMax          31        /* max chars per leaf name */
+#define kRowHeight        13        /* list row height, pixels */
+
 /* our DITL items, 1-based within our own DITL */
-enum { kLabel = 1, kStatus, kAutostart, kIP, kHelpers, kAddBtn };
+enum { kLabel = 1, kStatus, kAutostart, kIP, kHelperList, kAddBtn, kRemoveBtn };
 
 /* per-instance state, kept in the cdevValue handle (no globals). */
 typedef struct {
-    short lastDaemon;     /* -1 unknown; 0/1 last shown */
+    short lastDaemon;                       /* -1 unknown; 0/1 last shown */
     short lastAuto;
-    short helpersShown;   /* 0 = (re)read the helper list on next poll */
+    short helpersShown;                     /* 0 = re-read helper leaves from prefs */
+    short listDirty;                        /* 1 = redraw the list from cache */
+    short helperCount;                      /* cached leaves in use */
+    short selRow;                           /* selected row, -1 = none */
+    char  leaf[kMaxHelpers][kLeafMax + 1];  /* NUL-terminated leaf names */
 } CPState;
 
 /* CRITICAL: the host calls a cdev by jumping to OFFSET 0 of the 'cdev' resource,
@@ -59,18 +74,22 @@ static Boolean AutostartInstalled(void);
 static OSErr   PrefsSpec(FSSpec *spec);
 static void    FSSpecToPath(const FSSpec *spec, char *path);
 static void    AddHelper(void);
+static void    RemoveSelectedHelper(Handle h);
 static void    DaemonString(Str255 d, Boolean running);
 static void    AutoString(Str255 d, Boolean installed);
 static void    ShowText(DialogPtr cpDialog, short numItems, short whichItem,
                         ConstStr255Param text);
 static void    DrawLED(DialogPtr cpDialog, const Rect *box, Boolean good);
-static void    ShowPrefsLines(DialogPtr cpDialog, short numItems);
+static void    ReadPrefs(DialogPtr cpDialog, short numItems, Handle h);
+static void    DrawHelperList(DialogPtr cpDialog, short numItems, Handle h);
+static void    SelectHelperRow(DialogPtr cpDialog, short numItems, Handle h,
+                               EventRecord *event);
 static void    PollAndShow(long cdevValue, short numItems, DialogPtr cpDialog);
 
 pascal long CDevMain(short message, short item, short numItems, short rsrcID,
                      EventRecord *event, long cdevValue, DialogPtr cpDialog)
 {
-#pragma unused(rsrcID, event)
+#pragma unused(rsrcID)
     switch (message) {
         case macDev:
             return 1;                              /* appear on this machine */
@@ -81,18 +100,34 @@ pascal long CDevMain(short message, short item, short numItems, short rsrcID,
                 CPState *st = (CPState *)(*h);
                 st->lastDaemon   = -1;             /* force first poll to draw */
                 st->lastAuto     = -1;
-                st->helpersShown = 0;
+                st->helpersShown = 0;              /* re-read helpers */
+                st->listDirty    = 1;              /* draw the list */
+                st->helperCount  = 0;
+                st->selRow       = -1;
             }
             return (long) h;
         }
 
-        case hitDev:                               /* Add Helper App button */
-            if (item - numItems == kAddBtn) {
-                AddHelper();                       /* SFGetFile -> append APP= to prefs */
-                if (cdevValue)                     /* force the helper list to re-read */
+        case hitDev:                               /* a click landed in one of our items */
+            if (cdevValue) {
+                short which = item - numItems;
+                if (which == kAddBtn) {
+                    AddHelper();                   /* SFGetFile -> append APP= to prefs */
+                    ((CPState *)(*(Handle)cdevValue))->helpersShown = 0;   /* re-read */
+                } else if (which == kRemoveBtn) {
+                    RemoveSelectedHelper((Handle) cdevValue);   /* drop selected APP= line */
                     ((CPState *)(*(Handle)cdevValue))->helpersShown = 0;
+                } else if (which == kHelperList && event) {
+                    SelectHelperRow(cpDialog, numItems, (Handle) cdevValue, event);
+                }
+                ((CPState *)(*(Handle)cdevValue))->listDirty = 1;
                 PollAndShow(cdevValue, numItems, cpDialog);
             }
+            return cdevValue;
+
+        case updateDev:                            /* window needs redraw: list + LEDs */
+            if (cdevValue) ((CPState *)(*(Handle)cdevValue))->listDirty = 1;
+            PollAndShow(cdevValue, numItems, cpDialog);
             return cdevValue;
 
         case activDev:                             /* panel came to front: refresh all */
@@ -101,9 +136,10 @@ pascal long CDevMain(short message, short item, short numItems, short rsrcID,
                 st->lastDaemon   = -1;
                 st->lastAuto     = -1;
                 st->helpersShown = 0;
+                st->listDirty    = 1;
             }
             /* fall through to poll-and-show */
-        case nulDev:                               /* idle: poll status (+ helpers once) */
+        case nulDev:                               /* idle: poll status; draw list if dirty */
             PollAndShow(cdevValue, numItems, cpDialog);
             return cdevValue;
 
@@ -255,6 +291,53 @@ static void AddHelper(void)
     FSClose(refNum);
 }
 
+/* Remove the selected helper: rewrite the prefs file omitting the Nth APP= line
+ * (N = selRow). Reads the file into a stack buffer, compacts out the target line
+ * in place (write pointer never overtakes the read pointer), writes it back and
+ * truncates with SetEOF. selRow captured to a local up front, so the handle may
+ * move under the file traps; re-dereferenced afterwards to clear the selection. */
+static void RemoveSelectedHelper(Handle h)
+{
+    FSSpec   spec;
+    CPState *st;
+    short    refNum, target;
+    long     len = 0, r, wp;
+    short    appIdx;
+    char     buf[kPrefsBufSize];
+
+    st = (CPState *)(*h);
+    target = st->selRow;
+    if (target < 0) return;
+
+    if (PrefsSpec(&spec) != noErr) return;
+    if (FSpOpenDF(&spec, fsRdWrPerm, &refNum) != noErr) return;
+    len = kPrefsBufSize;
+    FSRead(refNum, &len, buf);                   /* len <- bytes read */
+
+    r = 0; wp = 0; appIdx = 0;
+    while (r < len) {
+        long ls = r, le, k;
+        Boolean isApp, drop = false;
+        while (r < len && buf[r] != '\r' && buf[r] != '\n') r++;   /* to EOL */
+        le = r;
+        while (r < len && (buf[r] == '\r' || buf[r] == '\n')) r++;  /* past EOL */
+        isApp = (le - ls >= 4 &&
+                 buf[ls]=='A' && buf[ls+1]=='P' && buf[ls+2]=='P' && buf[ls+3]=='=');
+        if (isApp) { if (appIdx == target) drop = true; appIdx++; }
+        if (!drop)
+            for (k = ls; k < r; k++) buf[wp++] = buf[k];   /* keep whole line incl. EOL */
+    }
+
+    SetFPos(refNum, fsFromStart, 0);
+    len = wp;
+    FSWrite(refNum, &len, buf);                  /* overwrite from start */
+    SetEOF(refNum, wp);                          /* truncate the tail */
+    FSClose(refNum);
+
+    st = (CPState *)(*h);                         /* re-deref after the file traps */
+    st->selRow = -1;
+}
+
 /* "Daemon: RUNNING" / "Daemon: stopped" - char constants, no string literal. */
 static void DaemonString(Str255 d, Boolean running)
 {
@@ -297,10 +380,7 @@ static void ShowText(DialogPtr cpDialog, short numItems, short whichItem,
 
 /* Draw a status LED just LEFT of a status line: light-green = good, light-red =
  * bad. A4-free: RGBColor fields set with immediate constants (no initialised-data
- * globals), and only inline Color-QuickDraw traps (RGBForeColor/PaintOval/FrameOval).
- * The LED sits at a fixed x (94..106) inside the panel but outside any DITL item
- * box (the status items start at left=114), so SetDialogItemText never erases it.
- * `box` is the status item's display rect, used only for vertical alignment. */
+ * globals), and only inline Color-QuickDraw traps (RGBForeColor/PaintOval/FrameOval). */
 static void DrawLED(DialogPtr cpDialog, const Rect *box, Boolean good)
 {
     GrafPtr  savePort;
@@ -316,7 +396,7 @@ static void DrawLED(DialogPtr cpDialog, const Rect *box, Boolean good)
     led.bottom = (short)(box->top + 14);
     led.right  = 106;
 
-    if (good) { c.red = 0x2000; c.green = 0xD000; c.blue = 0x2000; }  /* hellgrün */
+    if (good) { c.red = 0x2000; c.green = 0xD000; c.blue = 0x2000; }  /* hellgruen */
     else      { c.red = 0xF000; c.green = 0x3000; c.blue = 0x3000; }  /* hellrot  */
     RGBForeColor(&c);
     PaintOval(&led);
@@ -329,18 +409,20 @@ static void DrawLED(DialogPtr cpDialog, const Rect *box, Boolean good)
     SetPort(savePort);
 }
 
-/* Read the prefs file ONCE and show two lines from it: the host IP ("Host IP:
- * <value>" from the IP= line) and the helper list ("Helpers: name1, name2" from
- * each APP= line's leaf, or "Helpers: none"). A4-free: char constants + file bytes. */
-static void ShowPrefsLines(DialogPtr cpDialog, short numItems)
+/* Read the prefs file ONCE: show the host IP ("Host IP: <value>" from the IP=
+ * line) and cache each APP= line's leaf name for the list. A4-free: char
+ * constants + file bytes. The IP statText is set BEFORE the handle is
+ * dereferenced (SetDialogItemText may move memory); the leaf cache is then
+ * filled with no intervening moving traps. */
+static void ReadPrefs(DialogPtr cpDialog, short numItems, Handle h)
 {
-    FSSpec  spec;
-    short   refNum;
-    long    len = 0, j;
-    char    buf[kPrefsBufSize];
-    Str255  out;
-    short   oi, n;
-    Boolean haveFile = false;
+    FSSpec   spec;
+    CPState *st;
+    short    refNum, oi;
+    long     len = 0, j;
+    char     buf[kPrefsBufSize];
+    Str255   out;
+    Boolean  haveFile = false;
 
     if (PrefsSpec(&spec) == noErr && FSpOpenDF(&spec, fsRdPerm, &refNum) == noErr) {
         len = kPrefsBufSize;                      /* FSRead/FSClose: thin trap-wrapper */
@@ -349,7 +431,7 @@ static void ShowPrefsLines(DialogPtr cpDialog, short numItems)
         haveFile = true;
     }
 
-    /* --- "Host IP: <value>" from the first IP= line --- */
+    /* --- "Host IP: <value>" from the first IP= line (statText; may move) --- */
     oi = 0;
     out[++oi]='H'; out[++oi]='o'; out[++oi]='s'; out[++oi]='t'; out[++oi]=' ';
     out[++oi]='I'; out[++oi]='P'; out[++oi]=':'; out[++oi]=' ';
@@ -367,41 +449,146 @@ static void ShowPrefsLines(DialogPtr cpDialog, short numItems)
         }
     }
     out[0] = (unsigned char) oi;
-    ShowText(cpDialog, numItems, kIP, out);
+    ShowText(cpDialog, numItems, kIP, out);       /* <- last possible memory move */
 
-    /* --- "Helpers: leaf1, leaf2" from the APP= lines --- */
-    oi = 0; n = 0;
-    out[++oi]='H'; out[++oi]='e'; out[++oi]='l'; out[++oi]='p'; out[++oi]='e';
-    out[++oi]='r'; out[++oi]='s'; out[++oi]=':'; out[++oi]=' ';
+    /* --- cache the APP= leaves (no moving traps below: safe to hold st) --- */
+    st = (CPState *)(*h);
+    st->helperCount = 0;
     if (haveFile) {
         j = 0;
-        while (j < len) {
+        while (j < len && st->helperCount < kMaxHelpers) {
             if (j + 4 <= len &&
                 buf[j]=='A' && buf[j+1]=='P' && buf[j+2]=='P' && buf[j+3]=='=') {
                 long v = j + 4, leaf = j + 4, k;
+                short n = 0;
                 while (v < len && buf[v] != '\r' && buf[v] != '\n') v++;
                 for (k = j + 4; k < v; k++) if (buf[k] == ':') leaf = k + 1;
-                if (n > 0 && oi < 250) { out[++oi]=','; out[++oi]=' '; }
-                for (k = leaf; k < v && oi < 250; k++) out[++oi] = buf[k];
-                n++;
+                for (k = leaf; k < v && n < kLeafMax; k++)
+                    st->leaf[st->helperCount][n++] = buf[k];
+                st->leaf[st->helperCount][n] = '\0';
+                st->helperCount++;
             }
             while (j < len && buf[j] != '\r' && buf[j] != '\n') j++;   /* to EOL */
             while (j < len && (buf[j] == '\r' || buf[j] == '\n')) j++;  /* past it */
         }
     }
-    if (n == 0) { out[++oi]='n'; out[++oi]='o'; out[++oi]='n'; out[++oi]='e'; }
-    out[0] = (unsigned char) oi;
-    ShowText(cpDialog, numItems, kHelpers, out);
+    if (st->selRow >= st->helperCount) st->selRow = st->helperCount - 1;
+    if (st->helperCount == 0)          st->selRow = -1;
 }
 
-/* Poll daemon + autostart (redraw on change), and read+show the helper list once
- * per activation / after an Add. Memory-safe: deref cdevValue AFTER the heap-moving
- * poll traps, write state before drawing. */
+/* Draw the helper list into its userItem box: a frame, one leaf per row, the
+ * selected row on a light-blue background, empty slots cleared. Idempotent and
+ * flicker-free (no InvertRect toggling). Inline QuickDraw only; A4-free. Called
+ * from PollAndShow only when the list is dirty. */
+static void DrawHelperList(DialogPtr cpDialog, short numItems, Handle h)
+{
+    GrafPtr   savePort;
+    RGBColor  saveFore, c;
+    RgnHandle saveClip;
+    CPState  *st;
+    short     type, i, n, top;
+    Handle    ih;
+    Rect      box, row;
+    Str255    s;
+
+    GetDialogItem(cpDialog, numItems + kHelperList, &type, &ih, &box);
+    GetPort(&savePort);
+    SetPort((GrafPtr) cpDialog);
+    GetForeColor(&saveFore);
+    saveClip = NewRgn();                          /* allocates: before we hold st */
+    GetClip(saveClip);
+    ClipRect(&box);
+
+    c.red = c.green = c.blue = 0;                 /* black frame */
+    RGBForeColor(&c);
+    FrameRect(&box);
+
+    TextFont(3);                                  /* Geneva */
+    TextSize(9);
+
+    /* Walk rows by ADDING kRowHeight each step - no divide/multiply, which would
+     * pull the LDIVT/LMUL runtime helpers (unreachable in a code resource). */
+    st = (CPState *)(*h);                          /* no moving traps past here */
+    top = (short)(box.top + 1);
+    for (i = 0; ; i++) {
+        row.left   = (short)(box.left + 1);
+        row.right  = (short)(box.right - 1);
+        row.top    = top;
+        row.bottom = (short)(top + kRowHeight);
+        if (row.bottom > box.bottom - 1) break;
+        top = (short)(top + kRowHeight);
+
+        if (i < st->helperCount) {
+            if (i == st->selRow) {                /* selected: light-blue bg */
+                c.red = 0xC000; c.green = 0xD800; c.blue = 0xFF00;
+                RGBForeColor(&c);
+                PaintRect(&row);
+            } else {
+                EraseRect(&row);                  /* white */
+            }
+            c.red = c.green = c.blue = 0;         /* black text */
+            RGBForeColor(&c);
+            n = 0;
+            while (st->leaf[i][n]) n++;
+            MoveTo((short)(box.left + 4), (short)(row.top + 10));
+            DrawText(st->leaf[i], 0, n);
+        } else {
+            EraseRect(&row);                      /* empty slot */
+        }
+    }
+
+    if (st->helperCount == 0) {                    /* "(none)" hint, grey */
+        c.red = c.green = c.blue = 0x8000;
+        RGBForeColor(&c);
+        s[0]=6; s[1]='('; s[2]='n'; s[3]='o'; s[4]='n'; s[5]='e'; s[6]=')';
+        MoveTo((short)(box.left + 4), (short)(box.top + 11));
+        DrawString(s);
+    }
+
+    RGBForeColor(&saveFore);
+    TextFont(0);                                  /* restore system font */
+    TextSize(0);
+    SetClip(saveClip);
+    DisposeRgn(saveClip);
+    SetPort(savePort);
+}
+
+/* A click in the list userItem: map the event point to a row and select it. */
+static void SelectHelperRow(DialogPtr cpDialog, short numItems, Handle h,
+                            EventRecord *event)
+{
+    GrafPtr  savePort;
+    CPState *st;
+    short    type, r, top;
+    Handle   ih;
+    Rect     box;
+    Point    pt;
+
+    GetDialogItem(cpDialog, numItems + kHelperList, &type, &ih, &box);
+    GetPort(&savePort);
+    SetPort((GrafPtr) cpDialog);
+    pt = event->where;
+    GlobalToLocal(&pt);                           /* to the panel's local coords */
+    SetPort(savePort);
+
+    if (!PtInRect(pt, &box)) return;
+    /* find the row containing pt.v by ADDING kRowHeight (no divide -> no LDIVT). */
+    r = 0;
+    top = (short)(box.top + 1);
+    if (pt.v < top) return;
+    while (pt.v >= (short)(top + kRowHeight)) { r++; top = (short)(top + kRowHeight); }
+    st = (CPState *)(*h);
+    if (r >= 0 && r < st->helperCount) st->selRow = r;
+}
+
+/* Poll daemon + autostart (redraw on change), re-read the prefs when helpersShown
+ * was cleared, and redraw the list only when dirty. Memory-safe: deref cdevValue
+ * AFTER the heap-moving poll traps, and write all state before any moving draw. */
 static void PollAndShow(long cdevValue, short numItems, DialogPtr cpDialog)
 {
     Handle   h = (Handle) cdevValue;
     short    dnow, anow;
-    Boolean  drawD, drawA, drawH;
+    Boolean  drawD, drawA, drawH, dirty;
     CPState *st;
 
     if (!h) return;
@@ -415,13 +602,17 @@ static void PollAndShow(long cdevValue, short numItems, DialogPtr cpDialog)
     st->lastDaemon   = dnow;                   /* write all state before drawing */
     st->lastAuto     = anow;
     st->helpersShown = 1;
+    if (drawH) st->listDirty = 1;              /* a re-read forces a redraw */
+    dirty = (st->listDirty != 0);
+    st->listDirty = 0;
 
     if (drawD) { Str255 b; DaemonString(b, dnow); ShowText(cpDialog, numItems, kStatus, b); }
     if (drawA) { Str255 b; AutoString(b, anow);   ShowText(cpDialog, numItems, kAutostart, b); }
-    if (drawH) ShowPrefsLines(cpDialog, numItems);   /* host IP + helper list */
+    if (drawH) ReadPrefs(cpDialog, numItems, h);     /* host IP statText + leaf cache */
+    if (dirty) DrawHelperList(cpDialog, numItems, h);/* self-drawn userItem list */
 
     /* LEDs: redraw EVERY poll (not just on change) so they survive update events,
-     * using the item boxes only for vertical alignment. Two small ovals/tick. */
+     * using the item boxes only for vertical alignment. Two small ovals. */
     {
         short  type;
         Handle ih;
