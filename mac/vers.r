@@ -6,7 +6,10 @@
  * the classic way to tell builds apart (replacing ad-hoc names like
  * "AppleBridge5"). One 'vers' file stamps the whole suite uniformly.
  *
- * This build: 0.8 development — d8 fixes a double-click crash (0.8d7 stamped modifiers on posted mouse events via PPostEvent, faulting the guest on the 2nd click; reverted to plain PostEvent) + host-side crash black-box (last command before a daemon drop is logged as the prime suspect); d7 rounded out synthetic input (named special keys
+ * This build: 0.8 development — d9 adds transport hot-swap (the daemon re-reads the
+ * NET= pref every ~5 s and, on a change, tears down the active OT/MacTCP/Serial stack
+ * and brings up the new one live — no relaunch; Control-Panel radio flips take effect
+ * within seconds). d8 fixes a double-click crash (0.8d7 stamped modifiers on posted mouse events via PPostEvent, faulting the guest on the 2nd click; reverted to plain PostEvent) + host-side crash black-box (last command before a daemon drop is logged as the prime suspect); d7 rounded out synthetic input (named special keys
  * via mac_key `key=` — return/tab/escape/arrows/delete/home/end/pageup/pagedown/
  * f1..f12; double- and triple-click and shift/command-click via mac_click
  * count=/modifiers= and an extended CLICK verb), on top of d6 (monitor telemetry:
@@ -23,16 +26,16 @@
 
 resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
-    development, 0x08,   /* development stage, non-release revision 8 */
+    development, 0x09,   /* development stage, non-release revision 9 */
     verUS,
-    "0.8d8",             /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d8 - input completeness + double-click crash fix"  /* long -> Get Info */
+    "0.8d9",             /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d9 - transport hot-swap (live NET= switch)"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
-    development, 0x08,
+    development, 0x09,
     verUS,
-    "0.8d8",
+    "0.8d9",
     "AppleBridge"        /* the shared/suite version line */
 };
