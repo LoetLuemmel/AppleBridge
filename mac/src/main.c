@@ -136,6 +136,12 @@ static MenuHandle gAppleMenu;
 static MenuHandle gFileMenu;
 static MenuHandle gEditMenu;
 
+/* JSF: the SFGetFile dlgHook redirects the journal to a dialog item's real
+ * GUEST-global center, so we never guess coordinates. gSFBlk is the journal
+ * state block to steer; gSFItem is the SFGetFile item to target (1=Open,3=Cancel). */
+static long  *gSFBlk = NULL;
+static short  gSFItem = 3;
+
 /* RX/TX Activity tracking */
 static long gLastRX = 0;     /* Tick count of last receive */
 static long gLastTX = 0;     /* Tick count of last transmit */
@@ -465,6 +471,32 @@ static void DrawABLogo(const Rect *logo, short phase)
         PaintRect(&r);
     }
     ForeColor(blackColor);
+}
+
+/*
+ * SFGetFile dlgHook (JSF): each call, read the target item's rect from the LIVE
+ * dialog, convert to global, and point the journal's target at that button's
+ * centre -- so the driver clicks the real button wherever SFGetFile placed it.
+ * No coordinate guessing. Returns the item unchanged (does not itself dismiss).
+ */
+pascal short SFCoordHook(short item, DialogPtr dlg)
+{
+    if (gSFBlk != NULL && dlg != NULL) {
+        short   itype;
+        Handle  ihandle;
+        Rect    r;
+        GrafPtr save;
+        Point   c;
+        GetPort(&save);
+        SetPort((GrafPtr)dlg);
+        GetDialogItem(dlg, gSFItem, &itype, &ihandle, &r);
+        c.v = (short)((r.top + r.bottom) / 2);
+        c.h = (short)((r.left + r.right) / 2);
+        LocalToGlobal(&c);
+        SetPort(save);
+        gSFBlk[0] = ((long)c.v << 16) | ((long)c.h & 0xFFFF);
+    }
+    return item;
 }
 
 /*
@@ -1719,33 +1751,33 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         return true;
     }
 
-    /* JSF[:<thresh>:<v>:<h>] verb: drive a modal STANDARD FILE (Open) dialog via
-     * journaling -- the class of thing posted clicks can NEVER reach. Mode 1
-     * (dialog click): the driver feeds a mouseDown at global (v,h), holds, then a
-     * mouseUp, so ModalDialog registers a click on whatever is at (v,h) (a button
-     * or a file in the list). Shows StandardGetFile and reports reply.sfGood + the
-     * chosen file name. Coordinates are tuned from a screenshot of the real dialog.
-     * Freeze-safe (daemon-owned block + in-driver safety); a miss just leaves the
-     * dialog up for a real Cancel. */
+    /* JSF[:<thresh>:<item>] verb: journal-drive a modal Standard File (Open) dialog
+     * to click a button DETERMINISTICALLY -- the class of thing posted clicks can
+     * NEVER reach. Uses SFGetFile (lets us place the dialog + install a dlgHook);
+     * the hook (SFCoordHook) reads the target item's real global rect and redirects
+     * the journal there, so NO coordinate guessing. item = 1 (Open) or 3 (Cancel,
+     * default). Mode 1 (dialog click: mouseDown -> hold -> mouseUp). Reports
+     * reply.good + the target coord the hook resolved + the chosen file. Freeze-safe;
+     * keep thresh small (~200) -- a big thresh holds the journal armed for minutes. */
     if (strncmp(request, "JSF", 3) == 0 &&
         (request[3] == '\0' || request[3] == '\r' || request[3] == '\n' || request[3] == ':')) {
-        static long        sblk[8];
-        StandardFileReply  reply;
-        Str255      pPath;
-        short       resRef, ref = 0, i, n = 0, k;
-        OSErr       oe;
-        long        thresh = 300, iv = 0, ih = 0, p;
-        DCtlHandle  dh;
-        char        body[220];
-        char        frame[280];
-        char       *b = body, *f = frame;
-        const char *fn = "ABJournalDRVR";
+        static long  sblk[8];
+        SFReply      reply;
+        Point        where;
+        Str255       pPath;
+        short        resRef, ref = 0, i, n = 0, k, item = 3;
+        OSErr        oe;
+        long         thresh = 200, p;
+        DCtlHandle   dh;
+        char         body[220];
+        char         frame[280];
+        char        *b = body, *f = frame;
+        const char  *fn = "ABJournalDRVR";
         SetActivity("JSF");
         if (request[3] == ':') {
             p = 4; thresh = 0;
             while (request[p] >= '0' && request[p] <= '9') thresh = thresh * 10 + (request[p++] - '0');
-            if (request[p] == ':') { p++; iv = 0; while (request[p] >= '0' && request[p] <= '9') iv = iv * 10 + (request[p++] - '0'); }
-            if (request[p] == ':') { p++; ih = 0; while (request[p] >= '0' && request[p] <= '9') ih = ih * 10 + (request[p++] - '0'); }
+            if (request[p] == ':') { p++; item = 0; while (request[p] >= '0' && request[p] <= '9') item = item * 10 + (request[p++] - '0'); }
         }
         for (i = 0; gPrefs.home[i] && n < 254; i++) pPath[1 + n++] = gPrefs.home[i];
         for (i = 0; fn[i] && n < 254; i++)          pPath[1 + n++] = fn[i];
@@ -1753,23 +1785,27 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         resRef = OpenResFile(pPath);
         oe = OpenDriver("\p.ABJournal", &ref);
         dh = (DCtlHandle)GetDCtlEntry(ref);
-        sblk[0] = (iv << 16) | (ih & 0xFFFF);
+        sblk[0] = 0;                 /* placeholder; the dlgHook redirects it to the item */
         sblk[1] = thresh;
         sblk[2] = 0; sblk[3] = 0; sblk[4] = 0; sblk[5] = 0; sblk[6] = 0;
-        sblk[7] = 1;                           /* mode 1 = dialog click */
+        sblk[7] = 1;                 /* mode 1 = dialog click */
         if (dh) (**dh).dCtlStorage = (Handle)sblk;
-        reply.sfGood = false;
+        gSFBlk = sblk; gSFItem = item;      /* the hook steers this block to <item> */
+        where.v = 90; where.h = 100;        /* dialog top-left (global) */
+        reply.good = false;
         *(volatile short *)0x08DEL = -1;
-        StandardGetFile(NULL, -1, NULL, &reply);
+        SFGetFile(where, "\p", NULL, -1, NULL, (DlgHookUPP)SFCoordHook, &reply);
         *(volatile short *)0x08DEL = 0;
+        gSFBlk = NULL;
         b = StatStr(b, "jsf openErr="); b = StatDec(b, (long)oe);
-        b = StatStr(b, " good=");  b = StatDec(b, reply.sfGood ? 1 : 0);
+        b = StatStr(b, " item=");  b = StatDec(b, (long)item);
+        b = StatStr(b, " good=");  b = StatDec(b, reply.good ? 1 : 0);
         b = StatStr(b, " poll=");  b = StatDec(b, sblk[2]);
-        b = StatStr(b, " mouse="); b = StatDec(b, sblk[3]);
-        b = StatStr(b, " evt=");   b = StatDec(b, sblk[5]);
-        if (reply.sfGood) {
+        b = StatStr(b, " tgtV="); b = StatDec(b, (long)((sblk[0] >> 16) & 0xFFFF));
+        b = StatStr(b, " tgtH="); b = StatDec(b, (long)(sblk[0] & 0xFFFF));
+        if (reply.good) {
             b = StatStr(b, " file=");
-            for (k = 1; k <= reply.sfFile.name[0] && k < 40; k++) *b++ = reply.sfFile.name[k];
+            for (k = 1; k <= reply.fName[0] && k < 40; k++) *b++ = reply.fName[k];
         }
         *b = '\0';
         f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body));
