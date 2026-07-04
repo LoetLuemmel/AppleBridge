@@ -30,16 +30,16 @@
 
 resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
-    development, 0x17,   /* development stage, non-release revision 17 (BCD) */
+    development, 0x18,   /* development stage, non-release revision 18 (BCD) */
     verUS,
-    "0.8d17",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d17 - JSF via SFGetFile + dlgHook (deterministic button coords)"  /* long -> Get Info */
+    "0.8d18",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d18 - Time Manager journaling watchdog (JSAFE) + JSF guarded"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
-    development, 0x17,
+    development, 0x18,
     verUS,
-    "0.8d17",
+    "0.8d18",
     "AppleBridge"        /* the shared/suite version line */
 };

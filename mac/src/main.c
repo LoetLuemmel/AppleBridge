@@ -25,6 +25,7 @@
 #include <Gestalt.h>
 #include <Shutdown.h>
 #include <OSUtils.h>
+#include <Timer.h>
 #include <prefs.h>
 #include <auth.h>
 
@@ -471,6 +472,42 @@ static void DrawABLogo(const Rect *logo, short phase)
         PaintRect(&r);
     }
     ForeColor(blackColor);
+}
+
+/*
+ * INTERRUPT-driven journaling watchdog. While the journal is armed, a modal loop
+ * that stops polling the journal (e.g. StandardGetFile on a missed click) spins at
+ * 100% CPU and no in-driver safety can fire -- but the Time Manager runs at
+ * INTERRUPT time regardless, so this task zeroes JournalFlag ($08DE) after a delay,
+ * unfreezing the guest. DisarmTMProc references only a fixed low-mem address (no A5,
+ * no globals) so it is safe to run at interrupt time.
+ */
+static TMTask gDisarmTask;
+static Boolean gDisarmActive = false;
+
+static void DisarmTMProc(void)
+{
+    *(volatile short *)0x08DEL = 0;     /* JournalFlag = 0 (disarm) */
+}
+
+/* Prime the watchdog to disarm journaling in <ms> milliseconds. Call BEFORE arming. */
+static void ArmJournalWatchdog(long ms)
+{
+    gDisarmTask.tmAddr     = (TimerUPP)DisarmTMProc;
+    gDisarmTask.tmWakeUp   = 0;
+    gDisarmTask.tmReserved = 0;
+    InsTime((QElemPtr)&gDisarmTask);
+    PrimeTime((QElemPtr)&gDisarmTask, ms);
+    gDisarmActive = true;
+}
+
+/* Cancel/remove the watchdog after the armed section completes (safe if it fired). */
+static void CancelJournalWatchdog(void)
+{
+    if (gDisarmActive) {
+        RmvTime((QElemPtr)&gDisarmTask);
+        gDisarmActive = false;
+    }
 }
 
 /*
@@ -1751,6 +1788,60 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         return true;
     }
 
+    /* JSAFE verb: validate the interrupt-driven journaling watchdog IN ISOLATION,
+     * safely, before pointing it at a modal call. Installs the driver (so JournalRef
+     * is valid), primes the watchdog to disarm in ~1500ms, arms JournalFlag, then
+     * spins reading JournalFlag + RAW low-mem Ticks ($016A, interrupt-updated -- NOT
+     * TickCount(), which is itself journaled) with a 5s self-timeout. So even if the
+     * watchdog fails the daemon's own spin self-recovers -- JSAFE cannot hard-hang.
+     * Reports elapsed ticks: ~90 (1.5s) = watchdog FIRED (PASS); ~300 (5s) = watchdog
+     * failed (daemon self-timed-out). No modal call -> nothing left open. */
+    if (strncmp(request, "JSAFE", 5) == 0 &&
+        (request[5] == '\0' || request[5] == '\r' || request[5] == '\n')) {
+        static long tblk[8];
+        Str255      pPath;
+        short       resRef, ref = 0, i, n = 0, jf;
+        OSErr       oe;
+        long        startT, elapsed;
+        DCtlHandle  dh;
+        char        body[160];
+        char        frame[220];
+        char       *b = body, *f = frame;
+        const char *fn = "ABJournalDRVR";
+        SetActivity("JSAFE");
+        for (i = 0; gPrefs.home[i] && n < 254; i++) pPath[1 + n++] = gPrefs.home[i];
+        for (i = 0; fn[i] && n < 254; i++)          pPath[1 + n++] = fn[i];
+        pPath[0] = (unsigned char)n;
+        resRef = OpenResFile(pPath);
+        oe = OpenDriver("\p.ABJournal", &ref);
+        dh = (DCtlHandle)GetDCtlEntry(ref);
+        tblk[0] = 0; tblk[1] = 999999L;     /* huge thresh: in-driver safety won't fire */
+        tblk[2] = 0; tblk[3] = 0; tblk[4] = 0; tblk[5] = 0; tblk[6] = 0; tblk[7] = 0;
+        if (dh) (**dh).dCtlStorage = (Handle)tblk;
+        ArmJournalWatchdog(1500);           /* interrupt-disarm in ~1.5s */
+        startT = *(volatile long *)0x016AL;
+        *(volatile short *)0x08DEL = -1;    /* arm playback */
+        while (*(volatile short *)0x08DEL != 0 &&
+               (*(volatile long *)0x016AL - startT) < 300) { }   /* watchdog OR 5s */
+        elapsed = *(volatile long *)0x016AL - startT;
+        jf = *(volatile short *)0x08DEL;
+        *(volatile short *)0x08DEL = 0;     /* ensure disarmed */
+        CancelJournalWatchdog();
+        b = StatStr(b, "jsafe openErr="); b = StatDec(b, (long)oe);
+        b = StatStr(b, " elapsedTicks="); b = StatDec(b, elapsed);
+        b = StatStr(b, " flagAtExit=");  b = StatDec(b, (long)jf);
+        b = StatStr(b, " result=");
+        b = StatStr(b, (elapsed < 200) ? "PASS-watchdog-fired" : "FAIL-self-timeout");
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body));
+        *f++ = '\r';
+        f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
     /* JSF[:<thresh>:<item>] verb: journal-drive a modal Standard File (Open) dialog
      * to click a button DETERMINISTICALLY -- the class of thing posted clicks can
      * NEVER reach. Uses SFGetFile (lets us place the dialog + install a dlgHook);
@@ -1793,9 +1884,11 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         gSFBlk = sblk; gSFItem = item;      /* the hook steers this block to <item> */
         where.v = 90; where.h = 100;        /* dialog top-left (global) */
         reply.good = false;
+        ArmJournalWatchdog(3000);           /* interrupt-disarm after 3s if we hang */
         *(volatile short *)0x08DEL = -1;
         SFGetFile(where, "\p", NULL, -1, NULL, (DlgHookUPP)SFCoordHook, &reply);
         *(volatile short *)0x08DEL = 0;
+        CancelJournalWatchdog();
         gSFBlk = NULL;
         b = StatStr(b, "jsf openErr="); b = StatDec(b, (long)oe);
         b = StatStr(b, " item=");  b = StatDec(b, (long)item);
