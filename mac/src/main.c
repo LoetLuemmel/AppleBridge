@@ -14,6 +14,7 @@
 #include <TextEdit.h>
 #include <Scrap.h>
 #include <Dialogs.h>
+#include <StandardFile.h>
 #include <Files.h>
 #include <Resources.h>
 #include <Devices.h>
@@ -1633,6 +1634,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         jblk[0] = (iv << 16) | (ih & 0xFFFF);  /* itemPt (v,h) */
         jblk[1] = thresh;                      /* release after this many calls */
         jblk[2] = 0; jblk[3] = 0; jblk[4] = 0; jblk[5] = 0; jblk[6] = 0;
+        jblk[7] = 0;                           /* mode 0 = menu (null -> mouseUp) */
         if (dh) (**dh).dCtlStorage = (Handle)jblk;   /* point the driver at our block */
         *(volatile short *)0x08DEL = -1;   /* arm playback */
         res = PopUpMenuSelect(m, 120, 120, 1);
@@ -1694,6 +1696,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         ablk[0] = (iv << 16) | (ih & 0xFFFF);  /* itemPt = the About item's location */
         ablk[1] = thresh;
         ablk[2] = 0; ablk[3] = 0; ablk[4] = 0; ablk[5] = 0; ablk[6] = 0;
+        ablk[7] = 0;                           /* mode 0 = menu */
         if (dh) (**dh).dCtlStorage = (Handle)ablk;
         startPt.v = 10; startPt.h = 12;        /* Apple menu title in the menu bar */
         *(volatile short *)0x08DEL = -1;       /* arm playback */
@@ -1713,6 +1716,68 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         gLastTX = TickCount();
         gTXCount++;
         HandleMenuCommand(res);        /* item 1 -> ShowAboutBox (click-to-close) */
+        return true;
+    }
+
+    /* JSF[:<thresh>:<v>:<h>] verb: drive a modal STANDARD FILE (Open) dialog via
+     * journaling -- the class of thing posted clicks can NEVER reach. Mode 1
+     * (dialog click): the driver feeds a mouseDown at global (v,h), holds, then a
+     * mouseUp, so ModalDialog registers a click on whatever is at (v,h) (a button
+     * or a file in the list). Shows StandardGetFile and reports reply.sfGood + the
+     * chosen file name. Coordinates are tuned from a screenshot of the real dialog.
+     * Freeze-safe (daemon-owned block + in-driver safety); a miss just leaves the
+     * dialog up for a real Cancel. */
+    if (strncmp(request, "JSF", 3) == 0 &&
+        (request[3] == '\0' || request[3] == '\r' || request[3] == '\n' || request[3] == ':')) {
+        static long        sblk[8];
+        StandardFileReply  reply;
+        Str255      pPath;
+        short       resRef, ref = 0, i, n = 0, k;
+        OSErr       oe;
+        long        thresh = 300, iv = 0, ih = 0, p;
+        DCtlHandle  dh;
+        char        body[220];
+        char        frame[280];
+        char       *b = body, *f = frame;
+        const char *fn = "ABJournalDRVR";
+        SetActivity("JSF");
+        if (request[3] == ':') {
+            p = 4; thresh = 0;
+            while (request[p] >= '0' && request[p] <= '9') thresh = thresh * 10 + (request[p++] - '0');
+            if (request[p] == ':') { p++; iv = 0; while (request[p] >= '0' && request[p] <= '9') iv = iv * 10 + (request[p++] - '0'); }
+            if (request[p] == ':') { p++; ih = 0; while (request[p] >= '0' && request[p] <= '9') ih = ih * 10 + (request[p++] - '0'); }
+        }
+        for (i = 0; gPrefs.home[i] && n < 254; i++) pPath[1 + n++] = gPrefs.home[i];
+        for (i = 0; fn[i] && n < 254; i++)          pPath[1 + n++] = fn[i];
+        pPath[0] = (unsigned char)n;
+        resRef = OpenResFile(pPath);
+        oe = OpenDriver("\p.ABJournal", &ref);
+        dh = (DCtlHandle)GetDCtlEntry(ref);
+        sblk[0] = (iv << 16) | (ih & 0xFFFF);
+        sblk[1] = thresh;
+        sblk[2] = 0; sblk[3] = 0; sblk[4] = 0; sblk[5] = 0; sblk[6] = 0;
+        sblk[7] = 1;                           /* mode 1 = dialog click */
+        if (dh) (**dh).dCtlStorage = (Handle)sblk;
+        reply.sfGood = false;
+        *(volatile short *)0x08DEL = -1;
+        StandardGetFile(NULL, -1, NULL, &reply);
+        *(volatile short *)0x08DEL = 0;
+        b = StatStr(b, "jsf openErr="); b = StatDec(b, (long)oe);
+        b = StatStr(b, " good=");  b = StatDec(b, reply.sfGood ? 1 : 0);
+        b = StatStr(b, " poll=");  b = StatDec(b, sblk[2]);
+        b = StatStr(b, " mouse="); b = StatDec(b, sblk[3]);
+        b = StatStr(b, " evt=");   b = StatDec(b, sblk[5]);
+        if (reply.sfGood) {
+            b = StatStr(b, " file=");
+            for (k = 1; k <= reply.sfFile.name[0] && k < 40; k++) *b++ = reply.sfFile.name[k];
+        }
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body));
+        *f++ = '\r';
+        f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));
+        gLastTX = TickCount();
+        gTXCount++;
         return true;
     }
 

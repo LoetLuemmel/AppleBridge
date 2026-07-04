@@ -30,16 +30,16 @@
 
 resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
-    development, 0x15,   /* development stage, non-release revision 15 (BCD) */
+    development, 0x16,   /* development stage, non-release revision 16 (BCD) */
     verUS,
-    "0.8d15",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d15 - JABOUT: journal-drive the real Apple menu -> About box"  /* long -> Get Info */
+    "0.8d16",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d16 - JSF: journal-drive a modal Standard File dialog"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
-    development, 0x15,
+    development, 0x16,
     verUS,
-    "0.8d15",
+    "0.8d16",
     "AppleBridge"        /* the shared/suite version line */
 };

@@ -52,6 +52,7 @@ oCntMouse       EQU     12
 oCntBtn         EQU     16
 oCntEvt         EQU     20
 oCntOth         EQU     24
+oMode           EQU     28              ; 0 = menu (null->mouseUp), 1 = click (mouseDown->mouseUp)
 
 ABJournal       MAIN
         DC.W    $4400                   ; drvrFlags: dCtlEnable|dNeedLock
@@ -109,8 +110,14 @@ JM_Evt
         ADDQ.L  #1,oCntEvt(A3)
         MOVE.L  oPoll(A3),D2
         CMP.L   oThresh(A3),D2
-        BLE.S   JM_EvtNull
-        MOVE.W  #2,(A2)               ; what = mouseUp (ends the tracking loop)
+        BGT.S   JM_EvtUp              ; poll > thresh -> release (mouseUp)
+        MOVE.L  oMode(A3),D3          ; pre-release: mode 0 = null, mode 1 = mouseDown
+        BEQ.S   JM_EvtNull
+        MOVE.W  #1,(A2)               ; mode 1: mouseDown (register the dialog hit)
+        BRA.S   JM_EvtFill
+JM_EvtUp
+        MOVE.W  #2,(A2)               ; mouseUp (ends tracking / completes the click)
+JM_EvtFill
         CLR.L   2(A2)                 ; message = 0
         MOVE.L  TicksLM,6(A2)         ; when = Ticks
         MOVE.L  oItemPt(A3),10(A2)    ; where = itemPt (global)
