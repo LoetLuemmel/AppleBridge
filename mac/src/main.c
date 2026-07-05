@@ -26,6 +26,8 @@
 #include <Shutdown.h>
 #include <OSUtils.h>
 #include <Timer.h>
+#include <Patches.h>
+#include <Traps.h>
 #include <prefs.h>
 #include <auth.h>
 
@@ -154,6 +156,11 @@ static Boolean gLastWasReal = false;  /* was the last request a real command (no
                                        * PING/STAT heartbeat)? gates the latency capture
                                        * so ~0-tick heartbeats don't clobber gLastLat. */
 static char gLastErr[48] = "";        /* short tag of the most recent error (for id) */
+
+/* Route B: the installed global _MenuSelect patch block (system heap, layout in
+ * mac/journal/mspatch.a). 0 = not installed. The RESIDENT daemon installs it so
+ * it persists (ToolServer reverts trap patches an MPW tool makes on exit). */
+static Ptr gMSPatch = 0L;
 
 /* Current activity shown on the top bar next to the green "Active" LED
  * (the command/verb being processed). */
@@ -1042,6 +1049,15 @@ static char *StatStr(char *p, const char *s)
     while (*s) *p++ = *s++;
     return p;
 }
+static char *StatHex(char *p, unsigned long v)
+{
+    short i;
+    for (i = 28; i >= 0; i -= 4) {
+        short nyb = (short)((v >> i) & 0xF);
+        *p++ = (char)(nyb < 10 ? '0' + nyb : 'A' + nyb - 10);
+    }
+    return p;
+}
 
 /* Record an error: bump the counter AND remember a short identifying tag, so the
  * monitor/STAT can say WHAT failed, not just how often. Called at each error site. */
@@ -1916,6 +1932,145 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         gLastTX = TickCount();
         gTXCount++;
         if (res != 0) HandleMenuCommand(res);           /* perform the chosen command */
+        return true;
+    }
+
+    /* ---- Route B: global _MenuSelect trap patch (foreign-app menu driving) ----
+     * A head patch on _MenuSelect ($A93D) in the system heap (layout: mspatch.a,
+     * offsets +2 Magic 'MS', +4 Armed, +6 OneShot, +8 Result menuID<<16|item,
+     * +12 Real, +16 Calls, +20 Hits, +24 LastRes). Installed by the RESIDENT
+     * daemon (ToolServer reverts a trap patch an MPW tool makes on exit). When
+     * armed, the next MenuSelect in ANY context returns Result WITHOUT the
+     * tracking loop, so a posted menu-bar mouseDown makes the FRONT app dispatch
+     * that menu command -- no journal, no daemon self-foreground (Route A's crash
+     * mechanisms). See docs/JOURNALING_MENU_BY_NAME.md. */
+    if (strncmp(request, "MSINSTALL", 9) == 0) {
+        Str255        pPath;
+        short         resRef, i, n = 0;
+        Handle        h;
+        Size          sz;
+        Ptr           blk;
+        unsigned long real, live;
+        const char   *fn = "ABMenuPatch";
+        char body[220], frame[300];
+        char *b = body, *f = frame;
+        SetActivity("MSINSTALL");
+        if (gMSPatch != 0L) {
+            b = StatStr(b, "already installed blk="); b = StatHex(b, (unsigned long)gMSPatch);
+            b = StatStr(b, " calls=");                b = StatDec(b, *(long *)((char *)gMSPatch + 16));
+        } else {
+            for (i = 0; gPrefs.home[i] && n < 254; i++) pPath[1 + n++] = gPrefs.home[i];
+            for (i = 0; fn[i] && n < 254; i++)          pPath[1 + n++] = fn[i];
+            pPath[0] = (unsigned char)n;
+            resRef = OpenResFile(pPath);
+            if (resRef == -1) { b = StatStr(b, "OpenResFile failed err="); b = StatDec(b, ResError()); }
+            else {
+                h = Get1Resource('MSPT', 128);
+                if (h == 0L) { b = StatStr(b, "no MSPT 128 err="); b = StatDec(b, ResError()); }
+                else {
+                    HNoPurge(h); LoadResource(h);
+                    sz  = GetHandleSize(h);
+                    blk = NewPtrSys(sz);
+                    if (blk == 0L) { b = StatStr(b, "NewPtrSys failed"); }
+                    else {
+                        BlockMove(*h, blk, sz);
+                        if (*(short *)(blk + 2) != (short)0x4D53) {
+                            b = StatStr(b, "magic mismatch");   /* leave block; harmless */
+                        } else {
+                            real = (unsigned long)NGetTrapAddress(_MenuSelect, ToolTrap);
+                            *(unsigned long *)(blk + 12) = real;
+                            NSetTrapAddress((UniversalProcPtr)blk, _MenuSelect, ToolTrap);
+                            live = (unsigned long)NGetTrapAddress(_MenuSelect, ToolTrap);
+                            gMSPatch = blk;
+                            b = StatStr(b, "installed blk="); b = StatHex(b, (unsigned long)blk);
+                            b = StatStr(b, " real=");         b = StatHex(b, real);
+                            b = StatStr(b, (live == (unsigned long)blk) ? " head=YES" : " head=NO");
+                        }
+                    }
+                }
+                CloseResFile(resRef);
+            }
+        }
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body)); *f++ = '\r';
+        f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+
+    if (strncmp(request, "MSREAD", 6) == 0) {
+        char body[220], frame[300];
+        char *b = body, *f = frame;
+        SetActivity("MSREAD");
+        if (gMSPatch == 0L) { b = StatStr(b, "not installed"); }
+        else {
+            Ptr p = gMSPatch;
+            unsigned long live = (unsigned long)NGetTrapAddress(_MenuSelect, ToolTrap);
+            b = StatStr(b, "blk=");     b = StatHex(b, (unsigned long)p);
+            b = StatStr(b, " calls=");  b = StatDec(b, *(long *)(p + 16));
+            b = StatStr(b, " hits=");   b = StatDec(b, *(long *)(p + 20));
+            b = StatStr(b, " armed=");  b = StatDec(b, *(short *)(p + 4));
+            b = StatStr(b, " lastRes="); b = StatHex(b, *(unsigned long *)(p + 24));
+            b = StatStr(b, (live == (unsigned long)p) ? " head=YES" : " head=NO");
+        }
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body)); *f++ = '\r';
+        f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+
+    if (strncmp(request, "MSDRIVE:", 8) == 0) {
+        char body[220], frame[300];
+        char *b = body, *f = frame;
+        short menuID = 0, item = 0, p2 = 8;
+        SetActivity("MSDRIVE");
+        while (request[p2] >= '0' && request[p2] <= '9') menuID = menuID * 10 + (request[p2++] - '0');
+        if (request[p2] == ':') p2++;
+        while (request[p2] >= '0' && request[p2] <= '9') item = item * 10 + (request[p2++] - '0');
+        if (gMSPatch == 0L) { b = StatStr(b, "not installed (run MSINSTALL)"); }
+        else if (menuID == 0 || item == 0) { b = StatStr(b, "bad args (MSDRIVE:<menuID>:<item>)"); }
+        else {
+            Ptr p = gMSPatch;
+            *(unsigned long *)(p + 8) = ((unsigned long)menuID << 16) | (unsigned long)item;
+            *(short *)(p + 6) = 1;                       /* OneShot */
+            *(short *)(p + 4) = 1;                       /* Armed */
+            InjectClick(40, 10);                         /* menu-bar mouseDown -> front app MenuSelect */
+            b = StatStr(b, "armed menuID="); b = StatDec(b, menuID);
+            b = StatStr(b, " item=");        b = StatDec(b, item);
+            b = StatStr(b, " posted menu-bar click (MSREAD for hits)");
+        }
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body)); *f++ = '\r';
+        f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+
+    if (strncmp(request, "MSUNINSTALL", 11) == 0) {
+        char body[220], frame[300];
+        char *b = body, *f = frame;
+        SetActivity("MSUNINSTALL");
+        if (gMSPatch == 0L) { b = StatStr(b, "not installed"); }
+        else {
+            unsigned long live = (unsigned long)NGetTrapAddress(_MenuSelect, ToolTrap);
+            unsigned long real = *(unsigned long *)((char *)gMSPatch + 12);
+            if (live != (unsigned long)gMSPatch) {
+                b = StatStr(b, "NOT head - refusing; live="); b = StatHex(b, live);
+            } else {
+                NSetTrapAddress((UniversalProcPtr)real, _MenuSelect, ToolTrap);
+                gMSPatch = 0L;                            /* leave block resident (no dispose race) */
+                b = StatStr(b, "uninstalled; $A93D restored to "); b = StatHex(b, real);
+            }
+        }
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body)); *f++ = '\r';
+        f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));
+        gLastTX = TickCount(); gTXCount++;
         return true;
     }
 

@@ -1254,6 +1254,8 @@ def run_control_server(server):
                           or cmd == "JSF" or cmd == "JSAFE" or cmd == "JPROBE"
                           or cmd.startswith("JMENU:") or cmd.startswith("JABOUT:")
                           or cmd.startswith("JSF:") or cmd.startswith("MENU:")
+                          or cmd == "MSINSTALL" or cmd == "MSREAD" or cmd == "MSUNINSTALL"
+                          or cmd.startswith("MSDRIVE:")
                           or cmd.startswith("LAUNCH:") or cmd.startswith("QUIT:")
                           or cmd.startswith("KEY:") or cmd.startswith("TYPE:")
                           or cmd.startswith("CLICK:")):

@@ -439,3 +439,68 @@ The one shipping piece left is the **by-name menu verb surface** (`MENU:<title>:
 native path is the *right* long-term fix — it carries to the remote PowerPC target,
 where the host-side `cliclick` stopgap (pragmatic for **local** Basilisk only) can't
 reach.
+
+## Route B — the global `MenuSelect` trap patch (2026-07-05)
+
+The journaling path above reaches the daemon's **own** menus and modal loops. It cannot
+reach an **arbitrary front application's** menus: `MenuSelect` uses the *calling
+process's* menu list, and a background `WaitNextEvent` never pumps the journal (the
+`JPROBE`/`JPROBE2` spikes settled this — see [[applebridge-jgne-spike-state]]). Two
+runtime hooks were then investigated for the front-app case. **Route A** — a jGNE filter
+at `$29A` — can *read* any front app's menu structure in-context, but *driving* through it
+(inject a menu-bar mouse-down + arm playback) crashes the host with a Sequoia/SDL2
+window-teardown `SIGILL` that no guest watchdog can catch; `drive` is a dead end. **Route
+B — a global `_MenuSelect` ($A93D) trap patch — is the one that works.**
+
+**Mechanism.** A head patch on the `MenuSelect` Toolbox trap. When armed with a target
+`(menuID, item)`, the next `MenuSelect` in *any* context returns that value immediately —
+**no mouse-tracking loop, no journal, no window reorder** (the Route A crash mechanisms).
+A menu-bar mouse-down posted to the front app makes it call `MenuSelect`; the patch
+short-circuits the tracking and the app dispatches the chosen command. Pascal trap return:
+`MOVE.L (SP)+,A1 / ADDQ.L #4,SP / MOVE.L D0,(SP) / JMP (A1)` (result is the high-byte
+Pascal `Boolean` word on the stack, not `D0`). Sources: `mac/journal/mspatch.a` (the
+`'MSPT'` patch), `mac/journal/msinit.a` (the boot INIT), `mac/journal/msinstall.c`
+(harness), daemon `MSINSTALL`/`MSREAD`/`MSDRIVE`/`MSUNINSTALL` verbs.
+
+**App-installed patches are process-local — the INIT is *required*.** A patch installed by
+a running application (even the resident daemon, `NewPtrSys` + `NSetTrapAddress`) is
+visible **only in that process**: verified live — the daemon's own `MenuSelect` was
+intercepted, but the Finder's was not. This is exactly Inside Macintosh's rule (an
+app-heap patch applies to your app only; a **system-extension patch at startup** applies
+to all apps). So global reach needs a boot `INIT`. (ToolServer also *reverts* the trap
+table around each tool, so a patch made by an MPW tool never persists — the jGNE filter
+survived only because `$29A` is a low-memory global, not a trap slot.)
+
+**The boot INIT (`msinit.a`).** A self-contained System 7 extension — `INIT` id **0**,
+`sysheap, locked` (matches the working `AppleBridgeMenuLED`) — that **embeds** the 78-byte
+patch and installs it with `NewPtrSys` + `BlockMove`-from-self + `Get/SetToolTrapAddress`.
+It deliberately does **not** `Get1Resource` a sibling `'MSPT'`: at INIT execution time the
+extension's resource fork is not reliably the current res file, so a resource load bails.
+Build: `Asm msinit.a` → `Link -rt INIT=0 -m MSInit -ra =resSysHeap,resLocked` → `SetFile
+-t INIT -c 'ABmi'` → drop in `System Folder:Extensions:` → reboot. Gotchas: entry is
+`PROC EXPORT` (not `MAIN`, else Link Error 53); the embedded length must be a literal
+(`kPatchLen EQU 78`; a forward-referenced `PatchEnd-PatchData` is Asm Error 16).
+
+**Verify by heap scan, not the trap head.** After boot, `NGetTrapAddress(_MenuSelect)` did
+**not** equal our block ("magic mismatch") — which *looks* like the INIT never ran. It
+did. `MenuSelect` is a contended trap: the System and other Apple extensions (which load
+after `ABMenuInit` alphabetically) patch it *on top* of ours, chaining down — so our patch
+is alive in the chain but not the head. A system-heap scan for the patch signature
+(`601A 4D53` = `BRA.S Go` + `'MS'` magic) found the block and proved the INIT executed.
+**Trap-patch liveness must be checked by scanning for the patch, not by comparing the trap
+vector head.** (This is also why the `AppleBridgeMenuLED` INIT "looked" like it worked and
+this one didn't — the LED patches a quiet trap and you *see* the LED; nobody re-patches
+over it, so it stays head. Same INIT machinery; different verification.)
+
+**Proven end-to-end.** Armed the scanned block with `(888, 5)`, brought the Finder front,
+and press-held its File menu: the block went `calls 1→2, hits 1→2, lastRes = 03780005 =
+(888, 5)`. A **foreign front application's `MenuSelect` was intercepted and returned the
+injected menu selection, with no tracking loop and no crash** (guest uptime 382 s,
+`ERR 0`). This is the front-app menu driving that journaling (own-menu only) and the jGNE
+`drive` path (host crash) could not deliver — and unlike Route A it is completely stable.
+
+**Open polish:** the daemon should locate the patch by scanning for its magic (rather than
+`NGetTrapAddress`) so `MSINSTALL`/`MSDRIVE` adopt the INIT's global block automatically;
+then a `mac_menu(byName=…)` MCP wrapper. Recovery if a boot INIT ever wedges startup:
+Shift-boot (extensions off), or delete the file host-side with `hfsutils` while Basilisk
+is shut down. See [[applebridge-route-b-menuselect-patch]].
