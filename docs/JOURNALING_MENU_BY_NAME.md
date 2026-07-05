@@ -234,13 +234,38 @@ Progression:
   fully responsive. So the daemon now journal-drives a **modal Standard File** to click **any**
   button by item #, freeze-safe. Evidence: `docs/evidence/jsf-foreground-pass.txt`.
 
-**What remains for the shipping feature:** drive an **arbitrary front-app** menu **bar** by
-name (the `JABOUT` path generalised) behind a `MENU:<title>:<item>` wire verb +
-`mac_menu(by_name=…)`, resolving titles/items to coordinates. The three hard mechanics —
-menu bar (`MenuSelect`), modal dialog buttons (`SFGetFile`+dlgHook), and freeze-safety
-(interrupt watchdog + foreground-confirm) — are all proven; what's left is the by-name
-resolution + verb surface. This is also the piece that carries to the **remote** PowerPC
-target, where the host-`cliclick` stopgap can't reach.
+**Feasibility spike — JPROBE (0.8d21, commit d7a7a77).** Before building `MENU:<title>:<item>`,
+a spike settled whether it could ever reach an **arbitrary front app**. Two blockers, both
+confirmed: (1) `MenuSelect` uses the **calling process's** menu list, so a background daemon
+calling it only ever drives its **own** menus (the `JABOUT` comment says as much); (2) `JPROBE`
+showed that arming journal playback + a background `WaitNextEvent` **does not pump the journal at
+all** (`poll=0`, `wneHits=0`) — the journal is only consulted by an active tracking loop
+(`MenuSelect`/`ModalDialog`/`Button`) running *in-process*. So the naive cross-process path (arm,
+yield, let the front app pick up a journaled `mouseDown`) is unsupported. **Cross-process front-app
+menu driving via journaling is a dead end**; the host-side `cliclick` path remains the answer for
+foreign apps on *local* Basilisk.
+
+**Phase A — `MENU:<title>:<item>` on the daemon's OWN menu bar: ✅ BUILT + HARDENED (0.8d22→d23,
+commits ef73f00 / bd8fdf4).** Generalises `JABOUT` from a hardcoded Apple/item-1 to arbitrary
+title+item **by name**: it walks the live menu list (`GetMenuBar`; header `lastMenu@0`/`lastRight@2`/
+`mbResID@4`, then 6-byte entries `MenuHandle@0`/`menuLeft@4`; `MenuInfo` `menuID@0`/`menuWidth@2`/
+title Pascal string `@14`) to match the title (→ its screen X = `menuLeft`), resolves the item to an
+index (numeric, or case-insensitive `GetMenuItemText` match), computes the item point (16px rows
+below the 20px bar), and journal-drives `MenuSelect(titlePt)` → dispatches via `HandleMenuCommand`.
+Add `MENU:` to `host_server.py`'s raw-verb allowlist. Verified live: `MENU:Edit:Copy` → `selItem=1`
+and the log landed on the host clipboard (proves **dispatch**, not just selection); `MENU:Edit:Show
+details` → `selItem=3` (resolved by name past a separator; the 16px model held). **Hardening (d23):**
+d22 froze the guest on **invalid** input (`MENU:Bogus:1` / a typo) — fixed by making resolution
+read-only and touching the journal driver / `MenuSelect` **only for a fully-resolved, in-range
+target**; valid drives now save/restore the `GrafPort`, install the driver lazily (no per-call
+`OpenResFile`), and are watchdog-guarded. A typo is now a safe no-op (`found=0`, CPU ~6 %); repeated
+driving is stable. Evidence: `docs/evidence/menu-byname-pass.txt`.
+
+**What remains:** nothing tractable for the *journaling* path — the shipping own-menu verb is done;
+cross-process is ruled out (above). Optional polish: a `mac_menu(by_name=…)` MCP wrapper over the
+`MENU:` verb, and refining the item-Y model if a menu mixes reduced-height separators. Reaching a
+**foreign** app's shortcut-less menu remains host-`cliclick`-only (local Basilisk); the *remote*
+PowerPC target has no journaling route to it.
 
 ## The DRVR mechanics (RESOLVED — MPW Universal Interfaces 3.4, verified on-device 2026-07-04)
 
