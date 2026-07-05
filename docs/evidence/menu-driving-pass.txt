@@ -1,0 +1,12 @@
+AppleBridge journaling — part 2b: menu-driving (2026-07-04, daemon 0.8d14)
+Basilisk II, System 7.6.1. Faceless daemon drives PopUpMenuSelect via journaling.
+
+JMENU:200:128:150 -> jmenu openErr=0 ref=-96 dh=1 menuID=900 item=1 thr=200 poll=202 mouse=79 btn=41 evt=41
+JMENU:200:144:150 -> ...                                        item=2 ...
+JMENU:200:160:150 -> ...                                        item=3 ...
+JMENU:200:176:150 -> ...                                        item=4 ...
+
+item N selected at global v = 112 + 16*N. No host mouse, no calibration, no freeze.
+Tracking loop polls jcGetMouse + jcButton + jcEvent; a synthesized mouseUp (jcEvent)
+ends it. This is the payoff of the whole journaling arc: gate -> daemon-install ->
+menu-driving to an arbitrary item.

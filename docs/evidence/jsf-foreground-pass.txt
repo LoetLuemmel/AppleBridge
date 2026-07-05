@@ -1,0 +1,25 @@
+JSF modal Standard File driving — PASSED (daemon 0.8d20, 2026-07-05)
+====================================================================
+Fix: the faceless daemon foregrounds ITSELF before opening its modal SFGetFile.
+SetFrontProcess() is asynchronous, so d20 PUMPS WaitNextEvent until GetFrontProcess
+confirms the daemon IS the front process (bounded ~2 s) BEFORE arming the journal +
+opening the modal, and BAILS before SFGetFile if the switch never lands (so a failed
+foreground can never peg the CPU — the d19 freeze that forced a hard-kill).
+
+Live results over the bridge (BAII System 7.6.1, ToolServer up):
+
+  JSF:200:3  (Cancel)
+  -> STATUS:0  jsf openErr=0 item=3 front=1 good=0 poll=7 tgtV=262 tgtH=396
+     front=1  daemon became true front process (pump-until-front worked)
+     poll=7   dlgHook ran; tgtV/tgtH = live Cancel button center (262,396)
+     good=0   SFGetFile returned "no file" = Cancel path -> modal DISMISSED
+
+  JSF:200:1  (Open)
+  -> STATUS:0  jsf openErr=0 item=1 front=1 good=1 poll=6 tgtV=237 tgtH=396 file=AB.old4
+     front=1  foregrounded
+     good=1   a file WAS selected via the journal-driven Open button
+     file=AB.old4  the actual selection from the daemon's home dir
+     tgtV=237 vs Cancel's 262 (same H=396) -> distinct live button rects resolved
+
+BAII host CPU stayed 6-11% throughout BOTH drives (never pegged). Daemon returned to
+background, fully responsive (served a screenshot immediately after). No freeze.

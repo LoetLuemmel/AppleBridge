@@ -6,7 +6,15 @@
  * the classic way to tell builds apart (replacing ad-hoc names like
  * "AppleBridge5"). One 'vers' file stamps the whole suite uniformly.
  *
- * This build: 0.8 development — d10 shows the active transport in the monitor footer
+ * This build: 0.8 development — d20 fixes JSF's foreground handoff. d19 called
+ * SetFrontProcess(self) then entered SFGetFile immediately, but that switch is
+ * ASYNCHRONOUS and ModalDialog never yields, so the daemon never truly became front
+ * and the modal spun undismissable at 100% CPU. d20 PUMPS WaitNextEvent until
+ * GetFrontProcess confirms we ARE front (bounded ~2 s) BEFORE arming the journal +
+ * opening the modal, and BAILS before SFGetFile if the switch never lands (so a
+ * failed foreground can't peg the CPU). Reply gains front=. d18 added the Time
+ * Manager journaling watchdog (JSAFE) + JSF guarded.
+ * d10 shows the active transport in the monitor footer
  * (a labelled "NET OT" / "NET MacTCP" / "NET Serial" field, updated live so a NET=
  * hot-swap relabels it within seconds) via a shared ABTransportName() helper, which
  * also fixes STAT's net= field (it used to report Serial as "OT"). d9 adds transport
@@ -30,16 +38,16 @@
 
 resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
-    development, 0x18,   /* development stage, non-release revision 18 (BCD) */
+    development, 0x20,   /* development stage, non-release revision 20 (BCD) */
     verUS,
-    "0.8d18",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d18 - Time Manager journaling watchdog (JSAFE) + JSF guarded"  /* long -> Get Info */
+    "0.8d20",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d20 - JSF pumps until front (confirmed) before the modal; bails if not"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
-    development, 0x18,
+    development, 0x20,
     verUS,
-    "0.8d18",
+    "0.8d20",
     "AppleBridge"        /* the shared/suite version line */
 };

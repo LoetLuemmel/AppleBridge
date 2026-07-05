@@ -1884,14 +1884,50 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         gSFBlk = sblk; gSFItem = item;      /* the hook steers this block to <item> */
         where.v = 90; where.h = 100;        /* dialog top-left (global) */
         reply.good = false;
-        ArmJournalWatchdog(3000);           /* interrupt-disarm after 3s if we hang */
-        *(volatile short *)0x08DEL = -1;
-        SFGetFile(where, "\p", NULL, -1, NULL, (DlgHookUPP)SFCoordHook, &reply);
-        *(volatile short *)0x08DEL = 0;
-        CancelJournalWatchdog();
+        /* FOREGROUND the daemon around SFGetFile. As a background app its modal
+         * ModalDialog gets NO events (they route to the front Finder), so it spins
+         * at 100% forever -- a freeze the journal watchdog can't fix (it's not the
+         * journal). SetFrontProcess is ASYNCHRONOUS: the layer switch only lands
+         * when the current front app next yields through the Event Manager. Since
+         * ModalDialog busy-loops on GetNextEvent (never WaitNextEvent) and journal
+         * playback intercepts event fetch, entering the modal immediately means the
+         * switch never completes -- the daemon never truly becomes front, the dialog
+         * gets no events, and it spins undismissable.  So: request the switch, then
+         * PUMP WaitNextEvent (yielding) until GetFrontProcess confirms we ARE front,
+         * bounded to ~2 s.  Only if confirmed front do we arm the journal + open the
+         * modal.  If we never become front, we BAIL before SFGetFile -- a failed
+         * switch can never peg the CPU. Restore the prior front app afterwards. */
+        {
+            ProcessSerialNumber selfPSN, prevPSN, frontPSN;
+            Boolean     haveSelf = (GetCurrentProcess(&selfPSN) == noErr);
+            Boolean     havePrev = (GetFrontProcess(&prevPSN) == noErr);
+            Boolean     amFront = false;
+            short       guard;
+            EventRecord ev;
+            if (haveSelf) {
+                SetFrontProcess(&selfPSN);
+                for (guard = 0; guard < 60 && !amFront; guard++) {
+                    Boolean same = false;
+                    WaitNextEvent(everyEvent, &ev, 2L, NULL);   /* yield ~2 ticks so MultiFinder switches */
+                    if (GetFrontProcess(&frontPSN) == noErr)
+                        SameProcess(&frontPSN, &selfPSN, &same);
+                    amFront = same;
+                }
+            }
+            sblk[6] = amFront ? 1 : 0;           /* reported as front= in the reply */
+            if (amFront) {
+                ArmJournalWatchdog(3000);        /* interrupt-disarm after 3s if we still hang */
+                *(volatile short *)0x08DEL = -1;
+                SFGetFile(where, "\p", NULL, -1, NULL, (DlgHookUPP)SFCoordHook, &reply);
+                *(volatile short *)0x08DEL = 0;
+                CancelJournalWatchdog();
+            }
+            if (havePrev) SetFrontProcess(&prevPSN);  /* hand the front back to Finder */
+        }
         gSFBlk = NULL;
         b = StatStr(b, "jsf openErr="); b = StatDec(b, (long)oe);
         b = StatStr(b, " item=");  b = StatDec(b, (long)item);
+        b = StatStr(b, " front="); b = StatDec(b, sblk[6]);
         b = StatStr(b, " good=");  b = StatDec(b, reply.good ? 1 : 0);
         b = StatStr(b, " poll=");  b = StatDec(b, sblk[2]);
         b = StatStr(b, " tgtV="); b = StatDec(b, (long)((sblk[0] >> 16) & 0xFFFF));
