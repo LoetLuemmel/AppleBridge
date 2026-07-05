@@ -283,6 +283,32 @@ Give EITHER `key` OR (`title` and `item`).""",
         }
     },
     {
+        "name": "mac_menu_front",
+        "description": """Drive the FRONT app's menu via the Route B global MenuSelect trap patch -- the one path that reaches a FOREIGN front application's shortcut-less menu (mac_menu's by-name mode drives only the daemon's OWN bar).
+
+Orchestrates the proven pieces: MSINSTALL (adopt the boot INIT's global patch, found by heap scan) -> MSDRIVE (arm the patch to return the target on the next MenuSelect) -> host cliclick a menu-bar title (so the front app calls MenuSelect; the patch returns the item with NO tracking loop, no journal, no window reorder, so no host crash) -> MSREAD (confirm the interception fired).
+
+Requirements & limits: the `ABMenuInit` boot extension must be installed and the guest rebooted (a trap patch is global ONLY when installed at startup; an app-installed one is process-local). `menu_id`/`item` are NUMERIC -- the target app's real menu id + 1-based item; resolving a foreign app's menu BY NAME needs reading its menu list and is not wired here. The host trigger uses `cliclick` + `osascript` with BasiliskII visible locally -- LOCAL Basilisk only.""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "menu_id": {
+                    "type": "integer",
+                    "description": "The front app's real menu ID (numeric) to dispatch."
+                },
+                "item": {
+                    "type": "integer",
+                    "description": "1-based item index within that menu."
+                },
+                "menu_x": {
+                    "type": "integer",
+                    "description": "Guest x of a menu-bar title to click as the trigger (default 45; any title works -- the armed patch returns the target regardless of where clicked)."
+                }
+            },
+            "required": ["menu_id", "item"]
+        }
+    },
+    {
         "name": "mac_click",
         "description": """Click at a point in the FRONT application on the classic Mac.
 
@@ -1013,6 +1039,31 @@ def _parse_menu_reply(stdout: str) -> Dict[str, Any]:
     return out
 
 
+def _parse_msread(stdout: str) -> Dict[str, Any]:
+    """Parse the MSREAD verb's reply, e.g.
+    'blk=00004140 calls=1 hits=1 armed=0 lastRes=03090003 head=NO' ->
+    {'blk':'00004140','calls':1,'hits':1,'armed':0,'lastRes':0x03090003,'head':'NO'}.
+    calls/hits/armed are decimal; blk/lastRes are hex; head is a string."""
+    out: Dict[str, Any] = {}
+    for tok in (stdout or "").split():
+        k, sep, v = tok.partition("=")
+        if not sep:
+            continue
+        if k in ("calls", "hits", "armed"):
+            try:
+                out[k] = int(v)
+            except ValueError:
+                pass
+        elif k in ("blk", "lastRes"):
+            try:
+                out[k] = int(v, 16)
+            except ValueError:
+                out[k] = v
+        else:
+            out[k] = v
+    return out
+
+
 def mac_menu(key: str = None, modifiers=None, title: str = None,
              item: str = None) -> Dict[str, Any]:
     """Invoke a menu command. Two modes (see the tool schema for detail):
@@ -1069,6 +1120,94 @@ def mac_menu(key: str = None, modifiers=None, title: str = None,
     mask = _modifiers_mask(names) | 256  # cmdKey
     return _inject(f"KEY:{cc}:0:{mask}",
                    {"menu_key": key, "modifiers": names or ["command"]})
+
+
+def mac_menu_front(menu_id: int, item: int, menu_x: int = 45) -> Dict[str, Any]:
+    """Drive the FRONT app's menu via the Route B global MenuSelect trap patch.
+
+    This is the one path that reaches a *foreign* front application's shortcut-less
+    menu (mac_menu's by-name mode drives only the daemon's own bar). It orchestrates
+    the proven daemon verbs and a host trigger:
+      1. MSINSTALL  -- adopt the boot INIT's global patch (found by heap scan).
+      2. MSDRIVE    -- arm the patch to return (menu_id, item) on the next call.
+      3. host trigger -- activate BasiliskII and cliclick a menu-bar title so the
+         front app calls MenuSelect; the patch returns the armed item WITHOUT the
+         tracking loop, and the app dispatches the command.
+      4. MSREAD     -- confirm the interception (hits advanced, lastRes matches).
+
+    Requirements / limits:
+      - The ABMenuInit boot extension must be installed and the guest rebooted
+        (the patch is global only when installed at startup; an app-installed
+        patch is process-local).
+      - menu_id / item are NUMERIC (the target app's real menu id + 1-based item);
+        resolving a foreign app's menu BY NAME needs reading its menu list and is
+        not wired here.
+      - The trigger uses host `cliclick` + `osascript` with BasiliskII visible
+        locally -- LOCAL Basilisk only (no remote/SheepShaver trigger).
+    """
+    import subprocess
+    import time
+
+    try:
+        mid, it = int(menu_id), int(item)
+    except (TypeError, ValueError):
+        return {"success": False, "error": "menu_id and item must be integers"}
+
+    adopt = _inject("MSINSTALL", {"step": "adopt"})
+    before = _parse_msread((_inject("MSREAD", {}).get("message")) or "")
+    arm = _inject(f"MSDRIVE:{mid}:{it}", {"menu_id": mid, "item": it})
+    if not arm.get("success"):
+        return {"success": False, "error": "MSDRIVE failed (patch not installed? "
+                "run the ABMenuInit boot INIT + reboot)",
+                "menu_id": mid, "item": it, "arm": arm.get("message")}
+
+    trigger_error = None
+    try:
+        subprocess.run(["osascript", "-e",
+                        'tell application "BasiliskII" to activate'],
+                       capture_output=True, text=True, timeout=10)
+        time.sleep(0.6)
+        geo = subprocess.run(
+            ["osascript", "-e",
+             'tell application "System Events" to tell process "BasiliskII" '
+             'to get {position, size} of window 1'],
+            capture_output=True, text=True, timeout=10)
+        nums = [int(n.strip()) for n in geo.stdout.split(",")]
+        wx, wy = nums[0], nums[1]
+        hx, hy = wx + int(menu_x), wy + 28 + 9   # 28px title bar + menu-bar row
+        # press-HOLD a menu title (a quick click is missed); the armed patch
+        # short-circuits tracking so no starvation. Retry once if it misses.
+        for _ in range(2):
+            subprocess.run(["cliclick", f"m:{hx},{hy}", "w:150",
+                            f"dd:{hx},{hy}", "w:130", f"du:{hx},{hy}"],
+                           capture_output=True, text=True, timeout=10)
+            time.sleep(0.4)
+            mid_read = _parse_msread((_inject("MSREAD", {}).get("message")) or "")
+            if mid_read.get("hits", 0) > before.get("hits", 0):
+                break
+    except FileNotFoundError:
+        trigger_error = ("cliclick/osascript not found on host -- Route B trigger "
+                         "is local-Basilisk only")
+    except Exception as e:  # geometry parse / subprocess failure
+        trigger_error = str(e)
+
+    after = _parse_msread((_inject("MSREAD", {}).get("message")) or "")
+    fired = after.get("hits", 0) > before.get("hits", 0)
+    want = ((mid & 0xFFFF) << 16) | (it & 0xFFFF)
+    return {
+        "success": bool(fired) and after.get("lastRes") == want,
+        "menu_id": mid,
+        "item": it,
+        "fired": fired,
+        "hits": after.get("hits"),
+        "last_result_hex": "%08X" % (after.get("lastRes") or 0),
+        "adopted": adopt.get("message"),
+        "trigger_error": trigger_error,
+        "note": ("Route B front-app menu drive via the boot-INIT MenuSelect patch. "
+                 "If fired is false: confirm the ABMenuInit extension is installed "
+                 "and the guest rebooted, that BasiliskII is visible locally, and "
+                 "that menu_id is the app's real menu id."),
+    }
 
 
 def mac_click(x: int, y: int, count: int = 1, modifiers=None) -> Dict[str, Any]:
@@ -1574,6 +1713,7 @@ TOOL_HANDLERS = {
     "mac_type": mac_type,
     "mac_key": mac_key,
     "mac_menu": mac_menu,
+    "mac_menu_front": mac_menu_front,
     "mac_click": mac_click,
     "mac_status": mac_status,
     "mac_build": mac_build,

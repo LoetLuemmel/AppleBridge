@@ -499,8 +499,12 @@ injected menu selection, with no tracking loop and no crash** (guest uptime 382 
 `ERR 0`). This is the front-app menu driving that journaling (own-menu only) and the jGNE
 `drive` path (host crash) could not deliver — and unlike Route A it is completely stable.
 
-**Open polish:** the daemon should locate the patch by scanning for its magic (rather than
-`NGetTrapAddress`) so `MSINSTALL`/`MSDRIVE` adopt the INIT's global block automatically;
-then a `mac_menu(byName=…)` MCP wrapper. Recovery if a boot INIT ever wedges startup:
-Shift-boot (extensions off), or delete the file host-side with `hfsutils` while Basilisk
-is shut down. See [[applebridge-route-b-menuselect-patch]].
+**Polish done.** The daemon now **adopts** the INIT's global block by scanning the system
+heap for its magic (`FindMSPatch`; `MSINSTALL` prefers it over installing its own
+process-local copy), and an MCP tool **`mac_menu_front(menu_id, item)`** orchestrates the
+full front-app drive — `MSINSTALL` (adopt) → `MSDRIVE` (arm) → host `cliclick` a menu-bar
+title (trigger) → `MSREAD` (verify). Numeric ids only (by-name resolution of a *foreign*
+app needs reading its menu list — the jGNE Route A read — and is not wired); the trigger is
+local-Basilisk (host `cliclick`). Recovery if a boot INIT ever wedges startup: Shift-boot
+(extensions off), or delete the file host-side with `hfsutils` while Basilisk is shut down.
+See [[applebridge-route-b-menuselect-patch]].
