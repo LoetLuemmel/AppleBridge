@@ -238,31 +238,48 @@ e.g. ["command"]. For a menu command it's usually clearer to call mac_menu.""",
     },
     {
         "name": "mac_menu",
-        "description": """Invoke a menu command by its Command-key equivalent in the FRONT app.
+        "description": """Invoke a menu command. Two modes:
 
-Selecting a menu item is a modal mouse-tracking loop that runs INSIDE the front
-app, so a synthetic click can't drive it — the reachable path is the menu's
-KEYBOARD equivalent. This injects Command+<key> (add Shift/Option via
-`modifiers`), which the front app dispatches through MenuKey.
+1) FRONT-app, by Command-key (`key`): selecting a menu item is a modal
+   mouse-tracking loop inside the front app that a synthetic click can't drive,
+   so the reachable path is the menu's KEYBOARD equivalent. This injects
+   Command+<key> (add Shift/Option via `modifiers`), which the front app
+   dispatches through MenuKey. `key` is the single character shown next to the
+   item (read it off a screenshot): "Q" to Quit, "W" to close, "N" for New.
+   Items with NO Command-key equivalent can't be reached this way.
 
-`key` is the single character shown next to the menu item (read it off a
-screenshot): e.g. "Q" to Quit, "W" to close, "N" for New, "S" to Save. Items
-with NO Command-key equivalent can't be reached this way — use the app's own
-keyboard interface (e.g. a command window) for those.""",
+2) BY NAME (`title` + `item`): journal-drives a menu on the DAEMON's OWN menu
+   bar (Apple / Edit) — matching the menu title and the item by name (or item
+   by 1-based index), then dispatching it. This is the ONLY way to reach a
+   shortcut-LESS item, but it works only on the daemon's own menus: a background
+   daemon's MenuSelect uses its own menu list and can't reach a front app
+   (proven by the JPROBE spike). Use it for the daemon's own commands, e.g.
+   title="Edit", item="Copy" (copies the Verbose log to the clipboard) or
+   item="Show details". Reports the resolved menu id + selected item.
+
+Give EITHER `key` OR (`title` and `item`).""",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "key": {
                     "type": "string",
-                    "description": "Single character of the menu item's Command-key equivalent (e.g. Q, W, N, S)"
+                    "description": "FRONT-app mode: single character of the menu item's Command-key equivalent (e.g. Q, W, N, S)"
                 },
                 "modifiers": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Extra modifiers beyond Command (e.g. [\"shift\"] for a Cmd-Shift item). Command is always included."
+                },
+                "title": {
+                    "type": "string",
+                    "description": "BY-NAME mode: menu title on the daemon's own menu bar (e.g. \"Edit\"). Requires `item`."
+                },
+                "item": {
+                    "type": "string",
+                    "description": "BY-NAME mode: menu item name (e.g. \"Copy\", \"Show details\") or 1-based index. Requires `title`."
                 }
             },
-            "required": ["key"]
+            "required": []
         }
     },
     {
@@ -981,18 +998,60 @@ def mac_key(char_code: Optional[int] = None, key_code: int = 0,
                           "modifiers": modifiers or []})
 
 
-def mac_menu(key: str, modifiers=None) -> Dict[str, Any]:
-    """Invoke a menu command by its Command-key equivalent in the front app.
+def _parse_menu_reply(stdout: str) -> Dict[str, Any]:
+    """Parse the MENU verb's reply into ints, e.g.
+    'menu found=1 menuID=130 item=1 nItems=3 titleX=34 itemY=28 selID=130
+    selItem=1 poll=202' -> {'found':1,'menuID':130,...}."""
+    out: Dict[str, Any] = {}
+    for tok in (stdout or "").split():
+        k, sep, v = tok.partition("=")
+        if sep:
+            try:
+                out[k] = int(v)
+            except ValueError:
+                out[k] = v
+    return out
 
-    Selecting a menu item is a modal mouse-tracking loop that runs inside the
-    front app; a background daemon is not scheduled during it, so a synthetic
-    click can't drive it. The reachable path is the menu's KEYBOARD equivalent:
-    this injects Command+<key> (add Shift/Option via `modifiers`), which the front
-    app dispatches through MenuKey. `key` is the single character printed next to
-    the menu item (e.g. "Q" to Quit, "W" to close, "N" for New). Items with no
-    Command-key equivalent cannot be reached this way -- use the app's own
-    keyboard interface for those.
+
+def mac_menu(key: str = None, modifiers=None, title: str = None,
+             item: str = None) -> Dict[str, Any]:
+    """Invoke a menu command. Two modes (see the tool schema for detail):
+
+    - key: FRONT-app Command-key equivalent (Command+<key> via MenuKey).
+    - title + item: journal-drive the DAEMON'S OWN menu bar by name (the only
+      way to a shortcut-less item; own menus only -- MenuSelect uses the caller's
+      menu list, so it can't reach a front app; JPROBE proved a background yield
+      never pumps the journal).
     """
+    # BY-NAME mode -> the daemon's MENU:<title>:<item> journaling verb.
+    if title is not None and item is not None:
+        t, it = str(title), str(item)
+        for bad, lbl in ((t, "title"), (it, "item")):
+            if any(c in bad for c in (":", "\r", "\n")):
+                return {"success": False,
+                        "error": f"{lbl} cannot contain ':' or newlines",
+                        "title": title, "item": item}
+        res = _inject(f"MENU:{t}:{it}",
+                      {"title": t, "item": it, "target": "daemon_own_menu_bar"})
+        fields = _parse_menu_reply(res.get("message") or "")
+        res.update(fields)
+        found = fields.get("found") == 1
+        resolved = fields.get("item", 0) or 0
+        sel = fields.get("selItem", 0) or 0
+        if not found:
+            res["success"] = False
+            res["error"] = f"menu title {title!r} not found on the daemon's menu bar"
+        elif resolved == 0:
+            res["success"] = False
+            res["error"] = f"item {item!r} not found in menu {title!r}"
+        else:
+            res["success"] = sel > 0
+            if sel == 0:
+                res["error"] = "menu resolved but MenuSelect returned no selection"
+        return res
+    if key is None:
+        return {"success": False,
+                "error": "provide either `key` (front-app Cmd-key) or `title`+`item` (by name)"}
     ch = str(key)
     if len(ch) != 1:
         return {"success": False, "error": "key must be a single character",
