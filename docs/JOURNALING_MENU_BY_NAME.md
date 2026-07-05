@@ -183,10 +183,64 @@ iteration (`jcGetMouse`/`jcButton`/`jcEvent`); the `mouseUp` ends it. With a val
 block the in-driver call-count safety works (self-recovers <1s), so no hard freeze —
 no Time Manager needed.
 
-**What remains for the shipping feature:** drive a real front-app menu **bar** via
-`MenuSelect` — feed a `mouseDown` at the menu title via `jcEvent` first (so the app
-calls `MenuSelect`), then track to the item — behind a `MENU:<title>:<item>` wire
-verb + `mac_menu(by_name=…)`, resolving titles/items to coordinates.
+**Part 2c — real menu BAR: ✅ WORKS (2026-07-04, daemon 0.8d15, commit 7a7b4be, `JABOUT`).**
+The daemon journal-drives its **own** Apple-menu title on the real menu **bar** via
+`MenuSelect` → item 1 → `ShowAboutBox`: the About box opened with zero synthetic input.
+The trick vs the popup case is feeding a `mouseDown` at the menu **title's** screen point
+via `jcEvent` *first* (so the front app enters `MenuSelect`), then tracking down the item
+column and releasing with a `mouseUp`. Proves the menu-bar path end-to-end for a
+shortcut-less item.
+
+**JSF — modal Standard File driving (0.8d16→d20). ✅ RESOLVED 2026-07-05 (0.8d20, commit f3742b4).**
+Progression:
+- **d16 (commit 9151b1b) — driver *mode*.** The driver gained a mode selector: mode 0 =
+  menu (feed `jcEvent` `null`→`mouseUp` mid-track); **mode 1 = dialog click** (feed a
+  `mouseDown` *then* `mouseUp` — a modal button needs a real mouse-DOWN, unlike a
+  `MenuSelect` entered mid-track). `JSF` opens a `StandardGetFile` and journal-clicks a point.
+- **d17 (commit aef3c95) — deterministic coords via a dlgHook.** `SFGetFile` + an
+  `SFCoordHook` that reads the target item's rect (`GetDialogItem`) → `LocalToGlobal` →
+  redirects the journal's target to that button's **live guest-global centre** — no
+  coordinate guessing. `JSF:<thresh>:<item>` (item 1 = Open, 3 = Cancel). The hook reports
+  the resolved coord back in the reply.
+- **d18 (commit e348e26) — interrupt-time watchdog (`JSAFE`).** A `ModalDialog` that misses
+  its click **spins at 100% CPU without polling the journal**, so the in-driver call-count
+  safety can never disarm it — the freeze that forced two hard-kills. Fix: a **Time Manager**
+  task (`DisarmTMProc`, primed via `ArmJournalWatchdog(ms)` before arming) zeroes
+  `JournalFlag` (`$08DE`) **at interrupt time** regardless of the frozen main loop. It touches
+  only the fixed low-mem address (no A5) so it's interrupt-safe. `JSAFE` validated it in
+  isolation: `elapsedTicks=91 flagAtExit=0 result=PASS-watchdog-fired`.
+- **d19 (froze) → d20 (fixed) — the real blocker: a faceless daemon's modal gets no events.**
+  As a background app, the daemon's `SFGetFile` `ModalDialog` receives no events (they route
+  to the front Finder), so it stays undismissable — a freeze the journal watchdog can't fix
+  because it isn't a journal hang. d19 tried `SetFrontProcess(self)` then entered the modal
+  immediately and **still froze** (forcing a hard-kill), because **`SetFrontProcess` is
+  asynchronous**: the layer switch only lands when the current front app next yields through
+  the Event Manager, but `ModalDialog` busy-loops on `GetNextEvent` (never `WaitNextEvent`)
+  and journal playback intercepts event fetch, so the switch never completes and the daemon
+  never truly becomes front. (The 100% CPU is normal for *any* `ModalDialog`; the bug is that
+  it's undismissable.)
+
+  **d20 fix:** `SetFrontProcess(self)`, then **pump `WaitNextEvent` until `GetFrontProcess`/
+  `SameProcess` confirms we ARE the front process** (bounded ~2 s); **only if confirmed front**
+  do we arm the journal + open `SFGetFile`; and **bail before the modal if the switch never
+  lands** — so a failed foreground can never peg the CPU again. Restore the prior front app
+  (Finder) afterwards. The reply gains `front=`. Verified live over the bridge:
+  ```
+  JSF:200:3 (Cancel) -> front=1 good=0 poll=7 tgtV=262 tgtH=396           -> modal DISMISSED
+  JSF:200:1 (Open)   -> front=1 good=1 poll=6 tgtV=237 tgtH=396 file=AB.old4 -> file SELECTED
+  ```
+  Distinct live button rects (Cancel `v=262`, Open `v=237`, same `h=396`); BAII host CPU
+  stayed 6–11 % through **both** drives (never pegged); the daemon returned to the background
+  fully responsive. So the daemon now journal-drives a **modal Standard File** to click **any**
+  button by item #, freeze-safe. Evidence: `docs/evidence/jsf-foreground-pass.txt`.
+
+**What remains for the shipping feature:** drive an **arbitrary front-app** menu **bar** by
+name (the `JABOUT` path generalised) behind a `MENU:<title>:<item>` wire verb +
+`mac_menu(by_name=…)`, resolving titles/items to coordinates. The three hard mechanics —
+menu bar (`MenuSelect`), modal dialog buttons (`SFGetFile`+dlgHook), and freeze-safety
+(interrupt watchdog + foreground-confirm) — are all proven; what's left is the by-name
+resolution + verb surface. This is also the piece that carries to the **remote** PowerPC
+target, where the host-`cliclick` stopgap can't reach.
 
 ## The DRVR mechanics (RESOLVED — MPW Universal Interfaces 3.4, verified on-device 2026-07-04)
 
@@ -327,7 +381,9 @@ inside a front-app `MenuSelect`).
    one known menu.
 5. **`MENU:<title>:<item>` wire verb + `mac_menu(byName=…)`** — resolve title/item to
    coordinates, drive the sequence, restore `JournalFlag = 0` (watchdog-guarded).
-   Extend to Standard File / modal-dialog mouse.
+   ~~Extend to Standard File / modal-dialog mouse~~ — ✅ **modal-dialog mouse done**
+   (`JSF`, 0.8d20; `SFGetFile`+dlgHook+foreground-confirm+interrupt watchdog). The
+   remaining open item here is the by-name **menu** verb surface.
 
 ## Risks & open questions
 
@@ -348,11 +404,13 @@ inside a front-app `MenuSelect`).
 
 ## Recommendation
 
-Feasible and the *right* long-term fix (native, works on the remote PowerPC target,
-no host calibration), but it is a **multi-session build** gated on two things in
-order: (1) the driver-call protocol from IM Vol I, then (2) the step-3 feasibility
-gate proving a background-installed playback driver is actually consulted. Until a
-concrete workflow needs a shortcut-less menu item or hands-off modal-dialog driving
-on the *remote* target, the host-side `cliclick` path remains the pragmatic
-stopgap for **local** Basilisk. Pick this up as a dedicated session starting at
-step 1.
+**Update 2026-07-05:** what read as a speculative multi-session build is now **mostly
+built and verified live.** The IM protocol (step 1), the DRVR skeleton (step 2), the
+step-3 gate, faceless-daemon install (`JGATE`), popup + real menu-bar driving
+(`JMENU`/`JABOUT`), the interrupt-time freeze watchdog (`JSAFE`, 0.8d18), and **modal
+Standard File button-driving** (`JSF`, 0.8d20 — foreground-confirm + dlgHook) all work.
+The one shipping piece left is the **by-name menu verb surface** (`MENU:<title>:<item>`
++ `mac_menu(byName=…)`) generalising the `JABOUT` path to an arbitrary front app. This
+native path is the *right* long-term fix — it carries to the remote PowerPC target,
+where the host-side `cliclick` stopgap (pragmatic for **local** Basilisk only) can't
+reach.
