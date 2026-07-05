@@ -1059,6 +1059,22 @@ static char *StatHex(char *p, unsigned long v)
     return p;
 }
 
+/* Route B: find the boot INIT's global MenuSelect patch by scanning the system
+ * heap for its block header (word 0 = 0x601A `BRA.S Go`, word 2 = 0x4D53 'MS').
+ * NGetTrapAddress can't find it -- MenuSelect is contended, so a later patch is
+ * the $A93D head and ours is chained below it; the block is still resident and
+ * armable. Returns the block ptr or 0. */
+static Ptr FindMSPatch(void)
+{
+    unsigned char *p   = (unsigned char *)(*(unsigned long *)0x02A6L); /* SysZone  */
+    unsigned char *end = (unsigned char *)(*(unsigned long *)0x02AAL); /* ApplZone */
+    for (; p + 4 < end; p += 2) {
+        if (*(unsigned short *)p == 0x601A && *(unsigned short *)(p + 2) == 0x4D53)
+            return (Ptr)p;
+    }
+    return 0L;
+}
+
 /* Record an error: bump the counter AND remember a short identifying tag, so the
  * monitor/STAT can say WHAT failed, not just how often. Called at each error site. */
 static void NoteErr(const char *tag)
@@ -1955,6 +1971,18 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         char body[220], frame[300];
         char *b = body, *f = frame;
         SetActivity("MSINSTALL");
+        if (gMSPatch == 0L) {
+            /* Prefer the boot INIT's GLOBAL block (found by heap scan) over
+             * installing our own process-local copy -- only the INIT's patch
+             * reaches a FOREIGN app's MenuSelect. */
+            gMSPatch = FindMSPatch();
+            if (gMSPatch != 0L) {
+                b = StatStr(b, "adopted INIT patch blk="); b = StatHex(b, (unsigned long)gMSPatch);
+                b = StatStr(b, " calls=");  b = StatDec(b, *(long *)((char *)gMSPatch + 16));
+                b = StatStr(b, " hits=");   b = StatDec(b, *(long *)((char *)gMSPatch + 20));
+                goto msinstall_reply;
+            }
+        }
         if (gMSPatch != 0L) {
             b = StatStr(b, "already installed blk="); b = StatHex(b, (unsigned long)gMSPatch);
             b = StatStr(b, " calls=");                b = StatDec(b, *(long *)((char *)gMSPatch + 16));
@@ -1991,6 +2019,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
                 CloseResFile(resRef);
             }
         }
+msinstall_reply:
         *b = '\0';
         f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body)); *f++ = '\r';
         f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
