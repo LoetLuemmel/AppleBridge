@@ -33,3 +33,18 @@ calls (each J-verb re-OpenResFile's ABJournalDRVR + OpenDriver) or a stateful
 interaction with the earlier Show-details toggle. Needs hardening: open the driver
 only for a valid target, close//balance the resource file, and validate inputs
 early. A mistyped menu/item name must never wedge the guest.
+
+-----------------------------------------------------------------------------
+HARDENING (daemon 0.8d23, 2026-07-05) — the d22 invalid-input freeze is FIXED.
+Invalid input is now a pure READ-ONLY no-op (resolve + report only; opens no
+journal driver, arms no journal, calls no MenuSelect). Valid drives save/restore
+the GrafPort around MenuSelect, install the driver lazily (no per-call
+OpenResFile), and are guarded by the interrupt watchdog.
+
+Verified live on 0.8d23:
+  MENU:Bogus:1     -> found=0 ... poll=0            CPU 6.5%  (was: freeze->crash)
+  MENU:Edit:Nope   -> found=1 item=0 ... poll=0     CPU 9.6%  (menu found, no drive)
+  MENU:Edit:Copy   -> found=1 item=1 selItem=1 poll=202       (still drives+dispatches)
+  MENU:Edit:Show details x4 (repeated) -> selItem=3 each; daemon stayed responsive
+                     (Echo ALIVE ok); CPU settled to ~7.8% idle afterwards. No freeze.
+A typo can no longer wedge the guest; repeated driving is stable.

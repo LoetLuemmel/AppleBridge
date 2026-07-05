@@ -1829,15 +1829,10 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         wantItem[0] = (unsigned char)ii;
         if (ii == 0) itemIsNum = false;
         for (i = 1; i <= ii; i++) if (wantItem[i] < '0' || wantItem[i] > '9') itemIsNum = false;
-        /* open the journal driver (same path as JABOUT) */
-        for (i = 0; gPrefs.home[i] && n < 254; i++) pPath[1 + n++] = gPrefs.home[i];
-        for (i = 0; fn[i] && n < 254; i++)          pPath[1 + n++] = fn[i];
-        pPath[0] = (unsigned char)n;
-        resRef = OpenResFile(pPath);
-        OpenDriver("\p.ABJournal", &ref);
-        dh = (DCtlHandle)GetDCtlEntry(ref);
+        mblk[2] = 0;                                    /* poll: stays 0 unless we drive */
         /* resolve the menu by title from the LIVE menu list (header: lastMenu@0,
-         * lastRight@2, mbResID@4; then 6-byte entries: MenuHandle@0, menuLeft@4) */
+         * lastRight@2, mbResID@4; then 6-byte entries: MenuHandle@0, menuLeft@4).
+         * READ-ONLY -- no driver / journal / MenuSelect touched during resolution. */
         mbar = GetMenuBar();
         if (mbar != NULL) {
             mp = *mbar;
@@ -1872,16 +1867,37 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
             }
         }
         if (itemIndex > 0) itemY = 20 + 16 * (itemIndex - 1) + 8;   /* 16px rows below the 20px bar */
-        mblk[0] = ((long)itemY << 16) | ((long)(titleX + (menuW > 24 ? menuW / 2 : 12)) & 0xFFFF);
-        mblk[1] = thresh;
-        mblk[2] = 0; mblk[3] = 0; mblk[4] = 0; mblk[5] = 0; mblk[6] = 0;
-        mblk[7] = 0;                                     /* mode 0 = menu */
-        if (dh) (**dh).dCtlStorage = (Handle)mblk;
-        startPt.v = 10; startPt.h = titleX + 4;         /* the menu title on the bar */
+        /* DRIVE only a fully-resolved, IN-RANGE target. Invalid input (unknown title
+         * or item) falls through here as a pure read-only no-op -- it opens no driver,
+         * arms no journal, and calls no MenuSelect, so a typo can never wedge the
+         * guest. For a valid target: install the driver LAZILY (OpenDriver first; only
+         * OpenResFile if it is not already in the unit table -- avoids re-opening the
+         * resource file on every call), save/restore the GrafPort around the modal
+         * MenuSelect, and guard it with the interrupt watchdog (a hung tracking loop
+         * self-recovers at interrupt time). */
         if (found && itemIndex > 0 && itemIndex <= numItems) {
+            GrafPtr savePort;
+            if (OpenDriver("\p.ABJournal", &ref) != noErr) {
+                for (i = 0; gPrefs.home[i] && n < 254; i++) pPath[1 + n++] = gPrefs.home[i];
+                for (i = 0; fn[i] && n < 254; i++)          pPath[1 + n++] = fn[i];
+                pPath[0] = (unsigned char)n;
+                resRef = OpenResFile(pPath);
+                OpenDriver("\p.ABJournal", &ref);
+            }
+            dh = (DCtlHandle)GetDCtlEntry(ref);
+            mblk[0] = ((long)itemY << 16) | ((long)(titleX + (menuW > 24 ? menuW / 2 : 12)) & 0xFFFF);
+            mblk[1] = thresh;
+            mblk[2] = 0; mblk[3] = 0; mblk[4] = 0; mblk[5] = 0; mblk[6] = 0;
+            mblk[7] = 0;                                 /* mode 0 = menu */
+            if (dh) (**dh).dCtlStorage = (Handle)mblk;
+            startPt.v = 10; startPt.h = titleX + 4;      /* the menu title on the bar */
+            GetPort(&savePort);
+            ArmJournalWatchdog(3000);                    /* interrupt-disarm if MenuSelect hangs */
             *(volatile short *)0x08DEL = -1;            /* arm playback */
             res = MenuSelect(startPt);
             *(volatile short *)0x08DEL = 0;             /* disarm */
+            CancelJournalWatchdog();
+            SetPort(savePort);
         }
         b = StatStr(b, "menu found=");   b = StatDec(b, (long)found);
         b = StatStr(b, " menuID=");      b = StatDec(b, (long)menuID);

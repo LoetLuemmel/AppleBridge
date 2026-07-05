@@ -6,7 +6,13 @@
  * the classic way to tell builds apart (replacing ad-hoc names like
  * "AppleBridge5"). One 'vers' file stamps the whole suite uniformly.
  *
- * This build: 0.8 development — d22 adds MENU:<title>:<item>, by-name menu driving on
+ * This build: 0.8 development — d23 HARDENS MENU (d22 froze the guest on invalid input /
+ * repeated driving). Invalid input (unknown title or item) is now a pure READ-ONLY no-op:
+ * it opens no journal driver, arms no journal, and calls no MenuSelect, so a typo can
+ * never wedge the guest. Valid drives now install the driver lazily (OpenDriver first,
+ * OpenResFile only if needed -- no per-call resource-file re-open), save/restore the
+ * GrafPort around MenuSelect, and are guarded by the interrupt watchdog. d22 adds
+ * MENU:<title>:<item>, by-name menu driving on
  * the daemon's OWN menu bar: resolves the title to a menu (menuLeft from the live menu
  * list) + the item to an index (numeric or by item text), computes the item point, and
  * journal-drives MenuSelect to select + dispatch it. Generalizes JABOUT. Own-menu only
@@ -48,16 +54,16 @@
 
 resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
-    development, 0x22,   /* development stage, non-release revision 22 (BCD) */
+    development, 0x23,   /* development stage, non-release revision 23 (BCD) */
     verUS,
-    "0.8d22",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d22 - MENU:<title>:<item> by-name menu driving (own menu bar)"  /* long -> Get Info */
+    "0.8d23",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d23 - MENU hardened: invalid input is a safe no-op (no freeze)"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
-    development, 0x22,
+    development, 0x23,
     verUS,
-    "0.8d22",
+    "0.8d23",
     "AppleBridge"        /* the shared/suite version line */
 };
