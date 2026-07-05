@@ -1,0 +1,251 @@
+*-------------------------------------------------------------------------------------------
+*
+* NAME
+*       jgne.a -- JPROBE2 spike (v4): passive jGNE filter + TM unhook watchdog
+*                 + on-demand foreign MenuList snapshot.
+*
+* DESCRIPTION
+*       Runs in the calling app's context on every GetNextEvent. Counts per
+*       context (v1-v3). v3 added a Time Manager watchdog that restores $29A at
+*       interrupt time (auto-unhook). v4 adds a ONE-SHOT MenuList SNAPSHOT:
+*       when the installer sets SnapReq=1 (optionally targeting a context via
+*       SnapA5), the next matching filter call walks the FRONT app's low-mem
+*       MenuList ($0A1C) -- which the Process Manager swaps per process, so it is
+*       the current foreground app's own menu list -- and copies each menu's ID
+*       and title into SnapBuf. This proves we can read a FOREIGN app's menu
+*       structure from inside its context (the core of Route A).
+*
+*       Snapshot runs at filter time (normal execution in the app's context, not
+*       interrupt), so dereferencing handles is safe (no allocation in-between).
+*       Guards: nil MenuList/handle skipped; menu count capped at 24; each title
+*       length clamped to 31; SnapBuf is 1024 bytes -> no overflow.
+*
+*       Block layout (fixed offsets, shared with jprobe2.c):
+*         +0    BRA.S Go
+*         +2    magic  $4A32
+*         +4    disarm word
+*         +6    OldFlt (long)
+*         +10   Total  (long)
+*         +14   SysLo  (long)
+*         +18   SysHi  (long)
+*         +22   Tgt    (long)
+*         +26   TMProcOff (word)
+*         +28   WDFired   (word)
+*         +30   pad
+*         +32   TMTask (16): qLink@32 qType@36 tmAddr@38 tmCount@42 pad@46
+*         +48   Slots  4 x 16 = 64
+*         +112  SnapReq   (word)  1 = snapshot requested
+*         +114  SnapDone  (word)  1 = snapshot taken
+*         +116  SnapA5    (long)  target context (0 = any)
+*         +120  SnapA5Out (long)  context actually snapshotted
+*         +124  SnapCount (word)  number of menus captured
+*         +126  pad
+*         +128  SnapBuf   1024 bytes: repeated { menuID(word), len(byte), chars }
+*         +1152 code (Go, TMProc, Snapshot)
+*
+*       docs/JOURNALING_MENU_BY_NAME.md -- JPROBE2 (foreign-context probe).
+*-------------------------------------------------------------------------------------------
+
+        CASE    OBJ
+        STRING  ASIS
+
+CurrentA5       EQU     $0904
+CurApName       EQU     $0910
+JGNEFilter      EQU     $029A
+JournalFlag     EQU     $08DE
+TicksLM         EQU     $016A
+MenuListLM      EQU     $0A1C
+
+JGNEProbe       MAIN
+Entry
+        BRA.S   Go
+Magic     DC.W    $4A32
+Disarm    DC.W    0
+OldFlt    DC.L    0
+Total     DC.L    0
+SysLo     DC.L    0
+SysHi     DC.L    0
+Tgt       DC.L    0
+TMProcOff DC.W    TMProc-Entry
+WDFired   DC.W    0
+Pad0      DC.W    0
+TMTask
+qLink     DC.L    0
+qType     DC.W    0
+tmAddr    DC.L    0
+tmCount   DC.L    0
+Pad1      DC.W    0
+Slots     DCB.B   64,0
+SnapReq   DC.W    0
+SnapDone  DC.W    0
+SnapA5    DC.L    0
+SnapA5Out DC.L    0
+SnapCount DC.W    0
+SnapBufOff DC.W   SnapBuf-Entry
+
+* ---- jGNE filter (runs in the calling app's context) ----
+Go
+        MOVEM.L D0-D2/A0-A1,-(SP)
+        LEA     Entry(PC),A0            ; A0 = block base (PC-relative)
+
+        ; ---- one-shot menu DRIVE: inject the entry mouseDown into THIS app's
+        ; GetNextEvent + arm journal playback (the DRVR, preconfigured by the tool
+        ; with the target ITEM point, then drives the tracking loop). A1 = event
+        ; record ptr here (not yet clobbered). ----
+        TST.W   DriveReq-Entry(A0)
+        BEQ.S   AfterDrive
+        MOVE.L  DriveA5-Entry(A0),D0
+        BEQ.S   DrGo
+        CMP.L   CurrentA5,D0
+        BNE.S   AfterDrive
+DrGo
+        MOVE.W  #1,(A1)                 ; what = mouseDown
+        CLR.L   2(A1)                   ; message = 0
+        MOVE.L  TicksLM,6(A1)           ; when = Ticks
+        MOVE.W  DriveV-Entry(A0),10(A1) ; where.v (menu bar, ~10)
+        MOVE.W  DriveH-Entry(A0),12(A1) ; where.h (menu title X)
+        CLR.W   14(A1)                  ; modifiers = 0
+        MOVE.W  #-1,JournalFlag         ; arm playback
+        CLR.W   DriveReq-Entry(A0)      ; one-shot
+        MOVE.W  #1,DriveDid-Entry(A0)
+        MOVEM.L (SP)+,D0-D2/A0-A1
+        MOVE.W  #$0100,4(SP)            ; GNE result := TRUE -- the Pascal Boolean
+                                        ; lives in the HIGH byte of the result word
+                                        ; at 4(SP); D0 alone is NOT the result
+        MOVEQ   #1,D0                   ; belt-and-suspenders for D0-checking glue
+        RTS                             ; return to GNE (skip chain for this one call)
+AfterDrive
+
+        ; range-checked chain target -> Tgt
+        MOVE.L  OldFlt-Entry(A0),D0
+        BEQ.S   SetTgt
+        CMP.L   SysLo-Entry(A0),D0
+        BCS.S   ClrTgt
+        CMP.L   SysHi-Entry(A0),D0
+        BCC.S   ClrTgt
+        BRA.S   SetTgt
+ClrTgt  MOVEQ   #0,D0
+SetTgt  MOVE.L  D0,Tgt-Entry(A0)
+
+        ; count (unless disarmed)
+        TST.W   Disarm-Entry(A0)
+        BNE.S   SnapChk
+        ADDQ.L  #1,Total-Entry(A0)
+        MOVE.L  CurrentA5,D0
+        LEA     Slots-Entry(A0),A1
+        MOVEQ   #3,D1
+FindLp
+        TST.L   (A1)
+        BEQ.S   Claim
+        CMP.L   (A1),D0
+        BEQ.S   Bump
+        LEA     16(A1),A1
+        DBRA    D1,FindLp
+        BRA.S   SnapChk
+Claim
+        MOVE.L  D0,(A1)
+        MOVE.L  CurApName,8(A1)
+        MOVE.L  CurApName+4,12(A1)
+Bump
+        ADDQ.L  #1,4(A1)
+
+        ; one-shot snapshot on request + context match
+SnapChk
+        TST.W   SnapReq-Entry(A0)
+        BEQ.S   Done
+        MOVE.L  SnapA5-Entry(A0),D0
+        BEQ.S   DoSnap                  ; 0 = any context
+        CMP.L   CurrentA5,D0
+        BNE.S   Done
+DoSnap
+        BSR     Snapshot
+
+Done
+        MOVEM.L (SP)+,D0-D2/A0-A1
+        MOVE.L  Tgt(PC),-(SP)
+        TST.L   (SP)
+        BEQ.S   NoChain
+        RTS
+NoChain
+        ADDQ.W  #4,SP
+        RTS
+
+* ---- Snapshot the front app's MenuList into SnapBuf. A0 = block base. ----
+Snapshot
+        MOVEM.L D0-D5/A1-A5,-(SP)
+        MOVE.L  MenuListLM,A1           ; MenuList handle
+        MOVE.L  A1,D0
+        BEQ     SnapFin                 ; nil -> count 0
+        MOVE.L  (A1),A1                 ; A1 = menu list ptr
+        LEA     SnapBuf-Entry(A0),A4    ; A4 = output cursor
+        MOVEQ   #0,D3                    ; menu count
+        MOVEQ   #6,D4                    ; entry offset (entries start at 6)
+SnapLoop
+        MOVE.W  (A1),D5                 ; lastMenu (offset of last entry)
+        CMP.W   D5,D4
+        BHI.S   SnapFin                 ; D4 > lastMenu -> done
+        CMP.W   #24,D3
+        BHS.S   SnapFin                 ; cap 24 menus
+        MOVE.L  A1,A2
+        ADDA.W  D4,A2                   ; A2 = &entry
+        MOVE.L  (A2),A3                 ; menuHandle
+        MOVE.L  A3,D0
+        BEQ.S   SnapNext                ; nil -> skip
+        MOVE.L  (A3),A3                 ; A3 = MenuInfo ptr
+        MOVE.W  (A3),D0                 ; menuID
+        MOVE.W  D0,(A4)+                ; store menuID (word)
+        LEA     14(A3),A5              ; title Pascal string
+        MOVEQ   #0,D0
+        MOVE.B  (A5)+,D0               ; len, A5 -> first char
+        CMP.W   #31,D0
+        BLS.S   LenOK
+        MOVEQ   #31,D0                 ; clamp long titles
+LenOK
+        MOVE.B  D0,(A4)+              ; store (clamped) len
+        TST.W   D0
+        BEQ.S   SnapCntUp
+        SUBQ.W  #1,D0
+SnapCpy
+        MOVE.B  (A5)+,(A4)+
+        DBRA    D0,SnapCpy
+SnapCntUp
+        ADDQ.W  #1,D3
+SnapNext
+        ADDQ.W  #6,D4
+        BRA.S   SnapLoop
+SnapFin
+        MOVE.W  D3,SnapCount-Entry(A0)
+        MOVE.L  CurrentA5,D0
+        MOVE.L  D0,SnapA5Out-Entry(A0)
+        MOVE.W  #0,SnapReq-Entry(A0)   ; one-shot: clear request
+        MOVE.W  #1,SnapDone-Entry(A0)
+        MOVEM.L (SP)+,D0-D5/A1-A5
+        RTS
+
+* ---- Time Manager watchdog: restore $29A -> OldFlt (unhook), interrupt-safe ----
+TMProc
+        MOVE.L  A0,-(SP)
+        MOVE.L  D0,-(SP)
+        CLR.W   JournalFlag            ; dual watchdog: disarm journal playback too
+        LEA     -32(A1),A0             ; A0 = block base (A1 = &TMTask = block+32)
+        MOVE.L  JGNEFilter,D0
+        CMP.L   A0,D0
+        BNE.S   TMx
+        MOVE.L  OldFlt-Entry(A0),D0
+        MOVE.L  D0,JGNEFilter
+        MOVE.W  #1,WDFired-Entry(A0)
+TMx
+        MOVE.L  (SP)+,D0
+        MOVE.L  (SP)+,A0
+        RTS
+
+* ---- snapshot output buffer (kept LAST so Go stays in BRA.S range of Entry) ----
+SnapBuf   DCB.B   1024,0
+* ---- drive fields (tool locates them at SnapBufOff+1024; filter uses symbols) ----
+DriveReq  DC.W    0                      ; +1024: 1 = drive requested
+DriveDid  DC.W    0                      ; +1026: 1 = drive fired
+DriveA5   DC.L    0                      ; +1028: target context (0 = any)
+DriveV    DC.W    0                      ; +1032: injected mouseDown where.v
+DriveH    DC.W    0                      ; +1034: injected mouseDown where.h
+
+        END
