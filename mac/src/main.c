@@ -14,13 +14,18 @@
 #include <TextEdit.h>
 #include <Scrap.h>
 #include <Dialogs.h>
+#include <StandardFile.h>
 #include <Files.h>
+#include <Resources.h>
+#include <Devices.h>
+#include <LowMem.h>
 #include <Processes.h>
 #include <ToolUtils.h>
 #include <AppleEvents.h>
 #include <Gestalt.h>
 #include <Shutdown.h>
 #include <OSUtils.h>
+#include <Timer.h>
 #include <prefs.h>
 #include <auth.h>
 
@@ -131,6 +136,12 @@ static long gStartTick = 0;   /* daemon launch tick (for Alive uptime) */
 static MenuHandle gAppleMenu;
 static MenuHandle gFileMenu;
 static MenuHandle gEditMenu;
+
+/* JSF: the SFGetFile dlgHook redirects the journal to a dialog item's real
+ * GUEST-global center, so we never guess coordinates. gSFBlk is the journal
+ * state block to steer; gSFItem is the SFGetFile item to target (1=Open,3=Cancel). */
+static long  *gSFBlk = NULL;
+static short  gSFItem = 3;
 
 /* RX/TX Activity tracking */
 static long gLastRX = 0;     /* Tick count of last receive */
@@ -461,6 +472,68 @@ static void DrawABLogo(const Rect *logo, short phase)
         PaintRect(&r);
     }
     ForeColor(blackColor);
+}
+
+/*
+ * INTERRUPT-driven journaling watchdog. While the journal is armed, a modal loop
+ * that stops polling the journal (e.g. StandardGetFile on a missed click) spins at
+ * 100% CPU and no in-driver safety can fire -- but the Time Manager runs at
+ * INTERRUPT time regardless, so this task zeroes JournalFlag ($08DE) after a delay,
+ * unfreezing the guest. DisarmTMProc references only a fixed low-mem address (no A5,
+ * no globals) so it is safe to run at interrupt time.
+ */
+static TMTask gDisarmTask;
+static Boolean gDisarmActive = false;
+
+static void DisarmTMProc(void)
+{
+    *(volatile short *)0x08DEL = 0;     /* JournalFlag = 0 (disarm) */
+}
+
+/* Prime the watchdog to disarm journaling in <ms> milliseconds. Call BEFORE arming. */
+static void ArmJournalWatchdog(long ms)
+{
+    gDisarmTask.tmAddr     = (TimerUPP)DisarmTMProc;
+    gDisarmTask.tmWakeUp   = 0;
+    gDisarmTask.tmReserved = 0;
+    InsTime((QElemPtr)&gDisarmTask);
+    PrimeTime((QElemPtr)&gDisarmTask, ms);
+    gDisarmActive = true;
+}
+
+/* Cancel/remove the watchdog after the armed section completes (safe if it fired). */
+static void CancelJournalWatchdog(void)
+{
+    if (gDisarmActive) {
+        RmvTime((QElemPtr)&gDisarmTask);
+        gDisarmActive = false;
+    }
+}
+
+/*
+ * SFGetFile dlgHook (JSF): each call, read the target item's rect from the LIVE
+ * dialog, convert to global, and point the journal's target at that button's
+ * centre -- so the driver clicks the real button wherever SFGetFile placed it.
+ * No coordinate guessing. Returns the item unchanged (does not itself dismiss).
+ */
+pascal short SFCoordHook(short item, DialogPtr dlg)
+{
+    if (gSFBlk != NULL && dlg != NULL) {
+        short   itype;
+        Handle  ihandle;
+        Rect    r;
+        GrafPtr save;
+        Point   c;
+        GetPort(&save);
+        SetPort((GrafPtr)dlg);
+        GetDialogItem(dlg, gSFItem, &itype, &ihandle, &r);
+        c.v = (short)((r.top + r.bottom) / 2);
+        c.h = (short)((r.left + r.right) / 2);
+        LocalToGlobal(&c);
+        SetPort(save);
+        gSFBlk[0] = ((long)c.v << 16) | ((long)c.h & 0xFFFF);
+    }
+    return item;
 }
 
 /*
@@ -1486,6 +1559,591 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         f = StatStr(f, body);
         f = StatStr(f, "\rSTDERR:0\r\r");
         SetActivity("STAT");
+        ABSend(conn, frame, (long)(f - frame));
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
+    /* LOG verb: return the Verbose console ring as text so the host can READ the
+     * log over the bridge instead of screenshotting/scrolling the (fragile)
+     * monitor window. Flattens the gLog ring (oldest -> newest, CR between lines)
+     * into gTEBuf and streams it STATUS/STDOUT framed. The body is read BY
+     * DECLARED LENGTH on the host (it contains CR separators, so a terminator
+     * read would truncate it). "LOG:<maxbytes>" returns only the last <maxbytes>.
+     * Reusing gTEBuf is safe: it is only otherwise touched by SyncLogTE, which
+     * runs in the same cooperative main loop and rebuilds it from scratch. */
+    if (strncmp(request, "LOG", 3) == 0 &&
+        (request[3] == '\0' || request[3] == '\r' || request[3] == '\n' || request[3] == ':')) {
+        long n = 0, line, idx, k;
+        long cap = (long)sizeof(gTEBuf);
+        long maxBytes = 0;                  /* 0 => whole buffer */
+        char hdr[32];
+        char *h = hdr;
+        SetActivity("LOG");
+        if (request[3] == ':') {
+            long p = 4;
+            while (request[p] >= '0' && request[p] <= '9')
+                maxBytes = maxBytes * 10 + (request[p++] - '0');
+        }
+        for (line = 0; line < gLogN; line++) {
+            idx = (gLogHead - gLogN + line + 2 * LOG_LINES) % LOG_LINES;
+            for (k = 0; gLog[idx][k] && k < LOG_W - 1; k++)
+                if (n < cap - 1) gTEBuf[n++] = gLog[idx][k];
+            if (n < cap - 1) gTEBuf[n++] = '\r';
+        }
+        if (maxBytes > 0 && n > maxBytes) {  /* keep only the tail */
+            long start = n - maxBytes, j;
+            for (j = 0; j < maxBytes; j++) gTEBuf[j] = gTEBuf[start + j];
+            n = maxBytes;
+        }
+        h = StatStr(h, "STATUS:0\rSTDOUT:");
+        h = StatDec(h, n);
+        *h++ = '\r';
+        ABSend(conn, hdr, (long)(h - hdr));
+        if (n > 0) ABSend(conn, gTEBuf, n);
+        ABSend(conn, "\rSTDERR:0\r\r", 11);
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
+    /* JGATE verb: daemon-side journaling gate (step-3 part 2). Installs the
+     * journal DRVR from the daemon's OWN faceless process, arms playback, and
+     * checks that Button() returns the driver's injected value -- proving the
+     * Event Manager consults a driver a BACKGROUND daemon installed. Reads
+     * "ABJournalDRVR" from the daemon's home folder. The armed window is a single
+     * synchronous Button() with no yield; the driver also auto-disarms on the
+     * first jcEvent, so playback can never stick. Diagnostic/experimental. */
+    if (strncmp(request, "JGATE", 5) == 0 &&
+        (request[5] == '\0' || request[5] == '\r' || request[5] == '\n')) {
+        Str255      pPath;
+        short       resRef, drvRef = 0, jref, i, n = 0;
+        OSErr       oe;
+        Boolean     bIdle, bArmed;
+        long        calls = -1;
+        DCtlHandle  dh;
+        char        body[176];
+        char        frame[224];
+        char       *b = body;
+        char       *f = frame;
+        const char *fn = "ABJournalDRVR";
+        SetActivity("JGATE");
+        for (i = 0; gPrefs.home[i] && n < 254; i++) pPath[1 + n++] = gPrefs.home[i];
+        for (i = 0; fn[i] && n < 254; i++)          pPath[1 + n++] = fn[i];
+        pPath[0] = (unsigned char)n;
+        resRef = OpenResFile(pPath);
+        oe = OpenDriver("\p.ABJournal", &drvRef);
+        jref = LMGetJournalRef();
+        bIdle = Button();
+        *(volatile short *)0x08DEL = -1;    /* arm playback (JournalFlag < 0) */
+        bArmed = Button();
+        *(volatile short *)0x08DEL = 0;     /* disarm immediately (no yield above) */
+        dh = (DCtlHandle)GetDCtlEntry(drvRef);
+        if (dh) calls = (long)(**dh).dCtlStorage;
+        b = StatStr(b, "jgate resRef="); b = StatDec(b, (long)resRef);
+        b = StatStr(b, " openErr=");     b = StatDec(b, (long)oe);
+        b = StatStr(b, " drvRef=");      b = StatDec(b, (long)drvRef);
+        b = StatStr(b, " jref=");        b = StatDec(b, (long)jref);
+        b = StatStr(b, " idle=");        b = StatDec(b, (long)(unsigned char)bIdle);
+        b = StatStr(b, " armed=");       b = StatDec(b, (long)(unsigned char)bArmed);
+        b = StatStr(b, " calls=");       b = StatDec(b, calls);
+        b = StatStr(b, " result=");
+        b = StatStr(b, (bArmed && !bIdle) ? "PASS" : "FAIL");
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:");
+        f = StatDec(f, (long)(b - body));
+        *f++ = '\r';
+        f = StatStr(f, body);
+        f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
+    /* JMENU[:<thresh>:<v>:<h>] verb: step-3 part 2b -- drive a menu tracking loop
+     * via journaling. Pops a test menu and has the journal driver hold the mouse
+     * over item 3 (global v,h) then feed a mouseUp after <thresh> playback calls to
+     * end tracking; reports the selected (menuID,item) + per-code counts. The state
+     * block is DAEMON-owned (a static here) and dCtlStorage is pointed at it -- a
+     * self-allocating driver could bail on a nil block and hard-freeze the guest. */
+    if (strncmp(request, "JMENU", 5) == 0 &&
+        (request[5] == '\0' || request[5] == '\r' || request[5] == '\n' || request[5] == ':')) {
+        static long jblk[8];           /* daemon-owned journal state block */
+        Str255      pPath;
+        short       resRef, ref = 0, i, n = 0;
+        OSErr       oe;
+        long        res, thresh = 200, iv = 160, ih = 150, p;
+        MenuHandle  m;
+        DCtlHandle  dh;
+        char        body[240];
+        char        frame[300];
+        char       *b = body, *f = frame;
+        const char *fn = "ABJournalDRVR";
+        SetActivity("JMENU");
+        if (request[5] == ':') {       /* optional JMENU:<thresh>:<v>:<h> */
+            p = 6; thresh = 0;
+            while (request[p] >= '0' && request[p] <= '9') thresh = thresh * 10 + (request[p++] - '0');
+            if (request[p] == ':') { p++; iv = 0; while (request[p] >= '0' && request[p] <= '9') iv = iv * 10 + (request[p++] - '0'); }
+            if (request[p] == ':') { p++; ih = 0; while (request[p] >= '0' && request[p] <= '9') ih = ih * 10 + (request[p++] - '0'); }
+        }
+        m = NewMenu(900, "\pJ");
+        if (m) {
+            AppendMenu(m, "\pAlpha;Beta;Gamma;Delta");
+            InsertMenu(m, -1);              /* -1 = popup/hierarchical portion */
+            CalcMenuSize(m);
+        }
+        for (i = 0; gPrefs.home[i] && n < 254; i++) pPath[1 + n++] = gPrefs.home[i];
+        for (i = 0; fn[i] && n < 254; i++)          pPath[1 + n++] = fn[i];
+        pPath[0] = (unsigned char)n;
+        resRef = OpenResFile(pPath);
+        oe = OpenDriver("\p.ABJournal", &ref);
+        dh = (DCtlHandle)GetDCtlEntry(ref);
+        jblk[0] = (iv << 16) | (ih & 0xFFFF);  /* itemPt (v,h) */
+        jblk[1] = thresh;                      /* release after this many calls */
+        jblk[2] = 0; jblk[3] = 0; jblk[4] = 0; jblk[5] = 0; jblk[6] = 0;
+        jblk[7] = 0;                           /* mode 0 = menu (null -> mouseUp) */
+        if (dh) (**dh).dCtlStorage = (Handle)jblk;   /* point the driver at our block */
+        *(volatile short *)0x08DEL = -1;   /* arm playback */
+        res = PopUpMenuSelect(m, 120, 120, 1);
+        *(volatile short *)0x08DEL = 0;    /* disarm */
+        b = StatStr(b, "jmenu openErr="); b = StatDec(b, (long)oe);
+        b = StatStr(b, " ref=");     b = StatDec(b, (long)ref);
+        b = StatStr(b, " dh=");      b = StatDec(b, dh ? 1 : 0);
+        b = StatStr(b, " menuID=");  b = StatDec(b, (long)((res >> 16) & 0xFFFF));
+        b = StatStr(b, " item=");    b = StatDec(b, (long)(res & 0xFFFF));
+        b = StatStr(b, " thr=");     b = StatDec(b, thresh);
+        b = StatStr(b, " poll=");    b = StatDec(b, jblk[2]);
+        b = StatStr(b, " mouse=");   b = StatDec(b, jblk[3]);
+        b = StatStr(b, " btn=");     b = StatDec(b, jblk[4]);
+        b = StatStr(b, " evt=");     b = StatDec(b, jblk[5]);
+        *b = '\0';
+        if (m) { DeleteMenu(900); DisposeMenu(m); }
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body));
+        *f++ = '\r';
+        f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
+    /* JABOUT[:<thresh>:<v>:<h>] verb: the last-mile demo -- drive the daemon's OWN
+     * Apple menu on the real menu BAR via journaling (MenuSelect, not a popup) to
+     * choose "About AppleBridge" (item 1), then open the About box. The current menu
+     * list belongs to the calling process, so MenuSelect tracks the daemon's menus.
+     * Reports the selection first, THEN shows the About box (which blocks on its own
+     * click-to-close loop with the journal already disarmed). Freeze-safe (same
+     * daemon-owned block + mouseUp feed + in-driver safety as JMENU). */
+    if (strncmp(request, "JABOUT", 6) == 0 &&
+        (request[6] == '\0' || request[6] == '\r' || request[6] == '\n' || request[6] == ':')) {
+        static long ablk[8];           /* daemon-owned journal state block */
+        Str255      pPath;
+        short       resRef, ref = 0, i, n = 0;
+        OSErr       oe;
+        long        res, thresh = 200, iv = 28, ih = 40, p;
+        Point       startPt;
+        DCtlHandle  dh;
+        char        body[220];
+        char        frame[280];
+        char       *b = body, *f = frame;
+        const char *fn = "ABJournalDRVR";
+        SetActivity("JABOUT");
+        if (request[6] == ':') {       /* optional JABOUT:<thresh>:<v>:<h> */
+            p = 7; thresh = 0;
+            while (request[p] >= '0' && request[p] <= '9') thresh = thresh * 10 + (request[p++] - '0');
+            if (request[p] == ':') { p++; iv = 0; while (request[p] >= '0' && request[p] <= '9') iv = iv * 10 + (request[p++] - '0'); }
+            if (request[p] == ':') { p++; ih = 0; while (request[p] >= '0' && request[p] <= '9') ih = ih * 10 + (request[p++] - '0'); }
+        }
+        for (i = 0; gPrefs.home[i] && n < 254; i++) pPath[1 + n++] = gPrefs.home[i];
+        for (i = 0; fn[i] && n < 254; i++)          pPath[1 + n++] = fn[i];
+        pPath[0] = (unsigned char)n;
+        resRef = OpenResFile(pPath);
+        oe = OpenDriver("\p.ABJournal", &ref);
+        dh = (DCtlHandle)GetDCtlEntry(ref);
+        ablk[0] = (iv << 16) | (ih & 0xFFFF);  /* itemPt = the About item's location */
+        ablk[1] = thresh;
+        ablk[2] = 0; ablk[3] = 0; ablk[4] = 0; ablk[5] = 0; ablk[6] = 0;
+        ablk[7] = 0;                           /* mode 0 = menu */
+        if (dh) (**dh).dCtlStorage = (Handle)ablk;
+        startPt.v = 10; startPt.h = 12;        /* Apple menu title in the menu bar */
+        *(volatile short *)0x08DEL = -1;       /* arm playback */
+        res = MenuSelect(startPt);
+        *(volatile short *)0x08DEL = 0;        /* disarm before the About box's Button() loop */
+        b = StatStr(b, "jabout openErr="); b = StatDec(b, (long)oe);
+        b = StatStr(b, " ref=");     b = StatDec(b, (long)ref);
+        b = StatStr(b, " menuID=");  b = StatDec(b, (long)((res >> 16) & 0xFFFF));
+        b = StatStr(b, " item=");    b = StatDec(b, (long)(res & 0xFFFF));
+        b = StatStr(b, " thr=");     b = StatDec(b, thresh);
+        b = StatStr(b, " poll=");    b = StatDec(b, ablk[2]);
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body));
+        *f++ = '\r';
+        f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));   /* report the selection immediately */
+        gLastTX = TickCount();
+        gTXCount++;
+        HandleMenuCommand(res);        /* item 1 -> ShowAboutBox (click-to-close) */
+        return true;
+    }
+
+    /* MENU:<title>:<item> verb: journal-drive the daemon's OWN menu bar BY NAME.
+     * Resolves <title> to a menu (+ its title X, read as menuLeft from the live menu
+     * list) and <item> to an index (numeric, or matched case-insensitively against
+     * each item's text), computes the item's screen point, and drives
+     * MenuSelect(titlePt) via journaling to select it -- then dispatches it
+     * (HandleMenuCommand). Generalizes JABOUT (which hardcoded the Apple menu +
+     * item 1). OWN menus only: MenuSelect uses the CALLING process's menu list, so
+     * this cannot reach a front app (JPROBE proved a background yield never pumps the
+     * journal; see docs/JOURNALING_MENU_BY_NAME.md). Freeze-safe: same daemon-owned
+     * block + mouseUp feed + in-driver safety as JMENU/JABOUT (tracking self-ends on
+     * the synthesized mouseUp). Item Y uses a 16px/row model (JABOUT-verified: item 1
+     * centre = 28); separators before the target may skew it (report shows itemY). */
+    if (strncmp(request, "MENU:", 5) == 0) {
+        static long mblk[8];
+        Str255      pPath, wantTitle, wantItem, itemText;
+        short       resRef, ref = 0, i, n = 0, ti = 0, ii = 0, p;
+        short       menuID = 0, itemIndex = 0, titleX = 0, itemY = 0, menuW = 0;
+        short       numItems = 0, off, lastMenu, found = 0;
+        long        res = 0, thresh = 200;
+        Boolean     itemIsNum = true;
+        MenuHandle  mh, mtarget = NULL;
+        Handle      mbar;
+        Ptr         mp, mi;
+        DCtlHandle  dh;
+        Point       startPt;
+        char        body[260];
+        char        frame[320];
+        char       *b = body, *f = frame;
+        const char *fn = "ABJournalDRVR";
+        SetActivity("MENU");
+        /* parse "MENU:<title>:<item>" (title up to ':', item to ':' / end) */
+        p = 5;
+        while (request[p] && request[p] != ':' && request[p] != '\r' && request[p] != '\n' && ti < 255)
+            wantTitle[1 + ti++] = request[p++];
+        wantTitle[0] = (unsigned char)ti;
+        if (request[p] == ':') p++;
+        while (request[p] && request[p] != ':' && request[p] != '\r' && request[p] != '\n' && ii < 255)
+            wantItem[1 + ii++] = request[p++];
+        wantItem[0] = (unsigned char)ii;
+        if (ii == 0) itemIsNum = false;
+        for (i = 1; i <= ii; i++) if (wantItem[i] < '0' || wantItem[i] > '9') itemIsNum = false;
+        mblk[2] = 0;                                    /* poll: stays 0 unless we drive */
+        /* resolve the menu by title from the LIVE menu list (header: lastMenu@0,
+         * lastRight@2, mbResID@4; then 6-byte entries: MenuHandle@0, menuLeft@4).
+         * READ-ONLY -- no driver / journal / MenuSelect touched during resolution. */
+        mbar = GetMenuBar();
+        if (mbar != NULL) {
+            mp = *mbar;
+            lastMenu = *(short *)mp;
+            for (off = 6; off <= lastMenu && off < 6 + 6 * 40 && !found; off += 6) {
+                mh = *(MenuHandle *)(mp + off);
+                if (mh != NULL) {
+                    mi = *(Handle)mh;                       /* MenuInfo */
+                    if (EqualString((StringPtr)(mi + 14), wantTitle, false, false)) {
+                        mtarget = mh;
+                        menuID  = *(short *)mi;             /* menuID  @0 */
+                        menuW   = *(short *)(mi + 2);       /* menuWidth @2 */
+                        titleX  = *(short *)(mp + off + 4); /* menuLeft */
+                        found   = 1;
+                    }
+                }
+            }
+            DisposeHandle(mbar);
+        }
+        /* resolve the item index (numeric, or by item text) */
+        if (found && mtarget != NULL) {
+            numItems = CountMItems(mtarget);
+            if (itemIsNum) {
+                itemIndex = 0;
+                for (i = 1; i <= ii; i++) itemIndex = itemIndex * 10 + (wantItem[i] - '0');
+            } else {
+                short j;
+                for (j = 1; j <= numItems; j++) {
+                    GetMenuItemText(mtarget, j, itemText);
+                    if (EqualString(itemText, wantItem, false, false)) { itemIndex = j; break; }
+                }
+            }
+        }
+        if (itemIndex > 0) itemY = 20 + 16 * (itemIndex - 1) + 8;   /* 16px rows below the 20px bar */
+        /* DRIVE only a fully-resolved, IN-RANGE target. Invalid input (unknown title
+         * or item) falls through here as a pure read-only no-op -- it opens no driver,
+         * arms no journal, and calls no MenuSelect, so a typo can never wedge the
+         * guest. For a valid target: install the driver LAZILY (OpenDriver first; only
+         * OpenResFile if it is not already in the unit table -- avoids re-opening the
+         * resource file on every call), save/restore the GrafPort around the modal
+         * MenuSelect, and guard it with the interrupt watchdog (a hung tracking loop
+         * self-recovers at interrupt time). */
+        if (found && itemIndex > 0 && itemIndex <= numItems) {
+            GrafPtr savePort;
+            if (OpenDriver("\p.ABJournal", &ref) != noErr) {
+                for (i = 0; gPrefs.home[i] && n < 254; i++) pPath[1 + n++] = gPrefs.home[i];
+                for (i = 0; fn[i] && n < 254; i++)          pPath[1 + n++] = fn[i];
+                pPath[0] = (unsigned char)n;
+                resRef = OpenResFile(pPath);
+                OpenDriver("\p.ABJournal", &ref);
+            }
+            dh = (DCtlHandle)GetDCtlEntry(ref);
+            mblk[0] = ((long)itemY << 16) | ((long)(titleX + (menuW > 24 ? menuW / 2 : 12)) & 0xFFFF);
+            mblk[1] = thresh;
+            mblk[2] = 0; mblk[3] = 0; mblk[4] = 0; mblk[5] = 0; mblk[6] = 0;
+            mblk[7] = 0;                                 /* mode 0 = menu */
+            if (dh) (**dh).dCtlStorage = (Handle)mblk;
+            startPt.v = 10; startPt.h = titleX + 4;      /* the menu title on the bar */
+            GetPort(&savePort);
+            ArmJournalWatchdog(3000);                    /* interrupt-disarm if MenuSelect hangs */
+            *(volatile short *)0x08DEL = -1;            /* arm playback */
+            res = MenuSelect(startPt);
+            *(volatile short *)0x08DEL = 0;             /* disarm */
+            CancelJournalWatchdog();
+            SetPort(savePort);
+        }
+        b = StatStr(b, "menu found=");   b = StatDec(b, (long)found);
+        b = StatStr(b, " menuID=");      b = StatDec(b, (long)menuID);
+        b = StatStr(b, " item=");        b = StatDec(b, (long)itemIndex);
+        b = StatStr(b, " nItems=");      b = StatDec(b, (long)numItems);
+        b = StatStr(b, " titleX=");      b = StatDec(b, (long)titleX);
+        b = StatStr(b, " itemY=");       b = StatDec(b, (long)itemY);
+        b = StatStr(b, " selID=");       b = StatDec(b, (long)((res >> 16) & 0xFFFF));
+        b = StatStr(b, " selItem=");     b = StatDec(b, (long)(res & 0xFFFF));
+        b = StatStr(b, " poll=");        b = StatDec(b, mblk[2]);
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body));
+        *f++ = '\r';
+        f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));
+        gLastTX = TickCount();
+        gTXCount++;
+        if (res != 0) HandleMenuCommand(res);           /* perform the chosen command */
+        return true;
+    }
+
+    /* JSAFE verb: validate the interrupt-driven journaling watchdog IN ISOLATION,
+     * safely, before pointing it at a modal call. Installs the driver (so JournalRef
+     * is valid), primes the watchdog to disarm in ~1500ms, arms JournalFlag, then
+     * spins reading JournalFlag + RAW low-mem Ticks ($016A, interrupt-updated -- NOT
+     * TickCount(), which is itself journaled) with a 5s self-timeout. So even if the
+     * watchdog fails the daemon's own spin self-recovers -- JSAFE cannot hard-hang.
+     * Reports elapsed ticks: ~90 (1.5s) = watchdog FIRED (PASS); ~300 (5s) = watchdog
+     * failed (daemon self-timed-out). No modal call -> nothing left open. */
+    if (strncmp(request, "JSAFE", 5) == 0 &&
+        (request[5] == '\0' || request[5] == '\r' || request[5] == '\n')) {
+        static long tblk[8];
+        Str255      pPath;
+        short       resRef, ref = 0, i, n = 0, jf;
+        OSErr       oe;
+        long        startT, elapsed;
+        DCtlHandle  dh;
+        char        body[160];
+        char        frame[220];
+        char       *b = body, *f = frame;
+        const char *fn = "ABJournalDRVR";
+        SetActivity("JSAFE");
+        for (i = 0; gPrefs.home[i] && n < 254; i++) pPath[1 + n++] = gPrefs.home[i];
+        for (i = 0; fn[i] && n < 254; i++)          pPath[1 + n++] = fn[i];
+        pPath[0] = (unsigned char)n;
+        resRef = OpenResFile(pPath);
+        oe = OpenDriver("\p.ABJournal", &ref);
+        dh = (DCtlHandle)GetDCtlEntry(ref);
+        tblk[0] = 0; tblk[1] = 999999L;     /* huge thresh: in-driver safety won't fire */
+        tblk[2] = 0; tblk[3] = 0; tblk[4] = 0; tblk[5] = 0; tblk[6] = 0; tblk[7] = 0;
+        if (dh) (**dh).dCtlStorage = (Handle)tblk;
+        ArmJournalWatchdog(1500);           /* interrupt-disarm in ~1.5s */
+        startT = *(volatile long *)0x016AL;
+        *(volatile short *)0x08DEL = -1;    /* arm playback */
+        while (*(volatile short *)0x08DEL != 0 &&
+               (*(volatile long *)0x016AL - startT) < 300) { }   /* watchdog OR 5s */
+        elapsed = *(volatile long *)0x016AL - startT;
+        jf = *(volatile short *)0x08DEL;
+        *(volatile short *)0x08DEL = 0;     /* ensure disarmed */
+        CancelJournalWatchdog();
+        b = StatStr(b, "jsafe openErr="); b = StatDec(b, (long)oe);
+        b = StatStr(b, " elapsedTicks="); b = StatDec(b, elapsed);
+        b = StatStr(b, " flagAtExit=");  b = StatDec(b, (long)jf);
+        b = StatStr(b, " result=");
+        b = StatStr(b, (elapsed < 200) ? "PASS-watchdog-fired" : "FAIL-self-timeout");
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body));
+        *f++ = '\r';
+        f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
+    /* JPROBE verb: FEASIBILITY SPIKE for cross-process (front-app) menu driving.
+     * The open question: with journal playback armed, does the BACKGROUND daemon's own
+     * WaitNextEvent grab the injected mouseDown (so the daemon steals its own journal
+     * events -> cross-process is blocked, only its OWN menus are driveable), or does the
+     * event go elsewhere (a front app's event loop -> cross-process is feasible)?
+     * We arm the driver to feed a menu-bar mouseDown continuously (mode 1, huge thresh so
+     * it never auto-releases), then the daemon calls WaitNextEvent a few bounded times and
+     * records what IT receives. Freeze-safe: interrupt watchdog (~1.5s) + a raw-Ticks
+     * self-timeout (200t) + NO modal call -> nothing can stay open. Reports: is the daemon
+     * itself front (selfFront); driver poll/jcEvent counts (did the ROM consult the driver);
+     * how many of the daemon's own WNE calls returned an event (wneHits) and the first
+     * one's what/where; and whether any was a mouseDown at our injected point (gotMD). */
+    if (strncmp(request, "JPROBE", 6) == 0 &&
+        (request[6] == '\0' || request[6] == '\r' || request[6] == '\n')) {
+        static long pblk[8];
+        Str255      pPath;
+        EventRecord ev;
+        ProcessSerialNumber selfPSN, frontPSN;
+        Boolean     selfFront = false, gotMD = false;
+        short       resRef, ref = 0, i, n = 0, wneHits = 0;
+        long        firstWhat = -1, firstWhere = 0, startT;
+        OSErr       oe;
+        DCtlHandle  dh;
+        char        body[200];
+        char        frame[260];
+        char       *b = body, *f = frame;
+        const char *fn = "ABJournalDRVR";
+        SetActivity("JPROBE");
+        for (i = 0; gPrefs.home[i] && n < 254; i++) pPath[1 + n++] = gPrefs.home[i];
+        for (i = 0; fn[i] && n < 254; i++)          pPath[1 + n++] = fn[i];
+        pPath[0] = (unsigned char)n;
+        resRef = OpenResFile(pPath);
+        oe = OpenDriver("\p.ABJournal", &ref);
+        dh = (DCtlHandle)GetDCtlEntry(ref);
+        if (GetCurrentProcess(&selfPSN) == noErr && GetFrontProcess(&frontPSN) == noErr)
+            SameProcess(&frontPSN, &selfPSN, &selfFront);
+        pblk[0] = (10L << 16) | (40L & 0xFFFF);   /* itemPt = a menu-bar point (v=10,h=40) */
+        pblk[1] = 999999L;                        /* huge thresh: driver keeps feeding mouseDown, never auto-mouseUp */
+        pblk[2] = 0; pblk[3] = 0; pblk[4] = 0; pblk[5] = 0; pblk[6] = 0;
+        pblk[7] = 1;                              /* mode 1: jcEvent -> mouseDown (pre-release) */
+        if (dh) (**dh).dCtlStorage = (Handle)pblk;
+        ArmJournalWatchdog(1500);
+        startT = *(volatile long *)0x016AL;
+        *(volatile short *)0x08DEL = -1;          /* arm playback */
+        for (i = 0; i < 8 && (*(volatile short *)0x08DEL != 0) &&
+                    (*(volatile long *)0x016AL - startT) < 200; i++) {
+            if (WaitNextEvent(everyEvent, &ev, 2L, NULL)) {
+                wneHits++;
+                if (firstWhat < 0) { firstWhat = ev.what; firstWhere = ((long)ev.where.v << 16) | (ev.where.h & 0xFFFF); }
+                if (ev.what == mouseDown) gotMD = true;
+            }
+        }
+        *(volatile short *)0x08DEL = 0;           /* disarm */
+        CancelJournalWatchdog();
+        b = StatStr(b, "jprobe openErr="); b = StatDec(b, (long)oe);
+        b = StatStr(b, " selfFront=");  b = StatDec(b, selfFront ? 1 : 0);
+        b = StatStr(b, " poll=");       b = StatDec(b, pblk[2]);
+        b = StatStr(b, " jcEvt=");      b = StatDec(b, pblk[5]);
+        b = StatStr(b, " wneHits=");    b = StatDec(b, (long)wneHits);
+        b = StatStr(b, " firstWhat=");  b = StatDec(b, firstWhat);
+        b = StatStr(b, " firstV=");     b = StatDec(b, (long)((firstWhere >> 16) & 0xFFFF));
+        b = StatStr(b, " firstH=");     b = StatDec(b, (long)(firstWhere & 0xFFFF));
+        b = StatStr(b, " gotMD=");      b = StatDec(b, gotMD ? 1 : 0);
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body));
+        *f++ = '\r';
+        f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
+    /* JSF[:<thresh>:<item>] verb: journal-drive a modal Standard File (Open) dialog
+     * to click a button DETERMINISTICALLY -- the class of thing posted clicks can
+     * NEVER reach. Uses SFGetFile (lets us place the dialog + install a dlgHook);
+     * the hook (SFCoordHook) reads the target item's real global rect and redirects
+     * the journal there, so NO coordinate guessing. item = 1 (Open) or 3 (Cancel,
+     * default). Mode 1 (dialog click: mouseDown -> hold -> mouseUp). Reports
+     * reply.good + the target coord the hook resolved + the chosen file. Freeze-safe;
+     * keep thresh small (~200) -- a big thresh holds the journal armed for minutes. */
+    if (strncmp(request, "JSF", 3) == 0 &&
+        (request[3] == '\0' || request[3] == '\r' || request[3] == '\n' || request[3] == ':')) {
+        static long  sblk[8];
+        SFReply      reply;
+        Point        where;
+        Str255       pPath;
+        short        resRef, ref = 0, i, n = 0, k, item = 3;
+        OSErr        oe;
+        long         thresh = 200, p;
+        DCtlHandle   dh;
+        char         body[220];
+        char         frame[280];
+        char        *b = body, *f = frame;
+        const char  *fn = "ABJournalDRVR";
+        SetActivity("JSF");
+        if (request[3] == ':') {
+            p = 4; thresh = 0;
+            while (request[p] >= '0' && request[p] <= '9') thresh = thresh * 10 + (request[p++] - '0');
+            if (request[p] == ':') { p++; item = 0; while (request[p] >= '0' && request[p] <= '9') item = item * 10 + (request[p++] - '0'); }
+        }
+        for (i = 0; gPrefs.home[i] && n < 254; i++) pPath[1 + n++] = gPrefs.home[i];
+        for (i = 0; fn[i] && n < 254; i++)          pPath[1 + n++] = fn[i];
+        pPath[0] = (unsigned char)n;
+        resRef = OpenResFile(pPath);
+        oe = OpenDriver("\p.ABJournal", &ref);
+        dh = (DCtlHandle)GetDCtlEntry(ref);
+        sblk[0] = 0;                 /* placeholder; the dlgHook redirects it to the item */
+        sblk[1] = thresh;
+        sblk[2] = 0; sblk[3] = 0; sblk[4] = 0; sblk[5] = 0; sblk[6] = 0;
+        sblk[7] = 1;                 /* mode 1 = dialog click */
+        if (dh) (**dh).dCtlStorage = (Handle)sblk;
+        gSFBlk = sblk; gSFItem = item;      /* the hook steers this block to <item> */
+        where.v = 90; where.h = 100;        /* dialog top-left (global) */
+        reply.good = false;
+        /* FOREGROUND the daemon around SFGetFile. As a background app its modal
+         * ModalDialog gets NO events (they route to the front Finder), so it spins
+         * at 100% forever -- a freeze the journal watchdog can't fix (it's not the
+         * journal). SetFrontProcess is ASYNCHRONOUS: the layer switch only lands
+         * when the current front app next yields through the Event Manager. Since
+         * ModalDialog busy-loops on GetNextEvent (never WaitNextEvent) and journal
+         * playback intercepts event fetch, entering the modal immediately means the
+         * switch never completes -- the daemon never truly becomes front, the dialog
+         * gets no events, and it spins undismissable.  So: request the switch, then
+         * PUMP WaitNextEvent (yielding) until GetFrontProcess confirms we ARE front,
+         * bounded to ~2 s.  Only if confirmed front do we arm the journal + open the
+         * modal.  If we never become front, we BAIL before SFGetFile -- a failed
+         * switch can never peg the CPU. Restore the prior front app afterwards. */
+        {
+            ProcessSerialNumber selfPSN, prevPSN, frontPSN;
+            Boolean     haveSelf = (GetCurrentProcess(&selfPSN) == noErr);
+            Boolean     havePrev = (GetFrontProcess(&prevPSN) == noErr);
+            Boolean     amFront = false;
+            short       guard;
+            EventRecord ev;
+            if (haveSelf) {
+                SetFrontProcess(&selfPSN);
+                for (guard = 0; guard < 60 && !amFront; guard++) {
+                    Boolean same = false;
+                    WaitNextEvent(everyEvent, &ev, 2L, NULL);   /* yield ~2 ticks so MultiFinder switches */
+                    if (GetFrontProcess(&frontPSN) == noErr)
+                        SameProcess(&frontPSN, &selfPSN, &same);
+                    amFront = same;
+                }
+            }
+            sblk[6] = amFront ? 1 : 0;           /* reported as front= in the reply */
+            if (amFront) {
+                ArmJournalWatchdog(3000);        /* interrupt-disarm after 3s if we still hang */
+                *(volatile short *)0x08DEL = -1;
+                SFGetFile(where, "\p", NULL, -1, NULL, (DlgHookUPP)SFCoordHook, &reply);
+                *(volatile short *)0x08DEL = 0;
+                CancelJournalWatchdog();
+            }
+            if (havePrev) SetFrontProcess(&prevPSN);  /* hand the front back to Finder */
+        }
+        gSFBlk = NULL;
+        b = StatStr(b, "jsf openErr="); b = StatDec(b, (long)oe);
+        b = StatStr(b, " item=");  b = StatDec(b, (long)item);
+        b = StatStr(b, " front="); b = StatDec(b, sblk[6]);
+        b = StatStr(b, " good=");  b = StatDec(b, reply.good ? 1 : 0);
+        b = StatStr(b, " poll=");  b = StatDec(b, sblk[2]);
+        b = StatStr(b, " tgtV="); b = StatDec(b, (long)((sblk[0] >> 16) & 0xFFFF));
+        b = StatStr(b, " tgtH="); b = StatDec(b, (long)(sblk[0] & 0xFFFF));
+        if (reply.good) {
+            b = StatStr(b, " file=");
+            for (k = 1; k <= reply.fName[0] && k < 40; k++) *b++ = reply.fName[k];
+        }
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body));
+        *f++ = '\r';
+        f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
         ABSend(conn, frame, (long)(f - frame));
         gLastTX = TickCount();
         gTXCount++;

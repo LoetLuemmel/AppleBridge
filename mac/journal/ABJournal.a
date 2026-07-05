@@ -1,0 +1,151 @@
+*-------------------------------------------------------------------------------------------
+*
+* NAME
+*       ABJournal.a -- AppleBridge journaling playback DRVR (menu-driving build)
+*
+* DESCRIPTION
+*       Playback-only Event Manager journaling driver. When JournalFlag ($08DE) is
+*       negative the ROM Event Manager Control-calls the driver in JournalRef
+*       ($08E8) (csCode = jPlayCtl = 16) to synthesize the next input; the routine
+*       is identified by a WORD journal code at csParam+4 (pb offset 32) and
+*       csParam+0 (offset 28) is a pointer to the caller's buffer to fill.
+*
+*       This build drives a menu tracking loop (MenuSelect / PopUpMenuSelect):
+*         jcGetMouse -> the scripted Point (positions the highlight over the item)
+*         jcButton   -> DOWN while tracking, UP after the threshold
+*         jcEvent    -> a null event while tracking, then a synthesized mouseUp
+*                       EventRecord (this is what actually ENDS the tracking loop)
+*
+*       State (target point, threshold, counters) lives in a block the DAEMON
+*       allocates and points dCtlStorage at -- the driver does NOT allocate (a
+*       previous self-allocating build could bail on a nil block and hard-freeze
+*       the guest). If dCtlStorage is nil the driver is a safe no-op. A runaway
+*       safety disarms JournalFlag after threshold+8000 playback calls.
+*
+*       Step-3 part 2b of docs/JOURNALING_MENU_BY_NAME.md.
+*-------------------------------------------------------------------------------------------
+
+        CASE    OBJ
+        STRING  ASIS
+
+JournalFlag     EQU     $08DE
+JournalRef      EQU     $08E8
+TicksLM         EQU     $016A           ; low-mem Ticks (long, interrupt-updated)
+
+dCtlStorage     EQU     20              ; Ptr to the daemon-owned state block
+dCtlRefNum      EQU     24
+
+ioResult        EQU     16
+csCode          EQU     26
+csParam         EQU     28              ; [0](long)=buffer ptr; [2](WORD @+4)=journal code
+
+jPlayCtl        EQU     16
+jcGetMouse      EQU     1
+jcButton        EQU     2
+jcEvent         EQU     4
+
+; ---- state block layout (daemon-owned; dCtlStorage points here) ----
+oItemPt         EQU     0               ; Point (v,h) fed for jcGetMouse / mouseUp.where
+oThresh         EQU     4               ; long: playback calls before release
+oPoll           EQU     8               ; long: total playback calls (driver bumps)
+oCntMouse       EQU     12
+oCntBtn         EQU     16
+oCntEvt         EQU     20
+oCntOth         EQU     24
+oMode           EQU     28              ; 0 = menu (null->mouseUp), 1 = click (mouseDown->mouseUp)
+
+ABJournal       MAIN
+        DC.W    $4400                   ; drvrFlags: dCtlEnable|dNeedLock
+        DC.W    0,0,0                    ; delay, EMask, menu
+        DC.W    DOpen-ABJournal
+        DC.W    DDummy-ABJournal        ; prime
+        DC.W    DControl-ABJournal
+        DC.W    DDummy-ABJournal        ; status
+        DC.W    DClose-ABJournal
+        DC.B    10,'.ABJournal'
+        ALIGN
+
+; Open: self-register into JournalRef. The daemon sets dCtlStorage afterwards.
+DOpen
+        MOVE.W  dCtlRefNum(A1),D0
+        MOVE.W  D0,JournalRef
+        MOVEQ   #0,D0
+        RTS
+
+; Control: playback feed for menu tracking.
+DControl
+        MOVEA.L dCtlStorage(A1),A3      ; A3 = state block (daemon-owned)
+        MOVE.L  A3,D0
+        BEQ.W   CtlDone                 ; nil block -> safe no-op (far branch)
+        MOVE.W  csCode(A0),D0
+        CMP.W   #jPlayCtl,D0
+        BNE.W   CtlDone
+        MOVE.L  A2,-(SP)
+        ADDQ.L  #1,oPoll(A3)            ; total playback calls
+        MOVE.W  csParam+4(A0),D1        ; journal code (WORD)
+        MOVEA.L csParam(A0),A2          ; caller buffer
+        CMP.W   #jcGetMouse,D1
+        BEQ.S   JM_Mouse
+        CMP.W   #jcButton,D1
+        BEQ.S   JM_Btn
+        CMP.W   #jcEvent,D1
+        BEQ.S   JM_Evt
+        ADDQ.L  #1,oCntOth(A3)
+        BRA.S   JM_Pop
+JM_Mouse
+        ADDQ.L  #1,oCntMouse(A3)
+        MOVE.L  oItemPt(A3),(A2)        ; scripted Point -> GetMouse result
+        BRA.S   JM_Pop
+JM_Btn
+        ADDQ.L  #1,oCntBtn(A3)
+        MOVE.L  oPoll(A3),D2
+        CMP.L   oThresh(A3),D2
+        BLE.S   JM_BtnDn
+        CLR.B   (A2)                    ; UP after threshold
+        BRA.S   JM_Pop
+JM_BtnDn
+        MOVE.B  #$FF,(A2)              ; DOWN while tracking
+        BRA.S   JM_Pop
+JM_Evt
+        ADDQ.L  #1,oCntEvt(A3)
+        MOVE.L  oPoll(A3),D2
+        CMP.L   oThresh(A3),D2
+        BGT.S   JM_EvtUp              ; poll > thresh -> release (mouseUp)
+        MOVE.L  oMode(A3),D3          ; pre-release: mode 0 = null, mode 1 = mouseDown
+        BEQ.S   JM_EvtNull
+        MOVE.W  #1,(A2)               ; mode 1: mouseDown (register the dialog hit)
+        BRA.S   JM_EvtFill
+JM_EvtUp
+        MOVE.W  #2,(A2)               ; mouseUp (ends tracking / completes the click)
+JM_EvtFill
+        CLR.L   2(A2)                 ; message = 0
+        MOVE.L  TicksLM,6(A2)         ; when = Ticks
+        MOVE.L  oItemPt(A3),10(A2)    ; where = itemPt (global)
+        CLR.W   14(A2)               ; modifiers = 0
+        BRA.S   JM_Pop
+JM_EvtNull
+        CLR.W   (A2)                  ; nullEvent (what=0)
+JM_Pop
+        MOVE.L  oThresh(A3),D2         ; runaway safety: disarm past thresh+8000
+        ADD.L   #8000,D2
+        CMP.L   oPoll(A3),D2
+        BGE.S   JM_NoDisarm
+        CLR.W   JournalFlag
+JM_NoDisarm
+        MOVE.L  (SP)+,A2
+CtlDone
+        CLR.W   ioResult(A0)
+        MOVEQ   #0,D0
+        RTS
+
+DClose
+        CLR.W   JournalFlag
+        MOVEQ   #0,D0
+        RTS
+
+DDummy
+        MOVEQ   #0,D0
+        RTS
+
+        ENDPROC
+        END

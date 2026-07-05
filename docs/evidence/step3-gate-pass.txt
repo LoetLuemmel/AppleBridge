@@ -1,0 +1,14 @@
+AppleBridge journaling driver — step-3 gate (2026-07-04)
+Basilisk II, System 7.6.1. Run of jtest (MPW tool) over the bridge:
+
+OpenResFile -> refNum=3950 ResError=0
+Get1NamedResource('DRVR','.ABJournal') -> FOUND ResError=0
+  DRVR id=95 attrs=0x54 name='.ABJournal'
+UnitNtryCnt=96  highest-free-unit=94  (ID 128 valid? NO -> badUnitErr)
+OpenDriver('.ABJournal') -> err=0 driverRefNum=-96
+JournalRef after open = -96 (self-register OK if == -96)
+Button() idle  = 0 (expect 0)
+Button() armed = 255 (expect 1 if the driver was consulted)
+driver Control calls while armed = 1
+  csParam bytes: @28=0x06E35D6A  @32=0x00020060  (csCode was 16)
+RESULT: PASS - Event Manager consulted the playback journal DRVR
