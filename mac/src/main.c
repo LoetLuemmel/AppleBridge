@@ -1842,6 +1842,79 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         return true;
     }
 
+    /* JPROBE verb: FEASIBILITY SPIKE for cross-process (front-app) menu driving.
+     * The open question: with journal playback armed, does the BACKGROUND daemon's own
+     * WaitNextEvent grab the injected mouseDown (so the daemon steals its own journal
+     * events -> cross-process is blocked, only its OWN menus are driveable), or does the
+     * event go elsewhere (a front app's event loop -> cross-process is feasible)?
+     * We arm the driver to feed a menu-bar mouseDown continuously (mode 1, huge thresh so
+     * it never auto-releases), then the daemon calls WaitNextEvent a few bounded times and
+     * records what IT receives. Freeze-safe: interrupt watchdog (~1.5s) + a raw-Ticks
+     * self-timeout (200t) + NO modal call -> nothing can stay open. Reports: is the daemon
+     * itself front (selfFront); driver poll/jcEvent counts (did the ROM consult the driver);
+     * how many of the daemon's own WNE calls returned an event (wneHits) and the first
+     * one's what/where; and whether any was a mouseDown at our injected point (gotMD). */
+    if (strncmp(request, "JPROBE", 6) == 0 &&
+        (request[6] == '\0' || request[6] == '\r' || request[6] == '\n')) {
+        static long pblk[8];
+        Str255      pPath;
+        EventRecord ev;
+        ProcessSerialNumber selfPSN, frontPSN;
+        Boolean     selfFront = false, gotMD = false;
+        short       resRef, ref = 0, i, n = 0, wneHits = 0;
+        long        firstWhat = -1, firstWhere = 0, startT;
+        OSErr       oe;
+        DCtlHandle  dh;
+        char        body[200];
+        char        frame[260];
+        char       *b = body, *f = frame;
+        const char *fn = "ABJournalDRVR";
+        SetActivity("JPROBE");
+        for (i = 0; gPrefs.home[i] && n < 254; i++) pPath[1 + n++] = gPrefs.home[i];
+        for (i = 0; fn[i] && n < 254; i++)          pPath[1 + n++] = fn[i];
+        pPath[0] = (unsigned char)n;
+        resRef = OpenResFile(pPath);
+        oe = OpenDriver("\p.ABJournal", &ref);
+        dh = (DCtlHandle)GetDCtlEntry(ref);
+        if (GetCurrentProcess(&selfPSN) == noErr && GetFrontProcess(&frontPSN) == noErr)
+            SameProcess(&frontPSN, &selfPSN, &selfFront);
+        pblk[0] = (10L << 16) | (40L & 0xFFFF);   /* itemPt = a menu-bar point (v=10,h=40) */
+        pblk[1] = 999999L;                        /* huge thresh: driver keeps feeding mouseDown, never auto-mouseUp */
+        pblk[2] = 0; pblk[3] = 0; pblk[4] = 0; pblk[5] = 0; pblk[6] = 0;
+        pblk[7] = 1;                              /* mode 1: jcEvent -> mouseDown (pre-release) */
+        if (dh) (**dh).dCtlStorage = (Handle)pblk;
+        ArmJournalWatchdog(1500);
+        startT = *(volatile long *)0x016AL;
+        *(volatile short *)0x08DEL = -1;          /* arm playback */
+        for (i = 0; i < 8 && (*(volatile short *)0x08DEL != 0) &&
+                    (*(volatile long *)0x016AL - startT) < 200; i++) {
+            if (WaitNextEvent(everyEvent, &ev, 2L, NULL)) {
+                wneHits++;
+                if (firstWhat < 0) { firstWhat = ev.what; firstWhere = ((long)ev.where.v << 16) | (ev.where.h & 0xFFFF); }
+                if (ev.what == mouseDown) gotMD = true;
+            }
+        }
+        *(volatile short *)0x08DEL = 0;           /* disarm */
+        CancelJournalWatchdog();
+        b = StatStr(b, "jprobe openErr="); b = StatDec(b, (long)oe);
+        b = StatStr(b, " selfFront=");  b = StatDec(b, selfFront ? 1 : 0);
+        b = StatStr(b, " poll=");       b = StatDec(b, pblk[2]);
+        b = StatStr(b, " jcEvt=");      b = StatDec(b, pblk[5]);
+        b = StatStr(b, " wneHits=");    b = StatDec(b, (long)wneHits);
+        b = StatStr(b, " firstWhat=");  b = StatDec(b, firstWhat);
+        b = StatStr(b, " firstV=");     b = StatDec(b, (long)((firstWhere >> 16) & 0xFFFF));
+        b = StatStr(b, " firstH=");     b = StatDec(b, (long)(firstWhere & 0xFFFF));
+        b = StatStr(b, " gotMD=");      b = StatDec(b, gotMD ? 1 : 0);
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body));
+        *f++ = '\r';
+        f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
     /* JSF[:<thresh>:<item>] verb: journal-drive a modal Standard File (Open) dialog
      * to click a button DETERMINISTICALLY -- the class of thing posted clicks can
      * NEVER reach. Uses SFGetFile (lets us place the dialog + install a dlgHook);

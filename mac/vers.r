@@ -6,7 +6,12 @@
  * the classic way to tell builds apart (replacing ad-hoc names like
  * "AppleBridge5"). One 'vers' file stamps the whole suite uniformly.
  *
- * This build: 0.8 development — d20 fixes JSF's foreground handoff. d19 called
+ * This build: 0.8 development — d21 adds JPROBE, a freeze-safe feasibility spike for
+ * cross-process (front-app) menu driving: it arms the journal to feed a menu-bar
+ * mouseDown and records whether the BACKGROUND daemon's own WaitNextEvent grabs that
+ * event (-> daemon steals its own journal events, cross-process blocked) or it goes
+ * elsewhere. Watchdog + raw-Ticks bounded, no modal call. Investigation only — no
+ * behaviour change to shipping verbs. d20 fixes JSF's foreground handoff. d19 called
  * SetFrontProcess(self) then entered SFGetFile immediately, but that switch is
  * ASYNCHRONOUS and ModalDialog never yields, so the daemon never truly became front
  * and the modal spun undismissable at 100% CPU. d20 PUMPS WaitNextEvent until
@@ -38,16 +43,16 @@
 
 resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
-    development, 0x20,   /* development stage, non-release revision 20 (BCD) */
+    development, 0x21,   /* development stage, non-release revision 21 (BCD) */
     verUS,
-    "0.8d20",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d20 - JSF pumps until front (confirmed) before the modal; bails if not"  /* long -> Get Info */
+    "0.8d21",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d21 - JPROBE: cross-process menu-driving feasibility spike (safe)"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
-    development, 0x20,
+    development, 0x21,
     verUS,
-    "0.8d20",
+    "0.8d21",
     "AppleBridge"        /* the shared/suite version line */
 };
