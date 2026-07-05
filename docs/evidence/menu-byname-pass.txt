@@ -1,0 +1,35 @@
+MENU:<title>:<item> by-name menu driving (Phase A) — daemon 0.8d22, 2026-07-05
+=============================================================================
+Generalizes JABOUT: resolves a menu TITLE + an ITEM by name (or index) on the
+daemon's OWN menu bar, computes the item point, and journal-drives MenuSelect to
+select + dispatch it. Own-menu only (MenuSelect uses the caller's menu list;
+cross-process is a dead end per JPROBE, 0.8d21).
+
+VALID-INPUT RESULTS (all live over the bridge, daemon's Apple+Edit menu bar):
+
+  MENU:Edit:Copy
+  -> menu found=1 menuID=130 item=1 nItems=3 titleX=34 itemY=28 selID=130 selItem=1 poll=202
+     "Edit"->menu 130, "Copy"->item 1 (by name); MenuSelect returned (130,1).
+     SIDE EFFECT CONFIRMED: HandleMenuCommand ran DoCopyLog -> the daemon's
+     Verbose log appeared on the host clipboard (mac_clipboard_get). So the item
+     was not just selected but DISPATCHED.
+
+  MENU:Edit:Show details
+  -> menu found=1 menuID=130 item=3 nItems=3 titleX=34 itemY=60 selID=130 selItem=3 poll=202
+     "Show details"->item 3 by name, PAST a separator (item 2). The 16px/row
+     model held (separators occupy a full row here); MenuSelect returned (130,3).
+
+  MENU:Edit:1  (by index)
+  -> menu found=1 menuID=130 item=1 ... selID=130 selItem=1   (numeric path OK)
+
+CPU stayed low (spike ~16-28% during the drive, back to ~6%); no freeze on valid input.
+
+KNOWN ISSUE (to fix): INVALID input froze the daemon at 100% CPU -> emulator crash.
+  MENU:Bogus:1     (title not found)
+  MENU:Edit:Nope   (item name not found)
+The not-found path reads as a benign no-op (it does not arm the journal or call
+MenuSelect), so the freeze is likely resource accumulation across repeated verb
+calls (each J-verb re-OpenResFile's ABJournalDRVR + OpenDriver) or a stateful
+interaction with the earlier Show-details toggle. Needs hardening: open the driver
+only for a valid target, close//balance the resource file, and validate inputs
+early. A mistyped menu/item name must never wedge the guest.

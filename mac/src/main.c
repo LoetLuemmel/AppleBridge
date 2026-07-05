@@ -1788,6 +1788,121 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         return true;
     }
 
+    /* MENU:<title>:<item> verb: journal-drive the daemon's OWN menu bar BY NAME.
+     * Resolves <title> to a menu (+ its title X, read as menuLeft from the live menu
+     * list) and <item> to an index (numeric, or matched case-insensitively against
+     * each item's text), computes the item's screen point, and drives
+     * MenuSelect(titlePt) via journaling to select it -- then dispatches it
+     * (HandleMenuCommand). Generalizes JABOUT (which hardcoded the Apple menu +
+     * item 1). OWN menus only: MenuSelect uses the CALLING process's menu list, so
+     * this cannot reach a front app (JPROBE proved a background yield never pumps the
+     * journal; see docs/JOURNALING_MENU_BY_NAME.md). Freeze-safe: same daemon-owned
+     * block + mouseUp feed + in-driver safety as JMENU/JABOUT (tracking self-ends on
+     * the synthesized mouseUp). Item Y uses a 16px/row model (JABOUT-verified: item 1
+     * centre = 28); separators before the target may skew it (report shows itemY). */
+    if (strncmp(request, "MENU:", 5) == 0) {
+        static long mblk[8];
+        Str255      pPath, wantTitle, wantItem, itemText;
+        short       resRef, ref = 0, i, n = 0, ti = 0, ii = 0, p;
+        short       menuID = 0, itemIndex = 0, titleX = 0, itemY = 0, menuW = 0;
+        short       numItems = 0, off, lastMenu, found = 0;
+        long        res = 0, thresh = 200;
+        Boolean     itemIsNum = true;
+        MenuHandle  mh, mtarget = NULL;
+        Handle      mbar;
+        Ptr         mp, mi;
+        DCtlHandle  dh;
+        Point       startPt;
+        char        body[260];
+        char        frame[320];
+        char       *b = body, *f = frame;
+        const char *fn = "ABJournalDRVR";
+        SetActivity("MENU");
+        /* parse "MENU:<title>:<item>" (title up to ':', item to ':' / end) */
+        p = 5;
+        while (request[p] && request[p] != ':' && request[p] != '\r' && request[p] != '\n' && ti < 255)
+            wantTitle[1 + ti++] = request[p++];
+        wantTitle[0] = (unsigned char)ti;
+        if (request[p] == ':') p++;
+        while (request[p] && request[p] != ':' && request[p] != '\r' && request[p] != '\n' && ii < 255)
+            wantItem[1 + ii++] = request[p++];
+        wantItem[0] = (unsigned char)ii;
+        if (ii == 0) itemIsNum = false;
+        for (i = 1; i <= ii; i++) if (wantItem[i] < '0' || wantItem[i] > '9') itemIsNum = false;
+        /* open the journal driver (same path as JABOUT) */
+        for (i = 0; gPrefs.home[i] && n < 254; i++) pPath[1 + n++] = gPrefs.home[i];
+        for (i = 0; fn[i] && n < 254; i++)          pPath[1 + n++] = fn[i];
+        pPath[0] = (unsigned char)n;
+        resRef = OpenResFile(pPath);
+        OpenDriver("\p.ABJournal", &ref);
+        dh = (DCtlHandle)GetDCtlEntry(ref);
+        /* resolve the menu by title from the LIVE menu list (header: lastMenu@0,
+         * lastRight@2, mbResID@4; then 6-byte entries: MenuHandle@0, menuLeft@4) */
+        mbar = GetMenuBar();
+        if (mbar != NULL) {
+            mp = *mbar;
+            lastMenu = *(short *)mp;
+            for (off = 6; off <= lastMenu && off < 6 + 6 * 40 && !found; off += 6) {
+                mh = *(MenuHandle *)(mp + off);
+                if (mh != NULL) {
+                    mi = *(Handle)mh;                       /* MenuInfo */
+                    if (EqualString((StringPtr)(mi + 14), wantTitle, false, false)) {
+                        mtarget = mh;
+                        menuID  = *(short *)mi;             /* menuID  @0 */
+                        menuW   = *(short *)(mi + 2);       /* menuWidth @2 */
+                        titleX  = *(short *)(mp + off + 4); /* menuLeft */
+                        found   = 1;
+                    }
+                }
+            }
+            DisposeHandle(mbar);
+        }
+        /* resolve the item index (numeric, or by item text) */
+        if (found && mtarget != NULL) {
+            numItems = CountMItems(mtarget);
+            if (itemIsNum) {
+                itemIndex = 0;
+                for (i = 1; i <= ii; i++) itemIndex = itemIndex * 10 + (wantItem[i] - '0');
+            } else {
+                short j;
+                for (j = 1; j <= numItems; j++) {
+                    GetMenuItemText(mtarget, j, itemText);
+                    if (EqualString(itemText, wantItem, false, false)) { itemIndex = j; break; }
+                }
+            }
+        }
+        if (itemIndex > 0) itemY = 20 + 16 * (itemIndex - 1) + 8;   /* 16px rows below the 20px bar */
+        mblk[0] = ((long)itemY << 16) | ((long)(titleX + (menuW > 24 ? menuW / 2 : 12)) & 0xFFFF);
+        mblk[1] = thresh;
+        mblk[2] = 0; mblk[3] = 0; mblk[4] = 0; mblk[5] = 0; mblk[6] = 0;
+        mblk[7] = 0;                                     /* mode 0 = menu */
+        if (dh) (**dh).dCtlStorage = (Handle)mblk;
+        startPt.v = 10; startPt.h = titleX + 4;         /* the menu title on the bar */
+        if (found && itemIndex > 0 && itemIndex <= numItems) {
+            *(volatile short *)0x08DEL = -1;            /* arm playback */
+            res = MenuSelect(startPt);
+            *(volatile short *)0x08DEL = 0;             /* disarm */
+        }
+        b = StatStr(b, "menu found=");   b = StatDec(b, (long)found);
+        b = StatStr(b, " menuID=");      b = StatDec(b, (long)menuID);
+        b = StatStr(b, " item=");        b = StatDec(b, (long)itemIndex);
+        b = StatStr(b, " nItems=");      b = StatDec(b, (long)numItems);
+        b = StatStr(b, " titleX=");      b = StatDec(b, (long)titleX);
+        b = StatStr(b, " itemY=");       b = StatDec(b, (long)itemY);
+        b = StatStr(b, " selID=");       b = StatDec(b, (long)((res >> 16) & 0xFFFF));
+        b = StatStr(b, " selItem=");     b = StatDec(b, (long)(res & 0xFFFF));
+        b = StatStr(b, " poll=");        b = StatDec(b, mblk[2]);
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body));
+        *f++ = '\r';
+        f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));
+        gLastTX = TickCount();
+        gTXCount++;
+        if (res != 0) HandleMenuCommand(res);           /* perform the chosen command */
+        return true;
+    }
+
     /* JSAFE verb: validate the interrupt-driven journaling watchdog IN ISOLATION,
      * safely, before pointing it at a modal call. Installs the driver (so JournalRef
      * is valid), primes the watchdog to disarm in ~1500ms, arms JournalFlag, then
