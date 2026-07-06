@@ -569,7 +569,7 @@ static void ShowAboutBoxMono(void)
     DialogPtr dialog;
     Rect      bounds, logo;
 
-    SetRect(&bounds, 96, 88, 416, 268);            /* fits a 512x342 screen */
+    SetRect(&bounds, 76, 84, 468, 264);            /* wider so the tagline doesn't clip; fits 512x342 */
     dialog = NewDialog(NULL, &bounds, "\p", true, dBoxProc,
                        (WindowPtr)-1L, false, 0, NULL);
     if (dialog == NULL) return;
@@ -755,6 +755,49 @@ void InitApp(void)
  * installed lazily so a foregrounded daemon has a sane menu bar — deliberately NO
  * Quit item (quitting tears down Open Transport and crashes the SDL2 host).
  */
+/* Fill *r with the Verbose window's content rect: the saved bounds from prefs if
+ * set AND on-screen, otherwise a default clamped to the screen so the footer
+ * stays visible even on a 512x342 SE/30. */
+static void ComputeMonitorRect(Rect *r)
+{
+    Rect  scr = qd.screenBits.bounds;
+    short mbar = GetMBarHeight();
+    short usableTop = (short)(scr.top + mbar + 22);   /* +22 so the title bar clears the menu bar */
+    short w, h;
+
+    if (gPrefs.winB > gPrefs.winT && gPrefs.winR > gPrefs.winL &&
+        gPrefs.winT >= scr.top + mbar && gPrefs.winL >= scr.left &&
+        gPrefs.winB <= scr.bottom && gPrefs.winR <= scr.right) {
+        SetRect(r, gPrefs.winL, gPrefs.winT, gPrefs.winR, gPrefs.winB);
+        return;
+    }
+    w = (short)(scr.right - scr.left - 8);    if (w > 480) w = 480;
+    h = (short)(scr.bottom - usableTop - 4);  if (h > 360) h = 360;
+    SetRect(r, (short)(scr.left + 4), usableTop,
+              (short)(scr.left + 4 + w), (short)(usableTop + h));
+}
+
+/* Snapshot the Verbose window's current global content rect into prefs and
+ * persist it, so it reopens at the same size/place next launch. */
+static void SaveMonitorBounds(void)
+{
+    GrafPtr save;
+    Rect    pr;
+    Point   tl;
+    if (gStatusWindow == NULL) return;
+    GetPort(&save);
+    SetPort(gStatusWindow);
+    pr = gStatusWindow->portRect;          /* local content rect */
+    tl.v = pr.top; tl.h = pr.left;         /* (0,0) */
+    LocalToGlobal(&tl);                    /* global top-left of the content */
+    SetPort(save);
+    gPrefs.winT = tl.v;
+    gPrefs.winL = tl.h;
+    gPrefs.winB = (short)(tl.v + (pr.bottom - pr.top));
+    gPrefs.winR = (short)(tl.h + (pr.right - pr.left));
+    SavePrefs(&gPrefs);
+}
+
 void OpenMonitor(void)
 {
     Rect r;
@@ -764,10 +807,25 @@ void OpenMonitor(void)
         return;
     }
 
-    SetRect(&r, 40, 60, 40 + 480, 60 + 340);
+    ComputeMonitorRect(&r);           /* saved bounds, or a screen-fitted default */
     gStatusWindow = NewCWindow(NULL, &r, "\pAppleBridge - Verbose", true,
                                zoomDocProc, (WindowPtr)-1L, true, 0);
     if (gStatusWindow == NULL) return;
+
+    /* Zoom box "standard state" = fill the usable screen, so a click on it on a
+     * big display expands the window and toggles back to the user size. */
+    {
+        WStateDataHandle wsd =
+            (WStateDataHandle)((WindowPeek)gStatusWindow)->dataHandle;
+        if (wsd != NULL) {
+            Rect  scr2 = qd.screenBits.bounds;
+            short mbar2 = GetMBarHeight();
+            (**wsd).userState = r;
+            SetRect(&(**wsd).stdState, (short)(scr2.left + 4),
+                    (short)(scr2.top + mbar2 + 22),
+                    (short)(scr2.right - 4), (short)(scr2.bottom - 4));
+        }
+    }
 
     if (!gMenuInstalled) {
         gAppleMenu = NewMenu(APPLE_MENU_ID, "\p\024");
@@ -874,6 +932,7 @@ Boolean CheckUserAbort(void)
                                     qd.screenBits.bounds.right - 4,
                                     qd.screenBits.bounds.bottom - 4);
                             DragWindow(window, event.where, &dragRect);
+                            SaveMonitorBounds();
                         }
                         break;
                     case inGoAway:
@@ -921,7 +980,34 @@ Boolean CheckUserAbort(void)
                                     gLogDirty = true;
                                 }
                                 InvalRect(&window->portRect);
+                                SaveMonitorBounds();
                             }
+                        }
+                        break;
+                    case inZoomIn:
+                    case inZoomOut:
+                        if (window == gStatusWindow &&
+                            TrackBox(window, event.where, part)) {
+                            SetPort(window);
+                            EraseRect(&window->portRect);
+                            ZoomWindow(window, part, true);
+                            if (gScroll != NULL) {
+                                short w2 = window->portRect.right -
+                                           window->portRect.left;
+                                short h2 = window->portRect.bottom -
+                                           window->portRect.top;
+                                MoveControl(gScroll, w2 - 15, 19);
+                                SizeControl(gScroll, 16, (h2 - 14) - 19);
+                            }
+                            if (gLogTE != NULL) {
+                                Rect body;
+                                MonitorBodyRect(&body);
+                                (**gLogTE).viewRect = body;
+                                (**gLogTE).destRect = body;
+                                gLogDirty = true;
+                            }
+                            InvalRect(&window->portRect);
+                            SaveMonitorBounds();
                         }
                         break;
                     case inContent:
