@@ -543,8 +543,67 @@ pascal short SFCoordHook(short item, DialogPtr dlg)
     return item;
 }
 
+/* True iff the main screen is 1-bit monochrome (or there is no Color QuickDraw
+ * at all). The color About box uses RGBForeColor + a colour PICT in a basic
+ * GrafPort, which faults on a real 1-bit device (e.g. a Macintosh SE/30), so we
+ * pick a plain black-and-white About there instead. */
+static Boolean ScreenIsMono(void)
+{
+    long         qd;
+    GDHandle     gd;
+    PixMapHandle pm;
+
+    if (Gestalt(gestaltQuickdrawVersion, &qd) != noErr || qd < gestalt8BitQD)
+        return true;                        /* no Color QuickDraw -> monochrome */
+    gd = GetMainDevice();
+    if (gd == NULL) return true;
+    pm = (**gd).gdPMap;
+    if (pm == NULL) return true;
+    return (Boolean)((**pm).pixelSize <= 1);
+}
+
+/* Plain monochrome About box: text + a hand-drawn 1-bit suspension bridge, all
+ * basic (1-bit-safe) QuickDraw -- no RGBForeColor, no colour PICT, no animation. */
+static void ShowAboutBoxMono(void)
+{
+    DialogPtr dialog;
+    Rect      bounds, logo;
+
+    SetRect(&bounds, 96, 88, 416, 268);            /* fits a 512x342 screen */
+    dialog = NewDialog(NULL, &bounds, "\p", true, dBoxProc,
+                       (WindowPtr)-1L, false, 0, NULL);
+    if (dialog == NULL) return;
+
+    SetPort(dialog);
+    SetRect(&logo, 24, 30, 128, 118);
+    FrameRect(&logo);                              /* logo frame */
+    MoveTo(52, 108); LineTo(52, 46);               /* left tower  */
+    MoveTo(100,108); LineTo(100,46);               /* right tower */
+    MoveTo(28, 96);  LineTo(124, 96);              /* deck        */
+    MoveTo(28, 96);  LineTo(52, 46);               /* main cable  */
+    LineTo(100,46);  LineTo(124,96);
+
+    MoveTo(148, 46); TextSize(14); TextFace(bold);
+    DrawString("\pAppleBridge v0.7.0");
+    MoveTo(148, 70); TextSize(10); TextFace(0);
+    DrawString("\pBuilt by Pit with Love");
+    MoveTo(148, 86);
+    DrawString("\pfor 68K and Claude");
+    MoveTo(148, 110); TextFace(italic);
+    DrawString("\p\"Connecting classic Mac to the future\"");
+    MoveTo(148, 134); TextFace(bold);
+    DrawString("\pMonochrome Edition");
+    MoveTo(148, 158); TextFace(0);
+    DrawString("\pClick to close...");
+
+    while (!Button()) SystemTask();
+    while (Button()) {}
+    DisposeDialog(dialog);
+}
+
 /*
- * Show About dialog (animated bridge logo: data packets crossing the bridge)
+ * Show About dialog. Case on screen depth: the animated colour bridge on a
+ * colour machine, a plain monochrome box on a 1-bit screen (SE/30 & friends).
  */
 void ShowAboutBox(void)
 {
@@ -552,6 +611,11 @@ void ShowAboutBox(void)
     Rect bounds, logo;
     short phase = 0;
     long  nextTick = 0;
+
+    if (ScreenIsMono()) {                          /* the do-case split */
+        ShowAboutBoxMono();
+        return;
+    }
 
     SetRect(&bounds, 90, 80, 480, 280);
     dialog = NewDialog(NULL, &bounds, "\p", true, dBoxProc,

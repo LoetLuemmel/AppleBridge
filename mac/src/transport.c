@@ -11,12 +11,33 @@
 #include <transport_priv.h>
 #include <Memory.h>       /* NewPtrClear, DisposePtr */
 #include <Errors.h>       /* memFullErr */
+#include <Gestalt.h>      /* Gestalt, gestaltOpenTpt (OT-presence gate) */
+
+#ifndef gestaltOpenTpt
+#define gestaltOpenTpt              'otan'
+#endif
+#ifndef gestaltOpenTptPresentMask
+#define gestaltOpenTptPresentMask   0x00000001L
+#endif
 
 /* Which stack actually came up (after any fallback). */
 static short   gActive       = kTransportOT;
 /* Set once a MacTCP connect has ever succeeded, so a single early failure can
  * fall back to OT but a later transient hiccup does not abandon a proven stack. */
 static Boolean gMacTcpProven = false;
+
+/*
+ * True iff Open Transport is installed. Calling OT traps (ot_Init / ot_Connect)
+ * on a classic-MacTCP-only machine (e.g. a real Macintosh SE/30) faults with a
+ * hardware exception (Error 11), so every OT fall-back below is gated on this.
+ * A failed MacTCP connect there just means "host not up yet", not a broken stack.
+ */
+static Boolean ABOpenTptAvailable(void)
+{
+    long result;
+    return (Gestalt(gestaltOpenTpt, &result) == noErr &&
+            (result & gestaltOpenTptPresentMask) != 0);
+}
 
 /*
  * Bring up the requested stack. If MacTCP is requested but its driver can't be
@@ -37,9 +58,15 @@ OSStatus ABNetInit(short want)
             gActive = kTransportMacTCP;
             return noErr;
         }
+        if (!ABOpenTptAvailable()) {
+            StatusMessage("MacTCP init failed and no Open Transport - bridge offline");
+            return -1;
+        }
         StatusMessage("MacTCP init failed - falling back to Open Transport");
     }
-    if (ot_Init() == noErr) {
+    /* Explicit OT, or a MacTCP->OT fall-back: only touch OT if it is installed,
+     * so a no-OT machine never trap-faults (Error 11). */
+    if (ABOpenTptAvailable() && ot_Init() == noErr) {
         gActive = kTransportOT;
         return noErr;
     }
@@ -87,12 +114,17 @@ OSStatus ABConnect(ABConn **conn, unsigned long hostIP, unsigned short port)
         err = mt_Connect(c, hostIP, port);
         if (err == noErr) {
             gMacTcpProven = true;
-        } else if (!gMacTcpProven) {
+        } else if (!gMacTcpProven && ABOpenTptAvailable()) {
             StatusMessage("MacTCP connect failed - switching to Open Transport");
             mt_Close(c);                 /* release any half-built MacTCP state */
             gActive = kTransportOT;
             c->transport = kTransportOT;
             if (ot_Init() == noErr) err = ot_Connect(c, hostIP, port);
+        } else if (err != noErr) {
+            /* No OT to fall back to (e.g. a real SE/30): keep MacTCP and let the
+             * reconnect loop retry — a failed connect just means "host not up
+             * yet", not a broken stack, so we must NOT touch OT traps here. */
+            mt_Close(c);
         }
     } else if (gActive == kTransportSerial) {
         err = sr_Connect(c, hostIP, port);

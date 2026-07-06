@@ -189,7 +189,14 @@ OSErr InjectClickMod(short h, short v, short count, short modifiers)
         ShortDelay(4L);                        /* hold ~1/15 s for tracking loops */
         LM_MBState = (signed char)0x80;        /* button UP */
         PostEvent(mouseUp, 0L);
-        if (c + 1 < count) ShortDelay(6L);     /* let the app process; gap < GetDblTime */
+        if (c + 1 < count) {
+            /* Size the inter-click gap to the machine's OWN double-click window so
+             * the down->down interval stays inside GetDblTime() even when the Mouse
+             * control panel is set fast -- a fixed gap can exceed it, and the front
+             * app then registers two single clicks instead of a double-click. */
+            long g = GetDblTime() / 2 - 4;     /* less the 4-tick press hold above */
+            ShortDelay(g > 1 ? g : 1);
+        }
     }
     if (modifiers) ApplyModifierKeys(modifiers, false);
     return noErr;
