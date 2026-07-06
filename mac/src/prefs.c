@@ -23,7 +23,7 @@ void PrefsDefaults(AppPrefs *p)
     p->debug = false;
     p->transport = kTransportOT;   /* Open Transport is the default networking service */
     p->serialPortB = false;        /* modem port A by default (Serial backend only) */
-    p->serialBaud = 57600;         /* default serial line rate */
+    p->serialBaud = 9600;          /* default serial line rate (safe first-contact) */
     p->home[0] = '\0';             /* empty ⇒ legacy hardcoded path (pre-installer setups) */
     p->token[0] = '\0';            /* empty ⇒ auth disabled (opt-in; see docs/PROTOCOL_v0.2.md) */
     p->appCount = 0;
@@ -157,7 +157,7 @@ OSErr SavePrefs(const AppPrefs *p)
     strcat(buf, "\r");
     if (p->transport == kTransportSerial) {
         char bs[16], t[16];
-        long v = (p->serialBaud > 0) ? p->serialBaud : 57600;
+        long v = (p->serialBaud > 0) ? p->serialBaud : 9600;
         short i = 0, j;
         strcat(buf, "PORT="); strcat(buf, p->serialPortB ? "B" : "A"); strcat(buf, "\r");
         while (v > 0) { t[i++] = (char)('0' + (v % 10)); v /= 10; }

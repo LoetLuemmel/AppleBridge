@@ -15,12 +15,17 @@ to run continuously, so this app is where a human configures and supervises it.
 - **Add Helper App…** — a Standard File picker; the chosen app's full HFS path is
   appended as an `APP=` line in the shared **AppleBridge Prefs** file (in the
   Preferences folder). The daemon chain-launches these on startup.
-- **Networking service** — a radio pair (**Open Transport** / **MacTCP**) that
-  selects which TCP stack the daemon uses, written as `NET=OT` / `NET=MacTCP` in
-  the prefs. Open Transport is the default; MacTCP is the lighter, pre-OT-capable
-  backend (the daemon auto-falls back to OT if the chosen stack can't come up).
+- **Networking service** — three radios (**Open Transport** / **MacTCP** /
+  **Serial**), written as `NET=OT` / `NET=MacTCP` / `NET=Serial` in the prefs.
+  Open Transport is the default; MacTCP is the lighter, pre-OT-capable backend;
+  **Serial** reaches Ethernet-less machines over the modem/printer port.
+- **Serial options** (dimmed unless **Serial** is selected) — a **port** pair
+  (**Modem (A)** / **Printer (B)** → `PORT=A` / `PORT=B`) and a **baud** selector
+  (**9600** / **19200** / **38400** / **57600** → `BAUD=`). 9600 is the default,
+  safe first-contact rate; bump higher once the link is proven. **The host must
+  be set to the same baud** (`APPLEBRIDGE_BAUD=`) — there is no autobaud.
   The change **takes effect on the daemon's next launch** (reboot or relaunch) —
-  there is no live hot-swap, by design.
+  `NET=` hot-swaps live, but `PORT=`/`BAUD=` are read at startup.
 - **Quit** — quits the config app.
 
 There are intentionally **no Launch/Stop Daemon buttons**: the daemon is a

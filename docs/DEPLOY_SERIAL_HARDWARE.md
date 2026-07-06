@@ -70,7 +70,7 @@ copies the sibling binaries), a `HOME=`-relocatable install, and autostart
   Open Transport / MacTCP. It now probes the serial driver (`.AOut`) too and
   passes as "Serial (modem port)", so an Ethernet-less machine installs. When no
   TCP stack is detected the seeded prefs default to `NET=Serial` / `PORT=A` /
-  `BAUD=57600`; a detected OT/MacTCP still wins. Everything else (the `HOME=` copy,
+  `BAUD=9600`; a detected OT/MacTCP still wins. Everything else (the `HOME=` copy,
   the autostart alias, the faceless bring-up) is unchanged.
 
 A follow-up would add a **Serial radio** to AppleBridgeConfig (it currently offers
@@ -109,7 +109,7 @@ optional checksum/resend layer — is the deferred item in SERIAL_TRANSPORT.md.)
 **Run the host in serial mode** on the adapter's device:
 
 ```bash
-APPLEBRIDGE_SERIAL=/dev/tty.usbserial-XXXX APPLEBRIDGE_BAUD=57600 /usr/bin/python3 host/host_server.py
+APPLEBRIDGE_SERIAL=/dev/tty.usbserial-XXXX APPLEBRIDGE_BAUD=9600 /usr/bin/python3 host/host_server.py
 ```
 
 The `:9001` control port and all 20 MCP tools are unchanged — only the daemon
@@ -124,7 +124,7 @@ folder) or use **AppleBridgeConfig**:
 ```
 NET=Serial
 PORT=A          # A = modem port, B = printer port
-BAUD=57600      # match the host's APPLEBRIDGE_BAUD
+BAUD=9600       # match the host's APPLEBRIDGE_BAUD
 ```
 
 `IP=` is ignored under serial. Leave `TOKEN=` empty for first bring-up (auth is

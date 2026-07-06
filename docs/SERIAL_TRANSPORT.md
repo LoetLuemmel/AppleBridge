@@ -116,7 +116,7 @@ unlike OT).
 Two new prefs keys, both optional with sane defaults:
 
 - `PORT=A` (modem, default) or `PORT=B` (printer).
-- `BAUD=57600` (default). Higher (115 200) works on faster machines; lower is
+- `BAUD=9600` (default, safe first-contact; 19 200 / 38 400 / 57 600 selectable in the Control Panel). Higher (115 200) works on faster machines; lower is
   safer on a busy 68000.
 
 `NET=Serial` selects the backend. The fallback ladder in `ABNetInit` should **not**
@@ -136,7 +136,7 @@ dispatch are reused unchanged. Selected by an env var / flag:
 
 ```
 APPLEBRIDGE_SERIAL=/dev/tty.usbserial-XXXX   # or a pty from the test harness
-APPLEBRIDGE_BAUD=57600
+APPLEBRIDGE_BAUD=9600
 ```
 
 In serial mode the `:9000` accept loop is replaced by "open the device, treat it

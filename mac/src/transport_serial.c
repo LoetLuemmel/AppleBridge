@@ -18,7 +18,7 @@
 /* Line/port config, set from prefs by main.c via ABSerialConfig() before
  * ABNetInit(). Defaults: modem port (A), 57600 baud, 8-N-1. */
 static Boolean gPortB   = false;        /* false = modem (A), true = printer (B) */
-static long    gBaudCfg = baud57600;    /* a Serial.h baud constant */
+static long    gBaudCfg = baud9600;     /* a Serial.h baud constant (default 9600) */
 
 /* Map a numeric baud to its Serial.h config constant (default 57600). */
 static long BaudConst(long baud)
