@@ -41,7 +41,10 @@ static Boolean      gRunning = true;
 static WindowPtr    gWin = NULL;
 static AppPrefs     gPrefs;
 static ControlHandle gInstallBtn, gRemoveBtn, gAddBtn, gQuitBtn;
-static ControlHandle gOTRadio, gMacTCPRadio;   /* networking-service selector */
+static ControlHandle gOTRadio, gMacTCPRadio, gSerialRadio;  /* networking-service selector */
+static ControlHandle gPortARadio, gPortBRadio;              /* serial port: modem (A) / printer (B) */
+static ControlHandle gBaudRadio[4];                         /* 9600 / 19200 / 38400 / 57600 */
+static const long    kBaudVals[4] = { 9600L, 19200L, 38400L, 57600L };
 
 /* ---- small helpers ---------------------------------------------------- */
 
@@ -260,13 +263,16 @@ static void DrawContent(void)
     /* Networking service selector (the two radio controls sit just below). */
     MoveTo(16, 84);
     DrawString("\pNetworking service:");
-    MoveTo(16, 116);
-    TextFace(0);
+    MoveTo(16, 130);
+    DrawString("\pSerial port:");
+    MoveTo(16, 154);
+    DrawString("\pBaud:");
+    MoveTo(16, 176);
     DrawString("\p(takes effect on the next daemon launch / reboot)");
 
-    MoveTo(16, 140);
+    MoveTo(16, 200);
     DrawString("\pHelper apps (chain-launched):");
-    y = 156;
+    y = 216;
     for (i = 0; i < gPrefs.appCount; i++) {
         Str255 p;
         MoveTo(28, y);
@@ -280,6 +286,24 @@ static void DrawContent(void)
     }
 
     DrawControls(gWin);
+}
+
+/* Reflect gPrefs into the transport + serial radios, and dim the serial
+ * sub-options unless Serial is selected. */
+static void SyncTransportRadios(void)
+{
+    short i, hi;
+    SetControlValue(gOTRadio,     gPrefs.transport == kTransportOT     ? 1 : 0);
+    SetControlValue(gMacTCPRadio, gPrefs.transport == kTransportMacTCP ? 1 : 0);
+    SetControlValue(gSerialRadio, gPrefs.transport == kTransportSerial ? 1 : 0);
+    SetControlValue(gPortARadio,  gPrefs.serialPortB ? 0 : 1);
+    SetControlValue(gPortBRadio,  gPrefs.serialPortB ? 1 : 0);
+    for (i = 0; i < 4; i++)
+        SetControlValue(gBaudRadio[i], gPrefs.serialBaud == kBaudVals[i] ? 1 : 0);
+    hi = (gPrefs.transport == kTransportSerial) ? 0 : 255;
+    HiliteControl(gPortARadio, hi);
+    HiliteControl(gPortBRadio, hi);
+    for (i = 0; i < 4; i++) HiliteControl(gBaudRadio[i], hi);
 }
 
 static void MakeButtons(void)
@@ -299,13 +323,29 @@ static void MakeButtons(void)
     /* Networking-service radio group (just under the "Networking service:" label).
      * radioButProc == 2. The pair is mutually exclusive — clicks in HandleClick
      * set one to 1 and the other to 0 and persist the choice to prefs. */
-    SetRect(&r, 28, 92, 170, 108);
+    SetRect(&r, 28, 92, 150, 108);
     gOTRadio = NewControl(gWin, &r, "\pOpen Transport", true, 0, 0, 1, 2 /*radioButProc*/, 0);
-    SetRect(&r, 180, 92, 300, 108);
+    SetRect(&r, 156, 92, 250, 108);
     gMacTCPRadio = NewControl(gWin, &r, "\pMacTCP", true, 0, 0, 1, 2 /*radioButProc*/, 0);
+    SetRect(&r, 256, 92, 360, 108);
+    gSerialRadio = NewControl(gWin, &r, "\pSerial", true, 0, 0, 1, 2 /*radioButProc*/, 0);
 
-    SetControlValue(gOTRadio,    gPrefs.transport == kTransportMacTCP ? 0 : 1);
-    SetControlValue(gMacTCPRadio, gPrefs.transport == kTransportMacTCP ? 1 : 0);
+    /* Serial sub-options (dimmed unless Serial is the active transport). */
+    SetRect(&r, 110, 118, 205, 134);
+    gPortARadio = NewControl(gWin, &r, "\pModem (A)", true, 0, 0, 1, 2 /*radioButProc*/, 0);
+    SetRect(&r, 210, 118, 320, 134);
+    gPortBRadio = NewControl(gWin, &r, "\pPrinter (B)", true, 0, 0, 1, 2 /*radioButProc*/, 0);
+    {
+        static unsigned char *baudLbl[4] = { "\p9600", "\p19200", "\p38400", "\p57600" };
+        short bx[4], i;
+        bx[0] = 60; bx[1] = 146; bx[2] = 242; bx[3] = 338;
+        for (i = 0; i < 4; i++) {
+            SetRect(&r, bx[i], 142, bx[i] + 86, 158);
+            gBaudRadio[i] = NewControl(gWin, &r, baudLbl[i], true, 0, 0, 1, 2 /*radioButProc*/, 0);
+        }
+    }
+
+    SyncTransportRadios();
 }
 
 static void HandleClick(EventRecord *ev)
@@ -325,16 +365,31 @@ static void HandleClick(EventRecord *ev)
                 else if (ctl == gRemoveBtn) { RemoveAutostart(); }
                 else if (ctl == gAddBtn)    { AddHelperApp(); }
                 else if (ctl == gQuitBtn)   { gRunning = false; }
-                else if (ctl == gOTRadio || ctl == gMacTCPRadio) {
+                else if (ctl == gOTRadio || ctl == gMacTCPRadio ||
+                         ctl == gSerialRadio) {
                     /* Pick a networking service, reflect it in the radios, and
                      * persist it. The daemon reads NET= at its next launch. */
-                    gPrefs.transport = (ctl == gMacTCPRadio)
-                                           ? kTransportMacTCP : kTransportOT;
-                    SetControlValue(gOTRadio,
-                                    gPrefs.transport == kTransportMacTCP ? 0 : 1);
-                    SetControlValue(gMacTCPRadio,
-                                    gPrefs.transport == kTransportMacTCP ? 1 : 0);
+                    gPrefs.transport = (ctl == gMacTCPRadio) ? kTransportMacTCP
+                                     : (ctl == gSerialRadio) ? kTransportSerial
+                                     : kTransportOT;
+                    SyncTransportRadios();
                     SavePrefs(&gPrefs);
+                }
+                else if (ctl == gPortARadio || ctl == gPortBRadio) {
+                    gPrefs.serialPortB = (ctl == gPortBRadio);
+                    SyncTransportRadios();
+                    SavePrefs(&gPrefs);
+                }
+                else {
+                    short i;
+                    for (i = 0; i < 4; i++) {
+                        if (ctl == gBaudRadio[i]) {
+                            gPrefs.serialBaud = kBaudVals[i];
+                            SyncTransportRadios();
+                            SavePrefs(&gPrefs);
+                            break;
+                        }
+                    }
                 }
                 DrawContent();
             }
@@ -364,7 +419,7 @@ int main(void)
     PrefsDefaults(&gPrefs);
     LoadPrefs(&gPrefs);
 
-    SetRect(&bounds, 40, 60, 500, 360);
+    SetRect(&bounds, 40, 60, 500, 420);
     gWin = NewCWindow(NULL, &bounds, "\pAppleBridge Config", true,
                       documentProc, (WindowPtr)-1L, true, 0);
     SetPort(gWin);

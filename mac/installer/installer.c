@@ -448,7 +448,7 @@ static void DoInstall(void)
     mystrncpy(gPrefs.home, gDestPath, PREFS_PATH_LEN - 1);
     gPrefs.home[PREFS_PATH_LEN - 1] = '\0';
     /* Prefer a detected TCP stack; on an Ethernet-less machine fall to serial
-     * (modem port A, 57600), so the daemon can reach the host over a cable. */
+     * (modem port A, 9600), so the daemon can reach the host over a cable. */
     if (gHasOT)
         gPrefs.transport = kTransportOT;
     else if (gHasMacTCP)
@@ -456,7 +456,7 @@ static void DoInstall(void)
     else {
         gPrefs.transport   = kTransportSerial;
         gPrefs.serialPortB = false;   /* modem port A */
-        gPrefs.serialBaud  = 57600;
+        gPrefs.serialBaud  = 9600;
     }
 
     /* Optional: let the user locate ToolServer -> APP= chain-launch entry. */

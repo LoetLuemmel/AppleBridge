@@ -102,7 +102,7 @@ CTRL_TOKEN = os.environ.get("APPLEBRIDGE_CTRL_TOKEN", "").encode("utf-8")
 # line instead of the TCP :9000 accept — for Ethernet-less machines and the pty
 # test harness. The :9001 control port and all framing/dispatch are unchanged.
 SERIAL_DEVICE = os.environ.get("APPLEBRIDGE_SERIAL") or None
-SERIAL_BAUD = int(os.environ.get("APPLEBRIDGE_BAUD", "57600"))
+SERIAL_BAUD = int(os.environ.get("APPLEBRIDGE_BAUD", "9600"))
 
 _logf = open(LOG_PATH, "a", buffering=1)  # line-buffered
 
