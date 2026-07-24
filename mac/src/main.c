@@ -2753,6 +2753,62 @@ static Boolean WaitForReconnect(void)
     return false;
 }
 
+/* How often the full "host missing" help block is repeated in the Verbose log
+ * while the daemon keeps retrying. One cycle is ~10 s of connect timeout + 30 s
+ * of backoff, so every 8th attempt is a reminder about every 5 minutes: enough
+ * that someone opening the window late still learns WHY nothing is happening,
+ * without burying the log in boilerplate. */
+#define HOSTHINT_REPEAT_EVERY  8
+
+/*
+ * Spell out in the Verbose console that the HOST side is missing.
+ *
+ * The status bar has room for one short line; the log is where actual
+ * instructions fit — and the console is the only feedback channel a faceless
+ * daemon has when the bridge is down (the host can't be told anything: there is
+ * no link to tell it over).
+ *
+ * We cannot distinguish "host_server.py not running" from "wrong NIC": the
+ * host's stealth firewall DROPS SYNs to a closed port instead of returning a
+ * RST, so both surface here as a plain timeout. So the text names the likely
+ * causes in the order they are worth checking rather than over-claiming one.
+ */
+static void LogHostMissingHint(long attempt, OSStatus err)
+{
+    char line[160];
+    char *p;
+
+    if (attempt == 1 || (attempt % HOSTHINT_REPEAT_EVERY) == 0) {
+        StatusMessage("*** HOST SERVER NOT REACHABLE - bridge is DOWN ***");
+        if (err == kABConnectTimeout) {
+            StatusMessage("  no reply: our connect was never answered");
+        } else if (err == kABConnectRefused) {
+            StatusMessage("  refused: something answered but rejected us");
+        } else {
+            StatusMessage("  the connection attempt failed");
+        }
+        StatusMessage("  check on the HOST, in this order:");
+        StatusMessage("   1. is host_server.py running?  host/start_stack.sh");
+
+        p = line;
+        p = StatStr(p, "   2. is ");
+        p = StatStr(p, gPrefs.ip);
+        p = StatStr(p, " on the default-route NIC?");
+        *p = '\0';
+        StatusMessage(line);
+
+        StatusMessage("   3. emulator NIC alive? quit BasiliskII FULLY + relaunch");
+        StatusMessage("  no commands can run until this link comes up.");
+    }
+
+    p = line;
+    p = StatStr(p, "retry ");
+    p = StatDec(p, attempt);
+    p = StatStr(p, ": still no host - next attempt in 30s");
+    *p = '\0';
+    StatusMessage(line);
+}
+
 /*
  * NET= hot-swap. Re-read the transport pref (throttled to NET_POLL_TICKS) and,
  * if it differs from what's running, tear down the active networking stack and
@@ -2872,6 +2928,7 @@ int main(void)
     long bytesReceived;
     unsigned long hostIP;
     Boolean connected = false;
+    long connectFails = 0;      /* consecutive failed dials -> drives the console hint */
 
     /* Initialize Mac Toolbox */
     InitApp();
@@ -2969,6 +3026,12 @@ int main(void)
                     SetActivity("connection FAILED");
                 }
 
+                /* Say it in the console too, with the actual fix steps — the
+                 * one-line status bar can't carry them, and this window is the
+                 * only place the user can be told while the bridge is down. */
+                connectFails++;
+                LogHostMissingHint(connectFails, err);
+
                 /* Wait and retry */
                 if (WaitForReconnect()) {
                     break;  /* User aborted */
@@ -2976,6 +3039,10 @@ int main(void)
                 continue;  /* Try again */
             }
 
+            if (connectFails > 0) {
+                StatusMessage("host server found - bridge is UP again");
+                connectFails = 0;
+            }
             connected = true;
             /* Fresh link -> fresh auth state: a new host must re-negotiate
              * (HELLO) and, if a token is set, re-prove (AUTH2) before commands. */
