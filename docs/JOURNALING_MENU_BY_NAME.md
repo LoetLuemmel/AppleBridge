@@ -245,8 +245,12 @@ yield, let the front app pick up a journaled `mouseDown`) is unsupported. **Cros
 menu driving via journaling is a dead end**; the host-side `cliclick` path remains the answer for
 foreign apps on *local* Basilisk.
 
-**Follow-on spike — JPROBE2 v4: foreign-context probe (2026-07-05, `mac/journal/jgne.a` +
-`jprobe2.c`, PR #71).** A second, deeper spike revisited the cross-process question with a real
+**Follow-on spike — JPROBE2 v4: foreign-context probe (2026-07-05).** The probe sources
+(`mac/journal/jgne.a` + `jprobe2.c`) were deliberately **not merged** — the technique they
+exercise is unsafe (see below), so shipping it in the tree would only invite reuse. They remain
+readable in the unmerged spike [PR #71](https://github.com/LoetLuemmel/AppleBridge/pull/71) if the
+probe ever needs re-running; these findings are kept here because they are the reason the approach
+was abandoned. A second, deeper spike revisited the cross-process question with a real
 jGNE filter (`$29A`) that runs *in the calling app's own context* on every `GetNextEvent`. Verbs:
 `zones` / `install` / `armwd` (install + prime a Time-Manager unhook watchdog) / `snap` (one-shot
 `MenuList` snapshot) / `drive` (inject a menu-bar `mouseDown` + arm playback) / `read` / `disarm` /
