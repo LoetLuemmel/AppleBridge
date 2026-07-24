@@ -87,6 +87,13 @@ if (WaitNextEvent(everyEvent, &event, 1, NULL)) {
 - AppleBridge shows "Connecting to host..." indefinitely
 - No connection established
 
+**Start with `mac_status`** — it is answered host-side and always replies, whether or not
+the daemon is up. `host_server_running: false` means the host layer; `host_server_running:
+true` with `daemon_connected: false` means the guest layer, and the first thing to rule out
+there is a dead `etherhelpertool` (see
+[Guest has no network at all](#guest-has-no-network-at-all--etherhelpertool-died-adapter-unplugged)
+below) — the host can be configured perfectly and still see nothing.
+
 **Checklist:**
 
 1. **Verify OpenTransport is installed**
@@ -119,6 +126,48 @@ if (WaitNextEvent(everyEvent, &event, 1, NULL)) {
 5. **Verify the host IP in prefs**
    The daemon reads `IP=192.168.3.154` from the `AppleBridge Prefs` file (edit it in place
    or via AppleBridgeConfig). A compiled-in fallback (`.154`) applies if the file is missing.
+
+### Guest has no network at all — `etherhelpertool` died (adapter unplugged)
+
+**Symptoms:**
+- Daemon console loops `Opening TCP endpoint… / Connecting to host… / connect timeout -
+  no reply from host`, then `reconnecting in 30s`. Counters stay at `RX 0 TX 0`.
+- The host side checks out completely: server listening on `:9000`, `.154` aliased on the
+  default-route interface, firewall allowing the Python binary.
+- **Re-plugging the network cable does not fix it**, and neither does restarting the host
+  server or rebooting the guest.
+
+**Cause:** Basilisk II runs `etherhelpertool` as a child process which owns the host
+interface directly through a BPF handle (prefs: `ether etherhelper/en8`). If that adapter
+is unplugged or re-enumerated — easy to do with Thunderbolt/USB Ethernet — the helper
+**dies**. Basilisk II keeps running normally with **no network interface whatsoever**, so
+the daemon dials into a void. The helper is spawned *only* at emulator launch, so it never
+returns on its own.
+
+This presents identically to a misconfigured host (same timeout, same silence), which is
+what makes it expensive to diagnose. The host cannot see it at all.
+
+**Diagnosis** — on the host; all three should agree:
+
+```bash
+pgrep -fl etherhelpertool      # nothing, while BasiliskII is alive => the helper is dead
+ifconfig en8 | head -1         # PROMISC flag GONE (a working helper sets it)
+netstat -ibn -I en8 | tail -1  # Ipkts frozen; sample twice ~30 s apart
+```
+
+The packet counters are the clincher: a *promiscuous* port on a live segment always picks
+up broadcast traffic (ARP, mDNS). Compare against the default-route interface over the same
+interval — during the 2026-07-24 outage `en8` moved **0 packets in either direction in 30 s**
+while `en0` moved 2,836.
+
+**Fix:** quit Basilisk II **fully** and relaunch. Shut the guest down cleanly first
+(`mac_shutdown`, or Special → Shut Down) — never hard-kill the emulator, which risks an
+unclean HFS unmount and a corrupted disk image. A guest-only reboot is **not** sufficient,
+because the helper is only spawned when the emulator launches.
+
+**Note:** `mac_status` will report `host_server_running: true` with
+`daemon_connected: false`, which correctly narrows the fault to the guest side but cannot
+see the missing NIC itself. Check the three commands above before touching host config.
 
 ### Daemon hangs on "CONNECTING" and freezes the emulator (100% CPU)
 
