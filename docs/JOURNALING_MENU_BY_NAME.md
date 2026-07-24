@@ -245,6 +245,50 @@ yield, let the front app pick up a journaled `mouseDown`) is unsupported. **Cros
 menu driving via journaling is a dead end**; the host-side `cliclick` path remains the answer for
 foreign apps on *local* Basilisk.
 
+**Follow-on spike — JPROBE2 v4: foreign-context probe (2026-07-05).** The probe sources
+(`mac/journal/jgne.a` + `jprobe2.c`) were deliberately **not merged** — the technique they
+exercise is unsafe (see below), so shipping it in the tree would only invite reuse. They remain
+readable in the unmerged spike [PR #71](https://github.com/LoetLuemmel/AppleBridge/pull/71) if the
+probe ever needs re-running; these findings are kept here because they are the reason the approach
+was abandoned. A second, deeper spike revisited the cross-process question with a real
+jGNE filter (`$29A`) that runs *in the calling app's own context* on every `GetNextEvent`. Verbs:
+`zones` / `install` / `armwd` (install + prime a Time-Manager unhook watchdog) / `snap` (one-shot
+`MenuList` snapshot) / `drive` (inject a menu-bar `mouseDown` + arm playback) / `read` / `disarm` /
+`uninstall` / `peek` (read-only hex+ASCII dump). Results, all verified live on Basilisk II /
+System 7.6.1:
+
+- **The boot-time `$29A` filter is Apple's own, not a leftover.** A `peek` of the resident head
+  (fresh boot `$29A = 0x718xx`) decodes to the **Notification Manager's** GNE hook — a `WWExist`
+  (`$8F2`) gate, then a hardcoded chain to a worker that walks **`BNMQHd`** (`$B60`) and fetches
+  `'SICN'` for the blinking Apple-menu icon. It is present every boot and **built to be chained
+  onto**, so an install guard must refuse only a *stale jprobe2* head (magic `$4A32`), never any
+  hook. (This retired the earlier "a foreign filter caused the crash" theory.)
+- **Reading a foreign context's menus works (Route A confirmed).** With the filter installed,
+  `snap` walks the **front app's** low-mem `MenuList` (`$0A1C`, which the Process Manager swaps
+  per process) from *inside that app's context* and copies each menu's ID + title. Captured the
+  daemon's own live bar (Apple `128`, Edit `130`, the two system menus) cleanly, bounded and
+  crash-free. So **menu *structure* of any foreground app is readable** by this route.
+- **`install` + chain and the `armwd` watchdog are safe.** Chaining onto the NM hook counted
+  hundreds of GNE calls with no fault; the watchdog fired at interrupt time (`WDfired=1`),
+  zeroed `JournalFlag` and restored `$29A` — the recovery mechanism works as designed for a
+  *soft spin*.
+- **`drive` CRASHES BasiliskII — and the watchdog cannot save it.** Injecting a menu-bar
+  `mouseDown` + arming `JournalFlag` playback into the *faceless* daemon (which has no menu-bar
+  click handling) makes it perform a window / front-process reorder, and that trips a **host-side
+  `SIGILL` / `EXC_BAD_INSTRUCTION` on the AppKit/SDL2 window-management thread**
+  (`-[NSWindow _reallyDoOrderWindow]`) — the *same* Sequoia/SDL2 window-teardown crash as quitting
+  the daemon. Because the whole **emulator process** dies instantly, the guest's Time Manager never
+  runs, so the interrupt-time watchdog is structurally powerless here (it guards *spins*, not host
+  crashes). Crash report `BasiliskII-2026-07-05-100241.ips`; host log flagged the `drive` command as
+  the prime suspect 4 s before the drop.
+
+**Net:** JPROBE2 independently reconfirms JPROBE's verdict and adds one hard boundary — the `drive`
+technique (raw injection + playback) is not merely unsupported but actively *unsafe* on this
+Sequoia/SDL2 host, and no guest-side watchdog can make it safe. `drive` stays disabled. The safe
+menu-driving routes are unchanged: `MENU:<title>:<item>` / `JABOUT` (which journal-drive
+`MenuSelect` on the daemon's own bar **without** a raw menu-bar `mouseDown`/playback), synthetic
+`mac_menu` Cmd-key shortcuts, and host `cliclick` for foreign apps on local Basilisk.
+
 **Phase A — `MENU:<title>:<item>` on the daemon's OWN menu bar: ✅ BUILT + HARDENED (0.8d22→d23,
 commits ef73f00 / bd8fdf4).** Generalises `JABOUT` from a hardcoded Apple/item-1 to arbitrary
 title+item **by name**: it walks the live menu list (`GetMenuBar`; header `lastMenu@0`/`lastRight@2`/
