@@ -31,6 +31,8 @@ SHARE_FOLDER = "/Users/pitforster/Desktop/Share"
 # File extensions to treat as text (convert encoding)
 TEXT_EXTENSIONS = {
     '.c', '.h', '.r', '.a', '.p', '.pas',  # Source code
+    '.cp', '.cpp', '.cxx', '.cc',           # C++ source (THINK C++/Symantec use .cp)
+    '.hpp', '.hxx',                         # C++ headers
     '.txt', '.md', '.doc',                  # Text files
     '.make', '.makefile',                   # Makefiles
     '.script', '.sh',                       # Scripts
