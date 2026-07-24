@@ -80,7 +80,19 @@ cd host
 
 `start_stack.sh` aliases `.154` onto the default-route interface (the freeze-avoidance rule above, via one admin prompt), (re)starts `host_server.py`, and launches Basilisk II. The host server also **auto-starts via launchd** on login, so on a configured machine the bridge comes up on its own.
 
-> **Order matters:** the host server must be listening on `:9000` *before* Basilisk II / the daemon start, or the daemon's early connects foul the socket. Let `start_stack.sh` launch Basilisk II; don't start it by hand first.
+> **Startup order does not matter.** If the daemon comes up first it simply finds
+> nothing listening, logs the reason in its Verbose console, and connects on its
+> next retry — at most ~40 s later (a 10 s bounded connect plus 30 s of backoff).
+> Nothing needs restarting or rebooting.
+>
+> This used to be documented as a hard rule ("the daemon's early connects foul the
+> socket"). No socket was ever fouled: a blocking `accept()` on `:9000` sat ahead of
+> the control-port loop, so while no daemon was connected the server never serviced
+> `:9001` and *every* tool hung — which looked like damage caused by the startup
+> order. Fixed in PR #75; see the
+> [root-cause write-up](https://pit.390er.de/applebridge/blocking-accept-disables-diagnostic-channel/).
+> `mac_status` now answers whether or not the daemon is up, so it is the right first
+> question when the bridge seems dead.
 
 Server log: `/tmp/applebridge_server.log`. Smoke test once the daemon is connected:
 
