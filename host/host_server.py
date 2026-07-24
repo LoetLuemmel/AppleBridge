@@ -65,6 +65,11 @@ HEARTBEAT_INTERVAL = 10.0   # seconds of link idle before emitting a PING
 HEARTBEAT_TIMEOUT = 4.0     # bounded read for the PONG (must not hang the loop)
 HEARTBEAT_MAX_MISS = 2      # consecutive unanswered PINGs -> declare disconnected
 
+# How long one pass of the control loop waits for a Mac daemon to turn up before
+# going back to serving :9001. Short enough that the control port keeps its ~1 s
+# responsiveness while the emulator is down, long enough not to spin the CPU.
+MAC_ACCEPT_POLL = 0.5
+
 # --- Protocol v0.2 (see docs/PROTOCOL_v0.2.md) -------------------------------
 # Version negotiation + bounded reads ship HOST-side first and are fully
 # backward compatible: the currently deployed v0.1 daemon answers the HELLO
@@ -329,10 +334,18 @@ class AppleBridgeServer:
         self.server_socket.listen(1)
         log(f"Listening on {self.interface}:{self.port} (waiting for Mac daemon)")
 
-    def accept_mac(self):
-        """Block until a Mac daemon connects; (re)assign client_socket. Serial has
-        no accept — open the device and treat it as the link, retrying until it
-        opens (mirroring how TCP accept() blocks until a client is present)."""
+    def accept_mac(self, timeout=None):
+        """Wait for a Mac daemon to connect; (re)assign client_socket.
+
+        `timeout=None` blocks until a daemon arrives (the interactive/TTY path).
+        A float POLLS for at most that many seconds and returns None if nobody
+        turned up — which is what run_control_server uses, so that a missing
+        daemon can never wedge the control port (:9001). Blocking here used to
+        mean mac_status and every other MCP tool hung with no reply for as long
+        as the emulator was down, i.e. exactly when diagnostics matter most.
+
+        Serial has no accept — open the device and treat it as the link.
+        """
         if self.serial_dev:
             while True:
                 try:
@@ -341,9 +354,19 @@ class AppleBridgeServer:
                     log(f"Serial link open on {self.serial_dev}")
                     return self.serial_dev
                 except (OSError, ValueError) as e:
+                    if timeout is not None:
+                        # Polling caller: report "not yet" instead of sleeping on
+                        # its thread, so it can go serve the control port.
+                        return None
                     log(f"serial open failed ({e}); retrying in 3s")
                     time.sleep(3)
-        self.client_socket, addr = self.server_socket.accept()
+        self.server_socket.settimeout(timeout)
+        try:
+            self.client_socket, addr = self.server_socket.accept()
+        except socket.timeout:
+            return None
+        finally:
+            self.server_socket.settimeout(None)
         self.connected = True
         log(f"Mac connected from {addr}")
         return addr
@@ -1062,21 +1085,29 @@ def run_control_server(server):
 
     last_io = time.monotonic()   # last time we exchanged anything with the daemon
     missed = 0                   # consecutive unanswered heartbeats
+    waiting_logged = False       # "waiting for daemon" logged once per outage
     try:
         while True:
-            # Make sure a Mac is connected before serving commands.
+            # Poll for a Mac daemon, but NEVER block on it: the control port has
+            # to stay answerable while the emulator is down, or the whole stack
+            # looks hung exactly when the user needs mac_status to tell them
+            # which layer broke. Falls through to control.accept() either way.
             if not server.connected:
-                log("Waiting for Mac daemon to (re)connect...")
-                server.accept_mac()
-                # The first packet over a fresh OT/MACNAT connection is often
-                # corrupt; send one priming PING and discard its (possibly
-                # garbled) reply so a real command isn't the one that eats it.
-                server.heartbeat()
-                # Probe the daemon's protocol version (best-effort; a v0.1
-                # daemon or a silent peer falls back to legacy, link intact).
-                server.negotiate_version()
-                last_io = time.monotonic()
-                missed = 0
+                if not waiting_logged:
+                    log("Waiting for Mac daemon to (re)connect... "
+                        "(control port stays live; mac_status reports daemon down)")
+                    waiting_logged = True
+                if server.accept_mac(timeout=MAC_ACCEPT_POLL) is not None:
+                    waiting_logged = False
+                    # The first packet over a fresh OT/MACNAT connection is often
+                    # corrupt; send one priming PING and discard its (possibly
+                    # garbled) reply so a real command isn't the one that eats it.
+                    server.heartbeat()
+                    # Probe the daemon's protocol version (best-effort; a v0.1
+                    # daemon or a silent peer falls back to legacy, link intact).
+                    server.negotiate_version()
+                    last_io = time.monotonic()
+                    missed = 0
 
             try:
                 ctrl_conn, _addr = control.accept()
@@ -1110,6 +1141,24 @@ def run_control_server(server):
                             "utf-8"))
                     continue          # finally: closes the conn
                 if cmd:
+                    # Fail fast and LOUD when the daemon isn't linked. Every verb
+                    # below needs it, and a bare "No response" tells the user
+                    # nothing about which layer broke. MACSTATUS is exempt — it is
+                    # answered host-side precisely so it can report that.
+                    if not server.connected and cmd != "MACSTATUS":
+                        msg = (
+                            "Mac daemon not connected - the emulator has not dialled in. "
+                            "Check BasiliskII is running AND that its etherhelpertool "
+                            "child is alive (pgrep -fl etherhelpertool): if the network "
+                            "adapter was unplugged the helper dies and the guest loses "
+                            "its NIC entirely, so the daemon can never connect. Fix = "
+                            "quit BasiliskII fully and relaunch (a guest-only reboot "
+                            "does NOT respawn the helper). Run mac_status for detail.")
+                        log(f"rejected {cmd[:40]!r}: no daemon connected")
+                        ctrl_conn.sendall(
+                            f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(msg)}\r{msg}\r\r".encode(
+                                "utf-8"))
+                        continue          # finally: closes the conn
                     if cmd.lower() == "screenshot" or cmd.lower().startswith("screenshot:"):
                         # Optional crop: "screenshot:x:y:w:h" decodes only that region.
                         region = None
