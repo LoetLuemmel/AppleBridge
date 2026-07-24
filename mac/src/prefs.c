@@ -82,6 +82,22 @@ static void ParseLine(AppPrefs *p, const char *line)
             CopyValue(p->apps[p->appCount], line + 4, PREFS_PATH_LEN);
             if (p->apps[p->appCount][0]) p->appCount++;
         }
+    } else if (strncmp(line, "WIN=", 4) == 0) {
+        /* WIN=<top>,<left>,<bottom>,<right> — saved Verbose-window bounds. */
+        short vals[4]; short vi = 0, k = 4;
+        long  v = 0; short sign = 1; Boolean have = false;
+        while (line[k] && vi < 4) {
+            char ch = line[k++];
+            if (ch == '-')                     sign = -1;
+            else if (ch >= '0' && ch <= '9') { v = v * 10 + (ch - '0'); have = true; }
+            else if (ch == ',')              { vals[vi++] = (short)(sign * v);
+                                               v = 0; sign = 1; have = false; }
+        }
+        if (have && vi < 4) vals[vi++] = (short)(sign * v);
+        if (vi == 4) {
+            p->winT = vals[0]; p->winL = vals[1];
+            p->winB = vals[2]; p->winR = vals[3];
+        }
     }
 }
 
@@ -123,6 +139,20 @@ Boolean LoadPrefs(AppPrefs *p)
         }
     }
     return true;
+}
+
+/* Append a signed decimal integer to buf (this file avoids sprintf). */
+static void AppendNum(char *buf, long v)
+{
+    char  t[16], s[18];
+    short i = 0, j = 0;
+    Boolean neg = (v < 0);
+    if (neg) v = -v;
+    do { t[i++] = (char)('0' + (short)(v % 10)); v /= 10; } while (v > 0);
+    if (neg) s[j++] = '-';
+    while (i > 0) s[j++] = t[--i];
+    s[j] = '\0';
+    strcat(buf, s);
 }
 
 OSErr SavePrefs(const AppPrefs *p)
@@ -173,6 +203,13 @@ OSErr SavePrefs(const AppPrefs *p)
     }
     for (n = 0; n < p->appCount; n++) {
         strcat(buf, "APP="); strcat(buf, p->apps[n]); strcat(buf, "\r");
+    }
+    if (p->winB > p->winT && p->winR > p->winL) {
+        strcat(buf, "WIN=");
+        AppendNum(buf, p->winT); strcat(buf, ",");
+        AppendNum(buf, p->winL); strcat(buf, ",");
+        AppendNum(buf, p->winB); strcat(buf, ",");
+        AppendNum(buf, p->winR); strcat(buf, "\r");
     }
 
     count = (long)strlen(buf);

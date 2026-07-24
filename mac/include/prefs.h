@@ -40,6 +40,9 @@ typedef struct {
                                     * pre-installer setups keep working. Set by the
                                     * installer; read by the watchdog + config app to
                                     * locate the daemon/watchdog wherever they live. */
+    short   winT, winL, winB, winR;  /* WIN= : saved Verbose-window bounds (global,
+                                      * content rect). All zero ⇒ unset, so the
+                                      * monitor opens at a screen-fitted default. */
     short   appCount;
     char    apps[PREFS_MAX_APPS][PREFS_PATH_LEN];
 } AppPrefs;

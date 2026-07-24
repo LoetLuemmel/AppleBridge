@@ -1,0 +1,83 @@
+*-------------------------------------------------------------------------------------------
+*
+* NAME
+*       msinit.a -- Route B boot INIT: install the MenuSelect head patch GLOBALLY.
+*
+* DESCRIPTION
+*       A System 7 extension ('INIT' code resource, id 0, sysheap+locked). At
+*       startup the System calls it; it copies the MenuSelect patch (mspatch.a)
+*       into the SYSTEM heap and points the _MenuSelect ($A93D) tool trap at it.
+*       Installed at boot from an extension, the patch lives in the system heap
+*       and applies to EVERY application -- the global reach Route B needs (a
+*       running app's NSetTrapAddress is process-local; proven 2026-07-05).
+*
+*       SELF-CONTAINED: the patch bytes are embedded here (PatchData) and copied
+*       from THIS resource -- no Get(1)Resource of a sibling 'MSPT' at boot (that
+*       depends on the extension's resource fork being current, which it is not
+*       reliably during INIT execution). This mirrors the working MenuLED INIT.
+*       PatchData is a byte-exact copy of mspatch.a's 'MSPT' 128 (keep in sync);
+*       its code is PC-relative, so it self-relocates after the BlockMove.
+*
+*       Position-independent, no A5 world. Preserves D0-D2/A0-A2. Bails harmlessly
+*       (RTS, trap unchanged) on any failure -- a boot INIT must never wedge boot.
+*
+*       Trap words verified live against CIncludes:Traps.h (2026-07-05).
+*       Patch block layout: mspatch.a (+2 Magic $4D53, +12 Real).
+*       docs/JOURNALING_MENU_BY_NAME.md -- Route B (INIT trap patch).
+*-------------------------------------------------------------------------------------------
+
+        CASE    OBJ
+        STRING  ASIS
+
+tNewPtrSys      EQU     $A51E           ; NewPtr + SYS  (OS: D0=size -> A0=ptr)
+tBlockMove      EQU     $A02E           ; BlockMove     (OS: A0=src,A1=dst,D0=n)
+tGetToolTrap    EQU     $A746           ; GetToolTrapAddress (D0=trap -> A0=addr)
+tSetToolTrap    EQU     $A647           ; SetToolTrapAddress (A0=addr, D0=trap)
+trMenuSelect    EQU     $A93D
+kMagic          EQU     $4D53
+kPatchLen       EQU     78              ; mspatch.a 'MSPT' block = 39 words (keep in sync)
+
+MSInit          PROC    EXPORT
+        MOVEM.L D0-D2/A0-A2,-(SP)
+
+        ; blk = NewPtrSys(kPatchLen)
+        MOVE.L  #kPatchLen,D0
+        DC.W    tNewPtrSys
+        MOVE.L  A0,A2                    ; A2 = blk
+        MOVE.L  A0,D0
+        BEQ.S   Bail
+
+        ; BlockMove(PatchData, blk, kPatchLen)
+        LEA     PatchData(PC),A0         ; src (this resource, PC-relative)
+        MOVE.L  A2,A1                    ; dst = blk
+        MOVE.L  #kPatchLen,D0            ; count
+        DC.W    tBlockMove
+
+        ; verify copied magic before touching the trap
+        CMP.W   #kMagic,2(A2)
+        BNE.S   Bail
+
+        ; real = GetToolTrapAddress(MenuSelect); stash in blk+12
+        MOVE.W  #trMenuSelect,D0
+        DC.W    tGetToolTrap
+        MOVE.L  A0,12(A2)
+
+        ; SetToolTrapAddress(blk, MenuSelect) -- go live (global)
+        MOVE.L  A2,A0
+        MOVE.W  #trMenuSelect,D0
+        DC.W    tSetToolTrap
+Bail
+        MOVEM.L (SP)+,D0-D2/A0-A2
+        RTS
+
+* ---- embedded 'MSPT' 128 patch, byte-exact from mspatch.a (DeRez) ----
+PatchData
+        DC.W    $601A,$4D53,$0000,$0001,$0000,$0000,$0000,$0000
+        DC.W    $0000,$0000,$0000,$0000,$0000,$0000,$41FA,$FFE2
+        DC.W    $52A8,$0010,$4A68,$0004,$671E,$2028,$0008,$2140
+        DC.W    $0018,$52A8,$0014,$4A68,$0006,$6704,$4268,$0004
+        DC.W    $225F,$588F,$2E80,$4ED1,$2068,$000C,$4ED0
+PatchEnd
+        ENDPROC
+
+        END

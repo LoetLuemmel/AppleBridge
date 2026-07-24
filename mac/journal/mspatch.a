@@ -1,0 +1,83 @@
+*-------------------------------------------------------------------------------------------
+*
+* NAME
+*       mspatch.a -- Route B spike: a global _MenuSelect ($A93D) trap patch.
+*
+* DESCRIPTION
+*       A head patch on the MenuSelect Toolbox trap. Installed into the SYSTEM
+*       heap (by msinstall, or later by an INIT) it runs in the context of every
+*       application that calls MenuSelect -- including the front one. That is the
+*       property Route A's background journaling lacked.
+*
+*       Two behaviours, chosen per call by the daemon-owned Armed word:
+*         - Armed = 0 (default): transparent pass-through. JMP to the saved real
+*           MenuSelect with the identical stack frame -> normal mouse tracking.
+*           The daemon's own MENU: verb keeps working unchanged.
+*         - Armed = 1: INTERCEPT. Return the pre-set Result (menuID<<16 | item)
+*           to the caller WITHOUT entering the tracking loop -- no mouse poll, no
+*           journal, no window reorder. The calling app then dispatches that menu
+*           command itself. OneShot clears Armed after a single intercept.
+*
+*       MenuSelect is `pascal long MenuSelect(Point startPt)`. On entry via the
+*       Toolbox dispatcher the stack is:
+*         (SP)   return address
+*         4(SP)  Point startPt   (4 bytes, param)
+*         8(SP)  result slot      (4 bytes, caller-reserved)
+*       Intercept returns Pascal-style: store the long into the result slot, drop
+*       the param, and jump back -- leaving the result on top of stack. Only the
+*       scratch registers D0/A0/A1 are touched (Pascal callee-clobber set).
+*
+*       Block layout (fixed offsets, shared with msinstall.c):
+*         +0   BRA.S Go
+*         +2   Magic   $4D53 ('MS')
+*         +4   Armed   (word)  1 = intercept next call
+*         +6   OneShot (word)  1 = clear Armed after one intercept
+*         +8   Result  (long)  packed menuID<<16 | item to return when armed
+*         +12  Real    (long)  saved real MenuSelect address (pass-through target)
+*         +16  Calls   (long)  total MenuSelect calls seen
+*         +20  Hits    (long)  intercepts performed
+*         +24  LastRes (long)  last value returned by an intercept
+*         +28  code (Go)
+*
+*       docs/JOURNALING_MENU_BY_NAME.md -- Route B (INIT trap patch).
+*-------------------------------------------------------------------------------------------
+
+        CASE    OBJ
+        STRING  ASIS
+
+MSPatch         MAIN
+Entry
+        BRA.S   Go
+Magic     DC.W    $4D53
+Armed     DC.W    0
+OneShot   DC.W    1
+Result    DC.L    0
+Real      DC.L    0
+Calls     DC.L    0
+Hits      DC.L    0
+LastRes   DC.L    0
+
+Go
+        LEA     Entry(PC),A0            ; A0 = block base (PC-relative)
+        ADDQ.L  #1,Calls-Entry(A0)      ; count every MenuSelect call
+        TST.W   Armed-Entry(A0)
+        BEQ.S   PassThru
+
+        ; ---- intercept: return Result without tracking ----
+        MOVE.L  Result-Entry(A0),D0
+        MOVE.L  D0,LastRes-Entry(A0)
+        ADDQ.L  #1,Hits-Entry(A0)
+        TST.W   OneShot-Entry(A0)
+        BEQ.S   NoClr
+        CLR.W   Armed-Entry(A0)         ; one-shot: disarm after this call
+NoClr
+        MOVE.L  (SP)+,A1                ; A1 = return address; SP -> param
+        ADDQ.L  #4,SP                   ; drop the 4-byte Point param; SP -> result slot
+        MOVE.L  D0,(SP)                 ; store the long result into the caller's slot
+        JMP     (A1)                    ; Pascal return (result left on stack)
+
+PassThru
+        MOVE.L  Real-Entry(A0),A0       ; transparent: real MenuSelect, same frame
+        JMP     (A0)
+
+        END

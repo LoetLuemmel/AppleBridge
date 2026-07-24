@@ -26,6 +26,8 @@
 #include <Shutdown.h>
 #include <OSUtils.h>
 #include <Timer.h>
+#include <Patches.h>
+#include <Traps.h>
 #include <prefs.h>
 #include <auth.h>
 
@@ -154,6 +156,11 @@ static Boolean gLastWasReal = false;  /* was the last request a real command (no
                                        * PING/STAT heartbeat)? gates the latency capture
                                        * so ~0-tick heartbeats don't clobber gLastLat. */
 static char gLastErr[48] = "";        /* short tag of the most recent error (for id) */
+
+/* Route B: the installed global _MenuSelect patch block (system heap, layout in
+ * mac/journal/mspatch.a). 0 = not installed. The RESIDENT daemon installs it so
+ * it persists (ToolServer reverts trap patches an MPW tool makes on exit). */
+static Ptr gMSPatch = 0L;
 
 /* Current activity shown on the top bar next to the green "Active" LED
  * (the command/verb being processed). */
@@ -536,8 +543,67 @@ pascal short SFCoordHook(short item, DialogPtr dlg)
     return item;
 }
 
+/* True iff the main screen is 1-bit monochrome (or there is no Color QuickDraw
+ * at all). The color About box uses RGBForeColor + a colour PICT in a basic
+ * GrafPort, which faults on a real 1-bit device (e.g. a Macintosh SE/30), so we
+ * pick a plain black-and-white About there instead. */
+static Boolean ScreenIsMono(void)
+{
+    long         qd;
+    GDHandle     gd;
+    PixMapHandle pm;
+
+    if (Gestalt(gestaltQuickdrawVersion, &qd) != noErr || qd < gestalt8BitQD)
+        return true;                        /* no Color QuickDraw -> monochrome */
+    gd = GetMainDevice();
+    if (gd == NULL) return true;
+    pm = (**gd).gdPMap;
+    if (pm == NULL) return true;
+    return (Boolean)((**pm).pixelSize <= 1);
+}
+
+/* Plain monochrome About box: text + a hand-drawn 1-bit suspension bridge, all
+ * basic (1-bit-safe) QuickDraw -- no RGBForeColor, no colour PICT, no animation. */
+static void ShowAboutBoxMono(void)
+{
+    DialogPtr dialog;
+    Rect      bounds, logo;
+
+    SetRect(&bounds, 76, 84, 468, 264);            /* wider so the tagline doesn't clip; fits 512x342 */
+    dialog = NewDialog(NULL, &bounds, "\p", true, dBoxProc,
+                       (WindowPtr)-1L, false, 0, NULL);
+    if (dialog == NULL) return;
+
+    SetPort(dialog);
+    SetRect(&logo, 24, 30, 128, 118);
+    FrameRect(&logo);                              /* logo frame */
+    MoveTo(52, 108); LineTo(52, 46);               /* left tower  */
+    MoveTo(100,108); LineTo(100,46);               /* right tower */
+    MoveTo(28, 96);  LineTo(124, 96);              /* deck        */
+    MoveTo(28, 96);  LineTo(52, 46);               /* main cable  */
+    LineTo(100,46);  LineTo(124,96);
+
+    MoveTo(148, 46); TextSize(14); TextFace(bold);
+    DrawString("\pAppleBridge v0.7.0");
+    MoveTo(148, 70); TextSize(10); TextFace(0);
+    DrawString("\pBuilt by Pit with Love");
+    MoveTo(148, 86);
+    DrawString("\pfor 68K and Claude");
+    MoveTo(148, 110); TextFace(italic);
+    DrawString("\p\"Connecting classic Mac to the future\"");
+    MoveTo(148, 134); TextFace(bold);
+    DrawString("\pMonochrome Edition");
+    MoveTo(148, 158); TextFace(0);
+    DrawString("\pClick to close...");
+
+    while (!Button()) SystemTask();
+    while (Button()) {}
+    DisposeDialog(dialog);
+}
+
 /*
- * Show About dialog (animated bridge logo: data packets crossing the bridge)
+ * Show About dialog. Case on screen depth: the animated colour bridge on a
+ * colour machine, a plain monochrome box on a 1-bit screen (SE/30 & friends).
  */
 void ShowAboutBox(void)
 {
@@ -545,6 +611,11 @@ void ShowAboutBox(void)
     Rect bounds, logo;
     short phase = 0;
     long  nextTick = 0;
+
+    if (ScreenIsMono()) {                          /* the do-case split */
+        ShowAboutBoxMono();
+        return;
+    }
 
     SetRect(&bounds, 90, 80, 480, 280);
     dialog = NewDialog(NULL, &bounds, "\p", true, dBoxProc,
@@ -684,6 +755,49 @@ void InitApp(void)
  * installed lazily so a foregrounded daemon has a sane menu bar — deliberately NO
  * Quit item (quitting tears down Open Transport and crashes the SDL2 host).
  */
+/* Fill *r with the Verbose window's content rect: the saved bounds from prefs if
+ * set AND on-screen, otherwise a default clamped to the screen so the footer
+ * stays visible even on a 512x342 SE/30. */
+static void ComputeMonitorRect(Rect *r)
+{
+    Rect  scr = qd.screenBits.bounds;
+    short mbar = GetMBarHeight();
+    short usableTop = (short)(scr.top + mbar + 22);   /* +22 so the title bar clears the menu bar */
+    short w, h;
+
+    if (gPrefs.winB > gPrefs.winT && gPrefs.winR > gPrefs.winL &&
+        gPrefs.winT >= scr.top + mbar && gPrefs.winL >= scr.left &&
+        gPrefs.winB <= scr.bottom && gPrefs.winR <= scr.right) {
+        SetRect(r, gPrefs.winL, gPrefs.winT, gPrefs.winR, gPrefs.winB);
+        return;
+    }
+    w = (short)(scr.right - scr.left - 8);    if (w > 480) w = 480;
+    h = (short)(scr.bottom - usableTop - 4);  if (h > 360) h = 360;
+    SetRect(r, (short)(scr.left + 4), usableTop,
+              (short)(scr.left + 4 + w), (short)(usableTop + h));
+}
+
+/* Snapshot the Verbose window's current global content rect into prefs and
+ * persist it, so it reopens at the same size/place next launch. */
+static void SaveMonitorBounds(void)
+{
+    GrafPtr save;
+    Rect    pr;
+    Point   tl;
+    if (gStatusWindow == NULL) return;
+    GetPort(&save);
+    SetPort(gStatusWindow);
+    pr = gStatusWindow->portRect;          /* local content rect */
+    tl.v = pr.top; tl.h = pr.left;         /* (0,0) */
+    LocalToGlobal(&tl);                    /* global top-left of the content */
+    SetPort(save);
+    gPrefs.winT = tl.v;
+    gPrefs.winL = tl.h;
+    gPrefs.winB = (short)(tl.v + (pr.bottom - pr.top));
+    gPrefs.winR = (short)(tl.h + (pr.right - pr.left));
+    SavePrefs(&gPrefs);
+}
+
 void OpenMonitor(void)
 {
     Rect r;
@@ -693,10 +807,25 @@ void OpenMonitor(void)
         return;
     }
 
-    SetRect(&r, 40, 60, 40 + 480, 60 + 340);
+    ComputeMonitorRect(&r);           /* saved bounds, or a screen-fitted default */
     gStatusWindow = NewCWindow(NULL, &r, "\pAppleBridge - Verbose", true,
                                zoomDocProc, (WindowPtr)-1L, true, 0);
     if (gStatusWindow == NULL) return;
+
+    /* Zoom box "standard state" = fill the usable screen, so a click on it on a
+     * big display expands the window and toggles back to the user size. */
+    {
+        WStateDataHandle wsd =
+            (WStateDataHandle)((WindowPeek)gStatusWindow)->dataHandle;
+        if (wsd != NULL) {
+            Rect  scr2 = qd.screenBits.bounds;
+            short mbar2 = GetMBarHeight();
+            (**wsd).userState = r;
+            SetRect(&(**wsd).stdState, (short)(scr2.left + 4),
+                    (short)(scr2.top + mbar2 + 22),
+                    (short)(scr2.right - 4), (short)(scr2.bottom - 4));
+        }
+    }
 
     if (!gMenuInstalled) {
         gAppleMenu = NewMenu(APPLE_MENU_ID, "\p\024");
@@ -803,6 +932,7 @@ Boolean CheckUserAbort(void)
                                     qd.screenBits.bounds.right - 4,
                                     qd.screenBits.bounds.bottom - 4);
                             DragWindow(window, event.where, &dragRect);
+                            SaveMonitorBounds();
                         }
                         break;
                     case inGoAway:
@@ -850,7 +980,34 @@ Boolean CheckUserAbort(void)
                                     gLogDirty = true;
                                 }
                                 InvalRect(&window->portRect);
+                                SaveMonitorBounds();
                             }
+                        }
+                        break;
+                    case inZoomIn:
+                    case inZoomOut:
+                        if (window == gStatusWindow &&
+                            TrackBox(window, event.where, part)) {
+                            SetPort(window);
+                            EraseRect(&window->portRect);
+                            ZoomWindow(window, part, true);
+                            if (gScroll != NULL) {
+                                short w2 = window->portRect.right -
+                                           window->portRect.left;
+                                short h2 = window->portRect.bottom -
+                                           window->portRect.top;
+                                MoveControl(gScroll, w2 - 15, 19);
+                                SizeControl(gScroll, 16, (h2 - 14) - 19);
+                            }
+                            if (gLogTE != NULL) {
+                                Rect body;
+                                MonitorBodyRect(&body);
+                                (**gLogTE).viewRect = body;
+                                (**gLogTE).destRect = body;
+                                gLogDirty = true;
+                            }
+                            InvalRect(&window->portRect);
+                            SaveMonitorBounds();
                         }
                         break;
                     case inContent:
@@ -1041,6 +1198,31 @@ static char *StatStr(char *p, const char *s)
 {
     while (*s) *p++ = *s++;
     return p;
+}
+static char *StatHex(char *p, unsigned long v)
+{
+    short i;
+    for (i = 28; i >= 0; i -= 4) {
+        short nyb = (short)((v >> i) & 0xF);
+        *p++ = (char)(nyb < 10 ? '0' + nyb : 'A' + nyb - 10);
+    }
+    return p;
+}
+
+/* Route B: find the boot INIT's global MenuSelect patch by scanning the system
+ * heap for its block header (word 0 = 0x601A `BRA.S Go`, word 2 = 0x4D53 'MS').
+ * NGetTrapAddress can't find it -- MenuSelect is contended, so a later patch is
+ * the $A93D head and ours is chained below it; the block is still resident and
+ * armable. Returns the block ptr or 0. */
+static Ptr FindMSPatch(void)
+{
+    unsigned char *p   = (unsigned char *)(*(unsigned long *)0x02A6L); /* SysZone  */
+    unsigned char *end = (unsigned char *)(*(unsigned long *)0x02AAL); /* ApplZone */
+    for (; p + 4 < end; p += 2) {
+        if (*(unsigned short *)p == 0x601A && *(unsigned short *)(p + 2) == 0x4D53)
+            return (Ptr)p;
+    }
+    return 0L;
 }
 
 /* Record an error: bump the counter AND remember a short identifying tag, so the
@@ -1919,6 +2101,158 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         return true;
     }
 
+    /* ---- Route B: global _MenuSelect trap patch (foreign-app menu driving) ----
+     * A head patch on _MenuSelect ($A93D) in the system heap (layout: mspatch.a,
+     * offsets +2 Magic 'MS', +4 Armed, +6 OneShot, +8 Result menuID<<16|item,
+     * +12 Real, +16 Calls, +20 Hits, +24 LastRes). Installed by the RESIDENT
+     * daemon (ToolServer reverts a trap patch an MPW tool makes on exit). When
+     * armed, the next MenuSelect in ANY context returns Result WITHOUT the
+     * tracking loop, so a posted menu-bar mouseDown makes the FRONT app dispatch
+     * that menu command -- no journal, no daemon self-foreground (Route A's crash
+     * mechanisms). See docs/JOURNALING_MENU_BY_NAME.md. */
+    if (strncmp(request, "MSINSTALL", 9) == 0) {
+        Str255        pPath;
+        short         resRef, i, n = 0;
+        Handle        h;
+        Size          sz;
+        Ptr           blk;
+        unsigned long real, live;
+        const char   *fn = "ABMenuPatch";
+        char body[220], frame[300];
+        char *b = body, *f = frame;
+        SetActivity("MSINSTALL");
+        if (gMSPatch == 0L) {
+            /* Prefer the boot INIT's GLOBAL block (found by heap scan) over
+             * installing our own process-local copy -- only the INIT's patch
+             * reaches a FOREIGN app's MenuSelect. */
+            gMSPatch = FindMSPatch();
+            if (gMSPatch != 0L) {
+                b = StatStr(b, "adopted INIT patch blk="); b = StatHex(b, (unsigned long)gMSPatch);
+                b = StatStr(b, " calls=");  b = StatDec(b, *(long *)((char *)gMSPatch + 16));
+                b = StatStr(b, " hits=");   b = StatDec(b, *(long *)((char *)gMSPatch + 20));
+                goto msinstall_reply;
+            }
+        }
+        if (gMSPatch != 0L) {
+            b = StatStr(b, "already installed blk="); b = StatHex(b, (unsigned long)gMSPatch);
+            b = StatStr(b, " calls=");                b = StatDec(b, *(long *)((char *)gMSPatch + 16));
+        } else {
+            for (i = 0; gPrefs.home[i] && n < 254; i++) pPath[1 + n++] = gPrefs.home[i];
+            for (i = 0; fn[i] && n < 254; i++)          pPath[1 + n++] = fn[i];
+            pPath[0] = (unsigned char)n;
+            resRef = OpenResFile(pPath);
+            if (resRef == -1) { b = StatStr(b, "OpenResFile failed err="); b = StatDec(b, ResError()); }
+            else {
+                h = Get1Resource('MSPT', 128);
+                if (h == 0L) { b = StatStr(b, "no MSPT 128 err="); b = StatDec(b, ResError()); }
+                else {
+                    HNoPurge(h); LoadResource(h);
+                    sz  = GetHandleSize(h);
+                    blk = NewPtrSys(sz);
+                    if (blk == 0L) { b = StatStr(b, "NewPtrSys failed"); }
+                    else {
+                        BlockMove(*h, blk, sz);
+                        if (*(short *)(blk + 2) != (short)0x4D53) {
+                            b = StatStr(b, "magic mismatch");   /* leave block; harmless */
+                        } else {
+                            real = (unsigned long)NGetTrapAddress(_MenuSelect, ToolTrap);
+                            *(unsigned long *)(blk + 12) = real;
+                            NSetTrapAddress((UniversalProcPtr)blk, _MenuSelect, ToolTrap);
+                            live = (unsigned long)NGetTrapAddress(_MenuSelect, ToolTrap);
+                            gMSPatch = blk;
+                            b = StatStr(b, "installed blk="); b = StatHex(b, (unsigned long)blk);
+                            b = StatStr(b, " real=");         b = StatHex(b, real);
+                            b = StatStr(b, (live == (unsigned long)blk) ? " head=YES" : " head=NO");
+                        }
+                    }
+                }
+                CloseResFile(resRef);
+            }
+        }
+msinstall_reply:
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body)); *f++ = '\r';
+        f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+
+    if (strncmp(request, "MSREAD", 6) == 0) {
+        char body[220], frame[300];
+        char *b = body, *f = frame;
+        SetActivity("MSREAD");
+        if (gMSPatch == 0L) { b = StatStr(b, "not installed"); }
+        else {
+            Ptr p = gMSPatch;
+            unsigned long live = (unsigned long)NGetTrapAddress(_MenuSelect, ToolTrap);
+            b = StatStr(b, "blk=");     b = StatHex(b, (unsigned long)p);
+            b = StatStr(b, " calls=");  b = StatDec(b, *(long *)(p + 16));
+            b = StatStr(b, " hits=");   b = StatDec(b, *(long *)(p + 20));
+            b = StatStr(b, " armed=");  b = StatDec(b, *(short *)(p + 4));
+            b = StatStr(b, " lastRes="); b = StatHex(b, *(unsigned long *)(p + 24));
+            b = StatStr(b, (live == (unsigned long)p) ? " head=YES" : " head=NO");
+        }
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body)); *f++ = '\r';
+        f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+
+    if (strncmp(request, "MSDRIVE:", 8) == 0) {
+        char body[220], frame[300];
+        char *b = body, *f = frame;
+        short menuID = 0, item = 0, p2 = 8;
+        SetActivity("MSDRIVE");
+        while (request[p2] >= '0' && request[p2] <= '9') menuID = menuID * 10 + (request[p2++] - '0');
+        if (request[p2] == ':') p2++;
+        while (request[p2] >= '0' && request[p2] <= '9') item = item * 10 + (request[p2++] - '0');
+        if (gMSPatch == 0L) { b = StatStr(b, "not installed (run MSINSTALL)"); }
+        else if (menuID == 0 || item == 0) { b = StatStr(b, "bad args (MSDRIVE:<menuID>:<item>)"); }
+        else {
+            Ptr p = gMSPatch;
+            *(unsigned long *)(p + 8) = ((unsigned long)menuID << 16) | (unsigned long)item;
+            *(short *)(p + 6) = 1;                       /* OneShot */
+            *(short *)(p + 4) = 1;                       /* Armed */
+            InjectClick(40, 10);                         /* menu-bar mouseDown -> front app MenuSelect */
+            b = StatStr(b, "armed menuID="); b = StatDec(b, menuID);
+            b = StatStr(b, " item=");        b = StatDec(b, item);
+            b = StatStr(b, " posted menu-bar click (MSREAD for hits)");
+        }
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body)); *f++ = '\r';
+        f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+
+    if (strncmp(request, "MSUNINSTALL", 11) == 0) {
+        char body[220], frame[300];
+        char *b = body, *f = frame;
+        SetActivity("MSUNINSTALL");
+        if (gMSPatch == 0L) { b = StatStr(b, "not installed"); }
+        else {
+            unsigned long live = (unsigned long)NGetTrapAddress(_MenuSelect, ToolTrap);
+            unsigned long real = *(unsigned long *)((char *)gMSPatch + 12);
+            if (live != (unsigned long)gMSPatch) {
+                b = StatStr(b, "NOT head - refusing; live="); b = StatHex(b, live);
+            } else {
+                NSetTrapAddress((UniversalProcPtr)real, _MenuSelect, ToolTrap);
+                gMSPatch = 0L;                            /* leave block resident (no dispose race) */
+                b = StatStr(b, "uninstalled; $A93D restored to "); b = StatHex(b, real);
+            }
+        }
+        *b = '\0';
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)(b - body)); *f++ = '\r';
+        f = StatStr(f, body); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, frame, (long)(f - frame));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+
     /* JSAFE verb: validate the interrupt-driven journaling watchdog IN ISOLATION,
      * safely, before pointing it at a modal call. Installs the driver (so JournalRef
      * is valid), primes the watchdog to disarm in ~1500ms, arms JournalFlag, then
@@ -2419,6 +2753,62 @@ static Boolean WaitForReconnect(void)
     return false;
 }
 
+/* How often the full "host missing" help block is repeated in the Verbose log
+ * while the daemon keeps retrying. One cycle is ~10 s of connect timeout + 30 s
+ * of backoff, so every 8th attempt is a reminder about every 5 minutes: enough
+ * that someone opening the window late still learns WHY nothing is happening,
+ * without burying the log in boilerplate. */
+#define HOSTHINT_REPEAT_EVERY  8
+
+/*
+ * Spell out in the Verbose console that the HOST side is missing.
+ *
+ * The status bar has room for one short line; the log is where actual
+ * instructions fit — and the console is the only feedback channel a faceless
+ * daemon has when the bridge is down (the host can't be told anything: there is
+ * no link to tell it over).
+ *
+ * We cannot distinguish "host_server.py not running" from "wrong NIC": the
+ * host's stealth firewall DROPS SYNs to a closed port instead of returning a
+ * RST, so both surface here as a plain timeout. So the text names the likely
+ * causes in the order they are worth checking rather than over-claiming one.
+ */
+static void LogHostMissingHint(long attempt, OSStatus err)
+{
+    char line[160];
+    char *p;
+
+    if (attempt == 1 || (attempt % HOSTHINT_REPEAT_EVERY) == 0) {
+        StatusMessage("*** HOST SERVER NOT REACHABLE - bridge is DOWN ***");
+        if (err == kABConnectTimeout) {
+            StatusMessage("  no reply: our connect was never answered");
+        } else if (err == kABConnectRefused) {
+            StatusMessage("  refused: something answered but rejected us");
+        } else {
+            StatusMessage("  the connection attempt failed");
+        }
+        StatusMessage("  check on the HOST, in this order:");
+        StatusMessage("   1. is host_server.py running?  host/start_stack.sh");
+
+        p = line;
+        p = StatStr(p, "   2. is ");
+        p = StatStr(p, gPrefs.ip);
+        p = StatStr(p, " on the default-route NIC?");
+        *p = '\0';
+        StatusMessage(line);
+
+        StatusMessage("   3. emulator NIC alive? quit BasiliskII FULLY + relaunch");
+        StatusMessage("  no commands can run until this link comes up.");
+    }
+
+    p = line;
+    p = StatStr(p, "retry ");
+    p = StatDec(p, attempt);
+    p = StatStr(p, ": still no host - next attempt in 30s");
+    *p = '\0';
+    StatusMessage(line);
+}
+
 /*
  * NET= hot-swap. Re-read the transport pref (throttled to NET_POLL_TICKS) and,
  * if it differs from what's running, tear down the active networking stack and
@@ -2538,6 +2928,7 @@ int main(void)
     long bytesReceived;
     unsigned long hostIP;
     Boolean connected = false;
+    long connectFails = 0;      /* consecutive failed dials -> drives the console hint */
 
     /* Initialize Mac Toolbox */
     InitApp();
@@ -2635,6 +3026,12 @@ int main(void)
                     SetActivity("connection FAILED");
                 }
 
+                /* Say it in the console too, with the actual fix steps — the
+                 * one-line status bar can't carry them, and this window is the
+                 * only place the user can be told while the bridge is down. */
+                connectFails++;
+                LogHostMissingHint(connectFails, err);
+
                 /* Wait and retry */
                 if (WaitForReconnect()) {
                     break;  /* User aborted */
@@ -2642,6 +3039,10 @@ int main(void)
                 continue;  /* Try again */
             }
 
+            if (connectFails > 0) {
+                StatusMessage("host server found - bridge is UP again");
+                connectFails = 0;
+            }
             connected = true;
             /* Fresh link -> fresh auth state: a new host must re-negotiate
              * (HELLO) and, if a token is set, re-prove (AUTH2) before commands. */
