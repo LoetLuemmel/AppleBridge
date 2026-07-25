@@ -16,6 +16,7 @@ _HOST_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 if _HOST_DIR not in sys.path:
     sys.path.insert(0, _HOST_DIR)
 import macbinary  # noqa: E402
+import bridge_doctor  # noqa: E402  (stdlib-only host-side stack probes)
 
 
 def _ostype(value, default="????") -> bytes:
@@ -352,6 +353,30 @@ daemon is down (so you can tell WHICH layer is broken):
 
 Diagnostic shortcut: daemon_connected but not toolserver_running => commands
 will come back empty; daemon not connected => the bridge/emulator is down.""",
+        "inputSchema": {"type": "object", "properties": {}, "required": []}
+    },
+    {
+        "name": "bridge_doctor",
+        "description": """Diagnose the WHOLE stack in one call — use this the moment anything looks down.
+
+mac_status only sees the control port and the daemon link, so every deeper
+cause reports identically as "not connected". This probes the layers beneath
+and, because it runs host-side in this process, it still answers when the host
+server itself is dead:
+
+  - launchd job (loaded / absent / explicitly disabled)
+  - listening sockets :9000 / :9001, plus the guest's OBSERVED peer IP
+  - where the .154 alias lives vs. the default-route interface (a duplicate on
+    a second NIC splits the MACNAT return path and freezes the emulator)
+  - BasiliskII / SheepShaver and the etherhelpertool child (dead helper =>
+    the guest has no NIC at all)
+  - the emulator's "ether" backend vs. the intended one (slirp still passes
+    TCP, so the bridge looks fine — but it drops AppleTalk, so the Chooser
+    finds no AppleShare server, and bulk throughput falls ~80 %)
+
+Returns `verdict` (ok/info/warn/error), a ranked `findings` list where each
+entry carries a literal `fix` command, the raw `probes`, and a preformatted
+`text` report. Also merges mac_status when the control port is reachable.""",
         "inputSchema": {"type": "object", "properties": {}, "required": []}
     },
     {
@@ -1353,6 +1378,37 @@ def mac_status() -> Dict[str, Any]:
     }
 
 
+def bridge_doctor_tool() -> Dict[str, Any]:
+    """Cross-layer stack diagnosis.
+
+    Deliberately runs the probes LOCALLY rather than over the control port: the
+    single most useful moment for this tool is when the host server is the
+    broken layer, and a control-port round-trip would fail exactly then. When
+    the port IS reachable, mac_status is merged in for the daemon-side view.
+    """
+    try:
+        report = bridge_doctor.collect()
+    except Exception as e:
+        return {"success": False, "error": f"probe failed: {e}"}
+
+    result = {
+        "success": True,
+        "verdict": report["verdict"],          # ok | info | warn | error
+        "ok": report["ok"],
+        "findings": report["findings"],        # ranked; each may carry a `fix`
+        "probes": report["probes"],
+        "text": bridge_doctor.format_text(report),
+    }
+    # The daemon-side view is a bonus, never a precondition — a dead control
+    # port is itself one of the diagnoses above.
+    try:
+        status = mac_status()
+        result["mac_status"] = status
+    except Exception as e:
+        result["mac_status"] = {"success": False, "error": str(e)}
+    return result
+
+
 # Long enough for SC/Link round-trips (host gives these LONG_TIMEOUT=240s daemon-side).
 _BUILD_STEP_TIMEOUT = 250.0
 
@@ -1716,6 +1772,7 @@ TOOL_HANDLERS = {
     "mac_menu_front": mac_menu_front,
     "mac_click": mac_click,
     "mac_status": mac_status,
+    "bridge_doctor": bridge_doctor_tool,
     "mac_build": mac_build,
     "mac_send_apple_event": mac_send_apple_event,
     "mac_clipboard_get": mac_clipboard_get,

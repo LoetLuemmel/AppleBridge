@@ -26,6 +26,7 @@ already content-agnostic) — no per-response size limit on this side.
 """
 import base64
 import hmac
+import json
 import os
 import select
 import socket
@@ -34,6 +35,10 @@ import time
 
 import screenshot_decode  # stdlib-only raw-pixmap -> PNG (runs under /usr/bin/python3)
 import macbinary          # stdlib-only fork split/join for READFILE packaging
+try:
+    import bridge_doctor  # stdlib-only cross-layer stack diagnosis (DOCTOR verb)
+except ImportError:       # deployed copy predating the module: degrade, don't die
+    bridge_doctor = None
 
 HOST_INTERFACE = "192.168.3.154"   # single source of truth; daemon connects here
 HOST_PORT = 9000                   # Mac daemon connects to this
@@ -1145,15 +1150,26 @@ def run_control_server(server):
                     # below needs it, and a bare "No response" tells the user
                     # nothing about which layer broke. MACSTATUS is exempt — it is
                     # answered host-side precisely so it can report that.
-                    if not server.connected and cmd != "MACSTATUS":
-                        msg = (
-                            "Mac daemon not connected - the emulator has not dialled in. "
-                            "Check BasiliskII is running AND that its etherhelpertool "
-                            "child is alive (pgrep -fl etherhelpertool): if the network "
-                            "adapter was unplugged the helper dies and the guest loses "
-                            "its NIC entirely, so the daemon can never connect. Fix = "
-                            "quit BasiliskII fully and relaunch (a guest-only reboot "
-                            "does NOT respawn the helper). Run mac_status for detail.")
+                    if not server.connected and cmd not in ("MACSTATUS", "DOCTOR"):
+                        # Name the layer that is ACTUALLY broken. The old fixed
+                        # paragraph always blamed the Ethernet adapter, which
+                        # misleads whenever the cause is a disabled launchd job,
+                        # a slirp backend, a duplicated .154 alias — or simply a
+                        # guest that has not finished booting.
+                        reason = None
+                        if bridge_doctor is not None:
+                            try:
+                                reason = bridge_doctor.short_reason(
+                                    bridge_doctor.collect())
+                            except Exception as e:
+                                log(f"doctor probe failed: {e}")
+                        msg = ("Mac daemon not connected - the emulator has not "
+                               "dialled in. ")
+                        msg += (reason if reason else
+                                "Check BasiliskII is running AND that its "
+                                "etherhelpertool child is alive "
+                                "(pgrep -fl etherhelpertool).")
+                        msg += " Run bridge_doctor for the full cross-layer report."
                         log(f"rejected {cmd[:40]!r}: no daemon connected")
                         ctrl_conn.sendall(
                             f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(msg)}\r{msg}\r\r".encode(
@@ -1217,6 +1233,26 @@ def run_control_server(server):
                         payload = ";".join(fields)
                         out = f"STATUS:0\rSTDOUT:{len(payload)}\r{payload}\rSTDERR:0\r\r"
                         log(f"mac_status -> {payload}")
+                    elif cmd == "DOCTOR":
+                        # Cross-layer diagnosis, answered HOST-side (like
+                        # MACSTATUS) so it works with the daemon down — which is
+                        # exactly when it is needed. JSON payload; the MCP tool
+                        # renders it. Note the MCP layer ALSO runs the same
+                        # module locally, so a dead host server still gets a
+                        # report; this verb serves the plain `nc` path.
+                        if bridge_doctor is None:
+                            m = "bridge_doctor module not deployed"
+                            out = f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(m)}\r{m}\r\r"
+                        else:
+                            try:
+                                payload = json.dumps(bridge_doctor.collect())
+                                out = (f"STATUS:0\rSTDOUT:{len(payload)}\r{payload}"
+                                       f"\rSTDERR:0\r\r")
+                                log("doctor -> "
+                                    f"{json.loads(payload)['verdict']}")
+                            except Exception as e:
+                                m = f"doctor failed: {e}"
+                                out = f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(m)}\r{m}\r\r"
                     elif cmd == "CLIPGET":
                         resp = server.clipboard_get()
                         out = resp if resp is not None else "No response"
