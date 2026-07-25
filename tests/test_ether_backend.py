@@ -132,7 +132,8 @@ def test_in_place_edit_stays_portable():
     # works on both. The BSD form silently no-ops under GNU sed — it "repaired"
     # nothing, which is how this reached CI (the repair tests run on Linux).
     with open(SCRIPT) as fh:
-        assert "sed -i" not in fh.read()
+        code = [l for l in fh if not l.lstrip().startswith("#")]
+    assert not any("sed -i" in l for l in code)   # the comment may name it
 
 
 def test_drift_between_two_real_backends_is_also_repaired():
