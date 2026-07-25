@@ -48,7 +48,14 @@ SERVER_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEFAULT_IF="$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')"
 DEFAULT_IF="${DEFAULT_IF:-en0}"
 
-echo "[1/4] Privileged network setup (admin password dialog)…"
+echo "[1/5] Emulator backend preflight…"
+# The prefs' "ether" backend must match the one this stack was set up for. slirp
+# in particular is deceptive: it passes TCP (so the bridge looks healthy) but
+# drops AppleTalk, which surfaces as an empty Chooser, not as a network fault.
+# Repairs by default; AB_KEEP_ETHER=1 reports and changes nothing.
+"$SERVER_DIR/check_ether_backend.sh" || true
+
+echo "[2/5] Privileged network setup (admin password dialog)…"
 echo "      .154 -> ${DEFAULT_IF} (default-route iface, where MACNAT exits)"
 PRIV="
 # .154 belongs on the DEFAULT-ROUTE interface, not the wired one.
@@ -70,7 +77,7 @@ if ifconfig "$STALE_BRIDGE" >/dev/null 2>&1; then
     echo "      WARN: $STALE_BRIDGE still present — etherhelper may SIGSEGV (fret == -10)."
 fi
 
-echo "[2/4] (Re)starting host server…"
+echo "[3/5] (Re)starting host server…"
 LABEL="de.390er.applebridge-host"
 if [ -f "$HOME/Library/LaunchAgents/$LABEL.plist" ]; then
     # Preferred path: the launchd agent owns the server. deploy_host.sh syncs the
@@ -87,14 +94,14 @@ else
     sleep 2
 fi
 
-echo "[3/4] Verifying host server is listening on $HOST_IP:9000…"
+echo "[4/5] Verifying host server is listening on $HOST_IP:9000…"
 if lsof -nP -iTCP:9000 -sTCP:LISTEN 2>/dev/null | grep -q "${HOST_IP}:9000"; then
     echo "      OK — bound to ${HOST_IP}:9000 (+ control on 127.0.0.1:9001)"
 else
     echo "      WARN: not listening. Last log lines:"; tail -n 6 /tmp/applebridge_server.log | sed 's/^/        /'
 fi
 
-echo "[4/4] Launching Basilisk II…"
+echo "[5/5] Launching Basilisk II…"
 open -a "$BASILISK_APP"
 
 echo
