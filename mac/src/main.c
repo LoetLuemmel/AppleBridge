@@ -666,6 +666,17 @@ void HandleMenuCommand(long menuResult)
         case APPLE_MENU_ID:
             if (menuItem == ABOUT_ITEM) {
                 ShowAboutBox();
+            } else {
+                /* Everything below the separator was added by AppendResMenu:
+                 * desk accessories, control panels, whatever lives in Apple Menu
+                 * Items. An application must hand those to OpenDeskAcc itself —
+                 * without this the entries are drawn but picking one does
+                 * NOTHING, silently (reported 2026-07-25: "with AppleBridge
+                 * frontmost you cannot open a control panel"; the same trap made
+                 * the Chooser unreachable from this app earlier that day). */
+                Str255 daName;
+                GetMenuItemText(gAppleMenu, menuItem, daName);
+                if (daName[0] > 0) OpenDeskAcc(daName);
             }
             break;
 
@@ -769,6 +780,18 @@ static void ComputeMonitorRect(Rect *r)
         gPrefs.winT >= scr.top + mbar && gPrefs.winL >= scr.left &&
         gPrefs.winB <= scr.bottom && gPrefs.winR <= scr.right) {
         SetRect(r, gPrefs.winL, gPrefs.winT, gPrefs.winR, gPrefs.winB);
+        /* The saved rect is the CONTENT rect; the title bar sits ABOVE it. The
+         * validity test above only keeps the content below the menu bar, so a
+         * window saved near the top reopens with its title bar hidden UNDER the
+         * menu bar — undraggable and unclosable by hand. Push it down instead of
+         * rejecting the position, keeping the user's size. (Seen 2026-07-25 as a
+         * "missing title bar" after a hide/show cycle; the same trap applies to
+         * the close-box reopen, so this repairs a stale prefs value too.) */
+        if (r->top < usableTop) {
+            short d = (short)(usableTop - r->top);
+            r->top = (short)(r->top + d);
+            r->bottom = (short)(r->bottom + d);
+        }
         return;
     }
     w = (short)(scr.right - scr.left - 8);    if (w > 480) w = 480;
@@ -1271,6 +1294,17 @@ static void DrawTelemetry(void)
     RGBForeColor(&cBlack);
     EraseRect(&foot);
 
+    /* Rule between the log body and the footer. Without it the last log line
+     * runs straight into the telemetry strip, which reads as a clipped window
+     * rather than as two areas (noticed 2026-07-25). */
+    MoveTo(0, (short)(h - 16));
+    LineTo((short)(w - 15), (short)(h - 16));
+
+    /* The grow box shares the bottom-right corner with the footer, so redraw it
+     * here too — otherwise the corner stays blank after anything that repaints
+     * this strip without a full window update. */
+    DrawGrowIcon(gStatusWindow);
+
     /* --- active transport + counters + latency number --- */
     b = StatStr(b, "NET ");    b = StatStr(b, ABTransportName());  b = StatStr(b, "  ");
     b = StatStr(b, "RX ");     b = StatDec(b, gRXCount);
@@ -1341,6 +1375,88 @@ static OSType ParseHexType(const char *s)
  */
 /* Returns true if the connection is still healthy, false if a response send
  * failed partway (the wire is then desynced and the caller must reconnect). */
+
+/*
+ * MONITOR:0|1 — hide or show the Verbose console over the bridge.
+ *
+ * The window covers the desktop, which is exactly wrong while the guest's GUI
+ * is being driven: clicking a disk icon or pulling a menu means aiming around
+ * it first. Its close box already exists, but a human closing a window is no
+ * help to an automated sequence.
+ *
+ * Hiding uses HideWindow rather than the close box's DisposeWindow: the log ring
+ * and the scroll position survive, so showing it again continues the same
+ * session instead of starting an empty one. If the window was closed outright
+ * (or never opened), MONITOR:1 opens a fresh one.
+ */
+Boolean MonitorVerb(ABConn *conn, char *request, long requestLen)
+{
+    short         i = (short)strlen(PROTO_MONITOR);
+    Boolean       show = true;
+    CommandResult res;
+    Handle        h;
+    const char   *state;
+    short         len, k;
+
+    res.exitCode = -1;
+    res.outData  = NULL;
+    res.outLen   = 0;
+    res.errData[0] = '\0';
+
+    if (i < requestLen && request[i] == ':') i++;
+    if (i < requestLen && (request[i] == '0' || request[i] == 'h' || request[i] == 'H'))
+        show = false;
+
+    if (show) {
+        if (gStatusWindow == NULL) {
+            OpenMonitor();                 /* was closed outright: build a new one */
+        } else {
+            ShowWindow(gStatusWindow);
+            SelectWindow(gStatusWindow);
+            /* ShowHide brings the window back but leaves its title bar
+             * unpainted, so it returns blank. Two calls finish the job, in this
+             * order: HiliteWindow paints the bar — with false, because a
+             * background application's window is legitimately INACTIVE and
+             * painting the active state left a hybrid the Window Manager never
+             * completed (stripes but no text) — and SetWTitle then fills in the
+             * title, which must come second or the hilite overpaints it.
+             *
+             * Do NOT repaint by moving the window instead: MoveWindow takes the
+             * STRUCTURE origin while the port gives the CONTENT origin, so a
+             * "move it back where it already is" nudge walks the window UP by a
+             * title-bar height each time until the bar vanishes under the menu
+             * bar. That was the actual cause of the disappearing title bar
+             * (diagnosed 2026-07-25), not a missing frame. */
+            HiliteWindow(gStatusWindow, false);
+            SetWTitle(gStatusWindow, "\pAppleBridge - Verbose");
+            SetPort(gStatusWindow);
+            InvalRect(&gStatusWindow->portRect);
+            gLogDirty = true;
+            gTickCounter = 0;              /* force the next ShowAlive to redraw */
+        }
+        state = (gStatusWindow != NULL) ? "shown" : "could not open";
+    } else {
+        if (gStatusWindow != NULL) HideWindow(gStatusWindow);
+        state = "hidden";
+    }
+
+    len = (short)strlen(state);
+    h = NewHandle(len + 1);
+    if (h != NULL) {
+        HLock(h);
+        for (k = 0; k < len; k++) (*h)[k] = state[k];
+        (*h)[len] = '\r';
+        HUnlock(h);
+    }
+    res.exitCode = 0;
+    res.outData  = h;
+    res.outLen   = (h != NULL) ? (len + 1) : 0;
+    SendCommandResult(conn, &res);
+    if (h != NULL) DisposeHandle(h);
+    return true;
+}
+
+
 Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
 {
     char responseBuffer[RESP_SCRATCH];   /* small: fixed verb/error strings only (was 64 KB on the stack) */
@@ -2626,6 +2742,26 @@ msinstall_reply:
         Boolean ok;
         SetActivity("LISTDIR");
         ok = ListDirVerb(conn, request, requestLen);
+        gLastTX = TickCount();
+        gTXCount++;
+        return ok;
+    }
+
+    /* DISKINFO: verb: volume totals via PBHGetVInfo (no ToolServer). */
+    if (strncmp(request, PROTO_DISKINFO, strlen(PROTO_DISKINFO)) == 0) {
+        Boolean ok;
+        SetActivity("DISKINFO");
+        ok = DiskInfoVerb(conn, request, requestLen);
+        gLastTX = TickCount();
+        gTXCount++;
+        return ok;
+    }
+
+    /* MONITOR: verb: hide/show the Verbose window (it covers the desktop). */
+    if (strncmp(request, PROTO_MONITOR, strlen(PROTO_MONITOR)) == 0) {
+        Boolean ok;
+        SetActivity("MONITOR");
+        ok = MonitorVerb(conn, request, requestLen);
         gLastTX = TickCount();
         gTXCount++;
         return ok;

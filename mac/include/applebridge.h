@@ -56,6 +56,8 @@
 #define PROTO_NBPLOOK "NBPLOOK"        /* host->daemon: AppleTalk NBP name lookup (no Chooser, no ToolServer) */
 #define PROTO_AFPMOUNT "AFPMOUNT"      /* host->daemon: mount an AppleShare volume (PBVolumeMount; 5th field is a PASSWORD) */
 #define PROTO_AFPUNMOUNT "AFPUNMOUNT"  /* host->daemon: unmount a volume by name */
+#define PROTO_DISKINFO "DISKINFO"      /* host->daemon: volume totals/free (PBHGetVInfo, no ToolServer) */
+#define PROTO_MONITOR "MONITOR"        /* host->daemon: hide/show the Verbose window (it covers the desktop) */
 
 /* Wire protocol version advertised in the HELLO reply (see docs/PROTOCOL_v0.2.md). */
 #define AB_PROTOCOL_VERSION 2
@@ -150,6 +152,18 @@ Boolean NbpLookupVerb(ABConn *conn, char *request, long requestLen);
  * so its request line is MASKED before it reaches the console/log. */
 Boolean AfpMountVerb(ABConn *conn, char *request, long requestLen);
 Boolean AfpUnmountVerb(ABConn *conn, char *request, long requestLen);
+
+/* Volume totals (fileio.c): size/free for one volume or every mounted one, via
+ * PBHGetVInfo — the sibling of LISTDIR, and like it independent of ToolServer
+ * (so it also answers on a machine that has none). One line per volume:
+ * name<TAB>vRefNum<TAB>totalBytes<TAB>freeBytes<CR> */
+Boolean DiskInfoVerb(ABConn *conn, char *request, long requestLen);
+
+/* Monitor window visibility (main.c): the Verbose console covers the desktop,
+ * which is in the way when the guest's GUI is being driven. MONITOR:0 hides it
+ * WITHOUT tearing it down (the log ring and scroll position survive), MONITOR:1
+ * shows it again, opening it first if it was closed outright. */
+Boolean MonitorVerb(ABConn *conn, char *request, long requestLen);
 
 /* events.c -- synthetic input injection (drive the front GUI app). */
 OSErr InjectKey(short charCode, short keyCode);

@@ -640,3 +640,117 @@ OSErr SwapSelf(void)
     }
     return noErr;
 }
+
+/* ---- DISKINFO: volume totals (no ToolServer) ----------------------------- */
+
+/*
+ * DISKINFO[:<volume>] — report size and free space for one volume, or for every
+ * mounted volume when no name is given.
+ *
+ * The sibling of LISTDIR: MPW's `Volumes -l` answers the same question but needs
+ * ToolServer, which a plain OS 9 or a freshly installed machine may not have.
+ * It also pairs with AFPMOUNT — having mounted a server volume, the next
+ * question is invariably how much room is on it.
+ *
+ * One line per volume:  name<TAB>vRefNum<TAB>totalBytes<TAB>freeBytes<CR>
+ *
+ * Sizes are computed as blocks * blockSize in UNSIGNED long arithmetic: a 2 GB
+ * volume overflows a signed long, and a negative "free space" would be worse
+ * than no answer at all.
+ */
+Boolean DiskInfoVerb(ABConn *conn, char *request, long requestLen)
+{
+    char           want[64];
+    short          n = 0, i;
+    Str255         nm;
+    HParamBlockRec pb;
+    Handle         h;
+    CommandResult  res;
+    Boolean        one;
+
+    res.exitCode = -1;
+    res.outData  = NULL;
+    res.outLen   = 0;
+    res.errData[0] = '\0';
+
+    i = LD_len(PROTO_DISKINFO);
+    if (i < requestLen && request[i] == ':') i++;
+    while (i < requestLen && request[i] != '\r' && request[i] != '\n'
+           && request[i] != '\0' && n < 62) {
+        want[n++] = request[i++];
+    }
+    want[n] = '\0';
+    /* A volume name must END with a colon here: without it the File Manager
+     * reads the string as a FILE name on the default volume and quietly answers
+     * about that volume instead — "DISKINFO:AppleShare" reported MeinMac until
+     * this was fixed (2026-07-25). Accept either spelling from the caller and
+     * normalise to exactly one colon. */
+    if (n > 0 && want[n - 1] != ':' && n < 62) { want[n++] = ':'; want[n] = '\0'; }
+    one = (n > 0);
+
+    h = NewHandle(0);
+    if (h == NULL) {
+        LD_cpy(res.errData, "out of memory");
+        SendCommandResult(conn, &res);
+        return true;
+    }
+
+    for (i = 1; ; i++) {
+        char          line[200];
+        short         p = 0, k, len;
+        unsigned long total, freeb, blk;
+
+        LD_zero(&pb, sizeof(pb));
+        pb.volumeParam.ioNamePtr = nm;
+        if (one) {
+            LD_CtoP(want, nm);
+            pb.volumeParam.ioVRefNum = 0;
+            pb.volumeParam.ioVolIndex = -1;   /* select by NAME */
+        } else {
+            nm[0] = 0;
+            pb.volumeParam.ioVRefNum = 0;
+            pb.volumeParam.ioVolIndex = i;    /* walk the mounted volumes */
+        }
+        if (PBHGetVInfoSync(&pb) != noErr) break;   /* past the last / no such volume */
+
+        blk   = (unsigned long)pb.volumeParam.ioVAlBlkSiz;
+        total = (unsigned long)((unsigned short)pb.volumeParam.ioVNmAlBlks) * blk;
+        freeb = (unsigned long)((unsigned short)pb.volumeParam.ioVFrBlk) * blk;
+
+        len = nm[0];
+        for (k = 0; k < len; k++) line[p++] = (char)nm[k + 1];
+        line[p++] = '\t';
+        LD_num(line, &p, (long)pb.volumeParam.ioVRefNum);
+        line[p++] = '\t';
+        LD_unum(line, &p, total);
+        line[p++] = '\t';
+        LD_unum(line, &p, freeb);
+        line[p++] = '\r';
+
+        {
+            long oldSize = GetHandleSize(h);
+            SetHandleSize(h, oldSize + p);
+            if (MemError() == noErr) {
+                HLock(h);
+                BlockMoveData(line, *h + oldSize, p);
+                HUnlock(h);
+            }
+        }
+        if (one) break;                        /* named volume: exactly one line */
+    }
+
+    if (GetHandleSize(h) == 0) {
+        DisposeHandle(h);
+        LD_cpy(res.errData, one ? "no such volume" : "no volumes mounted");
+        SendCommandResult(conn, &res);
+        return true;
+    }
+
+    res.exitCode = 0;
+    res.outData  = h;
+    res.outLen   = GetHandleSize(h);
+    res.errData[0] = '\0';
+    SendCommandResult(conn, &res);
+    DisposeHandle(h);
+    return true;
+}
