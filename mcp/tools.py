@@ -17,6 +17,7 @@ if _HOST_DIR not in sys.path:
     sys.path.insert(0, _HOST_DIR)
 import macbinary  # noqa: E402
 import bridge_doctor  # noqa: E402  (stdlib-only host-side stack probes)
+import guest_input  # noqa: E402  (real-mouse driving in guest coordinates)
 
 
 def _ostype(value, default="????") -> bytes:
@@ -354,6 +355,90 @@ daemon is down (so you can tell WHICH layer is broken):
 Diagnostic shortcut: daemon_connected but not toolserver_running => commands
 will come back empty; daemon not connected => the bridge/emulator is down.""",
         "inputSchema": {"type": "object", "properties": {}, "required": []}
+    },
+    {
+        "name": "mac_host_click",
+        "description": """Click the guest's REAL mouse — for controls synthetic clicks cannot reach.
+
+Menus, Standard File lists and other modal tracking loops POLL the hardware
+pointer, so mac_click (which sets the low-memory mouse for an instant) never
+reaches them. This moves the host's own cursor instead. LOCAL emulator only — a
+remote guest has no host cursor to borrow.
+
+Coordinates are GUEST coordinates: take a mac_screenshot, read the pixel
+position of the target off that image, and pass it here unchanged — the capture
+IS the guest framebuffer, so its pixels map 1:1.
+
+Refuses rather than acts when the point lies outside the emulated screen, or
+when the emulator cannot be brought to the front; either would put the click
+into another application. Brings the emulator forward and restores the previous
+front app afterwards.""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "Guest X (from a mac_screenshot image)"},
+                "y": {"type": "integer", "description": "Guest Y (from a mac_screenshot image)"},
+                "count": {"type": "integer", "description": "Clicks at that point (2 = double-click)"},
+                "modifiers": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "Held during the click: cmd, shift, option/alt, control/ctrl"
+                }
+            },
+            "required": ["x", "y"]
+        }
+    },
+    {
+        "name": "mac_host_menu",
+        "description": """Pull down a menu with the REAL mouse: press on the title, release on the item.
+
+The only reliable way to drive a menu in an arbitrary front app: MenuSelect is a
+tracking loop that polls the hardware pointer, and mac_menu's Command-key path
+only works for items that HAVE a shortcut.
+
+Both points are GUEST coordinates read off a mac_screenshot. Issued as ONE
+gesture — press, drag, release in a single motion. There is deliberately no
+"open the menu and look around" mode: a menu left open blocks the guest's event
+loop, which starves the background daemon and drops the bridge for ~30 s. So
+the item's position must be known BEFORE the call (from an earlier capture of
+that menu, or the app's known layout).
+
+LOCAL emulator only. Refuses if either point is off-screen.""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title_x": {"type": "integer", "description": "Guest X of the menu title in the menu bar"},
+                "title_y": {"type": "integer", "description": "Guest Y of the menu title (~9 for the menu bar)"},
+                "item_x": {"type": "integer", "description": "Guest X inside the dropped-down item"},
+                "item_y": {"type": "integer", "description": "Guest Y of the item"}
+            },
+            "required": ["title_x", "title_y", "item_x", "item_y"]
+        }
+    },
+    {
+        "name": "mac_host_screenshot",
+        "description": """Capture the guest screen HOST-side — works while the daemon is blocked.
+
+mac_screenshot streams the framebuffer from the daemon, so it returns nothing
+precisely when a modal dialog or an open menu owns the machine — which is when
+a picture is most needed. This grabs the emulator's window from the host
+instead, so it answers regardless.
+
+Use mac_screenshot normally (it is the guest's own framebuffer, unaffected by
+host window stacking); reach for this one when the bridge is stalled or the
+guest is inside a tracking loop. `region` is [x, y, w, h] in guest coordinates.
+
+LOCAL emulator only. Note the emulator window must be visible — an obscured
+window captures whatever covers it.""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "region": {
+                    "type": "array", "items": {"type": "integer"},
+                    "description": "Optional crop [x, y, width, height] in guest coordinates"
+                }
+            },
+            "required": []
+        }
     },
     {
         "name": "mac_appletalk_browse",
@@ -1489,6 +1574,94 @@ def bridge_doctor_tool() -> Dict[str, Any]:
         result["mac_status"] = {"success": False, "error": str(e)}
     return result
 
+def _host_input_error(e) -> Dict[str, Any]:
+    """A refusal from the input driver is a result, not an exception to hide.
+
+    Every one of these means a gesture did NOT happen — which is the point: the
+    alternative is a click landing in some other application.
+    """
+    return {"success": False, "error": str(e)}
+
+
+def mac_host_click(x: int, y: int, count: int = 1,
+                   modifiers: Optional[list] = None) -> Dict[str, Any]:
+    """Click the guest's REAL mouse at guest coordinates (local emulator only).
+
+    Coordinates are read straight off a mac_screenshot image — that capture IS
+    the guest framebuffer, so its pixels are guest coordinates 1:1.
+    """
+    hold = ",".join(modifiers) if modifiers else None
+    try:
+        with guest_input.Session() as s:
+            pt = s.point(int(x), int(y))
+            s.cliclick(guest_input.build_click(pt, count, hold))
+        return {"success": True, "guest": [int(x), int(y)], "host": list(pt),
+                "count": count, "modifiers": modifiers or []}
+    except guest_input.InputError as e:
+        return _host_input_error(e)
+
+
+def mac_host_menu(title_x: int, title_y: int,
+                  item_x: int, item_y: int) -> Dict[str, Any]:
+    """Pull down a menu with the REAL mouse: press on the title, release on the item.
+
+    Issued as ONE gesture on purpose. A menu left open blocks the guest's event
+    loop, which starves the background daemon and drops the bridge for ~30 s —
+    so there is deliberately no "open the menu and look" mode here.
+    """
+    try:
+        with guest_input.Session() as s:
+            g = s.geometry()
+            guest_input.check_in_bounds(int(title_x), int(title_y), g["guest_size"])
+            guest_input.check_in_bounds(int(item_x), int(item_y), g["guest_size"])
+            title = guest_input.guest_to_host(g["origin"], g["title_h"],
+                                              int(title_x), int(title_y))
+            item = guest_input.guest_to_host(g["origin"], g["title_h"],
+                                             int(item_x), int(item_y))
+            s.cliclick(guest_input.build_menu_gesture(title, item))
+        return {"success": True, "title": [int(title_x), int(title_y)],
+                "item": [int(item_x), int(item_y)]}
+    except guest_input.InputError as e:
+        return _host_input_error(e)
+
+
+def mac_host_screenshot(region: Optional[list] = None) -> Dict[str, Any]:
+    """Capture the guest screen HOST-side (works while the daemon is blocked).
+
+    mac_screenshot streams from the daemon, so it returns nothing exactly while
+    a modal dialog or menu owns the machine. This grabs the emulator window
+    instead. `region` is in guest coordinates, like every other argument here.
+    """
+    import tempfile
+    rect = None
+    if region is not None:
+        try:
+            rect = tuple(int(v) for v in region)
+            if len(rect) != 4:
+                raise ValueError
+        except (TypeError, ValueError):
+            return {"success": False,
+                    "error": "region must be [x, y, width, height] integers"}
+    path = os.path.join(tempfile.gettempdir(), "applebridge_host_shot.png")
+    try:
+        guest_input.capture(path, rect)
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except guest_input.InputError as e:
+        return _host_input_error(e)
+    except OSError as e:
+        return {"success": False, "error": f"capture failed: {e}"}
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    if not data:
+        return {"success": False, "error": "capture produced no image"}
+    return {"success": True, "image": base64.b64encode(data).decode("ascii"),
+            "format": "png", "region": list(rect) if rect else None}
+
+
 # Long enough for SC/Link round-trips (host gives these LONG_TIMEOUT=240s daemon-side).
 _BUILD_STEP_TIMEOUT = 250.0
 
@@ -1853,6 +2026,9 @@ TOOL_HANDLERS = {
     "mac_click": mac_click,
     "mac_status": mac_status,
     "mac_appletalk_browse": mac_appletalk_browse,
+    "mac_host_click": mac_host_click,
+    "mac_host_menu": mac_host_menu,
+    "mac_host_screenshot": mac_host_screenshot,
     "bridge_doctor": bridge_doctor_tool,
     "mac_build": mac_build,
     "mac_send_apple_event": mac_send_apple_event,
