@@ -304,25 +304,29 @@ def cmd_menu(args):
     return 0
 
 
-def cmd_shot(args):
-    """Capture the guest screen HOST-side.
+def capture(out_path, region=None, app=None, dry_run=False):
+    """Capture the guest screen HOST-side into out_path; returns the path.
 
     Deliberately not the bridge's screenshot: the daemon cannot answer while a
     menu or modal dialog owns the machine, which is exactly when a picture is
-    needed to find the next coordinate.
+    needed to find the next coordinate. `region` is in GUEST coordinates.
     """
-    s = Session(args.app, activate=False, dry_run=args.dry_run)
-    g = s.geometry()
-    region = parse_region(args.region) if args.region else None
+    g = Session(app, activate=False, dry_run=dry_run).geometry()
     x, y, w, h = build_capture_region(g["origin"], g["title_h"],
                                       g["guest_size"], region)
-    out = args.out or "guest.png"
-    argv = ["screencapture", "-x", f"-R{x},{y},{w},{h}", out]
-    if args.dry_run:
+    argv = ["screencapture", "-x", f"-R{x},{y},{w},{h}", out_path]
+    if dry_run:
         print(" ".join(argv))
-        return 0
+        return out_path
     _run(argv)
-    print(out)
+    return out_path
+
+
+def cmd_shot(args):
+    region = parse_region(args.region) if args.region else None
+    out = capture(args.out or "guest.png", region, args.app, args.dry_run)
+    if not args.dry_run:
+        print(out)
     return 0
 
 
