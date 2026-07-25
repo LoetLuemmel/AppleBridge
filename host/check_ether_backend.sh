@@ -73,7 +73,17 @@ backup="$PREFS.bak-ether-$(date +%Y%m%d-%H%M%S)"
 cp "$PREFS" "$backup"
 if [ -n "$current" ]; then
     # Only the backend token changes; every other pref is left untouched.
-    sed -i '' "s|^ether[ \t].*$|ether $intended|" "$PREFS"
+    #
+    # Rewrite via awk + mv rather than `sed -i`: the in-place flag takes an
+    # argument on BSD sed and none on GNU sed, so no single spelling works on
+    # both — and the tests run on Linux CI while the script itself targets
+    # macOS. A GNU sed silently treated the BSD form's '' as the script and
+    # left the file untouched, i.e. it "repaired" nothing. Also collapses a
+    # duplicate `ether` key, which would otherwise stay ambiguous.
+    tmp="$PREFS.tmp.$$"
+    awk -v want="ether $intended" \
+        '/^ether[ \t]/ { if (!seen) { print want; seen = 1 } ; next } { print }' \
+        "$PREFS" > "$tmp" && mv "$tmp" "$PREFS"
 else
     printf 'ether %s\n' "$intended" >> "$PREFS"     # key was missing entirely
 fi

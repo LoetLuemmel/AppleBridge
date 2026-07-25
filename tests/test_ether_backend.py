@@ -106,6 +106,35 @@ def test_repair_touches_only_the_ether_line():
     assert text.count("ether ") == 1       # replaced, not appended
 
 
+def test_repair_collapses_a_duplicate_ether_key():
+    # Two `ether` lines leave the effective backend ambiguous; the repair must
+    # end with exactly one.
+    d = tempfile.mkdtemp()
+    try:
+        prefs = os.path.join(d, "prefs")
+        with open(prefs, "w") as fh:
+            fh.write("screen win/1024/768\nether slirp\nether slirp\nramsize 1\n")
+        netmode = prefs + ".netmode"
+        with open(netmode, "w") as fh:
+            fh.write("etherhelper/en8\n")
+        subprocess.run(["bash", SCRIPT, prefs, netmode], capture_output=True)
+        with open(prefs) as fh:
+            text = fh.read()
+        assert text.count("ether ") == 1
+        assert "ether etherhelper/en8" in text
+        assert "ramsize 1" in text
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_in_place_edit_stays_portable():
+    # `sed -i` takes an argument on BSD and none on GNU, so no single spelling
+    # works on both. The BSD form silently no-ops under GNU sed — it "repaired"
+    # nothing, which is how this reached CI (the repair tests run on Linux).
+    with open(SCRIPT) as fh:
+        assert "sed -i" not in fh.read()
+
+
 def test_drift_between_two_real_backends_is_also_repaired():
     # Not slirp-specific: any mismatch against the recorded intent is drift.
     rc, out, ether, _, _ = run(ether="etherhelper/en0", netmode="etherhelper/en8")
