@@ -2,6 +2,23 @@
 
 This document contains solutions to common issues, historical fixes, and known limitations.
 
+## Start here: `bridge_doctor`
+
+Before reading any section below, run the cross-layer diagnosis — it probes the
+whole stack in one call and names the layer that is actually broken, with a
+literal fix command:
+
+```bash
+/usr/bin/python3 host/bridge_doctor.py        # or the bridge_doctor MCP tool
+printf 'DOCTOR\n\n' | nc localhost 9001       # same report via the control port
+```
+
+It answers even when the host server is down, and it catches the four causes
+that otherwise all present identically as "Mac not connected": a `disable`d
+launchd job, a `.154` alias duplicated onto a second NIC, a `slirp` emulator
+backend (TCP works, AppleTalk does not — see *Chooser finds no AppleShare
+server* below), and a dead `etherhelpertool`.
+
 ## Table of Contents
 
 - [Apple Events Issues](#apple-events-issues)
@@ -231,6 +248,31 @@ Full write-up: <https://pit.390er.de/applebridge/anatomy-of-a-freeze-macnat-retu
    Mac: Quit AppleBridge, restart ToolServer, relaunch AppleBridge
    Host: host_server.py re-accepts the daemon automatically
    ```
+
+### Chooser finds no AppleShare server (but the bridge works fine)
+
+**Symptom:** the guest's Chooser shows the AppleShare icon with an empty server
+list — while `Echo HELLO` over the bridge returns `STATUS:0` and TCP/IP in the
+guest reports an address like `10.0.2.15`.
+
+**Cause:** the emulator is running the **slirp** Ethernet backend
+(`ether slirp` in `~/.basilisk_ii_prefs`). slirp is a user-mode **IP-only** NAT:
+it forwards TCP/UDP over IPv4 and silently drops everything else — including
+AppleTalk/EtherTalk frames, which is what the System 7 Chooser uses to find
+file servers. So the bridge (plain TCP) keeps working and only AppleTalk dies,
+which makes this look like a broken AppleShare extension rather than a network
+setting. A second tell: `pgrep -fl etherhelpertool` is empty, because on slirp
+no helper is spawned.
+
+**Fix:** switch back to the wired backend and relaunch the emulator.
+
+```bash
+sed -i '' 's|^ether slirp$|ether etherhelper/en8|' ~/.basilisk_ii_prefs
+host/start_stack.sh          # also puts .154 back on the default-route interface
+```
+
+`bridge_doctor` reports this as the `ether_slirp` finding, and flags any drift
+from the backend recorded in `~/.basilisk_ii_prefs.netmode`.
 
 ---
 
