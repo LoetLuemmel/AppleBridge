@@ -5,7 +5,7 @@
 # limit, else Link "Error 48: PC-relative edit, offset out of range".
 #   SC -i :include: -model far :src:main.c -o :obj:main.c.o
 Set LIBS 'MeinMac:Interfaces&Libraries:Libraries:'
-Link -model far -o :bin:AppleBridge.new :obj:main.c.o :obj:transport.c.o :obj:transport_ot.c.o :obj:transport_mactcp.c.o :obj:transport_serial.c.o :obj:protocol.c.o :obj:command.c.o :obj:screenshot.c.o :obj:fileio.c.o :obj:events.c.o :obj:utils.c.o :obj:mystring.c.o :obj:prefs.c.o :obj:auth.c.o "{LIBS}CLibraries:StdCLib.o" "{LIBS}Libraries:OpenTransport.o" "{LIBS}Libraries:OpenTransportApp.o" "{LIBS}Libraries:OpenTptInet.o" "{LIBS}Libraries:Interface.o" "{LIBS}Libraries:MacRuntime.o"
+Link -model far -o :bin:AppleBridge.new :obj:main.c.o :obj:transport.c.o :obj:transport_ot.c.o :obj:transport_mactcp.c.o :obj:transport_serial.c.o :obj:protocol.c.o :obj:command.c.o :obj:screenshot.c.o :obj:fileio.c.o :obj:events.c.o :obj:utils.c.o :obj:mystring.c.o :obj:prefs.c.o :obj:auth.c.o :obj:nbp.c.o "{LIBS}CLibraries:StdCLib.o" "{LIBS}Libraries:OpenTransport.o" "{LIBS}Libraries:OpenTransportApp.o" "{LIBS}Libraries:OpenTptInet.o" "{LIBS}Libraries:Interface.o" "{LIBS}Libraries:MacRuntime.o"
 Rez AppleBridge_res.r -a -o :bin:AppleBridge.new
 Rez vers.r -a -o :bin:AppleBridge.new
 SetFile -t APPL -c 'ABrg' :bin:AppleBridge.new

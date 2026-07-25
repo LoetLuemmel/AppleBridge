@@ -53,6 +53,7 @@
 #define PROTO_AUTH2 "AUTH2:"           /* host->daemon: host's proof of the shared token (v0.2) */
 #define PROTO_SWAPSELF "SWAPSELF"      /* host->daemon: rename the staged '<name> new' binary over the running daemon (self-update) */
 #define PROTO_SHUTDOWN "SHUTDOWN"      /* host->daemon: clean System 7 power-off via the Shutdown Manager (ShutDwnPower) */
+#define PROTO_NBPLOOK "NBPLOOK"        /* host->daemon: AppleTalk NBP name lookup (no Chooser, no ToolServer) */
 
 /* Wire protocol version advertised in the HELLO reply (see docs/PROTOCOL_v0.2.md). */
 #define AB_PROTOCOL_VERSION 2
@@ -134,6 +135,12 @@ Boolean ReadFileVerb(ABConn *conn, char *request, long requestLen);
  * `Files` path). One line per entry: name<TAB>type<TAB>creator<TAB>size<TAB>modSecs<CR> */
 Boolean ListDirVerb(ABConn *conn, char *request, long requestLen);
 OSErr SwapSelf(void);   /* self-update: rename '<name> new' over the running daemon */
+
+/* AppleTalk name lookup (nbp.c): list the entities the Chooser would show —
+ * file servers, printers, workstations — via NBP instead of driving the Chooser
+ * (a modal tracking loop a faceless daemon cannot reach). One line per entity:
+ * object<TAB>type<TAB>zone<TAB>net.node.socket<CR> */
+Boolean NbpLookupVerb(ABConn *conn, char *request, long requestLen);
 
 /* events.c -- synthetic input injection (drive the front GUI app). */
 OSErr InjectKey(short charCode, short keyCode);

@@ -30,7 +30,7 @@ LIBS_LIST = "{LIBS}CLibraries:StdCLib.o" "{LIBS}Libraries:OpenTransport.o" "{LIB
 # The transport seam: transport.c (dispatcher) + transport_ot.c (Open Transport
 # backend, was network.c) + transport_mactcp.c (MacTCP backend). MacTCP needs no
 # extra library — its driver calls (PBControl/OpenDriver) resolve via Interface.o.
-OBJS = {OBJ_DIR}main.c.o {OBJ_DIR}transport.c.o {OBJ_DIR}transport_ot.c.o {OBJ_DIR}transport_mactcp.c.o {OBJ_DIR}transport_serial.c.o {OBJ_DIR}protocol.c.o {OBJ_DIR}command.c.o {OBJ_DIR}screenshot.c.o {OBJ_DIR}fileio.c.o {OBJ_DIR}events.c.o {OBJ_DIR}utils.c.o {OBJ_DIR}mystring.c.o {OBJ_DIR}prefs.c.o {OBJ_DIR}auth.c.o
+OBJS = {OBJ_DIR}main.c.o {OBJ_DIR}transport.c.o {OBJ_DIR}transport_ot.c.o {OBJ_DIR}transport_mactcp.c.o {OBJ_DIR}transport_serial.c.o {OBJ_DIR}protocol.c.o {OBJ_DIR}command.c.o {OBJ_DIR}screenshot.c.o {OBJ_DIR}fileio.c.o {OBJ_DIR}events.c.o {OBJ_DIR}utils.c.o {OBJ_DIR}mystring.c.o {OBJ_DIR}prefs.c.o {OBJ_DIR}auth.c.o {OBJ_DIR}nbp.c.o
 
 # Default target
 all ƒ {BIN_DIR}AppleBridge
@@ -87,9 +87,12 @@ all ƒ {BIN_DIR}AppleBridge
 {OBJ_DIR}auth.c.o ƒ {SRC_DIR}auth.c {INC_DIR}auth.h
 	{CC} {CFLAGS} {SRC_DIR}auth.c -o {OBJ_DIR}auth.c.o
 
+{OBJ_DIR}nbp.c.o ƒ {SRC_DIR}nbp.c {INC_DIR}applebridge.h
+	{CC} {CFLAGS} {SRC_DIR}nbp.c -o {OBJ_DIR}nbp.c.o
+
 # Clean target
 clean ƒ
-	Delete -i {OBJ_DIR}main.c.o {OBJ_DIR}transport.c.o {OBJ_DIR}transport_ot.c.o {OBJ_DIR}transport_mactcp.c.o {OBJ_DIR}transport_serial.c.o {OBJ_DIR}protocol.c.o {OBJ_DIR}command.c.o {OBJ_DIR}screenshot.c.o {OBJ_DIR}fileio.c.o {OBJ_DIR}utils.c.o {OBJ_DIR}mystring.c.o {OBJ_DIR}prefs.c.o {OBJ_DIR}auth.c.o || Set Status 0
+	Delete -i {OBJ_DIR}main.c.o {OBJ_DIR}transport.c.o {OBJ_DIR}transport_ot.c.o {OBJ_DIR}transport_mactcp.c.o {OBJ_DIR}transport_serial.c.o {OBJ_DIR}protocol.c.o {OBJ_DIR}command.c.o {OBJ_DIR}screenshot.c.o {OBJ_DIR}fileio.c.o {OBJ_DIR}utils.c.o {OBJ_DIR}mystring.c.o {OBJ_DIR}prefs.c.o {OBJ_DIR}auth.c.o {OBJ_DIR}nbp.c.o || Set Status 0
 	Delete -i {BIN_DIR}AppleBridge || Set Status 0
 
 # Create directories

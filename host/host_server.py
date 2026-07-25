@@ -52,6 +52,11 @@ LONG_CMDS = {
 DEFAULT_TIMEOUT = 15.0
 LONG_TIMEOUT = 240.0   # multi-MB transfers (large DumpFile/Catenate) over OT
 SCREENSHOT_TIMEOUT = 30.0   # full-screen pixmap transfer + decode
+# NBP always runs its full retry window before answering (it cannot know when
+# the last reply has arrived), so the daemon needs ~3 s of protocol time before
+# it sends anything. Budget well above that so a busy zone can't look like a
+# timeout.
+NBP_TIMEOUT = 20.0
 
 # Application-level heartbeat (design: /applebridge/designing-an-application-level-heartbeat/).
 # The host is the ACTIVE party: during idle it PINGs the daemon every
@@ -591,6 +596,28 @@ class AppleBridgeServer:
             return None
         log(f"LISTDIR {mac_path!r}")
         return self._read_framed_response(DEFAULT_TIMEOUT, label="LISTDIR")
+
+    def nbp_lookup(self, args):
+        """NBPLOOK[:type[:zone[:object]]]: AppleTalk name lookup on the guest.
+
+        STDOUT is one entity per line: object\\ttype\\tzone\\tnet.node.socket.
+        The daemon's lookup runs its full NBP retry window (~3 s) before it can
+        answer — that is protocol, not a stall — so this gets its own timeout
+        above the retry budget instead of the 15 s default's implicit slack.
+        """
+        if not self.connected or not self.client_socket:
+            return None
+        if not self._drain():
+            self._mark_disconnected("drain detected closed socket")
+            return None
+        verb = "NBPLOOK" + (":" + args if args else "")
+        try:
+            self.client_socket.sendall(verb.encode("mac_roman", errors="replace"))
+        except OSError as e:
+            self._mark_disconnected(f"send failed: {e}")
+            return None
+        log(f"NBPLOOK {args!r}")
+        return self._read_framed_response(NBP_TIMEOUT, label="NBPLOOK")
 
     def clipboard_set(self, data):
         """CLIPSET: replace the guest TEXT scrap. Length-framed raw bytes."""
@@ -1267,6 +1294,12 @@ def run_control_server(server):
                         # LISTDIR:<path> -> native directory listing (no ToolServer)
                         mac_path = cmd[len("LISTDIR:"):]
                         resp = server.list_dir(mac_path)
+                        out = resp if resp is not None else "No response"
+                    elif cmd == "NBPLOOK" or cmd.startswith("NBPLOOK:"):
+                        # NBPLOOK[:type[:zone[:object]]] -> AppleTalk entities
+                        # the guest can see (the Chooser's list, headless).
+                        args = cmd[len("NBPLOOK:"):] if ":" in cmd else ""
+                        resp = server.nbp_lookup(args)
                         out = resp if resp is not None else "No response"
                     elif cmd.startswith("READFILE:"):
                         mac_path = cmd[len("READFILE:"):]
