@@ -2622,6 +2622,16 @@ msinstall_reply:
         return ok;
     }
 
+    /* NBPLOOK: verb: AppleTalk name lookup (no Chooser, no ToolServer). */
+    if (strncmp(request, PROTO_NBPLOOK, strlen(PROTO_NBPLOOK)) == 0) {
+        Boolean ok;
+        SetActivity("NBPLOOK");
+        ok = NbpLookupVerb(conn, request, requestLen);
+        gLastTX = TickCount();
+        gTXCount++;
+        return ok;
+    }
+
     /* Parse command */
     result = ParseCommand(request, command, &commandLength);
     if (result != kBridgeNoErr) {

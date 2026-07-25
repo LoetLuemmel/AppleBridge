@@ -356,6 +356,46 @@ will come back empty; daemon not connected => the bridge/emulator is down.""",
         "inputSchema": {"type": "object", "properties": {}, "required": []}
     },
     {
+        "name": "mac_appletalk_browse",
+        "description": """List the AppleTalk entities the classic Mac can see — headless, no Chooser.
+
+This is the Chooser's list (file servers, printers, other Macs) obtained via an
+NBP name lookup in the daemon. It needs neither ToolServer nor GUI driving: the
+Chooser's own list is built by a modal tracking loop a background daemon cannot
+reach, and opening it host-side means taking over the real mouse.
+
+  entity_type — NBP type. Default "AFPServer" (what the Chooser's AppleShare
+                icon shows). Others: "LaserWriter", "Workstation", or "=" for
+                every type on the network.
+  zone        — AppleTalk zone; default "*" (this Mac's own zone, which on a
+                single-zone network is the whole network).
+  name        — entity name; default "=" (all names of that type).
+
+Returns `entities`, each with name / type / zone / address (net.node.socket).
+Takes ~3 s: NBP always runs its full retry window before it can answer.
+
+An empty list means nothing answered; AppleTalk being switched off is reported
+as an explicit error instead, since the two call for very different fixes.""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity_type": {
+                    "type": "string",
+                    "description": "NBP entity type (default \"AFPServer\"; \"=\" for all types)"
+                },
+                "zone": {
+                    "type": "string",
+                    "description": "AppleTalk zone (default \"*\" = this Mac's own zone)"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Entity name to match (default \"=\" = all names)"
+                }
+            },
+            "required": []
+        }
+    },
+    {
         "name": "bridge_doctor",
         "description": """Diagnose the WHOLE stack in one call — use this the moment anything looks down.
 
@@ -377,8 +417,7 @@ server itself is dead:
 Returns `verdict` (ok/info/warn/error), a ranked `findings` list where each
 entry carries a literal `fix` command, the raw `probes`, and a preformatted
 `text` report. Also merges mac_status when the control port is reachable.""",
-        "inputSchema": {"type": "object", "properties": {}, "required": []}
-    },
+        "inputSchema": {"type": "object", "properties": {}, "required": []}    },
     {
         "name": "mac_build",
         "description": """Build a 68K project on the Mac in ONE verified call.
@@ -1378,6 +1417,48 @@ def mac_status() -> Dict[str, Any]:
     }
 
 
+def mac_appletalk_browse(entity_type: str = "AFPServer", zone: str = "*",
+                         name: str = "=") -> Dict[str, Any]:
+    """List visible AppleTalk entities via the daemon's NBP lookup.
+
+    The wire verb takes its fields positionally (type:zone:object), so the
+    arguments are ordered here to match rather than named on the wire.
+    """
+    verb = "NBPLOOK:{}:{}:{}".format(entity_type or "AFPServer",
+                                     zone or "*", name or "=")
+    try:
+        conn = get_connection()
+        # Above the daemon's ~3 s NBP retry window plus transport slack.
+        status, stdout, stderr = conn.send_command(verb, timeout=25.0)
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+    if status != 0:
+        # AppleTalk off / driver error — distinct from "nothing answered".
+        return {"success": False, "error": stderr or stdout or "NBP lookup failed",
+                "entity_type": entity_type, "zone": zone}
+
+    entities = []
+    for line in (stdout or "").replace("\r", "\n").split("\n"):
+        if not line.strip():
+            continue
+        f = line.split("\t")
+        if len(f) >= 4:
+            entities.append({"name": f[0], "type": f[1], "zone": f[2],
+                             "address": f[3]})
+    return {
+        "success": True,
+        "entity_type": entity_type,
+        "zone": zone,
+        "count": len(entities),
+        "entities": entities,
+        # A lookup that answers with nothing is a valid result, not an error —
+        # say so, so an empty list doesn't read as a broken call.
+        "note": (stderr or None) if stderr else
+                (None if entities else "no entities answered this lookup"),
+    }
+
+
 def bridge_doctor_tool() -> Dict[str, Any]:
     """Cross-layer stack diagnosis.
 
@@ -1407,7 +1488,6 @@ def bridge_doctor_tool() -> Dict[str, Any]:
     except Exception as e:
         result["mac_status"] = {"success": False, "error": str(e)}
     return result
-
 
 # Long enough for SC/Link round-trips (host gives these LONG_TIMEOUT=240s daemon-side).
 _BUILD_STEP_TIMEOUT = 250.0
@@ -1772,6 +1852,7 @@ TOOL_HANDLERS = {
     "mac_menu_front": mac_menu_front,
     "mac_click": mac_click,
     "mac_status": mac_status,
+    "mac_appletalk_browse": mac_appletalk_browse,
     "bridge_doctor": bridge_doctor_tool,
     "mac_build": mac_build,
     "mac_send_apple_event": mac_send_apple_event,
