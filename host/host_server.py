@@ -1394,6 +1394,14 @@ def run_control_server(server):
                         args = cmd[len("NBPLOOK:"):] if ":" in cmd else ""
                         resp = server.nbp_lookup(args)
                         out = resp if resp is not None else "No response"
+                    elif cmd == "DISKINFO" or cmd.startswith("DISKINFO:"):
+                        # DISKINFO[:<volume>] -> name/vRefNum/total/free per line
+                        resp = server.send_raw(cmd)
+                        out = resp if resp is not None else "No response"
+                    elif cmd == "MONITOR" or cmd.startswith("MONITOR:"):
+                        # MONITOR:0|1 -> hide/show the daemon's Verbose window
+                        resp = server.send_raw(cmd)
+                        out = resp if resp is not None else "No response"
                     elif cmd.startswith("AFPMOUNT:"):
                         # AFPMOUNT:<zone>:<server>:<volume>:<user>:<password>[:<uam>]
                         # The password must not reach the log: name only the

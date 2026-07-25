@@ -6,7 +6,14 @@
  * the classic way to tell builds apart (replacing ad-hoc names like
  * "AppleBridge5"). One 'vers' file stamps the whole suite uniformly.
  *
- * This build: 0.8 development — d26 adds AFPMOUNT/AFPUNMOUNT, the companion to d25's
+ * This build: 0.8 development — d27 adds two small verbs that both came out of using
+ * the bridge: DISKINFO[:<vol>] reports size/free per volume via PBHGetVInfo (the sibling
+ * of LISTDIR — no ToolServer, so it also answers where none is installed, and it is the
+ * question that follows every AFPMOUNT), and MONITOR:0|1 hides/shows the Verbose console
+ * over the bridge. The console covers the desktop, which is in the way while the guest's
+ * GUI is driven; hiding uses HideWindow, NOT the close box's DisposeWindow, so the log
+ * ring and scroll position survive and showing it resumes the same session.
+ * d26 adds AFPMOUNT/AFPUNMOUNT, the companion to d25's
  * lookup: having FOUND a file server without the Chooser, mount it without the Chooser
  * too (PBVolumeMount with a hand-built AFPVolMountInfo). Guest or cleartext UAM, no
  * interaction bit (a faceless daemon must never raise a login dialog), and the server's
@@ -74,16 +81,16 @@
 
 resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
-    development, 0x26,   /* development stage, non-release revision 26 (BCD) */
+    development, 0x27,   /* development stage, non-release revision 27 (BCD) */
     verUS,
-    "0.8d26",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d26 - AFPMOUNT: mount an AppleShare volume without the Chooser"  /* long -> Get Info */
+    "0.8d27",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d27 - DISKINFO volume totals + MONITOR window toggle"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
-    development, 0x26,
+    development, 0x27,
     verUS,
-    "0.8d26",
+    "0.8d27",
     "AppleBridge"        /* the shared/suite version line */
 };

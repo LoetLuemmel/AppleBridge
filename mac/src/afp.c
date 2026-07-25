@@ -306,9 +306,11 @@ Boolean AfpUnmountVerb(ABConn *conn, char *request, long requestLen)
         return true;
     }
 
-    /* A trailing colon is how volumes are written everywhere else in this
-     * protocol; the File Manager wants the bare name. */
-    if (volume[n - 1] == ':') volume[--n] = '\0';
+    /* The name must END with a colon: without one the File Manager treats it as
+     * a FILE name on the default volume, so an unmount request would silently
+     * aim at the boot volume instead of the named one (found while fixing the
+     * same bug in DISKINFO, 2026-07-25). Normalise to exactly one colon. */
+    if (volume[n - 1] != ':' && n < 62) { volume[n++] = ':'; volume[n] = '\0'; }
     AF_CtoP(volume, pVol);
 
     AF_zero(&pb, sizeof(pb));
