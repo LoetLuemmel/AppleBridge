@@ -1382,10 +1382,19 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
     if (strncmp(request, PROTO_COMMAND, strlen(PROTO_COMMAND)) != 0) {
         char  vt[LOG_W];
         short vk;
-        for (vk = 0; vk < LOG_W - 1 && request[vk] &&
-                     request[vk] != '\r' && request[vk] != '\n'; vk++)
+        /* AFPMOUNT's 5th field is a password. The console keeps a scrollback,
+         * so a logged password outlives the call — keep zone/server/volume and
+         * mask everything from the user field on. */
+        short mask = (strncmp(request, PROTO_AFPMOUNT,
+                              strlen(PROTO_AFPMOUNT)) == 0) ? 3 : -1;
+        short colons = 0;
+        for (vk = 0; vk < LOG_W - 5 && request[vk] &&
+                     request[vk] != '\r' && request[vk] != '\n'; vk++) {
+            if (mask >= 0 && request[vk] == ':' && colons++ == mask) break;
             vt[vk] = request[vk];
+        }
         vt[vk] = '\0';
+        if (mask >= 0 && colons > mask) strcat(vt, ":***");
         if (strncmp(request, "PING", 4) == 0 ||
             strncmp(request, PROTO_STAT, strlen(PROTO_STAT)) == 0)
             AddLogLine(vt, 1);   /* heartbeat -> detail (hidden when collapsed) */
@@ -2627,6 +2636,24 @@ msinstall_reply:
         Boolean ok;
         SetActivity("NBPLOOK");
         ok = NbpLookupVerb(conn, request, requestLen);
+        gLastTX = TickCount();
+        gTXCount++;
+        return ok;
+    }
+
+    /* AFPMOUNT/AFPUNMOUNT verbs: mount an AppleShare volume with no Chooser. */
+    if (strncmp(request, PROTO_AFPMOUNT, strlen(PROTO_AFPMOUNT)) == 0) {
+        Boolean ok;
+        SetActivity("AFPMOUNT");     /* never the arguments: they hold a password */
+        ok = AfpMountVerb(conn, request, requestLen);
+        gLastTX = TickCount();
+        gTXCount++;
+        return ok;
+    }
+    if (strncmp(request, PROTO_AFPUNMOUNT, strlen(PROTO_AFPUNMOUNT)) == 0) {
+        Boolean ok;
+        SetActivity("AFPUNMOUNT");
+        ok = AfpUnmountVerb(conn, request, requestLen);
         gLastTX = TickCount();
         gTXCount++;
         return ok;

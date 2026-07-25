@@ -62,6 +62,9 @@ SCREENSHOT_TIMEOUT = 30.0   # full-screen pixmap transfer + decode
 # it sends anything. Budget well above that so a busy zone can't look like a
 # timeout.
 NBP_TIMEOUT = 20.0
+# Mounting talks to a file server over AppleTalk (name lookup, login, volume
+# open), so it needs more room than a local File Manager call.
+AFP_TIMEOUT = 45.0
 
 # Application-level heartbeat (design: /applebridge/designing-an-application-level-heartbeat/).
 # The host is the ACTIVE party: during idle it PINGs the daemon every
@@ -120,6 +123,39 @@ SERIAL_DEVICE = os.environ.get("APPLEBRIDGE_SERIAL") or None
 SERIAL_BAUD = int(os.environ.get("APPLEBRIDGE_BAUD", "9600"))
 
 _logf = open(LOG_PATH, "a", buffering=1)  # line-buffered
+
+
+def redact_secrets(text):
+    """Mask the password in an AFP-shaped request before it is logged.
+
+    AFPMOUNT carries `zone:server:volume:user:password[:uam]`, so everything
+    from the 4th colon on is sensitive. Matching on the "AFP" prefix rather
+    than the exact verb is deliberate: the routed verbs never reach the verbatim
+    logger, so what DOES arrive here is a typo — exactly the case that would
+    otherwise write a real password into a long-lived log file.
+    """
+    if not text.startswith("AFP"):
+        return text
+    parts = text.split(":")
+    if len(parts) <= 4:
+        return text
+    return ":".join(parts[:4]) + ":***"
+
+
+def afp_log_label(cmd):
+    """The log line for an AFP verb — never the request itself.
+
+    AFPMOUNT's 5th field is a password, so the label names only WHERE the mount
+    goes (server:volume). Keeping this a function rather than an f-string in the
+    dispatcher is what makes it testable: a regression here writes credentials
+    into a long-lived log file, which no live test would notice.
+    """
+    f = cmd.split(":")
+    if cmd.startswith("AFPMOUNT:"):
+        return "AFPMOUNT " + (":".join(f[2:4]) if len(f) > 3 else "?")
+    if cmd.startswith("AFPUNMOUNT:"):
+        return "AFPUNMOUNT " + cmd[len("AFPUNMOUNT:"):]
+    return cmd.split()[0] if cmd else "?"
 
 
 class SerialConn:
@@ -623,6 +659,27 @@ class AppleBridgeServer:
             return None
         log(f"NBPLOOK {args!r}")
         return self._read_framed_response(NBP_TIMEOUT, label="NBPLOOK")
+
+    def afp_verb(self, verb, log_label):
+        """AFPMOUNT/AFPUNMOUNT: mount or unmount an AppleShare volume.
+
+        `log_label` is logged INSTEAD of the verb: an AFPMOUNT request carries a
+        password in the clear, and this log file is long-lived. Mounting talks
+        to a server over AppleTalk, so it gets the long timeout rather than the
+        15 s default.
+        """
+        if not self.connected or not self.client_socket:
+            return None
+        if not self._drain():
+            self._mark_disconnected("drain detected closed socket")
+            return None
+        try:
+            self.client_socket.sendall(verb.encode("mac_roman", errors="replace"))
+        except OSError as e:
+            self._mark_disconnected(f"send failed: {e}")
+            return None
+        log(log_label)
+        return self._read_framed_response(AFP_TIMEOUT, label=log_label.split()[0])
 
     def clipboard_set(self, data):
         """CLIPSET: replace the guest TEXT scrap. Length-framed raw bytes."""
@@ -1337,6 +1394,15 @@ def run_control_server(server):
                         args = cmd[len("NBPLOOK:"):] if ":" in cmd else ""
                         resp = server.nbp_lookup(args)
                         out = resp if resp is not None else "No response"
+                    elif cmd.startswith("AFPMOUNT:"):
+                        # AFPMOUNT:<zone>:<server>:<volume>:<user>:<password>[:<uam>]
+                        # The password must not reach the log: name only the
+                        # server and volume (fields 2 and 3).
+                        resp = server.afp_verb(cmd, afp_log_label(cmd))
+                        out = resp if resp is not None else "No response"
+                    elif cmd.startswith("AFPUNMOUNT:"):
+                        resp = server.afp_verb(cmd, afp_log_label(cmd))
+                        out = resp if resp is not None else "No response"
                     elif cmd.startswith("READFILE:"):
                         mac_path = cmd[len("READFILE:"):]
                         got = server.get_file(mac_path)
@@ -1381,7 +1447,11 @@ def run_control_server(server):
                         resp = server.send_raw(cmd)   # raw, not COMMAND-wrapped
                         out = resp if resp is not None else "No response"
                     else:
-                        log(f"cmd: {cmd[:60]!r}")
+                        # Anything unrouted is logged verbatim — which is fine
+                        # for MPW commands, but a MISTYPED AFP verb ("AFPMNT:")
+                        # lands here too, and its 5th field is a password. Mask
+                        # any AFP-shaped request before it reaches the log file.
+                        log(f"cmd: {redact_secrets(cmd)[:60]!r}")
                         resp = server.send_command(cmd)
                         out = resp if resp is not None else "No response"
                     ctrl_conn.sendall(out.encode("utf-8", errors="replace"))

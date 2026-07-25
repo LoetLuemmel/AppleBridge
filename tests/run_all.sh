@@ -15,7 +15,7 @@ files=(test_macbinary.py test_screenshot_decode.py test_encoding_convert.py
        test_input_modifiers.py test_self_update.py test_ctrl_auth.py
        test_bridge_doctor.py test_nbp_lookup.py
        test_ether_backend.py test_guest_input.py
-       test_host_input_tools.py)
+       test_host_input_tools.py test_afp_mount.py)
 
 fail=0
 for f in "${files[@]}"; do
