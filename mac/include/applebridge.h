@@ -54,6 +54,8 @@
 #define PROTO_SWAPSELF "SWAPSELF"      /* host->daemon: rename the staged '<name> new' binary over the running daemon (self-update) */
 #define PROTO_SHUTDOWN "SHUTDOWN"      /* host->daemon: clean System 7 power-off via the Shutdown Manager (ShutDwnPower) */
 #define PROTO_NBPLOOK "NBPLOOK"        /* host->daemon: AppleTalk NBP name lookup (no Chooser, no ToolServer) */
+#define PROTO_AFPMOUNT "AFPMOUNT"      /* host->daemon: mount an AppleShare volume (PBVolumeMount; 5th field is a PASSWORD) */
+#define PROTO_AFPUNMOUNT "AFPUNMOUNT"  /* host->daemon: unmount a volume by name */
 
 /* Wire protocol version advertised in the HELLO reply (see docs/PROTOCOL_v0.2.md). */
 #define AB_PROTOCOL_VERSION 2
@@ -141,6 +143,13 @@ OSErr SwapSelf(void);   /* self-update: rename '<name> new' over the running dae
  * (a modal tracking loop a faceless daemon cannot reach). One line per entity:
  * object<TAB>type<TAB>zone<TAB>net.node.socket<CR> */
 Boolean NbpLookupVerb(ABConn *conn, char *request, long requestLen);
+
+/* AppleShare volume mounting (afp.c): the companion to the lookup above —
+ * having found a server without the Chooser, mount it without the Chooser too
+ * (PBVolumeMount). NOTE: the AFPMOUNT request carries a password in the clear,
+ * so its request line is MASKED before it reaches the console/log. */
+Boolean AfpMountVerb(ABConn *conn, char *request, long requestLen);
+Boolean AfpUnmountVerb(ABConn *conn, char *request, long requestLen);
 
 /* events.c -- synthetic input injection (drive the front GUI app). */
 OSErr InjectKey(short charCode, short keyCode);

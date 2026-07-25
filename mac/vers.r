@@ -6,7 +6,14 @@
  * the classic way to tell builds apart (replacing ad-hoc names like
  * "AppleBridge5"). One 'vers' file stamps the whole suite uniformly.
  *
- * This build: 0.8 development — d25 adds NBPLOOK, an AppleTalk name lookup: the daemon
+ * This build: 0.8 development — d26 adds AFPMOUNT/AFPUNMOUNT, the companion to d25's
+ * lookup: having FOUND a file server without the Chooser, mount it without the Chooser
+ * too (PBVolumeMount with a hand-built AFPVolMountInfo). Guest or cleartext UAM, no
+ * interaction bit (a faceless daemon must never raise a login dialog), and the server's
+ * refusal codes are named rather than passed through as bare numbers. SECURITY: the
+ * request carries a password in the clear, so the verb's request line is MASKED before
+ * it reaches the Verbose console — which keeps a scrollback — and the activity field
+ * shows only the verb. d25 adds NBPLOOK, an AppleTalk name lookup: the daemon
  * asks NBP for the entities the Chooser would list (AFPServer / LaserWriter / Workstation,
  * any zone) and streams them back as object/type/zone/net.node.socket. It closes the last
  * "you must drive the GUI for this" gap in discovery — the Chooser's list is built by a
@@ -67,16 +74,16 @@
 
 resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
-    development, 0x25,   /* development stage, non-release revision 25 (BCD) */
+    development, 0x26,   /* development stage, non-release revision 26 (BCD) */
     verUS,
-    "0.8d25",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d25 - NBPLOOK: AppleTalk name lookup without the Chooser"  /* long -> Get Info */
+    "0.8d26",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d26 - AFPMOUNT: mount an AppleShare volume without the Chooser"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
-    development, 0x25,
+    development, 0x26,
     verUS,
-    "0.8d25",
+    "0.8d26",
     "AppleBridge"        /* the shared/suite version line */
 };
