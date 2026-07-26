@@ -22,3 +22,6 @@ nohup.out
 ._*
 .DS_Store
 uv.lock
+
+# Personal Claude Code settings — may hold API keys
+.claude/settings.local.json
