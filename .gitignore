@@ -12,9 +12,10 @@ __pycache__/
 nohup.out
 *.rtf
 
-# Screenshots
+# Screenshots — scratch captures stay out, documentation figures are deliberate
 *.raw
 *.png
+!docs/images/*.png
 
 # Mac resource forks
 .finf/

@@ -120,3 +120,11 @@ Format — every entry carries all five fields, checked by
 - **Decision:** on a machine with no TCP stack the installer seeds `NET=Serial`, `PORT=A` (modem), `BAUD=57600`; a detected OT/MacTCP always wins over serial.
 - **Evidence:** installer preflight design for Ethernet-less 68k targets, PR #54 (`docs/DEPLOY_SERIAL_HARDWARE.md`); 57600 verified over the pty harness and later on real SE/30 hardware.
 - **Revisit if:** real-hardware runs show sustained framing errors at 57600 without RTS/CTS — then the shipped default drops to 19200 until handshaking lands.
+
+## D-014 — real hardware is the periodic proof, the emulator is the workshop
+
+- **Date:** 2026-07-26
+- **Status:** active
+- **Decision:** Basilisk II stays the daily build and test environment, but a claim about **guest behaviour** is not proven until it has run at least once on physical 68k hardware; each milestone includes one such run. The emulator is where we work, the metal is what the claim is about.
+- **Evidence:** three defects surfaced on an SE/30 in a single session (2026-07-26) that were invisible in Basilisk II, each because the emulator does not reproduce the property under test: the Serial Manager's 64-byte input buffer (no timing pressure — 8150 of 8192 bytes silently wrong, [[applebridge-serial-64byte-buffer]]), the monitor window sized for 1024×768 on a 512×342 screen, and an AppleTalk seed router advertising inside the reserved startup range (MACNAT never asks for a routable net). Compiler output is *not* the difference — `SC` is deterministic and both machines emit identical objects; what differs is which environment the assertion covers.
+- **Revisit if:** three consecutive milestone hardware runs surface nothing the emulator missed — then the cadence is costlier than the divergence it catches and can be relaxed. Conversely, a hardware-only defect found *after* a milestone shipped argues for running the metal check earlier, not less often.
