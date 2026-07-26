@@ -275,6 +275,68 @@ host/start_stack.sh          # also puts .154 back on the default-route interfac
 `bridge_doctor` reports this as the `ether_slirp` finding, and flags any drift
 from the backend recorded in `~/.basilisk_ii_prefs.netmode`.
 
+### Chooser finds no AppleShare server — on real hardware (2026-07-26)
+
+**Symptom:** same empty server list, but on a physical 68k Mac on real Ethernet,
+where slirp cannot be the cause. The bridge works, the machine has been on this
+network for years, and the share was reachable until recently.
+
+**Do not stop at the slirp section above.** The symptom is identical and the
+cause is not. Two questions separate them, and both are worth asking out loud:
+
+1. *Did it ever work?* If yes, this is a **regression** in the network, not a
+   limitation of the old machine — which rules out most hardware theories.
+2. *What can each participant see?* On a broken net the answers are asymmetric,
+   and the asymmetry names the culprit. Here the emulator saw both the server
+   **and** the SE/30, while the SE/30 saw only the emulator. Anything that
+   reaches the SE/30 at all disproves cabling, the transceiver and the driver;
+   what was missing was not connectivity but a **routable address**.
+
+**Cause:** the `atalkd` seed router advertised its network inside AppleTalk's
+**reserved startup range, 65280–65534**:
+
+```
+eth0 -router -phase 2 -net 65280 -addr 65280.79 -zone "ApfelNetz"
+```
+
+Nodes may use that range to talk on the local wire before they know a real net
+number — which is exactly why the two machines could still see each other — but
+a router must never *advertise* it. So RTMP offered nothing acquirable, the
+SE/30 never left the startup range, and ZIP had no zone to hand it. The setup
+had worked for years **by coincidence**, on machines that never needed the
+router's answer.
+
+**Diagnose from the guest, not from the host.** A small MPW tool reporting
+`GetNodeAddress` is decisive — a net number in the 65280+ range means the node
+never acquired a routable address:
+
+```bash
+host/send_command.py '"Hard Disk 2048:MPW:atinfo"'
+#   GetNodeAddress : err=0  net=3  node=1     <- healthy
+#   GetNodeAddress : err=0  net=65280 ...     <- still in the startup range
+printf 'NBPLOOK:=\n\n'   | nc localhost 9001   # who is visible from the guest
+printf 'DISKINFO\n\n'    | nc localhost 9001   # did the volume actually mount
+```
+
+Evidence from the machine that found this:
+`docs/images/se30-appletalk-net3.png` (the acquired address) and
+`docs/images/se30-appleshare-foxpro.png` (the share read through ToolServer).
+
+**Fix** — on the netatalk host, seed a normal net and restart the **whole**
+stack:
+
+```
+eth0 -router -phase 2 -net 3-3 -addr 3.79 -zone "ApfelNetz"
+```
+
+- **Never restart `afpd` alone** — it fails with `-1069` and logs nothing.
+  Restart netatalk entirely so `atalkd` re-seeds.
+- On the guest, toggling AppleTalk off and on is enough to re-acquire.
+- **Do not reach for a PRAM reset first.** On an SE/30 it also clears 32-bit
+  addressing, and the machine comes back with 4 MB usable: re-enable it in the
+  Memory control panel and restart. The PRAM holds the AppleTalk connection
+  *and* the addressing mode.
+
 ---
 
 ## Emulator (Basilisk II) Crashes
