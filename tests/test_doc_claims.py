@@ -54,9 +54,11 @@ CURRENT_DOCS = ["README.md", "ARCHITECTURE.md", "CLAUDE.md", "docs/SETUP.md"]
 # Count claims that are deliberately about a PAST state. Keyed by file, value is
 # a substring identifying the line. Add to this list only when the sentence
 # really is dated — otherwise fix the number.
-HISTORICAL_COUNTS = {
-    "CLAUDE.md": ["The MCP surface grew **7 → 20 tools**"],
-}
+# Currently empty: the one dated count claim ("the surface grew 7 -> 20 tools",
+# 2026-06-29) lived in CLAUDE.md's status narrative, which moved to the ledger.
+# The test below noticed the sentence had gone and required this entry to go with
+# it — an exemption may not outlive the sentence it exempts.
+HISTORICAL_COUNTS = {}
 
 # The authoritative enumeration an agent reads first.
 INVENTORY_DOC = "CLAUDE.md"
