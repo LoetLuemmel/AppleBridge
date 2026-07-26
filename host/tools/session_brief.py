@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Print the project's current state at session start — rules and state, not history.
+
+An AI collaborator retains nothing between sessions; what it needs first is the
+small set of things that are true *now*: which version this is, where the branch
+stands, which decisions are of record, what is open on the ledger. This brief is
+the SessionStart counterpart to the Stop-hook `ledger_diff.py` — the pair
+bracket a session with "here is the state" and "did the records drift".
+
+Every section degrades silently: no CMS key → no ledger lines; no gh/git → skip.
+A brief that errors at every session start is a brief that gets switched off,
+so the exit code is always 0.
+
+    host/tools/session_brief.py          # the brief
+    host/tools/session_brief.py --full   # ...plus all open ledger items
+"""
+import os
+import re
+import subprocess
+import sys
+
+_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+
+def _run(args, timeout=15):
+    try:
+        return subprocess.run(args, capture_output=True, text=True,
+                              timeout=timeout, cwd=_ROOT).stdout.strip()
+    except Exception:
+        return ""
+
+
+def daemon_version():
+    """Short version from mac/vers.r — the project's single version source."""
+    try:
+        text = open(os.path.join(_ROOT, "mac", "vers.r"), encoding="utf-8").read()
+        found = re.findall(r'"(\d+\.\d+[a-z]\d+|\d+\.\d+\.\d+)"', text)
+        return found[0] if found else "?"
+    except OSError:
+        return "?"
+
+
+def decisions():
+    """-> (active_count, [three newest '## D-NNN — title' lines])."""
+    try:
+        text = open(os.path.join(_ROOT, "DECISIONS.md"), encoding="utf-8").read()
+    except OSError:
+        return 0, []
+    heads = re.findall(r"^## (D-\d{3} — .+)$", text, re.M)
+    active = len(re.findall(r"\*\*Status:\*\*\s*active", text))
+    return active, heads[-3:]
+
+
+def ledger_lines(show_all):
+    """Open ledger items via ledger_diff's fetch; [] when no key / no network."""
+    if not (os.environ.get("CMS_API_KEY") or os.environ.get("GENERIC_CMS_KEY")):
+        return []
+    try:
+        import ledger_diff
+        updated, body = ledger_diff.fetch_ledger(quiet=False)
+    except SystemExit:
+        return []
+    except Exception:
+        return []
+    items = ledger_diff.open_items(body)
+    lines = [f"ledger last edited : {updated}   open items: {len(items)}"]
+    shown = items if show_all else [i for i in items if i[1] in ("In progress", "Blocked")]
+    for title, status in shown:
+        lines.append(f"  [{status:<11}] {title}")
+    if not show_all and len(shown) < len(items):
+        lines.append(f"  (+{len(items) - len(shown)} open — session_brief.py --full)")
+    return lines
+
+
+def main():
+    full = "--full" in sys.argv
+    branch = _run(["git", "branch", "--show-current"]) or "?"
+    last = _run(["git", "log", "-1", "--format=%h %ad %s", "--date=short"])
+    n_active, newest = decisions()
+
+    print("=== AppleBridge session brief ===")
+    print(f"daemon version     : {daemon_version()}  (mac/vers.r)")
+    print(f"branch             : {branch}")
+    if last:
+        print(f"last commit        : {last[:100]}")
+    print(f"decisions of record: {n_active} active (DECISIONS.md)"
+          + (f" — newest: {newest[-1]}" if newest else ""))
+    for line in ledger_lines(full):
+        print(line)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

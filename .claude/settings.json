@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$CLAUDE_PROJECT_DIR/host/tools/session_brief.py\" 2>/dev/null || true",
+            "timeout": 30,
+            "statusMessage": "AppleBridge session brief (version, decisions, open ledger items)"
+          }
+        ]
+      }
+    ]
+  }
+}

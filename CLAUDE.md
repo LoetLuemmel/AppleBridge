@@ -35,17 +35,24 @@ Smoke test: `cd host && /usr/bin/python3 send_command.py 'Echo HELLO'`.
 - **`Link -model far` is the default linker** — verified and leaner output. `ILink` is *not* broken: with the correct `{CLibraries}`/`{Libraries}` paths it links, runs, and round-trips commands cleanly (verified 2026-06-26). The old "ILink crashes Basilisk II" belief was a misdiagnosis — the committed `BuildIt` used an empty `{LIBS}`, so its lib paths resolved to nothing → a broken binary that crashed *on launch*. ILink is fine to use; it just yields a slightly larger binary plus a big `.NJ` incremental file, so `Link` stays the default.
 - **`/usr/bin/python3` for the host server** (firewall). Stdlib-only, so system Python suffices.
 - **Re-run `Rez AppleBridge_res.r` after every link** — the `SIZE` resource (`isHighLevelEventAware`) is required or every command fails with `-903`.
-- **Never `2>&1`** in MPW (crashes the shell) — use `≥ file.err` to capture stderr.
-- **Build off the running daemon**: link to `:bin:AppleBridge.new`, then swap; a heavy link in the same ToolServer that serves the bridge can take it (and the AE layer) down.
+- **Never `2>&1`** in MPW (crashes the shell) — use `≥ file.err` to capture stderr (learned 2026-04-06, error-capture notes in `~/.claude/CLAUDE.md`).
+- **Build off the running daemon**: link to `:bin:AppleBridge.new`, then swap; a heavy link in the same ToolServer that serves the bridge can take it (and the AE layer) down (observed 2026-07-02: the 0.8d2 link dropped the bridge mid-command).
 - **Never hard-kill BasiliskII** — terminating the process can corrupt the guest System 7 disk image. The clean stop is **`mac_shutdown`** (the `SHUTDOWN` verb, Shutdown Manager `ShutDwnPower`) or Special → Shut Down in the guest. See [[applebridge-never-kill-basilisk]].
 - **Encoding**: host UTF-8/LF ↔ Mac MacRoman/CR — use `host/encoding_convert.py`.
-- Long commands (e.g. `Link`) may return `-1712` (AE timeout) **yet still complete** — verify by the artifact, not the status.
+- Long commands (e.g. `Link`) may return `-1712` (AE timeout) **yet still complete** — verify by the artifact, not the status (recurring since 2026-04-06; the artifact check is the only reliable signal).
 - **Host `.154` must live on the default-route interface** (where the guest's MACNAT exits — normally Wi-Fi `en0`), *not* a second NIC. If it's on the wrong interface, the daemon hangs on "CONNECTING" and freezes the emulator at 100% CPU (synchronous `OTConnect` starving the cooperative scheduler). `host/start_stack.sh` sets this up. **Never pre-create a bridge** — `etherhelpertool` owns `en8` directly; a manual `bridge100` SIGSEGVs it (`fret == -10`). The guest is behind MACNAT, so it is **never pingable** — diagnose via the *outbound* connection, not ICMP. See `TROUBLESHOOTING.md` → "Daemon hangs on CONNECTING".
 
 ## Where things stand
 AppleBridge runs as a **System 7 background service** with an optional on-screen monitor. The daemon speaks **wire protocol v0.2** (version negotiation + optional mutual auth); the host server auto-starts via launchd. Current daemon **0.8d27** (`mac/vers.r` is the single source for that number); the MCP surface is **30 tools** (`len(TOOLS)` in `mcp/tools.py`). Validated live on **both** Basilisk II (System 7.6.1) and SheepShaver (PowerPC / Mac OS 9), and on real hardware — a Macintosh **SE/30** over RS-422.
 
 **Progress and roadmap live on the [ledger](https://pit.390er.de/applebridge/applebridge-roadmap-ledger-progress-and-status-tracker/), not in this file.** What shipped when, which PR carried it, what is still open, what is blocked — that is the ledger's job, and `host/tools/ledger_diff.py` keeps it in step with the merged PRs. This file holds what an agent needs in order to *work*: the rules, the mechanisms, and the gotchas that each cost somebody a session. Where the two disagree about status, **the ledger wins** — a status narrative kept in two places drifts, which is precisely how a finished milestone sat here for three weeks marked as outstanding.
+
+## Process (one programmer + one AI)
+Each class of fact has exactly one owner; everything else links instead of restating (decided 2026-07-26, D-006):
+- **Status of work** → the ledger. **Decisions** → `DECISIONS.md` (its wording is authoritative; every entry carries evidence *and* a "revisit if" falsifier). **Dated accounts** → the article corpus, archival: an overtaken plan gets a dated *superseded* banner linking its successor — never a silent edit.
+- **Hard rules carry provenance** — a year or a pointer, enforced by `tests/test_doc_claims.py`; design docs in `docs/` journal *no* progress (same test — status markers there are a failure, not a habit). Rationale: four unfalsifiable rules from the first commit were wrong and held 82–110 days because obeying them suppressed the experiment that would have refuted them.
+- **Session bracket**: a SessionStart hook prints `host/tools/session_brief.py` (version, branch, decisions, open ledger items — state, not history); the Stop hook runs `ledger_diff.py --quiet` (silent when in step).
+- **Subtraction pass**: at each milestone the AI proposes deletions/consolidations with rationale; the human arbitrates. Addition is cheap here and deletion is judgement — left alone, this pairing only ever adds (2026-07-26 assessment).
 
 ## Capabilities and the gotchas that come with them
 Durable knowledge, not a changelog. Every entry below is something that will bite again.
