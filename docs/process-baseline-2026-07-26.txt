@@ -1,0 +1,66 @@
+AppleBridge — process baseline, 2026-07-26
+==========================================
+
+The zero point for judging the process work merged today (PR #93 process
+organs, PR #94 first subtraction pass). Efficiency cannot be shown on the
+day a process changes; the baseline can only be captured on that day.
+
+GENERATED — do not edit. Reproduce with:
+    CMS_API_KEY=... host/tools/process_metrics.py
+Compare a later run against this file; the script is the owner of the
+method, this file is only the dated reading.
+
+What should move if the work is doing anything:
+  - duplication index      -> down (one owner per fact, others point)
+  - folklore lifespan      -> down (a rule with a falsifier is cheap to test)
+  - correction latency     -> down (time from belief written to belief fixed)
+  - ledger size            -> flat, not creeping back toward 80k
+  - mutants killed         -> stays 8/8 as guards and docs both change
+
+------------------------------------------------------------------
+
+=== AppleBridge process metrics ===
+commit            : d5dcb45 2026-07-26
+repo age          : 2026-04-05 -> 2026-07-26
+merged PRs        : 85
+
+--- surface ---
+MCP tools         : 30
+daemon version    : 0.8d27 (mac/vers.r, single source)
+decisions         : 10 of which active: 10
+
+--- duplication index (lower is better; 1 owner + pointers) ---
+files stating a tool count : 4 ['README.md', 'ARCHITECTURE.md', 'CLAUDE.md', 'docs/SETUP.md']
+files stating the version  : 4 ['README.md', 'CLAUDE.md', 'docs/SETUP.md', 'TROUBLESHOOTING.md']
+
+--- guards ---
+doc-claim assertions : 12
+seeded mutants       : 8
+suite files in CI    : 19
+
+--- folklore: false rules and how long they stood ---
+    82d  2026-04-05 -> 2026-06-26  ILink crashes Basilisk II
+   110d  2026-04-05 -> 2026-07-24  start the server before the emulator
+    83d  2026-04-05 -> 2026-06-27  GUI apps crash the emulator
+    82d  2026-04-05 -> 2026-06-26  a 0-byte data fork means a broken link
+  (baseline for the falsifier requirement introduced 2026-07-26:
+   a rule carrying a 'revisit if' should not be able to reach these numbers)
+
+--- corrections in git history ---
+commits overturning a documented belief: 11
+    4581cf3 2026-07-26 Merge pull request #87 from LoetLuemmel/docs/hygiene-keycode-toolcount
+    6908ec1 2026-07-26 docs: record the key-code fix and correct the stale MCP tool count
+    68639aa 2026-07-24 Merge pull request #76 from LoetLuemmel/docs/retire-startup-order-rule
+    74180de 2026-07-24 docs: retire the startup-order rule (disproven by PR #75)
+    832aa33 2026-07-05 feat(journal): 68K journaling driver — menu, modal-dialog & by-name MENU driving 
+    9d42277 2026-06-27 feat(daemon): faceless background service — Phase 1 (v0.6.0)
+    f71c463 2026-06-27 examples: add MinAsm — a verified crash-free 68k assembly app
+    f707f95 2026-06-26 docs: correct stale ILink + Error -192 notes in TROUBLESHOOTING
+
+--- ledger ---
+chars: 49,084   done: 55   open: 14
+
+--- mutation run ---
+ok   test_the_unmutated_copy_passes
+
+2/2 passed
