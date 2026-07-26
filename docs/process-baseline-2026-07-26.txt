@@ -15,7 +15,11 @@ What should move if the work is doing anything:
   - folklore lifespan      -> down (a rule with a falsifier is cheap to test)
   - correction latency     -> down (time from belief written to belief fixed)
   - ledger size            -> flat, not creeping back toward 80k
-  - mutants killed         -> stays 8/8 as guards and docs both change
+  - mutants killed         -> stays at 100 %, while the mutant COUNT grows as
+                              new guards arrive (8 at this reading; 13 once the
+                              hardware-finding guards landed). A fixed number
+                              would be the wrong target: it would reward adding
+                              guards without proving they can fail.
 
 ------------------------------------------------------------------
 

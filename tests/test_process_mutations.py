@@ -48,15 +48,25 @@ def _scratch():
             shutil.copy2(src, dst)
     os.makedirs(os.path.join(tmp, "mac"), exist_ok=True)
     shutil.copy2(os.path.join(_ROOT, "mac", "vers.r"), os.path.join(tmp, "mac", "vers.r"))
+    # The guest sources the hardware-finding guards read (they never compile it).
+    os.makedirs(os.path.join(tmp, "mac", "src"), exist_ok=True)
+    for name in ("main.c", "transport_serial.c"):
+        shutil.copy2(os.path.join(_ROOT, "mac", "src", name),
+                     os.path.join(tmp, "mac", "src", name))
     os.makedirs(os.path.join(tmp, "tests"), exist_ok=True)
-    shutil.copy2(os.path.join(_ROOT, "tests", "test_doc_claims.py"),
-                 os.path.join(tmp, "tests", "test_doc_claims.py"))
+    for name in ("test_doc_claims.py", "test_hardware_findings.py"):
+        shutil.copy2(os.path.join(_ROOT, "tests", name),
+                     os.path.join(tmp, "tests", name))
     return tmp
 
 
-def _guards_pass(root):
-    """Run the guards inside `root`. -> (passed, output)."""
-    proc = subprocess.run([sys.executable, os.path.join(root, "tests", "test_doc_claims.py")],
+DOC_GUARDS = "test_doc_claims.py"
+HARDWARE_GUARDS = "test_hardware_findings.py"
+
+
+def _guards_pass(root, guards=DOC_GUARDS):
+    """Run one guard file inside `root`. -> (passed, output)."""
+    proc = subprocess.run([sys.executable, os.path.join(root, "tests", guards)],
                           capture_output=True, text=True, timeout=120, cwd=root)
     return proc.returncode == 0, (proc.stdout + proc.stderr)
 
@@ -147,15 +157,66 @@ def _m_hard_rule_without_provenance(root):
                  if "## Hard rules (learned the hard way)\n" in t else None)
 
 
+# --- mutants against the hardware-finding guards ----------------------------
+# These aim at fixes that only a real Macintosh ever proved necessary. The point
+# is the same as above: a guard standing watch over a defect nobody can still
+# reproduce is worth exactly as much as its ability to fail.
+
+def _m_serial_buffer_back_to_the_default(root):
+    return _edit(root, "mac/src/transport_serial.c",
+                 lambda s: s.replace("#define kSerInBufSize   16384",
+                                     "#define kSerInBufSize   64"))
+
+
+def _m_serial_buffer_freed_before_the_driver_lets_go(root):
+    """Restore AFTER the close — the ordering that hands the Serial Manager a
+    dangling pointer. Textually a two-line swap; on-device it is a use of freed
+    memory that nothing on the host would ever notice."""
+    return _edit(root, "mac/src/transport_serial.c",
+                 lambda s: s.replace(
+                     "        if (gInBuf != NULL) SerSetBuf(c->inRef, NULL, 0);\n"
+                     "        CloseDriver(c->inRef);",
+                     "        CloseDriver(c->inRef);\n"
+                     "        if (gInBuf != NULL) SerSetBuf(c->inRef, NULL, 0);"))
+
+
+def _m_monitor_window_regrown(root):
+    return _edit(root, "mac/src/main.c",
+                 lambda s: s.replace("#define COMPACT_MON_W    440",
+                                     "#define COMPACT_MON_W    480"))
+
+
+def _m_clamp_dropped_from_the_restored_path(root):
+    """Keep the clamp for a fresh window, lose it for a rect restored from
+    prefs — the half of the fix that is easy to delete because it looks
+    redundant, and the half that mattered on a screen the rect was never
+    saved on."""
+    return _edit(root, "mac/src/main.c",
+                 lambda s: s.replace("        ClampForCompactScreen(r, &scr);\n"
+                                     "        return;",
+                                     "        return;"))
+
+
+def _m_atalkd_checker_blind_to_the_range(root):
+    return _edit(root, "host/tools/check_atalkd_conf.py",
+                 lambda s: s.replace("STARTUP_FIRST = 65280",
+                                     "STARTUP_FIRST = 65535"))
+
+
 MUTANTS = [
-    ("tool count off by one",          _m_tool_count_off_by_one),
-    ("tool renamed in code only",      _m_tool_renamed_in_code),
-    ("version bumped in code only",    _m_version_bumped_only_in_code),
-    ("status marker in a design doc",  _m_status_marker_in_design_doc),
-    ("decision without a falsifier",   _m_decision_without_falsifier),
-    ("duplicate decision id",          _m_duplicate_decision_id),
-    ("superseded naming no successor", _m_superseded_without_successor),
-    ("hard rule without provenance",   _m_hard_rule_without_provenance),
+    ("tool count off by one",          _m_tool_count_off_by_one,          DOC_GUARDS),
+    ("tool renamed in code only",      _m_tool_renamed_in_code,           DOC_GUARDS),
+    ("version bumped in code only",    _m_version_bumped_only_in_code,    DOC_GUARDS),
+    ("status marker in a design doc",  _m_status_marker_in_design_doc,    DOC_GUARDS),
+    ("decision without a falsifier",   _m_decision_without_falsifier,     DOC_GUARDS),
+    ("duplicate decision id",          _m_duplicate_decision_id,          DOC_GUARDS),
+    ("superseded naming no successor", _m_superseded_without_successor,   DOC_GUARDS),
+    ("hard rule without provenance",   _m_hard_rule_without_provenance,   DOC_GUARDS),
+    ("serial buffer back to 64 bytes", _m_serial_buffer_back_to_the_default,        HARDWARE_GUARDS),
+    ("serial buffer freed too early",  _m_serial_buffer_freed_before_the_driver_lets_go, HARDWARE_GUARDS),
+    ("monitor window regrown",         _m_monitor_window_regrown,         HARDWARE_GUARDS),
+    ("clamp dropped on restore path",  _m_clamp_dropped_from_the_restored_path,     HARDWARE_GUARDS),
+    ("atalkd checker blinded",         _m_atalkd_checker_blind_to_the_range,        HARDWARE_GUARDS),
 ]
 
 
@@ -165,8 +226,10 @@ def test_the_unmutated_copy_passes():
     """Without this, a 'killed' mutant could just be a pre-existing failure."""
     root = _scratch()
     try:
-        ok, out = _guards_pass(root)
-        assert ok, "the guards fail on an UNMUTATED copy, so no kill below is meaningful:\n" + out[-800:]
+        for guards in (DOC_GUARDS, HARDWARE_GUARDS):
+            ok, out = _guards_pass(root, guards)
+            assert ok, (f"{guards} fails on an UNMUTATED copy, so no kill below "
+                        "is meaningful:\n" + out[-800:])
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -175,13 +238,13 @@ def test_the_unmutated_copy_passes():
 
 def test_every_seeded_defect_is_caught():
     survived, unapplied = [], []
-    for name, mutate in MUTANTS:
+    for name, mutate, guards in MUTANTS:
         root = _scratch()
         try:
             if not mutate(root):
                 unapplied.append(name)
                 continue
-            ok, _ = _guards_pass(root)
+            ok, _ = _guards_pass(root, guards)
             if ok:
                 survived.append(name)
         finally:
