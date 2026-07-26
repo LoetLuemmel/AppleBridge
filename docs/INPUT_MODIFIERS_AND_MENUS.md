@@ -114,6 +114,36 @@ into the MCP surface.
 - The daemon is faceless/background, so it does not consume the event itself — the
   front app does. Confirm during verification.
 
+### The virtual key code is not optional (fixed 2026-07-26)
+
+A key-down message packs **two** halves: the low byte is the character the `KCHR`
+produced, the next byte is the **physical key**. Apps split on which half they trust
+for a Command shortcut — most call `MenuKey` with the character, but some resolve it
+from the key code. The MCP surface originally sent key code `0` for every character
+(`mac_key`'s default, hard-wired in `mac_menu`), and **code 0 is not "unset" — it is
+the A key**, so to those apps every shortcut looked like Cmd-A.
+
+Symptom: `mac_key(key="o", modifiers=["command"])` did nothing in Photoshop 2.5 while
+the same call worked in ResEdit, SimpleText and Standard File dialogs. It looked like
+an application quirk; it was ours.
+
+A/B proof on-device (Photoshop 2.5, everything else identical):
+
+| verb | result |
+|---|---|
+| `KEY:111:0:256` (`o`, key code 0) | nothing |
+| `KEY:111:31:256` (`o`, key code 31 = the O key) | Open dialog appeared |
+| `KEY:113:0:256` (`q`, key code 0) | still running |
+| `KEY:113:12:256` (`q`, key code 12 = the Q key) | quit |
+
+Fix: `_CHAR_KEYCODES` in `mcp/tools.py` derives the physical key from the character
+for both `mac_key` and `mac_menu`; an explicit `key_code` argument still overrides it.
+Host-side only — `events.c` was always correct, it was handed the wrong code.
+
+Key codes name **positions**, so a QWERTZ keyboard swaps Y and Z against the US table.
+Set `APPLEBRIDGE_KEY_LAYOUT=de` when the guest runs a German `KCHR` *and* the target app
+resolves shortcuts by key code; letters are otherwise position-identical.
+
 ## Phase 2 — Menu selection by name (future, journaling)
 
 For items **without** a Cmd-key equivalent, a `MENU:<title>:<item>` verb backed by an

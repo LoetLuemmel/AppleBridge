@@ -227,7 +227,7 @@ e.g. ["command"]. For a menu command it's usually clearer to call mac_menu.""",
                 },
                 "key_code": {
                     "type": "integer",
-                    "description": "Virtual key code (optional; 0 for ordinary characters)"
+                    "description": "Virtual key code — the PHYSICAL key. Optional: derived from the character by default. Only pass it to override (e.g. a non-US keyboard position)."
                 },
                 "modifiers": {
                     "type": "array",
@@ -1142,7 +1142,43 @@ _NAMED_KEYS = {
 }
 
 
-def mac_key(char_code: Optional[int] = None, key_code: int = 0,
+# Character -> virtual key code (US/ANSI key POSITIONS, Inside Macintosh:
+# Toolbox Essentials "Key Codes"). A key-down message packs both halves: the low
+# byte is the character the KCHR produced, the next byte the physical key. Apps
+# split on which half they trust for Command shortcuts -- most call MenuKey with
+# the character, but some (Photoshop 2.5) resolve the shortcut from the key code.
+#
+# Code 0 is NOT an "unset" value: it is the A key. Sending 0 for every character
+# therefore made every shortcut look like Cmd-A to those apps. Verified live on
+# 2026-07-26: in Photoshop 2.5, Cmd-O opened the Open dialog only with code 31,
+# and Cmd-Q quit it only with code 12; with 0 both did nothing.
+_CHAR_KEYCODES = {
+    "a": 0,  "s": 1,  "d": 2,  "f": 3,  "h": 4,  "g": 5,  "z": 6,  "x": 7,
+    "c": 8,  "v": 9,  "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16,
+    "t": 17, "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "=": 24,
+    "9": 25, "7": 26, "-": 27, "8": 28, "0": 29, "]": 30, "o": 31, "u": 32,
+    "[": 33, "i": 34, "p": 35, "l": 37, "j": 38, "'": 39, "k": 40, ";": 41,
+    "\\": 42, ",": 43, "/": 44, "n": 45, "m": 46, ".": 47, "`": 50, " ": 49,
+}
+
+# Key codes name physical positions, so a QWERTZ keyboard swaps Y and Z against
+# the table above. Set APPLEBRIDGE_KEY_LAYOUT=de when the guest runs a German
+# KCHR *and* the target app resolves shortcuts by key code; everything else is
+# position-identical for letters. Per-call `key_code` overrides either way.
+if os.environ.get("APPLEBRIDGE_KEY_LAYOUT", "").strip().lower() in ("de", "german", "qwertz"):
+    _CHAR_KEYCODES["y"], _CHAR_KEYCODES["z"] = _CHAR_KEYCODES["z"], _CHAR_KEYCODES["y"]
+
+
+def _keycode_for_char(char_code: int) -> int:
+    """Physical key code for a character code; 0 (the A key) when unmapped."""
+    try:
+        ch = chr(int(char_code)).lower()
+    except (ValueError, TypeError):
+        return 0
+    return _CHAR_KEYCODES.get(ch, 0)
+
+
+def mac_key(char_code: Optional[int] = None, key_code: Optional[int] = None,
             modifiers=None, key=None) -> Dict[str, Any]:
     """Press one key in the front app via the daemon's KEY verb.
 
@@ -1152,6 +1188,10 @@ def mac_key(char_code: Optional[int] = None, key_code: int = 0,
     (+ optional `key_code`) for full control. `modifiers` is a list of names
     (e.g. ["command"], ["command","shift"]) or a raw Event Manager mask, making
     Command-key shortcuts and Option/Shift-modified input reachable.
+
+    The virtual key code is derived from the character (see _CHAR_KEYCODES) —
+    apps that resolve Command shortcuts by key code need the real physical key,
+    not 0. Pass `key_code` explicitly to override it.
     """
     mask = _modifiers_mask(modifiers)
     if key is not None:
@@ -1159,15 +1199,19 @@ def mac_key(char_code: Optional[int] = None, key_code: int = 0,
         if norm in _NAMED_KEYS:
             cc, kc = _NAMED_KEYS[norm]
         elif len(str(key)) == 1:
-            cc, kc = ord(str(key)), 0
+            cc = ord(str(key))
+            kc = _keycode_for_char(cc)
         else:
             return {"success": False, "key": key,
                     "error": f"unknown key {key!r}; use a single character or one of: "
                              + ", ".join(sorted(_NAMED_KEYS))}
     elif char_code is not None:
-        cc, kc = int(char_code), int(key_code)
+        cc = int(char_code)
+        kc = _keycode_for_char(cc)
     else:
         return {"success": False, "error": "provide either `key` (name/char) or `char_code`"}
+    if key_code is not None:
+        kc = int(key_code)                 # explicit caller override wins
     verb = f"KEY:{cc}:{kc}:{mask}"
     return _inject(verb, {"char_code": cc, "key_code": kc, "key": key,
                           "modifiers": modifiers or []})
@@ -1267,7 +1311,7 @@ def mac_menu(key: str = None, modifiers=None, title: str = None,
     # Menu equivalents are Command-based; default to Command, always include it.
     names = list(modifiers) if modifiers else []
     mask = _modifiers_mask(names) | 256  # cmdKey
-    return _inject(f"KEY:{cc}:0:{mask}",
+    return _inject(f"KEY:{cc}:{_keycode_for_char(cc)}:{mask}",
                    {"menu_key": key, "modifiers": names or ["command"]})
 
 

@@ -106,29 +106,54 @@ def _capture(fn, *a, **kw):
 
 def test_mac_key_plain_is_backward_compatible_shape():
     # No modifiers -> mask 0, still the 3-field form the new daemon parses.
+    # 'a' happens to BE key code 0, so this line is unchanged by the keycode fix.
     assert _capture(tools.mac_key, 97) == "KEY:97:0:0"
 
 
 def test_mac_key_with_command():
-    assert _capture(tools.mac_key, 110, modifiers=["command"]) == "KEY:110:0:256"
+    # 'n' sits at key code 45; sending 0 here made the app see the A key.
+    assert _capture(tools.mac_key, 110, modifiers=["command"]) == "KEY:110:45:256"
 
 
 def test_mac_key_with_keycode_and_mods():
+    # An explicitly passed key_code still wins over the derived one.
     assert _capture(tools.mac_key, 97, 0, ["command", "shift"]) == "KEY:97:0:768"
+    assert _capture(tools.mac_key, 111, 3, ["command"]) == "KEY:111:3:256"
+
+
+def test_mac_key_derives_keycode_from_named_char():
+    # key="o" -> char 111 at physical key 31 (the O key).
+    assert _capture(tools.mac_key, key="o", modifiers=["command"]) == "KEY:111:31:256"
+
+
+def test_mac_key_named_special_keys_keep_their_codes():
+    assert _capture(tools.mac_key, key="return") == "KEY:13:36:0"
+    assert _capture(tools.mac_key, key="escape") == "KEY:27:53:0"
+
+
+def test_mac_key_unmapped_char_falls_back_to_zero():
+    # A MacRoman char with no US key position: charCode still carries it.
+    assert _capture(tools.mac_key, 246, modifiers=["command"]) == "KEY:246:0:256"
+
+
+def test_keycode_table_matches_inside_macintosh():
+    for ch, code in (("a", 0), ("q", 12), ("o", 31), ("s", 1), ("n", 45),
+                     ("w", 13), ("z", 6), ("y", 16), (".", 47), ("1", 18)):
+        assert tools._keycode_for_char(ord(ch)) == code, ch
 
 
 def test_mac_menu_defaults_to_command():
-    # Cmd-Q: 'q' is 113, cmdKey 256.
-    assert _capture(tools.mac_menu, "Q") == "KEY:113:0:256"
+    # Cmd-Q: 'q' is char 113 at key code 12, cmdKey 256.
+    assert _capture(tools.mac_menu, "Q") == "KEY:113:12:256"
 
 
 def test_mac_menu_lowercases_the_key():
-    assert _capture(tools.mac_menu, "N") == "KEY:110:0:256"
+    assert _capture(tools.mac_menu, "N") == "KEY:110:45:256"
 
 
 def test_mac_menu_adds_extra_modifiers_but_always_command():
-    # Cmd-Shift-S: 's' 115, cmd 256 + shift 512 = 768.
-    assert _capture(tools.mac_menu, "S", modifiers=["shift"]) == "KEY:115:0:768"
+    # Cmd-Shift-S: 's' 115 at key code 1, cmd 256 + shift 512 = 768.
+    assert _capture(tools.mac_menu, "S", modifiers=["shift"]) == "KEY:115:1:768"
 
 
 def test_mac_menu_rejects_multichar_key():
