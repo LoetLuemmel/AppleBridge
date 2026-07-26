@@ -258,7 +258,7 @@ All core features working:
 - ✅ Application-level heartbeat + watchdog (no host-down freeze)
 - ✅ Apple Events command execution (ToolServer returns output)
 - ✅ Remote compilation and linking
-- ✅ MCP integration with Claude Code (20 tools)
+- ✅ MCP integration with Claude Code (30 tools)
 - ✅ Encoding conversion (UTF-8 ↔ MacRoman)
 - ✅ Screenshot capture (emulated framebuffer → PNG, host-side decode)
 - ✅ Host server auto-start via launchd

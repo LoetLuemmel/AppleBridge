@@ -120,10 +120,10 @@ The repo ships a project `.mcp.json` that registers the server over stdio:
 Verify Claude Code sees it:
 
 ```bash
-claude mcp list      # -> applebridge (20 tools)
+claude mcp list      # -> applebridge (30 tools)
 ```
 
-The 20 tools cover driving builds and reading output (`mpw_execute`, `mac_compile`, `mac_build`, `mac_read_file`, `mac_list_files`, `mac_send_apple_event`), moving bytes and interacting (`mac_put_file` / `mac_get_file`, `mac_write_file`, `launch_app`, `mac_screenshot`, `mac_type` / `mac_key` / `mac_click`, `mac_clipboard_get` / `mac_clipboard_set`), and lifecycle/liveness (`mac_status`, `mac_reboot`, `mac_restart_toolserver`, `run_applescript`). New tools register on the next MCP-server restart.
+The 30 tools cover driving builds and reading output (`mpw_execute`, `mac_compile`, `mac_build`, `mac_read_file`, `mac_list_files`, `mac_send_apple_event`), moving bytes and interacting (`mac_put_file` / `mac_get_file`, `mac_write_file`, `launch_app`, `mac_screenshot`, `mac_type` / `mac_key` / `mac_menu` / `mac_menu_front` / `mac_click`, `mac_clipboard_get` / `mac_clipboard_set`), driving the guest's real mouse for menus and modal dialogs (`mac_host_click`, `mac_host_menu`, `mac_host_screenshot`), network discovery (`mac_appletalk_browse`), and lifecycle/liveness (`mac_status`, `bridge_doctor`, `mac_verbose_log`, `mac_reboot`, `mac_shutdown`, `mac_restart_toolserver`, `mac_update_daemon`, `run_applescript`). New tools register on the next MCP-server restart.
 
 ## Part 3: Build and deploy the Mac daemon
 

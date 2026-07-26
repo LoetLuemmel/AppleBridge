@@ -195,14 +195,18 @@ in the v0.7.0 transport-seam refactor.)
 
 **Files:** `mcp/server.py`, `mcp/tools.py`, `mcp/mac_connection.py`
 
-**MCP Tools Provided:** 20 tools across two surfaces plus lifecycle — driving a
+**MCP Tools Provided:** 30 tools across two surfaces plus lifecycle — driving a
 build and reading output (`mpw_execute`, `mac_compile`, `mac_build`,
 `mac_read_file`, `mac_list_files`, `mac_send_apple_event`), moving bytes /
 running / observing / interacting (`mac_put_file`, `mac_get_file`,
 `mac_write_file`, `launch_app`, `mac_screenshot`, `mac_type`, `mac_key`,
-`mac_click`, `mac_clipboard_get`, `mac_clipboard_set`), and liveness/lifecycle
-(`mac_status`, `mac_reboot`, `mac_restart_toolserver`, `run_applescript`). See
-`CLAUDE.md` for the authoritative, current list.
+`mac_menu`, `mac_menu_front`, `mac_click`, `mac_clipboard_get`,
+`mac_clipboard_set`), driving the guest's real mouse (`mac_host_click`,
+`mac_host_menu`, `mac_host_screenshot`), network discovery
+(`mac_appletalk_browse`), and liveness/lifecycle (`mac_status`, `bridge_doctor`,
+`mac_verbose_log`, `mac_reboot`, `mac_shutdown`, `mac_restart_toolserver`,
+`mac_update_daemon`, `run_applescript`). The count is `len(TOOLS)` in
+`mcp/tools.py`; see `CLAUDE.md` for the authoritative, current list.
 
 ### The Bridge (host_server.py)
 
