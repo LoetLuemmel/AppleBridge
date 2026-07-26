@@ -45,29 +45,38 @@ LEDGER = "applebridge-roadmap-ledger-progress-and-status-tracker"
 REPO = os.environ.get("APPLEBRIDGE_REPO", "LoetLuemmel/AppleBridge")
 
 
-def fetch_ledger():
-    """-> (updated_iso, body). Raises SystemExit with a usable message."""
+def fetch_ledger(quiet=False):
+    """-> (updated_iso, body). Raises SystemExit with a usable message.
+
+    Under --quiet every failure exits 0 in silence: this runs as a Stop hook, and
+    a reminder that complains on every session — about a key it cannot fix, or a
+    network it cannot reach — is a reminder people switch off."""
+    def give_up(msg):
+        sys.exit(0 if quiet else msg)
+
     key = os.environ.get("CMS_API_KEY") or os.environ.get("GENERIC_CMS_KEY")
     if not key:
-        sys.exit("CMS_API_KEY is not set — export it, or pass --since <date> to skip the fetch.")
+        give_up("CMS_API_KEY is not set — export it, or pass --since <date> to skip the fetch.")
     url = f"{SITE}/api/v1/articles/{SECTION}/{LEDGER}.md"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"})
     try:
         with urllib.request.urlopen(req, timeout=30) as fh:
             doc = json.load(fh)
     except urllib.error.HTTPError as e:
-        sys.exit(f"ledger fetch failed: HTTP {e.code} {e.reason} ({url})")
+        give_up(f"ledger fetch failed: HTTP {e.code} {e.reason} ({url})")
     except urllib.error.URLError as e:
-        sys.exit(f"ledger fetch failed: {e.reason} ({url})")
+        give_up(f"ledger fetch failed: {e.reason} ({url})")
     fm = doc.get("frontmatter") or {}
     updated = fm.get("updated") or fm.get("date")
     if not updated:
-        sys.exit("ledger has no `updated` stamp — pass --since instead.")
+        give_up("ledger has no `updated` stamp — pass --since instead.")
     return updated, doc.get("body") or ""
 
 
-def merged_since(date):
+def merged_since(date, quiet=False):
     """PRs merged on or after `date` (YYYY-MM-DD), newest first."""
+    def give_up(msg):
+        sys.exit(0 if quiet else msg)
     try:
         out = subprocess.run(
             ["gh", "pr", "list", "--repo", REPO, "--state", "merged",
@@ -75,9 +84,9 @@ def merged_since(date):
              "--json", "number,title,mergedAt,url"],
             capture_output=True, text=True, timeout=60, check=True).stdout
     except FileNotFoundError:
-        sys.exit("`gh` not found — install the GitHub CLI or pass --since and read the list yourself.")
+        give_up("`gh` not found — install the GitHub CLI or pass --since and read the list yourself.")
     except subprocess.CalledProcessError as e:
-        sys.exit(f"gh failed: {e.stderr.strip() or e}")
+        give_up(f"gh failed: {e.stderr.strip() or e}")
     return sorted(json.loads(out), key=lambda p: p["mergedAt"], reverse=True)
 
 
@@ -108,10 +117,10 @@ def main():
     if args.since:
         updated, day = args.since, args.since[:10]
     else:
-        updated, body = fetch_ledger()
+        updated, body = fetch_ledger(args.quiet)
         day = updated[:10]
 
-    prs = merged_since(day)
+    prs = merged_since(day, args.quiet)
     # A same-day PR may still predate the edit, so compare instants — and the two
     # sources speak different time zones (see _moment).
     if args.since:
