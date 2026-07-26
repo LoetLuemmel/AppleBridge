@@ -202,7 +202,7 @@ AppleBridge/
 │   └── Makefile.68k              # MPW makefile
 ├── mcp/                          # Python MCP server (the MCP entry point)
 │   ├── server.py                 # `python -m mcp.server` (see .mcp.json)
-│   ├── tools.py                  # the 20 MCP tools
+│   ├── tools.py                  # the 30 MCP tools
 │   └── mac_connection.py         # talks to host_server.py on :9001
 ├── host/                         # Host server + utilities
 │   ├── host_server.py            # the bridge: :9000 daemon socket + :9001 control
@@ -249,7 +249,7 @@ AppleBridge/
 
 ## Status
 
-**Current daemon:** v0.7.0 ("selectable transport: Open Transport + MacTCP")
+**Current daemon:** 0.8d27 ("DISKINFO volume totals + MONITOR window toggle") — the version the daemon itself reports, from `mac/vers.r`
 **Status:** Production Ready ✅
 
 All core features working:
