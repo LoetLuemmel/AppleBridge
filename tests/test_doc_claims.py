@@ -83,6 +83,47 @@ VERSION_DOCS = ["README.md", "TROUBLESHOOTING.md", "docs/SETUP.md", "CLAUDE.md"]
 _COUNT_RE = re.compile(r"\(?(\d+)\s+(?:MCP\s+)?tools\b")
 _NAME_RE = re.compile(r"\b(mac_[a-z_]+|mpw_execute|launch_app|run_applescript|bridge_doctor)\b")
 
+# --- design docs must not journal progress ----------------------------------
+# Design documents explain mechanism and rationale; "is it done" belongs to the
+# ledger. Three docs grew running progress journals (✅ PASSED per step, PR
+# numbers, "Phase 1 shipped") and each had to be maintained at the tempo of its
+# fastest-changing sentence. This is a RATCHET: the named debt below is frozen,
+# new markers anywhere else fail.
+DESIGN_DOCS_GLOB = "docs/*.md"
+DESIGN_DOCS_EXTRA = ["RX_TX_LEDS.md"]
+_STATUS_MARKER_RE = re.compile(r"✅|\bPR #\d+|\bSHIPPED\b|^Status:.*(?:[Ss]hipped|[Dd]one)")
+
+# Whole files that already carry a progress journal — known debt, listed so it
+# cannot grow silently. Stripping a file's journal removes it from this set.
+STATUS_DEBT = {
+    "RX_TX_LEDS.md",
+    "docs/JOURNALING_MENU_BY_NAME.md",
+    "docs/INPUT_MODIFIERS_AND_MENUS.md",
+}
+
+# Individual lines where a marker is NOT progress journaling: a rhetorical
+# checkmark, or a PR number cited as *provenance* of a corrected belief (which
+# is encouraged, not banned). Same rule as HISTORICAL_COUNTS: an exemption may
+# not outlive the line it exempts.
+STATUS_OK_LINES = {
+    "docs/ARCHITECTURE_LAYERS.md": ["✅ **Both together:**"],
+    "docs/SETUP.md": ["Fixed in PR #75"],
+}
+
+# --- decisions of record -----------------------------------------------------
+DECISIONS_DOC = "DECISIONS.md"
+_DECISION_HEAD_RE = re.compile(r"^## (D-\d{3}) — .+", re.M)
+DECISION_FIELDS = ("**Date:**", "**Status:**", "**Decision:**", "**Evidence:**", "**Revisit if:**")
+
+# --- hard rules carry provenance ---------------------------------------------
+# A rule with no evidence and no pointer is folklore in waiting: four such rules
+# from the initial commit were false and survived 82–110 days because nothing
+# made them cheap to doubt. Checkable half: every Hard-rules bullet names a year
+# or points somewhere (a [[memory link]], a file, a doc section). The falsifier
+# itself stays prose discipline.
+HARD_RULES_DOC = "CLAUDE.md"
+_PROVENANCE_RE = re.compile(r"20\d\d|\[\[|\.(?:md|py|sh|r|c)\b|/")
+
 
 def _read(rel):
     with open(os.path.join(_ROOT, rel), encoding="utf-8") as fh:
@@ -179,6 +220,71 @@ def test_a_version_is_declared_somewhere():
 def test_tool_names_are_unique():
     dupes = {n for n in TOOL_NAMES if TOOL_NAMES.count(n) > 1}
     assert not dupes, f"duplicate tool names in TOOLS: {sorted(dupes)}"
+
+
+# --- process organs (2026-07-26) --------------------------------------------
+
+def _design_docs():
+    import glob
+    rels = [os.path.relpath(p, _ROOT).replace(os.sep, "/")
+            for p in glob.glob(os.path.join(_ROOT, DESIGN_DOCS_GLOB))]
+    return sorted(rels + DESIGN_DOCS_EXTRA)
+
+
+def test_design_docs_carry_no_status_markers():
+    bad = []
+    for rel in _design_docs():
+        if rel in STATUS_DEBT:
+            continue
+        ok_lines = STATUS_OK_LINES.get(rel, [])
+        for n, line in enumerate(_read(rel).split("\n"), 1):
+            if any(marker in line for marker in ok_lines):
+                continue
+            if _STATUS_MARKER_RE.search(line):
+                bad.append(f"{rel}:{n} journals progress in a design doc: {line.strip()[:90]}")
+    assert not bad, ("status belongs on the ledger, not in design docs:\n  "
+                     + "\n  ".join(bad))
+
+
+def test_status_exemptions_have_not_outlived_their_lines():
+    # Debt files must still contain a marker (else the debt entry is stale),
+    # and every exempted line must still exist.
+    for rel in sorted(STATUS_DEBT):
+        assert _STATUS_MARKER_RE.search(_read(rel)), \
+            f"{rel} is listed as status debt but carries no marker — remove it from STATUS_DEBT"
+    for rel, lines in STATUS_OK_LINES.items():
+        text = _read(rel)
+        for marker in lines:
+            assert marker in text, f"{rel}: exempted line vanished: {marker!r}"
+
+
+def test_decisions_register_is_wellformed():
+    text = _read(DECISIONS_DOC)
+    ids = _DECISION_HEAD_RE.findall(text)
+    assert ids, f"{DECISIONS_DOC} has no '## D-NNN — title' entries"
+    dupes = {i for i in ids if ids.count(i) > 1}
+    assert not dupes, f"duplicate decision ids: {sorted(dupes)}"
+    sections = _DECISION_HEAD_RE.split(text)[1:]  # [id, body, id, body, ...]
+    for did, body in zip(sections[0::2], sections[1::2]):
+        missing = [f for f in DECISION_FIELDS if f not in body]
+        assert not missing, f"{did} is missing fields: {missing}"
+        status = re.search(r"\*\*Status:\*\*\s*(.+)", body).group(1).strip()
+        assert status == "active" or re.match(r"superseded\s*(→|->)\s*D-\d{3}", status), \
+            f"{did} status must be 'active' or 'superseded → D-NNN', got: {status!r}"
+
+
+def test_hard_rules_carry_provenance():
+    text = _read(HARD_RULES_DOC)
+    m = re.search(r"^## Hard rules.*?$(.*?)(?=^## )", text, re.M | re.S)
+    assert m, f"{HARD_RULES_DOC} has no '## Hard rules' section"
+    naked = []
+    for n, line in enumerate(m.group(1).split("\n"), 1):
+        if not line.startswith("- "):
+            continue
+        if not _PROVENANCE_RE.search(line):
+            naked.append(f"rule bullet {n} has no year and no pointer: {line[:90]}")
+    assert not naked, ("every hard rule carries provenance (a year, a [[link]], or a "
+                       "file/doc pointer) — see DECISIONS.md header:\n  " + "\n  ".join(naked))
 
 
 if __name__ == "__main__":
