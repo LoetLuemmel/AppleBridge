@@ -249,7 +249,7 @@ AppleBridge/
 
 ## Status
 
-**Current daemon:** 0.8d27 ("DISKINFO volume totals + MONITOR window toggle") — the version the daemon itself reports, from `mac/vers.r`
+**Current daemon:** 0.8d28 ("serial input buffer + frame reassembly; compact-Mac monitor") — the version the daemon itself reports, from `mac/vers.r`
 **Status:** Production Ready ✅
 
 All core features working:

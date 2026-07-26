@@ -81,16 +81,16 @@
 
 resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
-    development, 0x27,   /* development stage, non-release revision 27 (BCD) */
+    development, 0x28,   /* development stage, non-release revision 27 (BCD) */
     verUS,
-    "0.8d27",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d27 - DISKINFO volume totals + MONITOR window toggle"  /* long -> Get Info */
+    "0.8d28",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d28 - serial input buffer + frame reassembly"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
-    development, 0x27,
+    development, 0x28,
     verUS,
-    "0.8d27",
+    "0.8d28",
     "AppleBridge"        /* the shared/suite version line */
 };

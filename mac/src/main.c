@@ -769,6 +769,25 @@ void InitApp(void)
 /* Fill *r with the Verbose window's content rect: the saved bounds from prefs if
  * set AND on-screen, otherwise a default clamped to the screen so the footer
  * stays visible even on a 512x342 SE/30. */
+/* A compact Mac (SE/30, Plus, Classic: 512x342) has no room for the roomy
+ * default — a 480x296 console buries the entire desktop, which is exactly how it
+ * looked on the SE/30 (2026-07-26). Cap the monitor there, and cap a RESTORED
+ * rect too: a rect saved on a big screen, or by an earlier build, is still
+ * "valid" on 342 lines and would otherwise keep covering everything. Stays well
+ * above MON_MIN_W/MON_MIN_H. */
+#define COMPACT_SCREEN_H 400
+#define COMPACT_MON_W    440
+#define COMPACT_MON_H    190
+
+static void ClampForCompactScreen(Rect *r, const Rect *scr)
+{
+    if ((short)(scr->bottom - scr->top) > COMPACT_SCREEN_H) return;   /* roomy display */
+    if ((short)(r->right - r->left) > COMPACT_MON_W)
+        r->right = (short)(r->left + COMPACT_MON_W);
+    if ((short)(r->bottom - r->top) > COMPACT_MON_H)
+        r->bottom = (short)(r->top + COMPACT_MON_H);
+}
+
 static void ComputeMonitorRect(Rect *r)
 {
     Rect  scr = qd.screenBits.bounds;
@@ -792,12 +811,14 @@ static void ComputeMonitorRect(Rect *r)
             r->top = (short)(r->top + d);
             r->bottom = (short)(r->bottom + d);
         }
+        ClampForCompactScreen(r, &scr);
         return;
     }
     w = (short)(scr.right - scr.left - 8);    if (w > 480) w = 480;
     h = (short)(scr.bottom - usableTop - 4);  if (h > 360) h = 360;
     SetRect(r, (short)(scr.left + 4), usableTop,
               (short)(scr.left + 4 + w), (short)(usableTop + h));
+    ClampForCompactScreen(r, &scr);
 }
 
 /* Snapshot the Verbose window's current global content rect into prefs and

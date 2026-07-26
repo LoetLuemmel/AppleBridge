@@ -89,6 +89,22 @@ Format — every entry carries all five fields, checked by
 - **Evidence:** the same subtraction pass found three of eight decisions restating three hard rules verbatim (linker, host interpreter, hard-kill) — a duplicate introduced by the very change that added the guards against duplication. Reasoning stated twice drifts; stated once, it cannot.
 - **Revisit if:** `CLAUDE.md` needs to be readable without this file — then inline the falsifiers and retire the split rather than keeping both.
 
+## D-011 — ILink is the linker for the daemon
+
+- **Date:** 2026-07-26
+- **Status:** active
+- **Decision:** the 68K daemon is linked with **`ILink`**; `Link` can no longer bind it.
+- **Evidence:** the daemon's code has reached ~98 KB in a single segment. `Link` places every object in one segment, so a near-model library cross-reference spanning it exceeds the 32 KB PC-relative limit — Error 48, first `MacRuntime`'s `___MAIN` -> `main`, and after reordering `_RTInit` -> `Interface.o`. Reordering only moves which reference breaks. `ILink` segments differently and linked the same objects cleanly (0.8d28, verified on-device). This supersedes the older note that `Link` is the default and `ILink` merely an alternative.
+- **Revisit if:** the code is split into explicit segments (`#pragma segment` or `SC -seg`), which would let `Link` work again — worth doing if `ILink`'s larger output or its `.NJ` incremental file becomes a problem.
+
+## D-012 — serial payloads above the guest's input buffer are not yet reliable
+
+- **Date:** 2026-07-26
+- **Status:** active
+- **Decision:** over serial, transfers up to the guest's serial input buffer (16 KB as of 0.8d28) are byte-exact; larger ones are not guaranteed and must be verified or split.
+- **Evidence:** on an SE/30 at 57600 after 0.8d28, 3x 8 KB round-tripped byte-identical (before the fix: 8150 of 8192 bytes wrong), while a single 82 KB transfer completed in 14.4 s with **30 of 82024 bytes** wrong. The wire delivers ~5.7 KB/s, so a 16 KB buffer is ~2.8 s of slack; a longer stall inside the daemon still overruns it. Host-side pacing is not a fix on its own — pacing slow enough for a small buffer trips the daemon's "host silent" watchdog.
+- **Revisit if:** RTS/CTS hardware handshaking is wired and enabled on both ends, or the protocol gains a windowed ack — either removes the dependency on drain speed. Re-run the 82 KB round-trip; byte-identical closes it.
+
 ## D-008 — serial fallback defaults
 
 - **Date:** 2026-07-02
