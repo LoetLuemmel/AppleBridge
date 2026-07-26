@@ -100,10 +100,18 @@ Format — every entry carries all five fields, checked by
 ## D-012 — serial payloads above the guest's input buffer are not yet reliable
 
 - **Date:** 2026-07-26
+- **Status:** superseded → D-013
+- **Decision:** *(withdrawn — the evidence was a measurement artifact; see D-013.)*
+- **Evidence:** claimed that 82 KB lost 30 of 82024 bytes over serial. Those bytes were the **file name inside the resource map**, which the Resource Manager rewrites when a resource fork is stored under a different name — not lost data. Comparing a resource fork byte-for-byte across a rename is not an integrity test.
+- **Revisit if:** n/a — superseded.
+
+## D-013 — bulk transfers are byte-exact on both transports
+
+- **Date:** 2026-07-26
 - **Status:** active
-- **Decision:** over serial, transfers up to the guest's serial input buffer (16 KB as of 0.8d28) are byte-exact; larger ones are not guaranteed and must be verified or split.
-- **Evidence:** on an SE/30 at 57600 after 0.8d28, 3x 8 KB round-tripped byte-identical (before the fix: 8150 of 8192 bytes wrong), while a single 82 KB transfer completed in 14.4 s with **30 of 82024 bytes** wrong. The wire delivers ~5.7 KB/s, so a 16 KB buffer is ~2.8 s of slack; a longer stall inside the daemon still overruns it. Host-side pacing is not a fix on its own — pacing slow enough for a small buffer trips the daemon's "host silent" watchdog.
-- **Revisit if:** RTS/CTS hardware handshaking is wired and enabled on both ends, or the protocol gains a windowed ack — either removes the dependency on drain speed. Re-run the 82 KB round-trip; byte-identical closes it.
+- **Decision:** with daemon 0.8d28 a file transfer is byte-exact over serial **and** MacTCP, for payloads well beyond the guest's serial input buffer; there is no known size limit to design around.
+- **Evidence:** 82024 bytes of random data written and read back **byte-identical** (data fork, SHA compared) over MacTCP at ~111 KB/s; 3× 8 KB byte-identical over serial at 57600. The earlier "30 bytes lost" appeared on **both** transports at the same magnitude, which is what exposed it as an artifact of comparing resource-map name fields rather than a transport fault. Integrity tests use a **data fork with random content**, because a resource fork legitimately differs after a rename.
+- **Revisit if:** a byte-compared transfer of random data in a *data fork* ever differs — that would be a real fault. The serial input buffer (16 KB) is still finite, so a transfer far larger than it, on a badly stalled guest, remains the plausible failure mode to watch.
 
 ## D-008 — serial fallback defaults
 
