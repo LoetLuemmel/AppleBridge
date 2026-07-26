@@ -6,7 +6,7 @@ Complete setup instructions for getting AppleBridge running with Claude Code.
 
 AppleBridge connects Claude Code to a classic Mac System 7.6.1 environment via four layers:
 
-1. **MCP layer** — Claude Code ↔ `mcp/server.py` (stdio), which exposes the 20 MCP tools.
+1. **MCP layer** — Claude Code ↔ `mcp/server.py` (stdio), which exposes the 30 MCP tools.
 2. **Control layer** — `mcp/server.py` ↔ `host_server.py` over `localhost:9001`.
 3. **Bridge layer** — the Mac daemon ↔ `host_server.py` over `:9000`. The architecture is **NAT-reversed**: the emulator sits behind Basilisk II's MACNAT, so the **daemon dials OUT** to the host; the host never connects in.
 4. **Apple Events layer** — the daemon ↔ ToolServer / MPW Shell.
@@ -293,5 +293,5 @@ caveats for real hardware are in [SERIAL_TRANSPORT.md](SERIAL_TRANSPORT.md).
 
 ---
 
-**Last Updated:** July 2, 2026
-**Target:** AppleBridge v0.7.0+ (protocol v0.2), Python host via launchd, 20 MCP tools
+**Last Updated:** July 26, 2026
+**Target:** AppleBridge 0.8d27 (protocol v0.2), Python host via launchd, 30 MCP tools

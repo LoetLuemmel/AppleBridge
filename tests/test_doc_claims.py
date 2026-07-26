@@ -64,7 +64,21 @@ INVENTORY_DOC = "CLAUDE.md"
 # Module and file names that share the tools' prefix and are not tools.
 NOT_TOOLS = {"mac_connection"}
 
-_COUNT_RE = re.compile(r"\(?(\d+)\s+tools\b")
+# The daemon's own 'vers' resource is the project's only version number: it is
+# what the Finder shows in Get Info, and `'vers'(2)` is commented there as the
+# shared/suite line. There are no git tags, so no second release track exists —
+# which is why "v0.7.0" sat in three documents as the *current* version long
+# after it had become a milestone inside the 0.8 line.
+VERS_R = "mac/vers.r"
+
+# Lines that declare what version the reader is looking at. Anything else
+# mentioning a version (a dated milestone, "wire protocol v0.2") is prose.
+VERSION_MARKERS = ("**Version:**", "**Current daemon:**", "**Target:**")
+VERSION_DOCS = ["README.md", "TROUBLESHOOTING.md", "docs/SETUP.md", "CLAUDE.md"]
+
+# "20 tools", "(30 tools)", "20 MCP tools" — the qualifier in the middle slipped
+# past the first version of this pattern and left a stale count in SETUP.md.
+_COUNT_RE = re.compile(r"\(?(\d+)\s+(?:MCP\s+)?tools\b")
 _NAME_RE = re.compile(r"\b(mac_[a-z_]+|mpw_execute|launch_app|run_applescript|bridge_doctor)\b")
 
 
@@ -129,6 +143,35 @@ def test_docs_do_not_name_tools_that_no_longer_exist():
                 if name not in known and name not in NOT_TOOLS:
                     stale.append(f"{rel}:{n} names {name!r}, which is not in TOOLS")
     assert not stale, "documented tool does not exist:\n  " + "\n  ".join(sorted(set(stale)))
+
+
+# --- the version ------------------------------------------------------------
+
+def _daemon_version():
+    """Short version string from mac/vers.r; both 'vers' resources must agree."""
+    found = re.findall(r'"(\d+\.\d+[a-z]\d+|\d+\.\d+\.\d+)"', _read(VERS_R))
+    assert found, f"no version string found in {VERS_R}"
+    assert len(set(found)) == 1, f"{VERS_R} disagrees with itself: {sorted(set(found))}"
+    return found[0]
+
+
+def test_version_declarations_match_the_vers_resource():
+    version = _daemon_version()
+    wrong = []
+    for rel in VERSION_DOCS:
+        for n, line in enumerate(_read(rel).split("\n"), 1):
+            if not any(m in line for m in VERSION_MARKERS):
+                continue
+            if version not in line:
+                wrong.append(f"{rel}:{n} declares a version without {version}: {line.strip()[:100]}")
+    assert not wrong, "stale version declaration:\n  " + "\n  ".join(wrong)
+
+
+def test_a_version_is_declared_somewhere():
+    version = _daemon_version()
+    declared = sum(1 for rel in VERSION_DOCS for line in _read(rel).split("\n")
+                   if any(m in line for m in VERSION_MARKERS) and version in line)
+    assert declared >= 2, f"only {declared} document(s) state the current version {version}"
 
 
 def test_tool_names_are_unique():

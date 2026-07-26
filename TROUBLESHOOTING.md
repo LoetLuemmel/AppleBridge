@@ -760,5 +760,5 @@ When things don't work, check in order:
 
 ---
 
-**Last Updated:** July 2, 2026
-**Version:** AppleBridge v0.7.0 (wire protocol v0.2)
+**Last Updated:** July 26, 2026
+**Version:** AppleBridge 0.8d27 (wire protocol v0.2) — from `mac/vers.r`, the single source
