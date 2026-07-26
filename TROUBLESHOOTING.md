@@ -27,6 +27,7 @@ server* below), and a dead `etherhelpertool`.
 - [Compilation and Linking](#compilation-and-linking)
 - [File System and Encoding](#file-system-and-encoding)
 - [ToolServer vs MPW Shell](#toolserver-vs-mpw-shell)
+- [Synthetic Input](#synthetic-input)
 - [Known Limitations](#known-limitations)
 
 ---
@@ -621,6 +622,42 @@ if (err != noErr) {
 ```
 
 **Recommendation:** Always run ToolServer for automation.
+
+---
+
+## Synthetic Input
+
+### A Command shortcut reports success but does nothing
+
+`mac_key` / `mac_menu` answer `success: true` whenever the daemon queued the event —
+that says the keystroke was *delivered*, never that the app *acted* on it. Verify by
+screenshot, not by the return value — the layer that reports is not the layer that
+decides.
+
+If the app ignores the shortcut, check what it resolves the shortcut from. A key-down
+message packs **two** halves: the low byte is the character the `KCHR` produced, the
+next byte the **physical key**. Most apps call `MenuKey` with the character; some read
+the key code.
+
+Until PR #86 the MCP surface sent key code `0` for every character, and **code 0 is
+the A key** — so key-code-reading apps saw Cmd-A for every shortcut. Symptom:
+`mac_key(key="o", modifiers=["command"])` did nothing in Photoshop 2.5 while the same
+call worked in ResEdit, SimpleText and Standard File dialogs. `mcp/tools.py` now
+derives the physical key from the character.
+
+Remaining cases and what to do:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Shortcut ignored in one app only | that app reads the key code, and yours is wrong | pass `key_code` explicitly (Inside Macintosh: Key Codes) |
+| `Y`/`Z` shortcuts hit the wrong item | key codes are *positions*; QWERTZ swaps them | `APPLEBRIDGE_KEY_LAYOUT=de`, or an explicit `key_code` |
+| No menu item has a Cmd-key equivalent | nothing to inject | `mac_host_menu` (real mouse, local emulator) or `mac_menu_front` |
+| Nothing arrives at all | the daemon's own window took the front | the target app must be frontmost — `MONITOR:0` keeps the Verbose console from stealing clicks |
+
+**Testing trap:** do not verify key injection with **Cmd-A**. `a` *is* key code 0, so a
+Cmd-A test passes whether or not the key code is correct — that is exactly why the
+original verification (Cmd-A/Cmd-Q in SimpleText) missed the bug. Pick a letter whose
+key code is non-zero and an app whose reaction is unmistakable (Cmd-O opening a dialog).
 
 ---
 
