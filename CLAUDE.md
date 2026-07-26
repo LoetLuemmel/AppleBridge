@@ -32,7 +32,7 @@ The **Mac daemon connects OUT** to the host (the emulator sits behind NAT, so th
 Smoke test: `cd host && /usr/bin/python3 send_command.py 'Echo HELLO'`.
 
 ## Hard rules (learned the hard way)
-- **`Link -model far` is the default linker** — `ILink` also works and is not broken; it just yields a larger binary plus a big `.NJ` file. Why, and when to revisit: D-002 in `DECISIONS.md`.
+- **`ILink -model far` is the linker for the daemon** — plain `Link` now fails it with Error 48 (one ~98 KB segment, 32 KB PC-relative reach). Small tools still link fine with `Link`. Why, and when to revisit: D-011 in `DECISIONS.md`.
 - **`/usr/bin/python3` for the host server** — never a venv interpreter; stdlib-only, so system Python suffices. Why: D-007 in `DECISIONS.md`.
 - **Re-run `Rez AppleBridge_res.r` after every link** — the `SIZE` resource (`isHighLevelEventAware`) is required or every command fails with `-903`.
 - **Never `2>&1`** in MPW (crashes the shell) — use `≥ file.err` to capture stderr (learned 2026-04-06, error-capture notes in `~/.claude/CLAUDE.md`).
