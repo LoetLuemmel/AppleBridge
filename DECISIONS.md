@@ -73,6 +73,22 @@ Format — every entry carries all five fields, checked by
 - **Evidence:** the macOS application firewall blocks the un-allowlisted venv binary — the server is stdlib-only precisely so the system interpreter suffices (`host/run_server.sh`).
 - **Revisit if:** the venv binary is firewall-allowlisted on the host and a dependency worth a venv actually appears.
 
+## D-009 — the ledger holds state, not history
+
+- **Date:** 2026-07-26
+- **Status:** active
+- **Decision:** the ledger records current state — the checkboxes — only; its per-session changelog is retired, and history is answered by `git log`, the merged pull requests, and the article corpus.
+- **Evidence:** first subtraction pass — the changelog had reached 33 entries and 36,000 characters, **45 % of the page**, restating what git already records automatically and without drift. A ledger nobody can scan fails at its only job. Removing it cut the page 38 %; every checkbox was preserved.
+- **Revisit if:** a narrative history is needed that git plus the article corpus cannot answer — in which case **generate** it from those sources, do not maintain a second copy by hand.
+
+## D-010 — hard rules point, decisions explain
+
+- **Date:** 2026-07-26
+- **Status:** active
+- **Decision:** a hard rule in `CLAUDE.md` states the imperative and points at its decision (`D-NNN`); the evidence and the falsifier live only in this file.
+- **Evidence:** the same subtraction pass found three of eight decisions restating three hard rules verbatim (linker, host interpreter, hard-kill) — a duplicate introduced by the very change that added the guards against duplication. Reasoning stated twice drifts; stated once, it cannot.
+- **Revisit if:** `CLAUDE.md` needs to be readable without this file — then inline the falsifiers and retire the split rather than keeping both.
+
 ## D-008 — serial fallback defaults
 
 - **Date:** 2026-07-02

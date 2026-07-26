@@ -32,12 +32,12 @@ The **Mac daemon connects OUT** to the host (the emulator sits behind NAT, so th
 Smoke test: `cd host && /usr/bin/python3 send_command.py 'Echo HELLO'`.
 
 ## Hard rules (learned the hard way)
-- **`Link -model far` is the default linker** — verified and leaner output. `ILink` is *not* broken: with the correct `{CLibraries}`/`{Libraries}` paths it links, runs, and round-trips commands cleanly (verified 2026-06-26). The old "ILink crashes Basilisk II" belief was a misdiagnosis — the committed `BuildIt` used an empty `{LIBS}`, so its lib paths resolved to nothing → a broken binary that crashed *on launch*. ILink is fine to use; it just yields a slightly larger binary plus a big `.NJ` incremental file, so `Link` stays the default.
-- **`/usr/bin/python3` for the host server** (firewall). Stdlib-only, so system Python suffices.
+- **`Link -model far` is the default linker** — `ILink` also works and is not broken; it just yields a larger binary plus a big `.NJ` file. Why, and when to revisit: D-002 in `DECISIONS.md`.
+- **`/usr/bin/python3` for the host server** — never a venv interpreter; stdlib-only, so system Python suffices. Why: D-007 in `DECISIONS.md`.
 - **Re-run `Rez AppleBridge_res.r` after every link** — the `SIZE` resource (`isHighLevelEventAware`) is required or every command fails with `-903`.
 - **Never `2>&1`** in MPW (crashes the shell) — use `≥ file.err` to capture stderr (learned 2026-04-06, error-capture notes in `~/.claude/CLAUDE.md`).
 - **Build off the running daemon**: link to `:bin:AppleBridge.new`, then swap; a heavy link in the same ToolServer that serves the bridge can take it (and the AE layer) down (observed 2026-07-02: the 0.8d2 link dropped the bridge mid-command).
-- **Never hard-kill BasiliskII** — terminating the process can corrupt the guest System 7 disk image. The clean stop is **`mac_shutdown`** (the `SHUTDOWN` verb, Shutdown Manager `ShutDwnPower`) or Special → Shut Down in the guest. See [[applebridge-never-kill-basilisk]].
+- **Never hard-kill BasiliskII** — the clean stop is **`mac_shutdown`** (the `SHUTDOWN` verb, Shutdown Manager `ShutDwnPower`) or Special → Shut Down in the guest. Why, and when to revisit: D-004 in `DECISIONS.md`.
 - **Encoding**: host UTF-8/LF ↔ Mac MacRoman/CR — use `host/encoding_convert.py`.
 - Long commands (e.g. `Link`) may return `-1712` (AE timeout) **yet still complete** — verify by the artifact, not the status (recurring since 2026-04-06; the artifact check is the only reliable signal).
 - **Host `.154` must live on the default-route interface** (where the guest's MACNAT exits — normally Wi-Fi `en0`), *not* a second NIC. If it's on the wrong interface, the daemon hangs on "CONNECTING" and freezes the emulator at 100% CPU (synchronous `OTConnect` starving the cooperative scheduler). `host/start_stack.sh` sets this up. **Never pre-create a bridge** — `etherhelpertool` owns `en8` directly; a manual `bridge100` SIGSEGVs it (`fret == -10`). The guest is behind MACNAT, so it is **never pingable** — diagnose via the *outbound* connection, not ICMP. See `TROUBLESHOOTING.md` → "Daemon hangs on CONNECTING".
