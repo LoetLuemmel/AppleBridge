@@ -1,8 +1,6 @@
 # Journaling driver — menu-by-name & modal-dialog mouse (R&D)
 
-Status: **R&D / design complete (2026-07-04)** — the driver-call protocol is now
-fully resolved (from Inside Macintosh Vol I); the next step is building the DRVR,
-not more research. Design + on-device reconnaissance for Phase 2 of
+Design and on-device reconnaissance for Phase 2 of
 [INPUT_MODIFIERS_AND_MENUS.md](INPUT_MODIFIERS_AND_MENUS.md). See also
 [[applebridge-journaling-driver-feasibility]].
 
@@ -115,7 +113,7 @@ since `MenuSelect`'s tracking loop is built on `GetMouse`/`Button`/`GetNextEvent
 (Primary source, if a re-check is ever needed: IM Vol I "The Journal", ≈ p. I-259;
 also on the AppleShare dev-docs volume, [[applebridge-appleshare-cdev-source]].)
 
-## ✅ Step-3 gate PASSED (2026-07-04) — journaling works on this ROM
+## The step-3 gate — journaling works on this ROM
 
 The key feasibility gate is **cleared**: a playback journal DRVR *is* consulted by
 the Event Manager on Basilisk II (System 7.6.1). Proven with a ToolServer test tool
@@ -161,7 +159,7 @@ Link -o jtest -t MPST -c 'MPS ' jtest.c.o "{LIBS}CLibraries:StdCLib.o" \
      "{LIBS}Libraries:IntEnv.o" "{LIBS}Libraries:Interface.o" "{LIBS}Libraries:MacRuntime.o"
 ```
 
-**Part 2a — daemon-side install: ✅ PASSED (2026-07-04, daemon 0.8d12).** The
+**Part 2a — daemon-side install.** The
 **faceless daemon** now installs the driver from its own process context via a
 `JGATE` wire verb (`OpenResFile` `ABJournalDRVR` from the daemon home →
 `OpenDriver` → self-register `JournalRef` → arm → `Button()`), verified live:
@@ -170,7 +168,7 @@ So a driver a *background daemon* installs is consulted by the ROM, not just one
 interactive/ToolServer process installs. (Deploy note: `ABJournalDRVR` must be
 staged in the daemon home, `MeinMac:AppleBridge:`.)
 
-**Part 2b — menu-driving: ✅ WORKS (2026-07-04, daemon 0.8d14, commit 4b58854).**
+**Part 2b — menu-driving.**
 The daemon drives `PopUpMenuSelect` to **any** chosen item via journaling, freeze-safe:
 `JMENU:200:128:150` → item 1, `:144` → 2, `:160` → 3, `:176` → 4 (item N at global
 `v = 112 + 16*N`). The driver feeds `jcGetMouse` the target `Point` and, after
@@ -183,7 +181,7 @@ iteration (`jcGetMouse`/`jcButton`/`jcEvent`); the `mouseUp` ends it. With a val
 block the in-driver call-count safety works (self-recovers <1s), so no hard freeze —
 no Time Manager needed.
 
-**Part 2c — real menu BAR: ✅ WORKS (2026-07-04, daemon 0.8d15, commit 7a7b4be, `JABOUT`).**
+**Part 2c — the real menu bar (`JABOUT`).**
 The daemon journal-drives its **own** Apple-menu title on the real menu **bar** via
 `MenuSelect` → item 1 → `ShowAboutBox`: the About box opened with zero synthetic input.
 The trick vs the popup case is feeding a `mouseDown` at the menu **title's** screen point
@@ -191,7 +189,7 @@ via `jcEvent` *first* (so the front app enters `MenuSelect`), then tracking down
 column and releasing with a `mouseUp`. Proves the menu-bar path end-to-end for a
 shortcut-less item.
 
-**JSF — modal Standard File driving (0.8d16→d20). ✅ RESOLVED 2026-07-05 (0.8d20, commit f3742b4).**
+**JSF — modal Standard File driving.**
 Progression:
 - **d16 (commit 9151b1b) — driver *mode*.** The driver gained a mode selector: mode 0 =
   menu (feed `jcEvent` `null`→`mouseUp` mid-track); **mode 1 = dialog click** (feed a
@@ -248,7 +246,7 @@ foreign apps on *local* Basilisk.
 **Follow-on spike — JPROBE2 v4: foreign-context probe (2026-07-05).** The probe sources
 (`mac/journal/jgne.a` + `jprobe2.c`) were deliberately **not merged** — the technique they
 exercise is unsafe (see below), so shipping it in the tree would only invite reuse. They remain
-readable in the unmerged spike [PR #71](https://github.com/LoetLuemmel/AppleBridge/pull/71) if the
+readable in the [unmerged spike](https://github.com/LoetLuemmel/AppleBridge/pull/71) if the
 probe ever needs re-running; these findings are kept here because they are the reason the approach
 was abandoned. A second, deeper spike revisited the cross-process question with a real
 jGNE filter (`$29A`) that runs *in the calling app's own context* on every `GetNextEvent`. Verbs:
@@ -289,8 +287,7 @@ menu-driving routes are unchanged: `MENU:<title>:<item>` / `JABOUT` (which journ
 `MenuSelect` on the daemon's own bar **without** a raw menu-bar `mouseDown`/playback), synthetic
 `mac_menu` Cmd-key shortcuts, and host `cliclick` for foreign apps on local Basilisk.
 
-**Phase A — `MENU:<title>:<item>` on the daemon's OWN menu bar: ✅ BUILT + HARDENED (0.8d22→d23,
-commits ef73f00 / bd8fdf4).** Generalises `JABOUT` from a hardcoded Apple/item-1 to arbitrary
+**Phase A — `MENU:<title>:<item>` on the daemon's OWN menu bar.** Generalises `JABOUT` from a hardcoded Apple/item-1 to arbitrary
 title+item **by name**: it walks the live menu list (`GetMenuBar`; header `lastMenu@0`/`lastRight@2`/
 `mbResID@4`, then 6-byte entries `MenuHandle@0`/`menuLeft@4`; `MenuInfo` `menuID@0`/`menuWidth@2`/
 title Pascal string `@14`) to match the title (→ its screen X = `menuLeft`), resolves the item to an
@@ -405,10 +402,9 @@ inside a front-app `MenuSelect`).
 
 ## Prototype plan (smallest step first)
 
-1. ~~Confirm the protocol~~ — ✅ **done** (resolved above from IM Vol I: `Control`
-   call, `csCode=16` for playback, journal codes 0–4, driver fills `csParam`'s
-   buffer). No longer a blocker.
-2. ~~**Playback DRVR skeleton**~~ — ✅ **built & verified 2026-07-04** (`mac/journal/ABJournal.a`).
+1. **Confirm the protocol** — resolved above from IM Vol I: `Control` call,
+   `csCode=16` for playback, journal codes 0–4, driver fills `csParam`'s buffer.
+2. **Playback DRVR skeleton** (`mac/journal/ABJournal.a`).
    Pure MPW asm; assembles clean and links into a valid `'DRVR' (128, ".ABJournal")`
    resource whose header/code DeRez byte-for-byte to spec (`$4400` flags; Open@30 →
    `dCtlRefNum`→`JournalRef`; Ctl@42 tests `csCode`==16, fills the caller's buffer per
@@ -435,13 +431,12 @@ inside a front-app `MenuSelect`).
    (`LMSetJournalRef`); the daemon `OpenDriver`s it by name, then pokes `JournalFlag`
    (`$08DE`) negative to start and back to 0 to stop. (All offsets header-verified —
    see "The DRVR mechanics" above.)
-3. ~~**Prove the hook fires**~~ — ✅ **PASSED 2026-07-04** (see "Step-3 gate PASSED"
-   above). A playback DRVR *is* consulted by the Event Manager on this ROM: a
-   ToolServer tool armed playback and `Button()` returned the driver's injected
-   value; the driver's own Control-call counter confirmed the ROM called it
-   (`csCode=16`). Still TODO within this step: prove it from the **faceless daemon**
-   (not a ToolServer tool) and reaching inside a real front-app **`MenuSelect`**
-   (not just `Button()`).
+3. **Prove the hook fires** (see "The step-3 gate" above). A playback DRVR *is*
+   consulted by the Event Manager on this ROM: a ToolServer tool armed playback and
+   `Button()` returned the driver's injected value; the driver's own Control-call
+   counter confirmed the ROM called it (`csCode=16`). The harder cases — driving it
+   from the **faceless daemon** and reaching inside a real front-app `MenuSelect` —
+   are Parts 2a and 2c above.
 4. **Scripted menu path** — replace the canned values with a small state machine the
    daemon loads: feed `jcGetMouse`/`jcButton`/`jcEvent` a real sequence —
    `mouseDown` at the menu title's screen point → `jcGetMouse` walking down the item
@@ -450,9 +445,8 @@ inside a front-app `MenuSelect`).
    one known menu.
 5. **`MENU:<title>:<item>` wire verb + `mac_menu(byName=…)`** — resolve title/item to
    coordinates, drive the sequence, restore `JournalFlag = 0` (watchdog-guarded).
-   ~~Extend to Standard File / modal-dialog mouse~~ — ✅ **modal-dialog mouse done**
-   (`JSF`, 0.8d20; `SFGetFile`+dlgHook+foreground-confirm+interrupt watchdog). The
-   remaining open item here is the by-name **menu** verb surface.
+   Extending to Standard File / modal-dialog mouse is the `JSF` path
+   (`SFGetFile` + dlgHook + foreground-confirm + interrupt watchdog).
 
 ## Risks & open questions
 
