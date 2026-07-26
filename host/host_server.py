@@ -121,6 +121,10 @@ CTRL_TOKEN = os.environ.get("APPLEBRIDGE_CTRL_TOKEN", "").encode("utf-8")
 # test harness. The :9001 control port and all framing/dispatch are unchanged.
 SERIAL_DEVICE = os.environ.get("APPLEBRIDGE_SERIAL") or None
 SERIAL_BAUD = int(os.environ.get("APPLEBRIDGE_BAUD", "9600"))
+# Optional send pacing for a guest whose serial input buffer is small (see
+# SerialConn.sendall). 0 = disabled: one write, full line rate.
+SERIAL_CHUNK = int(os.environ.get("APPLEBRIDGE_SERIAL_CHUNK", "0"))
+SERIAL_GAP = float(os.environ.get("APPLEBRIDGE_SERIAL_GAP", "0.015"))
 
 _logf = open(LOG_PATH, "a", buffering=1)  # line-buffered
 
@@ -222,16 +226,33 @@ class SerialConn:
                 continue
 
     def sendall(self, data):
+        """Write, optionally PACED so the guest's input buffer cannot overrun.
+
+        The classic Serial Manager's default input buffer is 64 bytes. A guest
+        that has not installed a bigger one (every daemon before 0.8d28) loses
+        bytes SILENTLY when the host streams a large payload at line rate — an
+        8 KB file arrived with the right length and the wrong contents. The host
+        is the only party that can throttle, so a paced write is what lets a
+        FIXED daemon be deployed over a link that is still broken.
+
+        Off by default (chunk 0 = one write, full speed). Set
+        APPLEBRIDGE_SERIAL_CHUNK (bytes) and APPLEBRIDGE_SERIAL_GAP (seconds) to
+        enable — e.g. 64 / 0.015 keeps a 64-byte-buffer guest fed just under
+        wire rate at 57600."""
         mv = memoryview(data)
+        chunk = SERIAL_CHUNK
         while mv:
             _, w, _ = select.select([], [self.fd], [], self._timeout)
             if not w:
                 raise socket.timeout()
+            piece = mv[:chunk] if chunk else mv
             try:
-                sent = os.write(self.fd, mv)
+                sent = os.write(self.fd, piece)
             except BlockingIOError:
                 continue
             mv = mv[sent:]
+            if chunk and mv and SERIAL_GAP:
+                time.sleep(SERIAL_GAP)     # let the guest drain before the next burst
 
     def close(self):
         try:
