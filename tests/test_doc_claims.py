@@ -94,12 +94,11 @@ DESIGN_DOCS_EXTRA = ["RX_TX_LEDS.md"]
 _STATUS_MARKER_RE = re.compile(r"✅|\bPR #\d+|\bSHIPPED\b|^Status:.*(?:[Ss]hipped|[Dd]one)")
 
 # Whole files that already carry a progress journal — known debt, listed so it
-# cannot grow silently. Stripping a file's journal removes it from this set.
-STATUS_DEBT = {
-    "RX_TX_LEDS.md",
-    "docs/JOURNALING_MENU_BY_NAME.md",
-    "docs/INPUT_MODIFIERS_AND_MENUS.md",
-}
+# cannot grow silently. Stripping a file's journal removes it from this set, and
+# the set may only ever shrink: the three files it was created with (RX_TX_LEDS,
+# JOURNALING_MENU_BY_NAME, INPUT_MODIFIERS_AND_MENUS) were cleared on 2026-07-26,
+# so every design doc is now held to the rule with no exceptions.
+STATUS_DEBT = set()
 
 # Individual lines where a marker is NOT progress journaling: a rhetorical
 # checkmark, or a PR number cited as *provenance* of a corrected belief (which

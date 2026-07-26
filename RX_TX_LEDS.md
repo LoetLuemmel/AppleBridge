@@ -193,27 +193,13 @@ live on-device verification.
 and `mac_status` surfaces `err_count` / `last_latency_ms` / `last_error` — so the
 same telemetry is available without opening the window.
 
-## Future Enhancements
+## Status and history
 
-Possible improvements:
-1. **Heartbeat/Ping**: Periodic health check command — ✅ shipped (v0.5.x app-level heartbeat)
-2. **Error counter**: Track failed commands separately — ✅ shipped (0.8d6, with a last-error tag)
-3. **Last command display**: Show most recent command text — ✅ shipped (the top-bar activity line)
-4. **Response time**: Display average command latency — ✅ shipped (0.8d6 last-command latency + health bar)
-5. **Connection quality meter**: Visual indicator of health — ✅ shipped (0.8d6 colour-coded latency bar)
-
-## Version History
-
-- **v0.3.0** (2026-04-11): Initial RX/TX LED implementation
-  - Visual activity indicators
-  - RX/TX counters
-  - Color-coded LEDs (green/red simulation)
-- **0.8d6** (2026-07-04): Telemetry footer
-  - Single **Active** indicator + scrolling Verbose console (prior evolution)
-  - Footer: RX/TX/**ERR** counters, last-command **latency** (number + colour-coded
-    health bar), and an **err:tag** last-error identifier
-  - Heartbeat-gated latency (real commands only)
-  - `STAT` `err=`/`lat=`/`lasterr=`; `mac_status` `err_count`/`last_latency_ms`/`last_error`
+Not here. What is built, what is open, and when each piece landed are the
+[roadmap ledger's](https://pit.390er.de/applebridge/applebridge-roadmap-ledger-progress-and-status-tracker/)
+job, and `git log` is the changelog. This document explains the *mechanism* — why
+the indicators exist, what each one means, and how to read them — which is the
+part that stays true.
 
 ## Credits
 
