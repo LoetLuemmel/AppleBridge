@@ -373,6 +373,37 @@ reads the Finder info and refuses anything whose type is not `'APPL'`.
 validates its argument before making it. The blast radius of a wrong argument
 here is the entire guest, not the command.
 
+### The same requirement, a second verb: `AESEND` waiting for a reply
+
+Later the same day, driving THINK C over Apple Events: a bare `KAHL/RUN` was
+sent to the Project Manager. The project does not link (`undefined: atexit`), so
+the application needed to interact, could not, and never replied. The daemon
+was inside `AESend` with `kAEWaitReply` and `AE_SCRIPT_TIMEOUT` — **five
+minutes** — and on a cooperative scheduler an application that is not yielding
+starves everything behind it. The guest stopped switching windows entirely; the
+host logged `command timeout after 240s`, and the emulator had to be force-quit
+with the disk image open.
+
+The timeout is not careless: ~5 min was chosen for `dosc`, where a
+`kAEDefaultTimeout` of ~60 s returned a spurious `-1712` on long `Link`/`SC`
+builds (`mac/include/applebridge.h`). The defect is that a value reasoned about
+for **ToolServer**, an application we control and that always answers, was
+inherited by a verb that can address **any** application.
+
+Two guards follow, neither of which needs the argument validation R16 added:
+
+* **Do not wait for a reply that the vocabulary says is empty.** `RUN`, `MAKE`
+  and most of the THINK suite declare `reply: 'null'`; `command.c` already has a
+  `kAENoReply` path for the other sender. Waiting is the caller's choice, so it
+  belongs in the verb, not in a constant.
+* **Bound the wait by what the caller can tolerate.** Five minutes is a build;
+  an interactive event is seconds. The host's own command timeout must be the
+  shorter of the two, so the bridge gives up before the guest is starved.
+
+**Requirement:** a verb that blocks the daemon states how long it may block, and
+the default is the interactive one. "It answered last time" is not a property of
+an application the bridge does not own.
+
 ## R17 — an acknowledged write is not a durable write
 
 `WRITEFILE` reported success and the `READFILE` immediately afterwards returned
