@@ -318,3 +318,74 @@ operator and a source, not from the measurements.
 **Requirement:** the installer establishes one launch path and one bridge policy.
 Two launchers with opposite beliefs about the same interface is a configuration
 that repairs itself into whichever state ran most recently.
+
+## R16 — a host-reachable verb must not be able to kill the guest
+
+`LAUNCH` builds a `LaunchParamBlockRec` with `launchNoFileFlags` — which tells
+the Launch Manager explicitly *not* to check the file's flags — and then calls
+`LaunchApplication` on whatever path it was given. Handing it a document is not
+an error that comes back as a status: on 2026-07-27 a `LAUNCH` of a THINK C
+project file (`'PROJ'`) took the **whole emulator down**, and the guest's disk
+was left unflushed.
+
+Having disabled the system's own check, the daemon owes one of its own. It now
+reads the Finder info and refuses anything whose type is not `'APPL'`.
+
+**Requirement:** every verb that reaches a Toolbox call from the network
+validates its argument before making it. The blast radius of a wrong argument
+here is the entire guest, not the command.
+
+## R17 — an acknowledged write is not a durable write
+
+`WRITEFILE` reported success and the `READFILE` immediately afterwards returned
+the new content — and the change was gone after the crash, with the file's
+original modification date intact. The write had reached the guest's disk cache;
+the read that "confirmed" it read **the same cache**.
+
+This is not a bridge defect, it is what a cache is. But it means a
+read-back over the bridge proves the guest *agrees* about the content, not that
+the content survives a power cut.
+
+**Requirement:** where a write must survive, it is verified after a clean
+shutdown, or the guest is asked to flush. Never treat a confirmed read-back as
+proof of durability — it is the strongest available evidence that is still not
+the claim being made.
+
+## R18 — an open application outranks the file on disk
+
+THINK C's Project Manager builds from its **editor buffer**, not from the file.
+A source changed over the bridge while its window is open is ignored by the
+build and — worse — is overwritten if the user then saves. The 2026-07-27
+session spent three build attempts on this before the window was closed.
+
+**Requirement:** before writing a file the guest may have open, close it in the
+owning application, or expect the write to be invisible and possibly reverted.
+Tooling that deploys sources should say so rather than let it be discovered.
+
+## R19 — suppressing the interface suppresses the errors
+
+`KAHL/NOUI` is exactly what a headless build wants, and it is also what hides
+the compiler's error dialog. A malformed source failed to compile and the build
+reported nothing at all; the failure only became visible after switching back to
+`KAHL/UI`.
+
+**Requirement:** a headless build is judged by its **artifact** — a changed code
+size, a new timestamp, a running binary that shows the new string — never by the
+absence of complaints. Suppressing the interface removes the channel the
+complaint would have used.
+
+## R20 — move classic sources as bytes, never as host text
+
+A source read from the guest, held briefly in a host-side file and read back in
+Python's text mode arrives with every `CR` silently rewritten to `LF`. The guest
+then sees one enormous line: the editor shows box characters instead of breaks,
+and the compiler fails — quietly, per R19. `#include` on the same line as the
+rest of the program does not survive the preprocessor.
+
+The project's encoding rule names character sets (MacRoman ↔ UTF-8) and line
+endings, but says nothing about *intermediate handling on the host*, which is
+where this happened.
+
+**Requirement:** classic-Mac text moves as bytes end to end. Where a host-side
+copy is unavoidable it is opened in binary mode, and line endings are converted
+once, deliberately, at a named boundary.
