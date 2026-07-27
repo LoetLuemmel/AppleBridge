@@ -251,10 +251,30 @@ def test_short_reason_reports_a_missing_emulator_plainly():
 
 # --- robustness: probes must degrade, never raise ---------------------------
 def test_every_probe_failing_still_yields_a_report():
+    """Every input is injected, including whether the agent exists.
+
+    Left to the real filesystem this passed on a machine that happens to have
+    the plist and failed on one that does not — which is the very divergence
+    bridge_doctor is for. A test that reads the developer's disk cannot detect
+    that class of fault; it embodies it.
+    """
     rep = bd.collect(run=lambda argv, timeout=4.0: "",
-                     read=lambda path: "", uid=UID, host_ip=HOST_IP)
+                     read=lambda path: "", uid=UID, host_ip=HOST_IP,
+                     exists=lambda _p: True)         # agent installed, not loaded
     assert rep["verdict"] == "error"          # missing job + missing alias
     assert {"launchd_absent", "host_ip_missing"} <= keys(rep)
+    assert isinstance(bd.format_text(rep), str)
+
+
+def test_every_probe_failing_on_a_machine_without_the_agent():
+    """The same collapse on an installation that has no launchd job at all."""
+    rep = bd.collect(run=lambda argv, timeout=4.0: "",
+                     read=lambda path: "", uid=UID, host_ip=HOST_IP,
+                     exists=lambda _p: False)
+    assert rep["verdict"] == "error"
+    k = keys(rep)
+    assert "host_server_not_running" in k
+    assert "launchd_absent" not in k
     assert isinstance(bd.format_text(rep), str)
 
 
