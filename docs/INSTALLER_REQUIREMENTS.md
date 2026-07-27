@@ -125,14 +125,39 @@ measurement; only the abandoned script disagreed.
 The mechanism matters more than the verdict, because "it works" without one is
 what made the kext survive for years. `etherhelpertool` is **not** setuid and
 `/dev/bpf*` are `root:wheel 0600`, yet the helper runs as root: BasiliskII
-elevates it itself, evidently through Authorization Services. No password was
-requested during that launch, which means a stored authorisation already exists
-on this machine.
+elevates it itself through Authorization Services, and it **prompts every
+launch**. This requirement first recorded that no password was requested; that
+was an artefact of measuring from a terminal while the operator typed it at the
+screen.
 
-**What the installer must therefore anticipate:** a *first* launch on a machine
-with no stored authorisation will most likely prompt, and a headless or
-scripted install cannot answer that prompt. That case is untested here — the
-answer above is for a machine that has already been authorised once.
+**Two costs follow, and they matter more than the verdict.**
+
+**A password per launch, twice.** One prompt for the bridge in the operator's
+launcher, one for BasiliskII's helper elevation. Neither can be answered by a
+script, so `start_stack.sh` was never truly one-shot on this path and an
+unattended or headless start is impossible on it.
+
+**A specific build.** `etherhelpertool` is not part of a stock BasiliskII. It
+comes from the **kanjitalk755 macemu fork** (<https://github.com/kanjitalk755/macemu>),
+where the backend originated and was extended; the running bundle here reports
+*"Basilisk II 1.0, SDL2 port"* and carries `etherhelpertool` plus an
+`etherhelpertool.arm64.bak` in `Contents/Resources`, while a second, different
+BasiliskII binary in the same folder has no helper at all. The build in use here was **compiled by the operator**,
+incorporating that backend — which raises the bar for anyone else from "install
+an emulator" to "find a fork build, or compile one". A normal user's copy does
+not have the helper, so for them the `etherhelper` branch does not exist at all,
+whatever their interfaces look like.
+
+The preflight must therefore probe the **app bundle** — is `etherhelpertool`
+present in `Contents/Resources`? — and not just the host's NICs. An absent helper
+decides the branch before the interface count is consulted, and it is the cheaper
+check of the two.
+
+**slirp needs none of it:** no bridge, no alias, no privileged step, no special
+build. For the single-interface machine of R6/D-015 that is a stronger argument
+than any throughput figure — that branch is not merely the only one that works
+there, it is the only one that starts without a human at the keyboard, and the
+only one a stock emulator can offer.
 
 ## R9 — do not require a kernel extension
 
