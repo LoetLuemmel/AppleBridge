@@ -1,5 +1,17 @@
 # Installer requirements — what a fresh machine actually needs
 
+> **Scope (D-018): the host-side installer configures the `slirp` branch only.**
+> Where it finds an `etherhelpertool` in the emulator bundle it names that path
+> as manual and stops. `etherhelper` stays supported and documented; it is set
+> up by hand. The reason is not effort but capability: that branch needs two
+> interactive password prompts per launch and a self-built fork emulator, so its
+> output cannot start without somebody at the keyboard. The cost is stated
+> rather than buried — **the slirp branch has no AppleTalk**.
+>
+> Requirements below that concern the `etherhelper` path (R6's second half, R15)
+> therefore describe *diagnosis and documentation*, not configuration the
+> installer performs.
+
 What the host-side installer must do, derived by installing AppleBridge on a
 machine that had never run it. Every requirement below is something that was
 missing, wrong, or silently misleading during that bring-up (2026-07-27,
