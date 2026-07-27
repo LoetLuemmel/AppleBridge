@@ -15,7 +15,13 @@
 #define kPrefCreator    'ABrg'
 #define kPrefFileName   "\pAppleBridge Prefs"
 #define PREFS_BUF_SIZE  4096
-#define DEFAULT_HOST_IP "192.168.3.154"
+/* No default host address, deliberately (R2 in docs/INSTALLER_REQUIREMENTS.md).
+ * A seeded address is not a harmless guess: on a LAN where it happens to answer,
+ * the daemon connects to the WRONG machine and reports full health — protocol
+ * negotiated, heartbeat running, zero errors on both consoles. That happened on
+ * 2026-07-27 and cost two rounds of diagnosis. An unconfigured daemon that says
+ * so is strictly better than a configured-looking one that is pointed elsewhere. */
+#define DEFAULT_HOST_IP ""
 
 void PrefsDefaults(AppPrefs *p)
 {

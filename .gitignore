@@ -26,3 +26,7 @@ uv.lock
 
 # Personal Claude Code settings — may hold API keys
 .claude/settings.local.json
+
+# Machine-specific host configuration (see host/local.env.example) — one
+# machine's address never belongs in the repository.
+host/local.env

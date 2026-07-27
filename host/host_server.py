@@ -2,7 +2,7 @@
 """
 AppleBridge Host Server (hardened)
 
-Mac daemon connects OUT to this server on 192.168.3.154:9000 (reversed
+Mac daemon connects OUT to this server on <configured host IP>:9000 (reversed
 architecture due to NAT). Local control clients (send_command.py, build.py,
 the MCP layer) connect to localhost:9001 and get one command executed per
 connection.
@@ -19,12 +19,13 @@ Hardening over the original (host-only, no 68k daemon changes):
   * Adaptive timeouts: long for Link/SC/Asm/Make/DumpFile, short otherwise.
   * Structured, unbuffered logging to stderr + /tmp/applebridge_server.log.
 
-NOTE: the daemon hardcodes the host IP (192.168.3.154). Large responses
+NOTE: the daemon dials the IP= in its own prefs. Large responses
 (>64 KB, up to a 4 MB cap) are now streamed by the daemon from a dynamically
 allocated handle and read here by their declared STDOUT:<len> (length-framing,
 already content-agnostic) — no per-response size limit on this side.
 """
 import base64
+import errno
 import hmac
 import json
 import os
@@ -40,7 +41,12 @@ try:
 except ImportError:       # deployed copy predating the module: degrade, don't die
     bridge_doctor = None
 
-HOST_INTERFACE = "192.168.3.154"   # single source of truth; daemon connects here
+import host_config                 # where the host's own address comes from (R1)
+
+# Resolved, never hardcoded: APPLEBRIDGE_HOST_IP -> host/local.env -> 0.0.0.0.
+# A literal here was correct on exactly one machine and produced an unreadable
+# Errno 49 everywhere else. See host_config.py and docs/INSTALLER_REQUIREMENTS.md.
+HOST_INTERFACE, HOST_INTERFACE_SOURCE = host_config.resolve_host_ip()
 HOST_PORT = 9000                   # Mac daemon connects to this
 CONTROL_PORT = 9001                # local control clients connect to this
 LOG_PATH = "/tmp/applebridge_server.log"
@@ -397,9 +403,25 @@ class AppleBridgeServer:
             return
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind((self.interface, self.port))
+        try:
+            self.server_socket.bind((self.interface, self.port))
+        except OSError as e:
+            # EADDRNOTAVAIL is the fresh-machine failure: a configured address
+            # that no interface carries. The bare errno names neither, so say
+            # both before re-raising (R1).
+            if e.errno == errno.EADDRNOTAVAIL:
+                for line in host_config.explain_bind_failure(self.interface).splitlines():
+                    log(line)
+            raise
         self.server_socket.listen(1)
         log(f"Listening on {self.interface}:{self.port} (waiting for Mac daemon)")
+        log(f"  host address from: {HOST_INTERFACE_SOURCE}")
+        if self.interface == host_config.BIND_ALL:
+            # Bound to everything, so the guest's IP= is the open question —
+            # answer it here rather than leaving it to be guessed.
+            hint = host_config.describe_reachability()
+            if hint:
+                log(f"  {hint}")
 
     def accept_mac(self, timeout=None):
         """Wait for a Mac daemon to connect; (re)assign client_socket.

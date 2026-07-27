@@ -26,7 +26,7 @@ LABEL="de.390er.applebridge-host"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 
 # The complete runtime set host_server.py needs at import/run time.
-RUNTIME_FILES=(host_server.py screenshot_decode.py macbinary.py bridge_doctor.py
+RUNTIME_FILES=(host_server.py screenshot_decode.py macbinary.py bridge_doctor.py host_config.py
                run_server.sh)
 
 RESTART=1

@@ -5,7 +5,7 @@
 # Starts host_server.py with the FIREWALL-ALLOWLISTED system Python
 # (/usr/bin/python3), NOT the project venv python. The venv binary is a
 # different, un-allowlisted executable, so inbound connections from the Mac
-# daemon (across the bridge, e.g. 192.168.3.244 -> 192.168.3.154:9000) get
+# daemon (across the bridge, guest -> <configured host IP>:9000) get
 # silently blocked by the macOS application firewall. host_server.py is
 # stdlib-only, so the system Python is sufficient.
 #

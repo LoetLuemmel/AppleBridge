@@ -2967,6 +2967,31 @@ static Boolean WaitForReconnect(void)
  * RST, so both surface here as a plain timeout. So the text names the likely
  * causes in the order they are worth checking rather than over-claiming one.
  */
+/* No host address configured at all — a different situation from "the host does
+ * not answer", and it must read differently. There is nothing to retry and
+ * nothing to diagnose on the host side: the daemon simply has not been told
+ * where to dial. Saying so beats the alternative this replaced, where a seeded
+ * address made the daemon connect to whichever machine happened to hold it.
+ * Repeats on the same schedule as the unreachable-host hint so a console opened
+ * later still shows it, without filling the log. */
+static void LogNoHostIPHint(void)
+{
+    static long sShown = 0;
+
+    sShown++;
+    if (sShown == 1 || (sShown % HOSTHINT_REPEAT_EVERY) == 0) {
+        StatusMessage("*** NO HOST ADDRESS CONFIGURED - not dialling ***");
+        StatusMessage("  the daemon has not been told where the host is, and");
+        StatusMessage("  will not guess: a wrong address that answers connects");
+        StatusMessage("  to the wrong machine and looks perfectly healthy.");
+        StatusMessage("  set it in ONE of these, then it is picked up here:");
+        StatusMessage("   1. AppleBridgeConfig");
+        StatusMessage("   2. IP=<host address> in 'AppleBridge Prefs'");
+        StatusMessage("      (System Folder:Preferences:, NOT the install folder)");
+        StatusMessage("  the host server prints the addresses it can be dialled at.");
+    }
+}
+
 static void LogHostMissingHint(long attempt, OSStatus err)
 {
     char line[160];
@@ -3200,6 +3225,22 @@ int main(void)
 
         /* Connect to host if not connected */
         if (!connected) {
+            /* No configured host address -> do NOT dial. There is nothing to
+             * derive here: the matching value lives on the host, and a guess
+             * that happens to answer connects to the wrong machine while every
+             * indicator reads healthy (R2). Re-read the prefs each round so
+             * setting IP= later takes effect without a relaunch. */
+            if (gPrefs.ip[0] == '\0') {
+                SetActivity("NO HOST IP - set IP= in AppleBridge Prefs");
+                LogNoHostIPHint();
+                if (WaitForReconnect()) {
+                    break;              /* User aborted */
+                }
+                LoadPrefs(&gPrefs);
+                hostIP = ParseIPAddress(gPrefs.ip);
+                continue;
+            }
+
             SetActivity("CONNECTING");
             SystemTask();
 
@@ -3213,7 +3254,7 @@ int main(void)
                  * the user an honest, actionable hint covering the likely fixes —
                  * a message with instructions still beats silence. */
                 if (err == kABConnectTimeout) {
-                    SetActivity("no host reply - server up? .154 on right NIC?");
+                    SetActivity("no host reply - server up? right NIC?");
                 } else if (err == kABConnectRefused) {
                     SetActivity("host unreachable - run start_stack.sh on host?");
                 } else {
