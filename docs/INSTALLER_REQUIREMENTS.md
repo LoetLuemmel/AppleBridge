@@ -240,3 +240,39 @@ means at startup, since the periodic re-read adopts transport fields only.
 the daemon (so its in-memory copy is the one that gets written), or the daemon
 re-reads before every save. Writing the file underneath it is not a supported
 edit, and the tooling should not present it as one.
+
+## R15 — the two launchers contradict each other about the bridge
+
+The operator starts the emulator with `/Applications/BAII Netzwerk.app`, whose
+entire privileged step is:
+
+```
+ifconfig bridge100 create
+ifconfig bridge100 addm en8
+ifconfig bridge100 up
+```
+
+followed by an **unprivileged** `open -a BasiliskII.app`. The bridge is created
+*first*, deliberately, and that is the arrangement that works.
+
+`start_stack.sh` does the opposite: it **destroys** `bridge100`, describing it as
+"stale state from older (wrong) runs", on the strength of a hard rule that said
+never to pre-create one. The rule has been corrected (the crash it came from
+happens when the bridge is touched *while* the helper owns the NIC, not when it
+is created beforehand), but the teardown is still in the script. The two
+launchers therefore undo each other, and which one ran last decides the state.
+
+**What is not known:** whether the bridge is *required* or merely harmless. Every
+observation on 2026-07-27 — including a launch that was believed to be
+bridge-less — had `bridge100` present, left over from an earlier run of the
+operator's launcher. So the evidence cannot separate the two, and no claim
+either way belongs in the documentation yet.
+
+**The experiment that settles it:** destroy `bridge100`, launch, and check
+AppleTalk specifically (the Chooser or `mac_appletalk_browse`) rather than the
+bridge — TCP would keep working in either case, which is exactly how the slirp
+backend fooled us in R6.
+
+**Requirement:** the installer establishes one launch path and one bridge policy.
+Two launchers with opposite beliefs about the same interface is a configuration
+that repairs itself into whichever state ran most recently.
