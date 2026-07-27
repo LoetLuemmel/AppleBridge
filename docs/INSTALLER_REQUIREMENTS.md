@@ -149,3 +149,57 @@ native surface and needs no toolchain at all.
 
 **Requirement:** the installer reports two tiers separately, and never treats an
 absent ToolServer as a failed install.
+
+## R12 — the server's mode is chosen by `isatty()`, and the choice is silent
+
+`host_server.py` branches on `sys.stdin.isatty()`: a TTY gets `interactive_mode`
+(a `Command>` prompt), anything else gets `run_control_server`. The two are
+mutually exclusive, so a server started the obvious way — in a terminal, to
+watch it come up — listens on `:9000`, reports a healthy daemon, negotiates the
+protocol, and has **no control port at all**. Every MCP tool and every script
+then fails with `Connection refused` against a server that looks perfect.
+
+The workaround is `./run_server.sh < /dev/null`: output stays on the terminal,
+stdin is not a TTY, the control port comes up. Nothing says so.
+
+**Requirement:** the banner names the mode and what it costs, or the two modes
+stop excluding each other.
+
+## R13 — diagnostics must not describe the developer's machine
+
+The daemon-down message reads *"Host server agent de.390er.applebridge-host is
+not loaded"*. That launchd job exists on one machine. Elsewhere the server is
+started by hand — correctly — and the hint sends the reader after a job that was
+never supposed to exist. A diagnostic that names a component the installation
+does not have is worse than none: it is a false lead with an authoritative tone.
+
+**Requirement:** every remedy a diagnostic proposes is one that applies to the
+installation it is running in.
+
+## What the tier actually delivers
+
+Measured on the clean-room machine with `host/tools/q1_native_surface.py`
+(11 checks, all passing), guest System 7.5.3 over slirp, no ToolServer:
+
+| | |
+|---|---|
+| data fork, 4 KB / 64 KB / 512 KB | byte-exact, well past the daemon's 64 KB buffer |
+| resource fork | full length, differences confined to the name stamp (D-013) |
+| screenshot | valid PNG, ~15 s |
+| `DISKINFO`, `LISTDIR` | real data, no toolchain involved |
+| round-trip throughput | 84 → 179 → 291 KiB/s, rising with payload size |
+
+Two of these deserve a second look.
+
+**Throughput contradicts the expectation set by D-001.** The 2026-06-28 bench
+measured ~0.2 MiB/s over slirp — but through `Catenate`/`DumpFile`, i.e.
+ToolServer. The native `WRITEFILE`/`READFILE` path beats it at 512 KB on
+slower hardware, so a good part of that figure was the detour, not the
+transport. D-001's throughput argument stands for the path it measured; it does
+not describe the path a ToolServer-less machine actually uses.
+
+**The screenshot is the weak point of this tier**, and it is the one operation a
+GUI-driving loop repeats constantly. The bridge carries the **raw** PixMap while
+the resulting PNG is ~17 KB, which bounds how compressible the content is. The
+compressor already exists in `host/tools/gif_to_rez.py`, applied in the other
+direction. For this tier that is less an optimisation than a precondition.
