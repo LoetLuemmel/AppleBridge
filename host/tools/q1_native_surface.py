@@ -29,7 +29,6 @@ is reported — loudly — but as a finding to investigate rather than a verdict
 import argparse
 import base64
 import os
-import socket
 import sys
 import time
 
@@ -37,55 +36,25 @@ CTRL_HOST = "127.0.0.1"
 CTRL_PORT = 9001
 SIZES = (4096, 65537, 524288)      # below / just above / well above the 64 KB buffer
 
+# The control-port client the MCP tools use, reused rather than reimplemented.
+# A second parser written for this script got the framing wrong on the first
+# live reply: the frame is documented with CR separators, the daemon emits LF
+# in places, and MacConnection already normalises both — plus it terminates a
+# request with "\n\n" and downgrades a truncated reply to an error. That
+# behaviour has its own regression suite in tests/test_parse_response.py, and
+# a copy of it here would only drift away from the original.
+# The path insert avoids the name clash between this repo's ./mcp package and
+# the installed `mcp` SDK — same reason and same workaround as that test file.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                os.pardir, os.pardir, "mcp"))
+from mac_connection import MacConnection             # noqa: E402
 
-# --- control port ------------------------------------------------------------
-
-def _auth_prefix():
-    token = os.environ.get("APPLEBRIDGE_CTRL_TOKEN", "")
-    return f"AUTH:{token}\n" if token else ""
-
-
-def send(command, timeout=300.0, port=CTRL_PORT):
-    """-> (status, stdout, stderr). Raises OSError if the port is not there."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(timeout)
-    try:
-        sock.connect((CTRL_HOST, port))
-        sock.sendall((_auth_prefix() + command).encode("utf-8"))
-        sock.shutdown(socket.SHUT_WR)
-        chunks = []
-        while True:
-            chunk = sock.recv(65536)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        return _parse(b"".join(chunks))
-    finally:
-        sock.close()
+_CONN = MacConnection(host=CTRL_HOST, port=CTRL_PORT)
 
 
-def _parse(raw):
-    """STATUS:<n>\\rSTDOUT:<len>\\r<data>\\rSTDERR:<len>\\r<data> — read by length."""
-    def field(blob, name):
-        marker = name + b":"
-        i = blob.find(marker)
-        if i < 0:
-            return None, blob
-        j = blob.find(b"\r", i)
-        n = int(blob[i + len(marker):j])
-        start = j + 1
-        return blob[start:start + n], blob[start + n:]
-
-    i = raw.find(b"STATUS:")
-    if i < 0:
-        return None, raw.decode("utf-8", "replace"), "no STATUS in reply"
-    j = raw.find(b"\r", i)
-    status = int(raw[i + 7:j if j > 0 else len(raw)] or -1)
-    out, rest = field(raw[j + 1:] if j > 0 else b"", b"STDOUT")
-    err, _ = field(rest, b"STDERR")
-    return (status,
-            (out or b"").decode("utf-8", "replace"),
-            (err or b"").decode("utf-8", "replace"))
+def send(command, timeout=300.0):
+    """-> (status, stdout, stderr). Raises OSError if the control port is absent."""
+    return _CONN.send_command(command, timeout=timeout)
 
 
 # --- checks ------------------------------------------------------------------
@@ -104,20 +73,19 @@ class Report:
 
 
 def check_link(rep):
+    """STATUS answers 0 only when a daemon is actually behind the control port."""
     status, out, err = send("STATUS", timeout=20.0)
-    alive = status == 0 or "toolserver" in (out + err).lower() or out.strip()
-    rep.add("bridge link", bool(alive), (out or err).strip()[:120] or f"status={status}")
-    return bool(alive)
+    alive = status == 0
+    rep.add("bridge link", alive, (out or err).strip()[:120] or f"status={status}")
+    return alive
 
 
-def check_native_verbs(rep):
-    for verb in ("DISKINFO", "LISTDIR:"):
-        cmd = verb if verb != "LISTDIR:" else None
-        if cmd is None:
-            continue
+def check_native_verbs(rep, base):
+    for verb in ("DISKINFO", "LISTDIR:" + base):
         status, out, err = send(verb, timeout=60.0)
-        rep.add(f"{verb} (no ToolServer)", status == 0 and bool(out.strip()),
-                out.strip().splitlines()[0][:100] if out.strip() else (err or f"status={status}"))
+        first = out.strip().splitlines()[0][:100] if out.strip() else ""
+        rep.add(f"{verb.split(':')[0]} (no ToolServer)", status == 0 and bool(first),
+                first or (err or f"status={status}"))
 
 
 def check_screenshot(rep, outdir):
@@ -232,7 +200,7 @@ def main():
         print("  Run this on the machine whose host server is running.")
         return 2
 
-    check_native_verbs(rep)
+    check_native_verbs(rep, base)
     check_screenshot(rep, args.out)
     check_roundtrip(rep, base, args.keep)
 
