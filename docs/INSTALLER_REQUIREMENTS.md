@@ -142,9 +142,11 @@ comes from the **kanjitalk755 macemu fork** (<https://github.com/kanjitalk755/ma
 where the backend originated and was extended; the running bundle here reports
 *"Basilisk II 1.0, SDL2 port"* and carries `etherhelpertool` plus an
 `etherhelpertool.arm64.bak` in `Contents/Resources`, while a second, different
-BasiliskII binary in the same folder has no helper at all. A normal user's copy
-does not have it, so for them the `etherhelper` branch does not exist, whatever
-their interfaces look like.
+BasiliskII binary in the same folder has no helper at all. The build in use here was **compiled by the operator**,
+incorporating that backend — which raises the bar for anyone else from "install
+an emulator" to "find a fork build, or compile one". A normal user's copy does
+not have the helper, so for them the `etherhelper` branch does not exist at all,
+whatever their interfaces look like.
 
 The preflight must therefore probe the **app bundle** — is `etherhelpertool`
 present in `Contents/Resources`? — and not just the host's NICs. An absent helper
