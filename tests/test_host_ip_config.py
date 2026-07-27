@@ -171,6 +171,33 @@ def test_local_env_is_not_tracked():
         "the example file documents the format and must be shipped"
 
 
+def test_no_derivative_of_local_env_is_tracked_either():
+    """Ask git what is tracked, not .gitignore what it intends to ignore.
+
+    The assertion above passed while two files carrying this machine's
+    addresses sat in the repository: `install_bridge.py` keeps a timestamped
+    backup beside `local.env` before rewriting it, `.gitignore` named only the
+    live file, and a `git add -A` committed the copies (2026-07-27). The
+    installer written to stop shipping one machine's addresses shipped them.
+
+    A test that reads the ignore list can only confirm an intention. This one
+    checks the outcome.
+    """
+    import subprocess
+    try:
+        out = subprocess.run(["git", "ls-files"], cwd=_ROOT, capture_output=True,
+                             text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):       # no git in this sandbox
+        return
+    if not out.strip():                                  # not a checkout
+        return
+    tracked = [f for f in out.split("\n")
+               if os.path.basename(f).startswith("local.env")
+               and not f.endswith("local.env.example")]
+    assert not tracked, ("machine-specific configuration is in the repository: "
+                         + ", ".join(tracked))
+
+
 def test_every_module_host_server_imports_is_deployed():
     """The deployed copy is a separate directory; a missed import breaks it there.
 

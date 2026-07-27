@@ -29,4 +29,12 @@ uv.lock
 
 # Machine-specific host configuration (see host/local.env.example) — one
 # machine's address never belongs in the repository.
+#
+# The backups matter as much as the file: install_bridge.py keeps a timestamped
+# copy beside local.env before rewriting it, and on 2026-07-27 two of those were
+# committed by a `git add -A` — carrying the very literals (.154, .244, en8,
+# bridge100) that the installer exists to stop shipping. Ignoring only the live
+# file was never enough; anything derived from it is the same secret.
 host/local.env
+host/local.env.bak-*
+host/local.env.bak.*
