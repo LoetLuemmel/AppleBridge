@@ -114,9 +114,13 @@ with the prefs, as one derived set.
 **Resolved 2026-07-27: the emulator does not need elevated rights.** Launched
 with a plain unprivileged `open -a`, BasiliskII ran as the normal user, its
 `etherhelpertool` child came up **as root**, opened a BPF device, and the guest
-daemon connected — so `start_stack.sh` is right to launch it unprivileged and
-the `sudo open -a` in the operator's own start script is ritual, like the kext
-in R9.
+daemon connected — so `start_stack.sh` is right to launch it unprivileged, and
+so is the operator's real launcher, `/Applications/BAII Netzwerk.app`, which
+elevates only its bridge setup (R15) and then starts the emulator with a plain
+`open -a`. The `sudo open -a` this requirement was written against belongs to
+`AppleTalk_Start.sh` — a script that is **not** the one in use, and which also
+carries the unnecessary kext of R9. Both launchers in actual use agree with the
+measurement; only the abandoned script disagreed.
 
 The mechanism matters more than the verdict, because "it works" without one is
 what made the kext survive for years. `etherhelpertool` is **not** setuid and
