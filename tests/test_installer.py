@@ -426,6 +426,27 @@ def test_the_launcher_takes_the_emulator_path_from_configuration():
     assert "APPLEBRIDGE_EMULATOR_APP" in _start_stack()
 
 
+def test_the_launcher_matches_a_wildcard_listener_the_way_lsof_prints_it():
+    # First slirp launch, 2026-07-27: step 4 reported "not listening" two lines
+    # below its own log saying it was. lsof renders a wildcard bind as `*:9000`,
+    # never `0.0.0.0:9000`, and the check grepped for the latter.
+    text = _start_stack()
+    assert r'LSOF_PATTERN=' in text
+    assert r"'\*:9000'" in text, "the wildcard bind must be matched as lsof prints it"
+
+
+def test_rewrite_preserves_lf_endings_because_mpw_c_swaps_the_escapes():
+    # The real guest file has LF and no CR: prefs.c writes "\r", but MPW C maps
+    # '\r' to 0x0A. Converting it to CR would corrupt the bridge's own config.
+    lf = (b"# AppleBridge preferences\nIP=192.168.3.154\nDEBUG=0\nNET=OT\n"
+          b"HOME=MeinMac:AppleBridge:\n")
+    out = ib.rewrite_ip_line(lf, "192.168.3.240")
+    assert b"\r" not in out, "must not impose CR on a file that has none"
+    assert b"IP=192.168.3.240\n" in out
+    assert len(out) == len(lf), "same-length address, same-length file"
+    assert b"HOME=MeinMac:AppleBridge:\n" in out
+
+
 # --- rendering --------------------------------------------------------------
 
 def test_the_refusal_report_shows_no_plan_and_no_checklist():

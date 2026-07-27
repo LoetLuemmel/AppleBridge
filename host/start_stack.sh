@@ -159,10 +159,18 @@ else
 fi
 
 # With no configured address the server binds 0.0.0.0, so match that instead of
-# an address this script does not know.
+# an address this script does not know — but match it the way lsof PRINTS it.
+# A wildcard bind shows as `*:9000`, never as `0.0.0.0:9000`, so grepping for
+# the latter reported "not listening" about a server whose own log two lines
+# above said it was listening (observed 2026-07-27, the first slirp launch).
 EXPECT_BIND="${HOST_IP:-0.0.0.0}"
+if [ "$EXPECT_BIND" = "0.0.0.0" ]; then
+    LSOF_PATTERN='\*:9000'
+else
+    LSOF_PATTERN="${EXPECT_BIND}:9000"
+fi
 echo "[4/5] Verifying host server is listening on ${EXPECT_BIND}:9000…"
-if lsof -nP -iTCP:9000 -sTCP:LISTEN 2>/dev/null | grep -q "${EXPECT_BIND}:9000"; then
+if lsof -nP -iTCP:9000 -sTCP:LISTEN 2>/dev/null | grep -q "${LSOF_PATTERN}"; then
     echo "      OK — bound to ${EXPECT_BIND}:9000 (+ control on 127.0.0.1:9001)"
 else
     echo "      WARN: not listening. Last log lines:"; tail -n 6 /tmp/applebridge_server.log | sed 's/^/        /'
