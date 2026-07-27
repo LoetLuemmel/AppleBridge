@@ -86,6 +86,16 @@ under `etherhelper` on a single-interface host the guest reaches file servers,
 LAN web servers and the public internet, and fails **only** against the computer
 it is running inside.
 
+**Deliberately out of scope:** the derivation runs once, at install time. A
+two-interface host *becomes* a single-interface host the moment its adapter is
+unplugged — `etherhelpertool` dies, the emulator keeps running without a guest
+NIC, and the daemon loops on connect timeouts — so the right backend for that
+machine changes underneath a correct installation. Reacting to it is a later
+feature, not a requirement of the first installer; the hook is already there,
+since whatever probe identifies `etherhelper` at install time can be re-run.
+Until then this stays a diagnosis (`bridge_doctor` reports the dead helper),
+not an automatic switch.
+
 ## R7 — slirp needs three values, and one of them is not obvious
 
 Guest `10.0.2.15` / `255.255.255.0`, router `10.0.2.2`, **resolver `10.0.2.3`**.
