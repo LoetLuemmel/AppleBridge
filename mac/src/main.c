@@ -3291,6 +3291,23 @@ int main(void)
                 StatusMessage("host server found - bridge is UP again");
                 connectFails = 0;
             }
+
+            /* Name the host we actually reached. The console said only
+             * "Connecting to host..." and printed the address solely when the
+             * attempt FAILED — so a healthy-looking console gave no way to tell
+             * a correct host from a stranger's, which is exactly the state a
+             * seeded default address produces (R4). */
+            {
+                char line[96];
+                char *q = line;
+                q = StatStr(q, "connected to ");
+                q = StatStr(q, gPrefs.ip);
+                q = StatStr(q, ":");
+                q = StatDec(q, (long)BRIDGE_PORT);
+                *q = '\0';
+                StatusMessage(line);
+            }
+
             connected = true;
             /* Fresh link -> fresh auth state: a new host must re-negotiate
              * (HELLO) and, if a token is set, re-prove (AUTH2) before commands. */
