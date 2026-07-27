@@ -82,23 +82,15 @@ if [ -n "$EMU_IP" ]; then
 else
     ROUTE_OPS=""
 fi
-# The bridge belongs to the ETHERHELPER backend only. A slirp machine has none
-# and needs none — it needs no privileged network setup at all (D-015/D-016).
-if [ "${ETHER_BACKEND%%/*}" = "etherhelper" ]; then
-    echo "      bridge: ensuring $BRIDGE with $WIRED_IF (required by etherhelper)"
-    BRIDGE_OPS="
-if ! ifconfig $BRIDGE >/dev/null 2>&1; then ifconfig $BRIDGE create; fi
-if ! ifconfig $BRIDGE | grep -q 'member: $WIRED_IF'; then ifconfig $BRIDGE addm $WIRED_IF; fi
-ifconfig $BRIDGE up
-"
-else
-    echo "      backend is '${ETHER_BACKEND:-unknown}' — no bridge needed (etherhelper only)"
-    BRIDGE_OPS=""
-fi
+# NO bridge handling here, in either direction (D-017). With `etherhelper/<if>`
+# the helper owns the NIC directly and no bridge is on the path — measured both
+# ways 2026-07-27. This script used to DESTROY one (removing what the operator's
+# launcher deliberately creates), then briefly CREATED one (overcorrection). It
+# now only reports, because the bridge belongs to the tap mode and to the
+# operator's launcher, not to this script.
 PRIV="
 # The host address belongs on the DEFAULT-ROUTE interface, not the wired one.
 $ALIAS_OPS
-$BRIDGE_OPS
 $ROUTE_OPS
 "
 osascript -e "do shell script \"$PRIV\" with administrator privileges" || {
@@ -111,10 +103,13 @@ if [ -n "$HOST_IP" ] && ifconfig "$WIRED_IF" 2>/dev/null | grep -q "inet ${HOST_
 fi
 if [ "${ETHER_BACKEND%%/*}" = "etherhelper" ]; then
     if ifconfig "$BRIDGE" 2>/dev/null | grep -q "member: $WIRED_IF"; then
-        echo "      bridge: $BRIDGE up with $WIRED_IF as a member"
+        echo "      bridge: $BRIDGE present with $WIRED_IF (harmless; not on the path in this mode)"
     else
-        echo "      WARN: $BRIDGE missing or without $WIRED_IF — etherhelper needs it."
+        echo "      bridge: none on $WIRED_IF — expected with etherhelper/<if> (D-017)"
     fi
+    echo "      NOTE: this path needs TWO password prompts per launch (bridge +"
+    echo "            BasiliskII elevating its built-in etherhelper), so it cannot"
+    echo "            start unattended. A slirp setup needs none."
 fi
 
 echo "[3/5] (Re)starting host server…"
