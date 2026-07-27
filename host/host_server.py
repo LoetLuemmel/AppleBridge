@@ -1577,11 +1577,26 @@ def main():
     server = AppleBridgeServer(serial_dev=SERIAL_DEVICE, serial_baud=SERIAL_BAUD)
     server.bind_listen()
     try:
-        if sys.stdin.isatty():
+        # Which mode this is has always been decided by isatty() and never
+        # stated, so a server started the obvious way — in a terminal, to watch
+        # it come up — serves :9000 perfectly and has NO control port at all.
+        # Every tool then fails against a server that looks healthy (R12).
+        forced = os.environ.get("APPLEBRIDGE_FORCE_CONTROL", "").strip().lower()
+        force_control = forced not in ("", "0", "false", "no")
+        if sys.stdin.isatty() and not force_control:
+            log("Interactive mode (stdin is a terminal): typed commands only.")
+            log(f"  NOTE: there is NO control port on :{CONTROL_PORT} in this mode,")
+            log("        so send_command.py, the MCP tools and host/tools/* cannot")
+            log("        reach this server. For those, start it as either of:")
+            log("            ./run_server.sh < /dev/null")
+            log("            APPLEBRIDGE_FORCE_CONTROL=1 ./run_server.sh")
             server.accept_mac()
             server.negotiate_version()
             interactive_mode(server)
         else:
+            if sys.stdin.isatty():
+                log("Control mode forced by APPLEBRIDGE_FORCE_CONTROL "
+                    "(no interactive prompt).")
             run_control_server(server)
     except KeyboardInterrupt:
         log("Shutting down...")

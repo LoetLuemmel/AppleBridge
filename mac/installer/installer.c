@@ -485,6 +485,11 @@ static void DoInstall(void)
      * the bridge" would be a promise it cannot keep — the daemon will come up and
      * refuse to dial. Nothing here can derive the address: it belongs to the host.
      * So name the missing step instead of implying there is none (R2). */
+    /* Name the file that was written. The preferences do NOT live in the
+     * installation folder — they go to the System Folder's Preferences folder —
+     * and somebody looking for them beside the binaries finds a template
+     * instead, edits it, and changes nothing (R3). */
+    mystrcat(gStatus, "; prefs in System Folder:Preferences:AppleBridge Prefs");
     if (gPrefs.ip[0] == '\0')
         mystrcat(gStatus, " - now set the host IP in AppleBridgeConfig.");
     else

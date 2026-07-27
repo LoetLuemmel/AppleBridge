@@ -231,6 +231,41 @@ def test_the_server_actually_enforces_the_refusal():
     assert '(("127.0.0.1", CONTROL_PORT))' not in src, \
         "the control bind address must no longer be a literal"
 
+
+# --- R12/R13: the two diagnostics that pointed at the developer's machine ----
+
+def test_interactive_mode_says_it_has_no_control_port():
+    """R12: the mode is chosen by isatty(); saying so is the whole fix.
+
+    A server started in a terminal serves :9000 flawlessly and :9001 not at all,
+    and every tool then fails against something that looks healthy.
+    """
+    src = _read("host/host_server.py")
+    assert "APPLEBRIDGE_FORCE_CONTROL" in src, \
+        "there must be a way to get the control port from a terminal"
+    i = src.find("sys.stdin.isatty()")
+    assert i > 0
+    window = src[i - 900:i + 900]
+    assert "NO control port" in window, \
+        "interactive mode must state that the control port is absent"
+    assert "/dev/null" in window, \
+        "the message must name the redirect that avoids the trap"
+
+
+def test_the_doctor_distinguishes_absent_from_unloaded():
+    """R13: a machine with no launchd agent starts the server by hand.
+
+    Telling its owner to bootstrap a plist that was never installed is a false
+    lead with an authoritative tone — worse than saying nothing.
+    """
+    src = _read("host/bridge_doctor.py")
+    assert '"installed"' in src, \
+        "the launchd probe must report whether the agent exists at all"
+    assert "host_server_not_running" in src, \
+        "an absent agent needs its own finding, not the unloaded-job one"
+    assert 'installed but not loaded' in src, \
+        "the bootstrap advice must be reserved for an agent that is installed"
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
