@@ -266,16 +266,29 @@ happens when the bridge is touched *while* the helper owns the NIC, not when it
 is created beforehand), but the teardown is still in the script. The two
 launchers therefore undo each other, and which one ran last decides the state.
 
-**What is not known:** whether the bridge is *required* or merely harmless. Every
-observation on 2026-07-27 — including a launch that was believed to be
-bridge-less — had `bridge100` present, left over from an earlier run of the
-operator's launcher. So the evidence cannot separate the two, and no claim
-either way belongs in the documentation yet.
+**Resolved: the bridge is required.** Confirmed by the operator and documented
+on Emaculation — the `etherhelper` backend needs it, which is why their launcher
+consists of nothing else. That turns this from a conflict of opinion into a
+defect: `start_stack.sh` was **removing a required component**, and the only
+reason it never showed is that the operator's launcher re-created it on the next
+start. A stack that repairs itself on the next run hides the fault rather than
+surviving it.
 
-**The experiment that settles it:** destroy `bridge100`, launch, and check
-AppleTalk specifically (the Chooser or `mac_appletalk_browse`) rather than the
-bridge — TCP would keep working in either case, which is exactly how the slirp
-backend fooled us in R6.
+`start_stack.sh` now ensures the bridge instead of destroying it — created if
+absent, member added if missing, brought up, inside the existing privileged block
+and before the emulator launches — but **only when the configured backend is
+`etherhelper`**. A bridge is a property of that backend, not of AppleBridge: a
+slirp machine has none, needs none, and needs no privileged network step at all.
+That sharpens the derivation of R6/D-015 rather than complicating it — the
+single-interface path is not merely the only one that works there, it is also the
+one that asks the user for nothing. The interface and bridge names come from
+`host/local.env` (`APPLEBRIDGE_WIRED_IF`, `APPLEBRIDGE_BRIDGE`), since `en8` is
+as machine-specific as the addresses in R1.
+
+Worth keeping in view: today's evidence could not have settled this on its own.
+Every observation had `bridge100` present — including a launch described at the
+time as bridge-less, where it was simply left over. The answer came from the
+operator and a source, not from the measurements.
 
 **Requirement:** the installer establishes one launch path and one bridge policy.
 Two launchers with opposite beliefs about the same interface is a configuration
