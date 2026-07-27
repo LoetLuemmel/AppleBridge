@@ -151,6 +151,38 @@ def _get(mac_path):
     return (data, rsrc), None
 
 
+def _judge_resource_fork(sent, got, mac_path):
+    """-> (ok, why). Byte equality is the WRONG contract for a resource fork.
+
+    A resource fork is a structure, not a byte container: the Resource Manager
+    stamps the owning file's name into the map as a Pascal string. Sending
+    random bytes and demanding them back verbatim therefore tests an invalid
+    payload — the mistake that produced D-012 and that D-013 corrected. The
+    2026-07-27 run identified the rewritten bytes exactly: 77-78 bytes between
+    offsets 48 and 125, containing <length><leaf name>, the length byte
+    tracking the name (9/10/11 characters -> 0x09/0x0a/0x0b).
+
+    So the contract checked here is: the fork comes back at its **full length**,
+    and any difference is confined to the name stamp. That is a real check —
+    a truncation, a shifted fork or a corrupted transfer all still fail it.
+    Byte-exactness is proven on the data fork, which has no such structure.
+    """
+    leaf = mac_path.rsplit(":", 1)[-1]
+    if len(got) != len(sent):
+        return False, f"length changed: sent {len(sent)} B, got {len(got)} B"
+    diffs = [i for i in range(len(sent)) if sent[i] != got[i]]
+    if not diffs:
+        return True, f"{len(sent)} B byte-exact (no name stamp written)"
+
+    stamp = bytes([len(leaf)]) + leaf.encode("mac_roman", "replace")
+    window = got[max(0, diffs[0] - 4):diffs[-1] + 1]
+    if stamp in window:
+        return True, (f"{len(sent)} B, intact except the Resource Manager's name stamp "
+                      f"({len(diffs)} B at offsets {diffs[0]}-{diffs[-1]}, "
+                      f"reads {stamp[1:].decode('mac_roman', 'replace')!r}) — D-013")
+    return False, _diff_report(sent, got, mac_path)
+
+
 def _diff_report(sent, got, mac_path):
     """Describe *how* two forks differ, and whether the difference is stable.
 
@@ -206,8 +238,9 @@ def check_roundtrip(rep, base_path, keep):
             detail = (f"DATA FORK DIFFERS: sent {len(data)} B, got {len(back_data)} B, "
                       f"first difference at offset {first}")
         rep.add(f"round trip {size} B", ok, detail)
-        if ok and back_rsrc != rsrc:
-            rep.add(f"resource fork {size} B", False, _diff_report(rsrc, back_rsrc, name))
+        if ok:
+            good, why = _judge_resource_fork(rsrc, back_rsrc, name)
+            rep.add(f"resource fork {size} B", good, why)
         if not keep:
             try:                                              # best effort: truncate to 0 B
                 _put(name, b"", b"")
