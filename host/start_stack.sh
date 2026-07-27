@@ -23,10 +23,12 @@
 #   synchronous OTConnect blocks → starves System 7's cooperative scheduler → the
 #   whole emulator freezes at 100% CPU (looks like a crash; it isn't).
 #
-# DO NOT create a bridge. Basilisk's etherhelpertool owns en8 directly; pre-creating
-# bridge100 + "addm en8" collides with it and SIGSEGVs the helper ("etherhelpertool:
-# fret == -10") before any screen appears. This script only TEARS DOWN any stale
-# bridge a previous (wrong) run may have left, so the etherhelper can own en8 cleanly.
+# THE BRIDGE IS REQUIRED (corrected 2026-07-27). The etherhelper backend needs
+# bridge100 with the wired NIC as a member, and it must exist BEFORE the emulator
+# starts — as Emaculation documents and as the operator's own launcher does. This
+# script previously DESTROYED it, citing an etherhelpertool SIGSEGV ("fret == -10").
+# That crash is real but comes from touching the bridge WHILE the helper owns the
+# NIC; the prohibition was the wrong lesson. See D-016 and R15.
 #
 # See: https://pit.390er.de/applebridge/anatomy-of-a-freeze-macnat-return-path/
 #
@@ -36,13 +38,13 @@
 #
 set -u
 
-WIRED_IF="en8"                 # Thunderbolt, wired LAN — owned by Basilisk's etherhelper
+WIRED_IF="${APPLEBRIDGE_WIRED_IF:-en8}"     # wired LAN the etherhelper bridges onto
 # shellcheck disable=SC1091
 [ -f "$(dirname "$0")/local.env" ] && . "$(dirname "$0")/local.env"
 HOST_IP="${APPLEBRIDGE_HOST_IP:-}"   # from host/local.env or the environment (R1)
 EMU_IP="${APPLEBRIDGE_GUEST_IP:-}"   # the emulated Mac, if known (behind MACNAT — never routable)
 NETMASK="255.255.255.0"
-STALE_BRIDGE="bridge100"       # only ever torn down here, never created
+BRIDGE="${APPLEBRIDGE_BRIDGE:-bridge100}"   # REQUIRED by the etherhelper backend
 BASILISK_APP="/Users/pitforster/Documents/Basilisk/BasiliskII.app"
 SERVER_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -57,6 +59,7 @@ echo "[1/5] Emulator backend preflight…"
 # drops AppleTalk, which surfaces as an empty Chooser, not as a network fault.
 # Repairs by default; AB_KEEP_ETHER=1 reports and changes nothing.
 "$SERVER_DIR/check_ether_backend.sh" || true
+ETHER_BACKEND="$(awk '/^ether[ \t]/{print $2; exit}' "$HOME/.basilisk_ii_prefs" 2>/dev/null)"
 
 echo "[2/5] Privileged network setup (admin password dialog)…"
 # With no configured address there is no alias to place — the server binds
@@ -79,11 +82,23 @@ if [ -n "$EMU_IP" ]; then
 else
     ROUTE_OPS=""
 fi
+# The bridge belongs to the ETHERHELPER backend only. A slirp machine has none
+# and needs none — it needs no privileged network setup at all (D-015/D-016).
+if [ "${ETHER_BACKEND%%/*}" = "etherhelper" ]; then
+    echo "      bridge: ensuring $BRIDGE with $WIRED_IF (required by etherhelper)"
+    BRIDGE_OPS="
+if ! ifconfig $BRIDGE >/dev/null 2>&1; then ifconfig $BRIDGE create; fi
+if ! ifconfig $BRIDGE | grep -q 'member: $WIRED_IF'; then ifconfig $BRIDGE addm $WIRED_IF; fi
+ifconfig $BRIDGE up
+"
+else
+    echo "      backend is '${ETHER_BACKEND:-unknown}' — no bridge needed (etherhelper only)"
+    BRIDGE_OPS=""
+fi
 PRIV="
 # The host address belongs on the DEFAULT-ROUTE interface, not the wired one.
 $ALIAS_OPS
-# Clean up stale state from older (wrong) runs so the etherhelper can own the NIC:
-if ifconfig $STALE_BRIDGE >/dev/null 2>&1; then ifconfig $STALE_BRIDGE destroy; fi
+$BRIDGE_OPS
 $ROUTE_OPS
 "
 osascript -e "do shell script \"$PRIV\" with administrator privileges" || {
@@ -94,8 +109,12 @@ echo "      ${DEFAULT_IF} addrs:"; ifconfig "$DEFAULT_IF" | grep "inet " | sed '
 if [ -n "$HOST_IP" ] && ifconfig "$WIRED_IF" 2>/dev/null | grep -q "inet ${HOST_IP} "; then
     echo "      WARN: ${HOST_IP} is STILL on $WIRED_IF — the freeze bug will return."
 fi
-if ifconfig "$STALE_BRIDGE" >/dev/null 2>&1; then
-    echo "      WARN: $STALE_BRIDGE still present — etherhelper may SIGSEGV (fret == -10)."
+if [ "${ETHER_BACKEND%%/*}" = "etherhelper" ]; then
+    if ifconfig "$BRIDGE" 2>/dev/null | grep -q "member: $WIRED_IF"; then
+        echo "      bridge: $BRIDGE up with $WIRED_IF as a member"
+    else
+        echo "      WARN: $BRIDGE missing or without $WIRED_IF — etherhelper needs it."
+    fi
 fi
 
 echo "[3/5] (Re)starting host server…"

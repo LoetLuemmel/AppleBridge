@@ -111,17 +111,28 @@ with the prefs, as one derived set.
 
 ## R8 — privileges: required for one backend, not the other
 
-`etherhelpertool` is not setuid and `/dev/bpf*` are `root:wheel 0600`, so the
-emulator must be launched with elevated rights for that backend. `slirp` needs
-none. `start_stack.sh` elevates only its `ifconfig` block and then launches the
-emulator unprivileged, which contradicts the operating practice on both
-machines — either the documented one-shot path starts an emulator without guest
-networking, or the requirement is subtler than it looks. Unresolved.
+**Resolved 2026-07-27: the emulator does not need elevated rights.** Launched
+with a plain unprivileged `open -a`, BasiliskII ran as the normal user, its
+`etherhelpertool` child came up **as root**, opened a BPF device, and the guest
+daemon connected — so `start_stack.sh` is right to launch it unprivileged, and
+so is the operator's real launcher, `/Applications/BAII Netzwerk.app`, which
+elevates only its bridge setup (R15) and then starts the emulator with a plain
+`open -a`. The `sudo open -a` this requirement was written against belongs to
+`AppleTalk_Start.sh` — a script that is **not** the one in use, and which also
+carries the unnecessary kext of R9. Both launchers in actual use agree with the
+measurement; only the abandoned script disagreed.
 
-A one-time `ChmodBPF`-style LaunchDaemon (`/dev/bpf*` → `root:access_bpf 0640`)
-would remove the per-launch password. Untested here; the `access_bpf` group
-already exists on the developer machine with the user in it, and nothing sets
-the permissions, so it currently grants nothing.
+The mechanism matters more than the verdict, because "it works" without one is
+what made the kext survive for years. `etherhelpertool` is **not** setuid and
+`/dev/bpf*` are `root:wheel 0600`, yet the helper runs as root: BasiliskII
+elevates it itself, evidently through Authorization Services. No password was
+requested during that launch, which means a stored authorisation already exists
+on this machine.
+
+**What the installer must therefore anticipate:** a *first* launch on a machine
+with no stored authorisation will most likely prompt, and a headless or
+scripted install cannot answer that prompt. That case is untested here — the
+answer above is for a machine that has already been authorised once.
 
 ## R9 — do not require a kernel extension
 
@@ -213,3 +224,72 @@ GUI-driving loop repeats constantly. The bridge carries the **raw** PixMap while
 the resulting PNG is ~17 KB, which bounds how compressible the content is. The
 compressor already exists in `host/tools/gif_to_rez.py`, applied in the other
 direction. For this tier that is less an optimisation than a precondition.
+
+## R14 — the daemon overwrites the prefs file it is reading
+
+Editing `AppleBridge Prefs` over the bridge does not reliably stick: the daemon
+holds its own copy in memory and writes it back, so an external edit can be
+silently replaced by the values the daemon started with. Observed 2026-07-27
+while demonstrating R2 — a `mac_write_file` reported 115 bytes written and a
+read immediately afterwards returned the *previous* content; the file recovered
+from the powered-off disk image later carried the daemon's own header and its
+`WIN=` geometry, with only the field it had never held in memory changed.
+
+This is the reason the demonstration had to blank the address twice, and it is
+a trap for anyone who edits configuration over the bridge and reads success
+back. A write is only durable once the daemon has re-read it — which for `IP=`
+means at startup, since the periodic re-read adopts transport fields only.
+
+**Requirement:** a configuration change made over the bridge is applied through
+the daemon (so its in-memory copy is the one that gets written), or the daemon
+re-reads before every save. Writing the file underneath it is not a supported
+edit, and the tooling should not present it as one.
+
+## R15 — the two launchers contradict each other about the bridge
+
+The operator starts the emulator with `/Applications/BAII Netzwerk.app`, whose
+entire privileged step is:
+
+```
+ifconfig bridge100 create
+ifconfig bridge100 addm en8
+ifconfig bridge100 up
+```
+
+followed by an **unprivileged** `open -a BasiliskII.app`. The bridge is created
+*first*, deliberately, and that is the arrangement that works.
+
+`start_stack.sh` does the opposite: it **destroys** `bridge100`, describing it as
+"stale state from older (wrong) runs", on the strength of a hard rule that said
+never to pre-create one. The rule has been corrected (the crash it came from
+happens when the bridge is touched *while* the helper owns the NIC, not when it
+is created beforehand), but the teardown is still in the script. The two
+launchers therefore undo each other, and which one ran last decides the state.
+
+**Resolved: the bridge is required.** Confirmed by the operator and documented
+on Emaculation — the `etherhelper` backend needs it, which is why their launcher
+consists of nothing else. That turns this from a conflict of opinion into a
+defect: `start_stack.sh` was **removing a required component**, and the only
+reason it never showed is that the operator's launcher re-created it on the next
+start. A stack that repairs itself on the next run hides the fault rather than
+surviving it.
+
+`start_stack.sh` now ensures the bridge instead of destroying it — created if
+absent, member added if missing, brought up, inside the existing privileged block
+and before the emulator launches — but **only when the configured backend is
+`etherhelper`**. A bridge is a property of that backend, not of AppleBridge: a
+slirp machine has none, needs none, and needs no privileged network step at all.
+That sharpens the derivation of R6/D-015 rather than complicating it — the
+single-interface path is not merely the only one that works there, it is also the
+one that asks the user for nothing. The interface and bridge names come from
+`host/local.env` (`APPLEBRIDGE_WIRED_IF`, `APPLEBRIDGE_BRIDGE`), since `en8` is
+as machine-specific as the addresses in R1.
+
+Worth keeping in view: today's evidence could not have settled this on its own.
+Every observation had `bridge100` present — including a launch described at the
+time as bridge-less, where it was simply left over. The answer came from the
+operator and a source, not from the measurements.
+
+**Requirement:** the installer establishes one launch path and one bridge policy.
+Two launchers with opposite beliefs about the same interface is a configuration
+that repairs itself into whichever state ran most recently.
