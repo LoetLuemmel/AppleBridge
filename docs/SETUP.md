@@ -34,19 +34,35 @@ The retired Swift `MacintoshBridgeHost` was replaced long ago by the stdlib-only
 
 ### 1.1 Emulator networking (MACNAT, not slirp)
 
-Use Basilisk II's **`etherhelper`** Ethernet backend (MACNAT), not slirp. In `~/.basilisk_ii_prefs`:
+There are **two backends**, and which one you can have is decided by your machine, not by preference (D-018 in `DECISIONS.md`).
+
+```bash
+cd host && ./install_bridge.py --dry-run   # read the plan first; it changes nothing
+cd host && ./install_bridge.py
+```
+
+**The installed branch is `slirp`.** It needs no interface alias, no bridge, no privileged step and no special emulator build, so it is the only one that comes up without somebody at the keyboard — and on a host with a single interface it is the only one that works at all, because a bridged backend cannot reach the machine it runs inside (D-015). The installer writes `ether slirp` into `~/.basilisk_ii_prefs`, generates `host/local.env` **without** a host address (the server binds `0.0.0.0`, since the guest's connection arrives from `127.0.0.1` or from your LAN address depending on which it dialled), and prints the guest-side values you then enter by hand:
+
+| where | value | whose address |
+|---|---|---|
+| guest TCP/IP control panel | `10.0.2.15` / `255.255.255.0`, router `10.0.2.2`, name server **`10.0.2.3`** | the **guest's own** |
+| `AppleBridge Prefs`, `IP=` | this machine's LAN address | the **host's** |
+
+Those two are the trap: the same word means opposite things three lines apart, and swapping them is silent. The name server is the field that gets left empty — without it DNS fails as iCab `-23045`, which reads like a routing fault.
+
+**The cost of this branch, stated plainly: no AppleTalk.** No Chooser, no AFP mounts, no `mac_appletalk_browse`. TCP is unaffected, which is exactly how the gap disguises itself as something else.
+
+**The `etherhelper` branch (MACNAT) keeps AppleTalk and is set up by hand.** The installer names it and stops rather than configuring it, and it **refuses to convert a host that already runs it** — pass `--force-slirp` if you really mean to. It needs a fork build of the emulator carrying `etherhelpertool` (from [kanjitalk755/macemu](https://github.com/kanjitalk755/macemu); a stock Basilisk II has none), two interfaces, and **two interactive password prompts per launch**, so it cannot start unattended:
 
 ```
 ether etherhelper/en8
 ```
 
-The guest sits behind MACNAT: it can only connect **out**, its outbound traffic is NAT'd through the host's **default-route** interface (normally Wi-Fi `en0`), and it is **never pingable**. The daemon dials the hard-coded host address **`192.168.3.154`**.
+The guest then sits behind MACNAT: it can only connect **out**, its outbound traffic is NAT'd through the host's **default-route** interface (normally Wi-Fi `en0`), and it is **never pingable**.
 
-**The rule that avoids a freeze:** the host's `.154` alias must live on the **same interface the NAT exits** — the default-route interface (`en0`). If `.154` is aliased on a second NIC, the MACNAT return path is split across interfaces, the daemon's connect blocks, and the emulator freezes at 100 % CPU (it looks like a crash; it isn't). Do **not** pre-create a bridge — `etherhelpertool` owns the wired interface directly.
+**The rule that avoids a freeze, on that branch:** the host address alias must live on the **same interface the NAT exits** — the default-route interface. Aliased on a second NIC, the MACNAT return path splits across interfaces, the daemon's connect blocks, and the emulator freezes at 100 % CPU (it looks like a crash; it isn't). `host/start_stack.sh` sets that up. Background: <https://pit.390er.de/applebridge/anatomy-of-a-freeze-macnat-return-path/>.
 
-`host/start_stack.sh` sets all of this up for you (see Part 2). Background: <https://pit.390er.de/applebridge/anatomy-of-a-freeze-macnat-return-path/>.
-
-> A **slirp** backend was benchmarked as an alternative but rejected: it improves latency but regresses bulk throughput ~80 % on this Basilisk build's legacy slirp. `etherhelper/en8` stays the default. See the transport benchmark notes.
+> The 2026-06-28 benchmark measured slirp ~80 % down on bulk throughput and that argument held the default for a month — but it went through `Catenate`/`DumpFile`, i.e. ToolServer. The **native** `WRITEFILE`/`READFILE` path over slirp reached 291 KiB/s at 512 KB on slower hardware (2026-07-27), so a good part of that figure was the detour, not the transport.
 
 ### 1.2 Shared folder
 
@@ -78,7 +94,7 @@ cd host
 ./start_stack.sh
 ```
 
-`start_stack.sh` aliases `.154` onto the default-route interface (the freeze-avoidance rule above, via one admin prompt), (re)starts `host_server.py`, and launches Basilisk II. The host server also **auto-starts via launchd** on login, so on a configured machine the bridge comes up on its own.
+`start_stack.sh` (re)starts `host_server.py` and launches the emulator named by `APPLEBRIDGE_EMULATOR_APP` in `host/local.env`. On the **etherhelper** branch it first places the host address alias on the default-route interface — the freeze-avoidance rule above — through one admin prompt. On **slirp** there is no privileged step at all and it asks for nothing. The host server also **auto-starts via launchd** on login (`install_bridge.py` installs that agent), so on a configured machine the bridge comes up on its own.
 
 > **Startup order does not matter.** If the daemon comes up first it simply finds
 > nothing listening, logs the reason in its Verbose console, and connects on its
@@ -146,7 +162,9 @@ Duplicate -y Unix:include: MeinMac:MPW:AppleBridge:include:
 
 ### 3.2 Host IP
 
-The host IP is read from the **`AppleBridge Prefs`** file (`IP=192.168.3.154`), editable in-place or via the **AppleBridgeConfig** control app — no source edit needed. A compiled-in fallback (`.154`) keeps a fresh build reachable if the prefs file is missing.
+The host IP is read from the **`AppleBridge Prefs`** file (`IP=<your host's LAN address>`), editable in-place, via the **AppleBridgeConfig** control app, or by seeding a powered-off disk image with `host/install_bridge.py --seed-guest-prefs <image.dmg>` — no source edit needed.
+
+There is **no compiled-in fallback address** and deliberately so: a shipped default is right on one machine and, on a LAN where that address answers, makes the daemon connect to the **wrong computer** and report full health — protocol negotiated, heartbeat running, no errors on either console. With no address the daemon refuses to dial and says why. Never seed a guessed one (R1, R2 in `docs/INSTALLER_REQUIREMENTS.md`).
 
 ### 3.3 Build
 
@@ -158,7 +176,7 @@ Directory MeinMac:MPW:AppleBridge:
 Make -f Makefile.68k > BuildIt; BuildIt
 ```
 
-`Make` only *prints* the build commands, so write them to `BuildIt` and execute it. The Makefile compiles each source (`main.c`, the `transport.c` / `transport_ot.c` / `transport_mactcp.c` seam that replaced the old `network.c`, `protocol.c`, `command.c`, `fileio.c`, `events.c`, `auth.c`, …), links with `Link -model far`, merges the `SIZE` resource with `Rez AppleBridge_res.r` (required for Apple Events — without it every command fails with `-903`), and sets the type/creator (`APPL` / `'ABrg'`). Result: `:bin:AppleBridge`.
+`Make` only *prints* the build commands, so write them to `BuildIt` and execute it. The Makefile compiles each source (`main.c`, the `transport.c` / `transport_ot.c` / `transport_mactcp.c` seam that replaced the old `network.c`, `protocol.c`, `command.c`, `fileio.c`, `events.c`, `auth.c`, …), links with `ILink -model far` (plain `Link` now fails this binary with Error 48 — one ~98 KB segment against a 32 KB PC-relative reach; D-011), merges the `SIZE` resource with `Rez AppleBridge_res.r` (required for Apple Events — without it every command fails with `-903`), and sets the type/creator (`APPL` / `'ABrg'`). Result: `:bin:AppleBridge`.
 
 > Build off the running daemon: link to `:bin:AppleBridge.new` and swap it in, rather than overwriting a running binary.
 

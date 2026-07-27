@@ -22,6 +22,32 @@ The one-line summary: **the installer's job is mostly derivation, not
 installation.** Every value this project hardcoded is correct on exactly one
 machine, and the failures they cause do not look like configuration errors.
 
+## Where the requirements live in code
+
+The installer is `host/install_bridge.py`, built on the `bridge_doctor.py` shape:
+`run`/`read`/`write`/`exists` are injectable, so every branch — the refusals
+above all — is driven from canned output by `tests/test_installer.py` with no
+live stack. `decide()` returns a declarative plan and `apply_plan()` is the only
+code that writes, so `--dry-run` is the same computation minus its last stage
+rather than a second path that can drift from it.
+
+| requirement | mechanism |
+|---|---|
+| R1, R2 | `host_config.resolve_host_ip()`; `render_local_env()` emits **no** address |
+| R3 | `guest_checklist()` names `:System Folder:Preferences:AppleBridge Prefs` |
+| R5 | the checklist labels every field by *whose* address it is |
+| R6, R8 | `probe_emulator_bundle()` — the bundle is asked before the NIC count |
+| R7 | the slirp triple, resolver included, and the `0.0.0.0` bind in `local.env` |
+| R9 | no kernel extension is loaded, and no bridge created, on this branch |
+| R10 | `exposure_report()` — the token pair, guest first, host second |
+| R11 | `tier_report()` — ToolServer is a tier you may not have, not a failure |
+| R12, R13 | `--no-agent` prints the `< /dev/null` form; the default installs the agent, so the doctor's launchd advice is true here |
+| R14 | `seed_guest_prefs()` refuses while an emulator runs |
+| R15 | one launch path per installation; `start_stack.sh` skips the privileged block entirely on slirp |
+| R20 | `rewrite_ip_line()` works in bytes and preserves CR endings |
+
+Whether any of this has *shipped* is the ledger's question, not this document's.
+
 ## R1 — derive every address; ship none
 
 `host/host_server.py` binds `HOST_INTERFACE = "192.168.3.154"`. That address
@@ -346,6 +372,37 @@ reads the Finder info and refuses anything whose type is not `'APPL'`.
 **Requirement:** every verb that reaches a Toolbox call from the network
 validates its argument before making it. The blast radius of a wrong argument
 here is the entire guest, not the command.
+
+### The same requirement, a second verb: `AESEND` waiting for a reply
+
+Later the same day, driving THINK C over Apple Events: a bare `KAHL/RUN` was
+sent to the Project Manager. The project does not link (`undefined: atexit`), so
+the application needed to interact, could not, and never replied. The daemon
+was inside `AESend` with `kAEWaitReply` and `AE_SCRIPT_TIMEOUT` — **five
+minutes** — and on a cooperative scheduler an application that is not yielding
+starves everything behind it. The guest stopped switching windows entirely; the
+host logged `command timeout after 240s`, and the emulator had to be force-quit
+with the disk image open.
+
+The timeout is not careless: ~5 min was chosen for `dosc`, where a
+`kAEDefaultTimeout` of ~60 s returned a spurious `-1712` on long `Link`/`SC`
+builds (`mac/include/applebridge.h`). The defect is that a value reasoned about
+for **ToolServer**, an application we control and that always answers, was
+inherited by a verb that can address **any** application.
+
+Two guards follow, neither of which needs the argument validation R16 added:
+
+* **Do not wait for a reply that the vocabulary says is empty.** `RUN`, `MAKE`
+  and most of the THINK suite declare `reply: 'null'`; `command.c` already has a
+  `kAENoReply` path for the other sender. Waiting is the caller's choice, so it
+  belongs in the verb, not in a constant.
+* **Bound the wait by what the caller can tolerate.** Five minutes is a build;
+  an interactive event is seconds. The host's own command timeout must be the
+  shorter of the two, so the bridge gives up before the guest is starved.
+
+**Requirement:** a verb that blocks the daemon states how long it may block, and
+the default is the interactive one. "It answered last time" is not a property of
+an application the bridge does not own.
 
 ## R17 — an acknowledged write is not a durable write
 

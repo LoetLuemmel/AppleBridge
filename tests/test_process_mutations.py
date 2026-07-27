@@ -234,6 +234,30 @@ def test_the_unmutated_copy_passes():
         shutil.rmtree(root, ignore_errors=True)
 
 
+# --- the suite that never ran ------------------------------------------------
+
+def test_every_test_file_is_registered_in_the_runner():
+    """A suite absent from run_all.sh is not run by CI, and nothing says so.
+
+    `test_host_ip_config.py` was written alongside the R1/R2 repair and never
+    added to the list: 23 ratchets — including "no host-address literal in the
+    runtime files", the exact defect they exist to hold — sat unexecuted while
+    every run reported ALL SUITES PASSED. They passed; nobody was running them.
+    That is the same shape as the defects this project keeps finding: it reports
+    success and does nothing.
+
+    smoke_e2e.py is the one deliberate exclusion — it drives the live stack and
+    needs an emulator, so it is a manual pre-release gate.
+    """
+    runner = open(os.path.join(_ROOT, "tests", "run_all.sh")).read()
+    listed = set(re.findall(r"test_[a-z_0-9]+\.py", runner))
+    present = {f for f in os.listdir(os.path.join(_ROOT, "tests"))
+               if f.startswith("test_") and f.endswith(".py")}
+    missing = sorted(present - listed)
+    assert not missing, ("test files CI never runs: " + ", ".join(missing)
+                         + " — add them to tests/run_all.sh")
+
+
 # --- the mutation run -------------------------------------------------------
 
 def test_every_seeded_defect_is_caught():

@@ -157,6 +157,65 @@ def control_bind_is_local(address):
     return address in _LOCAL_ONLY
 
 
+# --- carrying configuration into launchd -------------------------------------
+
+def launchd_environment(env=None, local_env_path=LOCAL_ENV):
+    """-> {KEY: value} the LaunchAgent must carry, or {} when there is nothing.
+
+    `host/local.env` sits beside the repo, but launchd runs a DEPLOYED copy from
+    `~/Library/Application Support/AppleBridge` — and `deploy_host.sh` syncs only
+    the runtime modules. So the file resolved fine for anything started by hand
+    and was INERT for the real server: on the developer machine
+    `APPLEBRIDGE_HOST_IP=192.168.3.154` had never once reached it (observed
+    2026-07-27). Nothing looked wrong, because the fallback is a wildcard bind
+    that accepts the guest anyway — a configuration file that reports success
+    and does nothing, which is this project's recurring failure shape.
+
+    Copying `local.env` into the deployed folder would fix it and leave two
+    copies of machine configuration to drift apart. launchd's own
+    `EnvironmentVariables` is where launchd configuration belongs, so the
+    installer resolves the values once and writes them into the plist.
+
+    Only NON-SECRET keys travel: `APPLEBRIDGE_CTRL_TOKEN` is deliberately absent,
+    because a plist is a world-readable file and a shared secret does not belong
+    in one. It keeps its `launchctl setenv` path.
+
+    The wildcard default is not written either — it is what the server does with
+    no configuration at all, and stating it in a plist only creates something
+    else to keep in step.
+    """
+    out = {}
+    ip, _src = resolve_host_ip(env=env, local_env_path=local_env_path)
+    if ip and ip != BIND_ALL:
+        out[ENV_VAR] = ip
+    ctrl, _src = resolve_control_bind(env=env, local_env_path=local_env_path)
+    if not control_bind_is_local(ctrl):
+        out[CTRL_ENV_VAR] = ctrl
+    return out
+
+
+def launchd_environment_xml(env=None, local_env_path=LOCAL_ENV):
+    """-> the plist `EnvironmentVariables` block, or '' when nothing to carry.
+
+    Emitted by the installer into the LaunchAgent. Empty is the common and
+    correct answer on the slirp branch, which configures no address at all.
+    """
+    values = launchd_environment(env=env, local_env_path=local_env_path)
+    if not values:
+        return ""
+    lines = ["    <key>EnvironmentVariables</key>", "    <dict>"]
+    for key in sorted(values):
+        lines.append(f"        <key>{_xml(key)}</key>")
+        lines.append(f"        <string>{_xml(values[key])}</string>")
+    lines.append("    </dict>")
+    return "\n".join(lines)
+
+
+def _xml(text):
+    return (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;"))
+
+
 def check_control_exposure(address, token):
     """-> None if this combination may run, else the reason it must not.
 

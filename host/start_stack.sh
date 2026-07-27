@@ -5,8 +5,14 @@
 #
 # Why this exists
 # ---------------
-# This host is dual-homed: en0 (Wi-Fi) and en8 (wired Thunderbolt). Two interfaces
-# are a PRECONDITION, not a detail — see D-015 and the note at the foot of this file.
+# It serves BOTH backends, and they need opposite things of it. On `slirp` there
+# is no privileged step at all — no alias, no bridge, no password — which is the
+# branch host/install_bridge.py configures (D-018). Everything below about
+# interfaces belongs to the `etherhelper` branch, which is set up by hand.
+#
+# On that branch this host is dual-homed: en0 (Wi-Fi) and en8 (wired Thunderbolt).
+# Two interfaces are a PRECONDITION, not a detail — see D-015 and the note at the
+# foot of this file.
 # The emulated Mac (.244) sits BEHIND Basilisk's MACNAT (prefs: "ether etherhelper/en8"),
 # so it can only connect OUT, and its outbound traffic is NAT'd through the host's
 # DEFAULT-ROUTE interface — normally Wi-Fi (en0, .213). The Mac daemon dials the
@@ -38,14 +44,19 @@
 #
 set -u
 
-WIRED_IF="${APPLEBRIDGE_WIRED_IF:-en8}"     # wired LAN the etherhelper bridges onto
+# local.env FIRST: it is the generated machine-specific configuration, and every
+# value below may come from it. Sourcing it after the assignments (as this script
+# did) meant an APPLEBRIDGE_WIRED_IF in the file was read and then ignored.
 # shellcheck disable=SC1091
 [ -f "$(dirname "$0")/local.env" ] && . "$(dirname "$0")/local.env"
+WIRED_IF="${APPLEBRIDGE_WIRED_IF:-en8}"     # wired LAN the etherhelper bridges onto
 HOST_IP="${APPLEBRIDGE_HOST_IP:-}"   # from host/local.env or the environment (R1)
 EMU_IP="${APPLEBRIDGE_GUEST_IP:-}"   # the emulated Mac, if known (behind MACNAT — never routable)
 NETMASK="255.255.255.0"
 BRIDGE="${APPLEBRIDGE_BRIDGE:-bridge100}"   # REQUIRED by the etherhelper backend
-BASILISK_APP="/Users/pitforster/Documents/Basilisk/BasiliskII.app"
+# The emulator bundle is one machine's path unless it is configured (R1);
+# install_bridge.py discovers it and writes APPLEBRIDGE_EMULATOR_APP.
+BASILISK_APP="${APPLEBRIDGE_EMULATOR_APP:-/Users/pitforster/Documents/Basilisk/BasiliskII.app}"
 SERVER_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # The interface .154 must live on = the host's default-route interface (where the
@@ -61,6 +72,23 @@ echo "[1/5] Emulator backend preflight…"
 "$SERVER_DIR/check_ether_backend.sh" || true
 ETHER_BACKEND="$(awk '/^ether[ \t]/{print $2; exit}' "$HOME/.basilisk_ii_prefs" 2>/dev/null)"
 
+# On slirp there is NO privileged network step at all: no alias to place (the
+# guest dials through the host's own stack), no bridge, no helper. Asking for a
+# password here would contradict the argument the whole branch rests on — that
+# it is the one setup which starts without somebody at the keyboard (D-018).
+# This block used to run unconditionally, raising an admin dialog to execute
+# nothing but comments whenever APPLEBRIDGE_HOST_IP was unset.
+NEEDS_PRIV=1
+if [ "$ETHER_BACKEND" = "slirp" ]; then
+    NEEDS_PRIV=0
+    echo "[2/5] Network setup: nothing to do — slirp needs no privileged step."
+    echo "      (no interface alias, no bridge, no password. No AppleTalk either.)"
+elif [ -z "$HOST_IP" ] && [ -z "$EMU_IP" ]; then
+    NEEDS_PRIV=0
+    echo "[2/5] Network setup: nothing to do — no configured address, no guest IP."
+fi
+
+if [ "$NEEDS_PRIV" = "1" ]; then
 echo "[2/5] Privileged network setup (admin password dialog)…"
 # With no configured address there is no alias to place — the server binds
 # 0.0.0.0 and the guest dials whatever this machine already answers on. The
@@ -101,6 +129,7 @@ echo "      ${DEFAULT_IF} addrs:"; ifconfig "$DEFAULT_IF" | grep "inet " | sed '
 if [ -n "$HOST_IP" ] && ifconfig "$WIRED_IF" 2>/dev/null | grep -q "inet ${HOST_IP} "; then
     echo "      WARN: ${HOST_IP} is STILL on $WIRED_IF — the freeze bug will return."
 fi
+fi   # NEEDS_PRIV
 if [ "${ETHER_BACKEND%%/*}" = "etherhelper" ]; then
     if ifconfig "$BRIDGE" 2>/dev/null | grep -q "member: $WIRED_IF"; then
         echo "      bridge: $BRIDGE present with $WIRED_IF (harmless; not on the path in this mode)"

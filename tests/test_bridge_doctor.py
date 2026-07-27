@@ -92,8 +92,9 @@ def report(**kw):
     # whether it is loaded; default True so every pre-existing case keeps its
     # meaning, and the two cases that care state it.
     installed = kw.pop("agent_installed", True)
+    host_ip = kw.pop("host_ip", HOST_IP)
     return bd.collect(run=make_run(**kw), read=make_read(**read_kw), uid=UID,
-                      host_ip=HOST_IP, exists=lambda _p: installed)
+                      host_ip=host_ip, exists=lambda _p: installed)
 
 
 def keys(rep):
@@ -191,6 +192,39 @@ def test_slirp_warns_about_appletalk_even_though_tcp_works():
     assert "AppleTalk" in f["message"]          # the non-obvious consequence
     assert rep["verdict"] == "warn"
     assert rep["ok"] is True                    # TCP works: not a hard failure
+
+
+def test_a_wildcard_bind_is_not_a_missing_alias():
+    # Observed live 2026-07-27, on the deployed server: with no configured
+    # address the doctor resolved 0.0.0.0, looked for an interface carrying that
+    # literal, found none, and reported ERROR "the daemon dials that address" —
+    # an address nothing dials. It is also the DEFAULT state of a slirp install,
+    # where the installer deliberately writes none (R7), so the wrong reading
+    # was about to become the common one.
+    rep = report(host_ip=bd.BIND_ALL)
+    assert "host_ip_missing" not in keys(rep)
+    f = [x for x in rep["findings"] if x["key"] == "host_ip_wildcard"][0]
+    assert f["level"] == "info"
+    assert HOST_IP in f["message"], "must still name what the guest can dial"
+
+
+def test_a_deliberately_installed_slirp_host_is_informed_not_warned():
+    # D-018: the installer configures this branch on purpose, so warning about
+    # it would tell an operator their correct installation is broken. The cost
+    # is still stated, because TCP keeps working and the gap is otherwise
+    # invisible — it shows up as an empty Chooser, not as a network error.
+    rep = report(ether="slirp", netmode="slirp")
+    f = [x for x in rep["findings"] if x["key"] == "ether_slirp_by_design"][0]
+    assert f["level"] == "info" and "AppleTalk" in f["message"]
+    assert "ether_slirp" not in keys(rep) and "ether_drift" not in keys(rep)
+
+
+def test_the_slirp_warning_no_longer_names_one_machines_interface():
+    # `set 'ether etherhelper/en8'` was advice as machine-specific as the
+    # addresses R1 removed, and wrong on any host without that NIC.
+    rep = report(ether="slirp", netmode=None)
+    fix = [x for x in rep["findings"] if x["key"] == "ether_slirp"][0]["fix"]
+    assert "en8" not in fix
 
 
 def test_backend_drift_against_netmode_is_flagged():
