@@ -266,6 +266,68 @@ def test_the_doctor_distinguishes_absent_from_unloaded():
     assert 'installed but not loaded' in src, \
         "the bootstrap advice must be reserved for an agent that is installed"
 
+
+# --- configuration must actually reach the launchd-served server -------------
+# `host/local.env` sits beside the repo; launchd runs a deployed copy and
+# deploy_host.sh syncs only the runtime modules. So the file resolved correctly
+# for anything started by hand and was INERT for the real server — the developer
+# machine's APPLEBRIDGE_HOST_IP had never once reached it, and nothing looked
+# wrong because the wildcard fallback accepts the guest anyway (2026-07-27).
+# The installer now resolves the values and writes them into the plist.
+
+def test_a_configured_address_is_carried_into_the_agent():
+    env = {"APPLEBRIDGE_HOST_IP": "10.9.9.9"}
+    assert host_config.launchd_environment(env=env, local_env_path="/nonexistent") \
+        == {"APPLEBRIDGE_HOST_IP": "10.9.9.9"}
+
+
+def test_the_wildcard_default_is_not_written_into_the_plist():
+    # It is what the server does with no configuration; stating it in a plist
+    # only creates a second thing to keep in step.
+    assert host_config.launchd_environment(env={}, local_env_path="/nonexistent") == {}
+    assert host_config.launchd_environment_xml(env={}, local_env_path="/nonexistent") == ""
+
+
+def test_the_control_token_never_travels_in_the_plist():
+    # A plist is a world-readable file; a shared secret does not belong in one.
+    env = {"APPLEBRIDGE_CTRL_TOKEN": "s3cret", "APPLEBRIDGE_CTRL_BIND": "0.0.0.0"}
+    got = host_config.launchd_environment(env=env, local_env_path="/nonexistent")
+    assert "APPLEBRIDGE_CTRL_TOKEN" not in got
+    assert got.get("APPLEBRIDGE_CTRL_BIND") == "0.0.0.0"
+    assert "s3cret" not in host_config.launchd_environment_xml(
+        env=env, local_env_path="/nonexistent")
+
+
+def test_a_loopback_control_bind_is_not_worth_carrying():
+    env = {"APPLEBRIDGE_CTRL_BIND": "127.0.0.1"}
+    assert host_config.launchd_environment(env=env, local_env_path="/nonexistent") == {}
+
+
+def test_the_emitted_block_is_a_plist_dict_with_escaped_values():
+    xml = host_config.launchd_environment_xml(
+        env={"APPLEBRIDGE_HOST_IP": "10.9.9.9"}, local_env_path="/nonexistent")
+    assert "<key>EnvironmentVariables</key>" in xml
+    assert "<key>APPLEBRIDGE_HOST_IP</key>" in xml
+    assert "<string>10.9.9.9</string>" in xml
+    assert host_config._xml('a&b<c>"d"') == "a&amp;b&lt;c&gt;&quot;d&quot;"
+
+
+def test_the_installer_writes_that_block_and_says_to_re_run_it():
+    src = _read("host/install_host_service.sh")
+    assert "launchd_environment_xml" in src, \
+        "the plist must take its values from the one place that resolves them"
+    assert "$ENV_BLOCK" in src
+    assert "Re-run this installer" in src, \
+        "deploy_host.sh syncs code, not configuration — say so where it matters"
+
+
+def test_the_service_installer_names_no_single_machines_interface():
+    # R13: the closing hint used to read ".154 must be aliased on en0".
+    src = _read("host/install_host_service.sh")
+    for literal in ("192.168.3.154", "(en0)"):
+        assert literal not in src, f"machine-specific literal in the hints: {literal}"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

@@ -92,8 +92,9 @@ def report(**kw):
     # whether it is loaded; default True so every pre-existing case keeps its
     # meaning, and the two cases that care state it.
     installed = kw.pop("agent_installed", True)
+    host_ip = kw.pop("host_ip", HOST_IP)
     return bd.collect(run=make_run(**kw), read=make_read(**read_kw), uid=UID,
-                      host_ip=HOST_IP, exists=lambda _p: installed)
+                      host_ip=host_ip, exists=lambda _p: installed)
 
 
 def keys(rep):
@@ -191,6 +192,20 @@ def test_slirp_warns_about_appletalk_even_though_tcp_works():
     assert "AppleTalk" in f["message"]          # the non-obvious consequence
     assert rep["verdict"] == "warn"
     assert rep["ok"] is True                    # TCP works: not a hard failure
+
+
+def test_a_wildcard_bind_is_not_a_missing_alias():
+    # Observed live 2026-07-27, on the deployed server: with no configured
+    # address the doctor resolved 0.0.0.0, looked for an interface carrying that
+    # literal, found none, and reported ERROR "the daemon dials that address" —
+    # an address nothing dials. It is also the DEFAULT state of a slirp install,
+    # where the installer deliberately writes none (R7), so the wrong reading
+    # was about to become the common one.
+    rep = report(host_ip=bd.BIND_ALL)
+    assert "host_ip_missing" not in keys(rep)
+    f = [x for x in rep["findings"] if x["key"] == "host_ip_wildcard"][0]
+    assert f["level"] == "info"
+    assert HOST_IP in f["message"], "must still name what the guest can dial"
 
 
 def test_a_deliberately_installed_slirp_host_is_informed_not_warned():

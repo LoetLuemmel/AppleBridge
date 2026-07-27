@@ -45,11 +45,13 @@ import subprocess
 # resolves it, so the diagnosis and the server can never disagree about which
 # address was meant. The literal that used to sit here was a "duplicated as a
 # default" copy, which is precisely how the two drift (R1).
+BIND_ALL = "0.0.0.0"           # own constant: the import below may not land
 try:
     import host_config
     DEFAULT_HOST_IP = host_config.resolve_host_ip()[0]
+    BIND_ALL = host_config.BIND_ALL
 except ImportError:            # deployed copy predating the module
-    DEFAULT_HOST_IP = os.environ.get("APPLEBRIDGE_HOST_IP", "0.0.0.0")
+    DEFAULT_HOST_IP = os.environ.get("APPLEBRIDGE_HOST_IP", BIND_ALL)
 LAUNCHD_LABEL = "de.390er.applebridge-host"
 DAEMON_PORT = 9000
 CONTROL_PORT = 9001
@@ -293,7 +295,22 @@ def interpret(probes):
     host_ip = net["host_ip"]
     on = net["host_ip_interfaces"]
     default_if = net["default_route_interface"]
-    if not on:
+    if host_ip == BIND_ALL:
+        # A wildcard bind has no alias to place, and treating it as one produced
+        # a confident ERROR saying the daemon "dials 0.0.0.0" — an address
+        # nothing dials. This is the DEFAULT state of a slirp install, where the
+        # installer deliberately writes no address (R7), so the wrong reading was
+        # about to become the common one. What the operator still needs is the
+        # menu: which of this machine's addresses the guest should be told to use.
+        dialable = ", ".join(
+            f"{a} ({i})" for i, addrs in sorted(net["interfaces"].items())
+            for a in addrs if not a.startswith("127.")) or "none found"
+        out.append(_finding(
+            INFO, "host_ip_wildcard",
+            "Server binds every address (no APPLEBRIDGE_HOST_IP configured), so "
+            "there is no alias to place and no interface rule to break. The "
+            f"guest's `IP=` must name one of: {dialable}."))
+    elif not on:
         out.append(_finding(
             ERROR, "host_ip_missing",
             f"{host_ip} is not aliased on any interface — the daemon dials that "
