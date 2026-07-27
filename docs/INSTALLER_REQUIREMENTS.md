@@ -458,3 +458,18 @@ where this happened.
 **Requirement:** classic-Mac text moves as bytes end to end. Where a host-side
 copy is unavoidable it is opened in binary mode, and line endings are converted
 once, deliberately, at a named boundary.
+
+### Corollary: do not assume which ending a guest file has
+
+`AppleBridge Prefs`, recovered from a powered-off image on 2026-07-27, contains
+**seven `LF` bytes and no `CR` at all** — although `prefs.c` writes `"\r"` after
+every key. Both facts are true because MPW C swaps the escapes: `'\n'` is `0x0D`
+and `'\r'` is `0x0A`, so the source's `"\r"` emits an `LF`. The daemon reads back
+what it wrote, so nothing was ever wrong; but a tool that "helpfully" converted
+this file to `CR` on the way past would corrupt the configuration the whole
+bridge depends on.
+
+So the rule is not "convert to CR" — it is **preserve what is there**.
+`install_bridge.rewrite_ip_line()` splits on `\r\n | \r | \n` and re-emits the
+separator it found, which is why seeding this file worked byte-for-byte: 128 B
+in, 128 B out, one line changed, endings untouched.
