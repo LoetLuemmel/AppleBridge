@@ -1208,12 +1208,16 @@ def _recv_control_command(conn):
 
 def run_control_server(server):
     """Non-TTY production path: serve control commands, auto-re-accept the Mac."""
+    bind_addr, bind_src = host_config.resolve_control_bind()
     control = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     control.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    control.bind(("127.0.0.1", CONTROL_PORT))
+    control.bind((bind_addr, CONTROL_PORT))
     control.listen(5)
     control.settimeout(1.0)
-    log(f"Control port on localhost:{CONTROL_PORT} (send_command.py / MCP)")
+    log(f"Control port on {bind_addr}:{CONTROL_PORT} (send_command.py / MCP)")
+    log(f"  control bind from: {bind_src}")
+    if not host_config.control_bind_is_local(bind_addr):
+        log("  reachable from the network — token auth REQUIRED and active")
 
     last_io = time.monotonic()   # last time we exchanged anything with the daemon
     missed = 0                   # consecutive unanswered heartbeats
@@ -1559,9 +1563,18 @@ def interactive_mode(server):
 
 
 def main():
-    server = AppleBridgeServer(serial_dev=SERIAL_DEVICE, serial_baud=SERIAL_BAUD)
     log("=== AppleBridge Host Server (hardened) ===")
     log(build_stamp())
+    # Before ANY socket is opened: an exposed control port with no token must
+    # not reach the point of listening, however briefly.
+    _ctrl_addr, _ = host_config.resolve_control_bind()
+    _refusal = host_config.check_control_exposure(
+        _ctrl_addr, CTRL_TOKEN.decode("utf-8", "replace") if CTRL_TOKEN else "")
+    if _refusal:
+        for _line in _refusal.splitlines():
+            log(_line)
+        return 2
+    server = AppleBridgeServer(serial_dev=SERIAL_DEVICE, serial_baud=SERIAL_BAUD)
     server.bind_listen()
     try:
         if sys.stdin.isatty():
@@ -1577,4 +1590,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)
