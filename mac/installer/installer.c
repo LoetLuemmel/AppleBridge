@@ -481,7 +481,14 @@ static void DoInstall(void)
     gStatus[0] = '\0';
     mystrcat(gStatus, "Installed to ");
     mystrcat(gStatus, gDestPath);
-    mystrcat(gStatus, " - reboot to start the bridge.");
+    /* An install with no host address is incomplete, and saying "reboot to start
+     * the bridge" would be a promise it cannot keep — the daemon will come up and
+     * refuse to dial. Nothing here can derive the address: it belongs to the host.
+     * So name the missing step instead of implying there is none (R2). */
+    if (gPrefs.ip[0] == '\0')
+        mystrcat(gStatus, " - now set the host IP in AppleBridgeConfig.");
+    else
+        mystrcat(gStatus, " - reboot to start the bridge.");
 }
 
 /* ---- UI ---------------------------------------------------------------- */

@@ -1,0 +1,200 @@
+"""Tests for host/host_config.py — the address is configuration, not a literal.
+
+Two failures on 2026-07-27 motivate every case below, and both were silent in
+their own way (R1/R2 in docs/INSTALLER_REQUIREMENTS.md):
+
+  * the host server bound a hardcoded 192.168.3.154 and died elsewhere with
+    `Errno 49`, a message naming neither the address nor the interfaces;
+  * the guest installer seeded the same address, so on a LAN where it answered
+    the daemon connected to the WRONG MACHINE and reported full health.
+
+The second is why the ratchets here are worth more than the unit tests: a
+returning literal would not break anything visibly.
+
+Run: python3 tests/test_host_ip_config.py   (or via pytest)
+"""
+
+import os
+import re
+import sys
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(_ROOT, "host"))
+import host_config  # noqa: E402
+
+
+def _read(rel):
+    with open(os.path.join(_ROOT, rel), encoding="utf-8") as fh:
+        return fh.read()
+
+
+# --- resolution order --------------------------------------------------------
+
+def test_environment_wins():
+    got, src = host_config.resolve_host_ip(env={"APPLEBRIDGE_HOST_IP": "10.1.2.3"},
+                                           local_env_path="/nonexistent")
+    assert got == "10.1.2.3"
+    assert src == "APPLEBRIDGE_HOST_IP"
+
+
+def test_local_env_is_used_when_the_environment_is_silent(tmp=None):
+    path = os.path.join(_ROOT, "tests", "_tmp_local.env")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("# a comment\nAPPLEBRIDGE_HOST_IP = \"10.9.9.9\"\n")
+    try:
+        got, src = host_config.resolve_host_ip(env={}, local_env_path=path)
+        assert got == "10.9.9.9", got
+        assert src.endswith("local.env")
+    finally:
+        os.unlink(path)
+
+
+def test_environment_beats_the_file():
+    path = os.path.join(_ROOT, "tests", "_tmp_local2.env")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("APPLEBRIDGE_HOST_IP=10.0.0.1\n")
+    try:
+        got, _ = host_config.resolve_host_ip(env={"APPLEBRIDGE_HOST_IP": "10.0.0.2"},
+                                             local_env_path=path)
+        assert got == "10.0.0.2", got
+    finally:
+        os.unlink(path)
+
+
+def test_a_fresh_clone_binds_everything_rather_than_guessing():
+    """No config anywhere -> 0.0.0.0. Never a derived address.
+
+    Deriving one from the default route would be the same class of mistake the
+    seeded default was: a plausible value that binds successfully and then waits
+    for a daemon that was told to dial something else.
+    """
+    got, src = host_config.resolve_host_ip(env={}, local_env_path="/nonexistent")
+    assert got == "0.0.0.0"
+    assert "default" in src
+
+
+def test_a_blank_value_counts_as_unset():
+    got, _ = host_config.resolve_host_ip(env={"APPLEBRIDGE_HOST_IP": "   "},
+                                         local_env_path="/nonexistent")
+    assert got == "0.0.0.0"
+
+
+def test_missing_local_env_is_normal_not_an_error():
+    assert host_config.read_local_env("/nonexistent/nope.env") == {}
+
+
+# --- what the operator is told ----------------------------------------------
+
+_IFCONFIG = """\
+lo0: flags=8049<UP,LOOPBACK> mtu 16384
+\tinet 127.0.0.1 netmask 0xff000000
+en0: flags=8863<UP,BROADCAST> mtu 1500
+\tinet 192.168.3.240 netmask 0xffffff00 broadcast 192.168.3.255
+\tinet 192.168.3.154 netmask 0xffffff00 broadcast 192.168.3.255
+en8: flags=8963<UP,BROADCAST,PROMISC> mtu 1500
+\tinet6 fe80::1%en8 prefixlen 64
+"""
+
+
+def test_addresses_are_listed_per_interface_without_loopback():
+    got = host_config.ipv4_addresses(run=lambda cmd: _IFCONFIG)
+    assert got == [("en0", "192.168.3.240"), ("en0", "192.168.3.154")], got
+
+
+def test_reachability_hint_names_what_the_guest_should_dial():
+    hint = host_config.describe_reachability(
+        addresses=[("en0", "192.168.3.158")])
+    assert "IP=" in hint and "192.168.3.158" in hint and "en0" in hint
+
+
+def test_bind_failure_names_the_address_and_the_alternatives():
+    """`Errno 49` alone cost a round of diagnosis; the explanation must not."""
+    text = host_config.explain_bind_failure(
+        "192.168.3.154", addresses=[("en0", "192.168.3.158")])
+    assert "192.168.3.154" in text, "the address that failed must appear"
+    assert "192.168.3.158" in text, "the addresses that exist must appear"
+    assert "alias" in text, "the fix (an alias) must be named"
+    assert "APPLEBRIDGE_HOST_IP" in text, "where to configure it must be named"
+
+
+def test_bind_failure_still_says_something_with_no_addresses_at_all():
+    text = host_config.explain_bind_failure("10.0.0.1", addresses=[])
+    assert "10.0.0.1" in text and "network" in text.lower()
+
+
+# --- ratchets: the literals must not come back -------------------------------
+
+# host_config.py quotes the removed literal in its own docstring as the reason
+# it exists; that is provenance, not configuration.
+_IP_RE = re.compile(r"192\.168\.3\.\d+")
+_RUNTIME_FILES = [
+    "host/host_server.py", "host/bridge_doctor.py", "host/run_server.sh",
+    "host/start_stack.sh", "host/ensure_host_alias.sh",
+    "host/install_alias_daemon.sh", "host/install_host_service.sh",
+    "host/deploy_host.sh",
+]
+
+
+def test_no_host_address_literal_in_the_runtime_files():
+    offenders = []
+    for rel in _RUNTIME_FILES:
+        for n, line in enumerate(_read(rel).split("\n"), 1):
+            if _IP_RE.search(line):
+                offenders.append(f"{rel}:{n}: {line.strip()[:90]}")
+    assert not offenders, (
+        "a machine-specific address is back in the runtime files — it belongs in "
+        "host/local.env (untracked). See R1:\n  " + "\n  ".join(offenders))
+
+
+def test_the_guest_ships_no_default_host_address():
+    """R2: an unconfigured daemon must say so, not dial a guess."""
+    src = _read("mac/src/prefs.c")
+    m = re.search(r'#define\s+DEFAULT_HOST_IP\s+"([^"]*)"', src)
+    assert m, "DEFAULT_HOST_IP is gone from prefs.c — has the mechanism moved?"
+    assert m.group(1) == "", (
+        f"prefs.c seeds a host address ({m.group(1)!r}). On a LAN where it "
+        "answers, the daemon connects to the wrong machine and reports health.")
+
+
+def test_the_daemon_refuses_to_dial_without_an_address():
+    src = _read("mac/src/main.c")
+    assert "gPrefs.ip[0] == '\\0'" in src, \
+        "main.c no longer guards the empty-IP case before connecting"
+    assert "LogNoHostIPHint" in src, \
+        "the empty-IP case must explain itself on the console, not fail silently"
+
+
+def test_local_env_is_not_tracked():
+    assert "host/local.env" in _read(".gitignore"), \
+        "host/local.env must stay out of version control — it is one machine's address"
+    assert os.path.exists(os.path.join(_ROOT, "host", "local.env.example")), \
+        "the example file documents the format and must be shipped"
+
+
+def test_every_module_host_server_imports_is_deployed():
+    """The deployed copy is a separate directory; a missed import breaks it there.
+
+    This already happened once with macbinary.py, which is why deploy_host.sh
+    carries an explicit list — a list nothing checked until now.
+    """
+    imported = set(re.findall(r"^import (\w+)", _read("host/host_server.py"), re.M))
+    local = {m for m in imported
+             if os.path.exists(os.path.join(_ROOT, "host", m + ".py"))}
+    runtime = _read("host/deploy_host.sh")
+    missing = sorted(m for m in local if m + ".py" not in runtime)
+    assert not missing, ("host_server.py imports modules absent from "
+                         "deploy_host.sh's RUNTIME_FILES: " + ", ".join(missing))
+
+
+if __name__ == "__main__":
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    failed = 0
+    for t in tests:
+        try:
+            t()
+            print(f"ok   {t.__name__}")
+        except AssertionError as e:
+            failed += 1
+            print(f"FAIL {t.__name__}: {e}")
+    print(f"\n{len(tests) - failed}/{len(tests)} passed")
+    sys.exit(1 if failed else 0)

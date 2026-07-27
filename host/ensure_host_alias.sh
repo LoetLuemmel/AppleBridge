@@ -1,18 +1,29 @@
 #!/bin/bash
 #
-# ensure_host_alias.sh — make the AppleBridge host IP (192.168.3.154) present on
+# ensure_host_alias.sh — make the configured AppleBridge host IP present on
 # the DEFAULT-ROUTE interface, and only there. Idempotent. Run as root at boot
 # and periodically by the de.390er.applebridge-alias LaunchDaemon.
 #
-# Why this exists: the host server binds .154:9000 and the guest's MACNAT return
-# path must come back on the interface its traffic exits — the default route
-# (normally Wi-Fi, en0). If .154 sits on a different NIC the daemon's connect
+# Why this exists: the host server binds that address:9000 and the guest's MACNAT
+# return path must come back on the interface its traffic exits — the default
+# route (normally Wi-Fi, en0). If it sits on a different NIC the daemon's connect
 # can't complete (the "Anatomy of a Freeze" case). A plain `ifconfig alias` does
 # not survive a reboot, so this restores it. See:
 #   https://pit.390er.de/applebridge/anatomy-of-a-freeze-macnat-return-path/
 #
-HOST_IP="192.168.3.154"
-MASK="255.255.255.0"
+# The address comes from configuration, never from this file (R1). Without it
+# there is nothing to alias — and no way to derive it, since the matching value
+# lives in the guest's prefs inside the emulator.
+_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+[ -f "$_DIR/local.env" ] && . "$_DIR/local.env"
+HOST_IP="${APPLEBRIDGE_HOST_IP:-}"
+MASK="${APPLEBRIDGE_HOST_MASK:-255.255.255.0}"
+
+if [ -z "$HOST_IP" ]; then
+    logger -t applebridge-alias "no APPLEBRIDGE_HOST_IP set (host/local.env) — nothing to alias"
+    exit 0                      # not an error: 0.0.0.0 setups need no alias
+fi
 
 # The interface .154 must live on = the host's default-route interface.
 IF="$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')"

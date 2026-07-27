@@ -15,7 +15,8 @@
 # After editing host_server.py / screenshot_decode.py / macbinary.py, you do NOT
 # re-run this installer — just run ./deploy_host.sh to push the change live.
 #
-# Prerequisite (unchanged): the server binds 192.168.3.154:9000, so the .154
+# Prerequisite (unchanged): the server binds the configured host address :9000,
+# so that address
 # alias must be on the default-route interface (en0). Until it is, the agent
 # just retries every 30s (ThrottleInterval). start_stack.sh sets the alias up;
 # a boot-persistent alias would need a root LaunchDaemon (separate, needs sudo).

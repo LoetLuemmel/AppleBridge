@@ -1,7 +1,8 @@
 #!/bin/bash
 #
 # install_alias_daemon.sh — install a root LaunchDaemon that keeps the host IP
-# 192.168.3.154 aliased on the default-route interface across reboots and network
+# the configured host address (host/local.env) aliased on the default-route
+# interface across reboots and network
 # changes. Pairs with install_host_service.sh (the user LaunchAgent for the
 # server). MUST be run as root:
 #
@@ -66,6 +67,6 @@ launchctl print "system/$LABEL" >/dev/null 2>&1 && echo "  loaded: $LABEL"
 
 echo
 echo "Done. .154 will be (re)aliased on the default-route NIC at boot and every 60s."
-echo "  - Verify:    ifconfig \$(route -n get default | awk '/interface:/{print \$2}') | grep 192.168.3.154"
+echo "  - Verify:    ifconfig \$(route -n get default | awk '/interface:/{print \$2}') | grep \"\$APPLEBRIDGE_HOST_IP\""
 echo "  - Uninstall: sudo launchctl bootout system $PLIST && sudo rm $PLIST"
 echo "  - Log:       /tmp/applebridge_alias.log (and: log show --predicate 'process == \"logger\"' | grep applebridge-alias)"

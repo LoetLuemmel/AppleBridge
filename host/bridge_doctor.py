@@ -41,10 +41,15 @@ import os
 import re
 import subprocess
 
-# The host identity the 68K daemon dials. Kept in sync with host_server.py's
-# HOST_INTERFACE (single source of truth over there; duplicated as a default
-# here so this module stays importable on its own).
-DEFAULT_HOST_IP = "192.168.3.154"
+# The host identity the 68K daemon dials — resolved the same way host_server.py
+# resolves it, so the diagnosis and the server can never disagree about which
+# address was meant. The literal that used to sit here was a "duplicated as a
+# default" copy, which is precisely how the two drift (R1).
+try:
+    import host_config
+    DEFAULT_HOST_IP = host_config.resolve_host_ip()[0]
+except ImportError:            # deployed copy predating the module
+    DEFAULT_HOST_IP = os.environ.get("APPLEBRIDGE_HOST_IP", "0.0.0.0")
 LAUNCHD_LABEL = "de.390er.applebridge-host"
 DAEMON_PORT = 9000
 CONTROL_PORT = 9001
