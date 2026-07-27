@@ -73,10 +73,22 @@ class Report:
 
 
 def check_link(rep):
-    """STATUS answers 0 only when a daemon is actually behind the control port."""
+    """Liveness is 'the daemon authored the reply', NOT status == 0.
+
+    STATUS reports the result of the daemon's Apple Events / ToolServer probe
+    (`Trace(diag, "initAE=", err)`, mac/src/command.c), so on a guest with no
+    ToolServer it is non-zero **by design** — which is exactly the case this
+    tool exists to measure. `initAE=` is written by the daemon itself, so its
+    presence proves the reply came from the guest and not from the host's
+    daemon-is-down sentinel.
+    """
     status, out, err = send("STATUS", timeout=20.0)
-    alive = status == 0
-    rep.add("bridge link", alive, (out or err).strip()[:120] or f"status={status}")
+    text = (out + " " + err).strip()
+    alive = "initAE=" in text
+    rep.add("bridge link", alive, text[:120] or f"status={status}")
+    if alive:
+        tier = "ToolServer present" if "no-ToolServer" not in text else "native verbs only"
+        rep.add("command tier", True, f"{tier} (an absent ToolServer is a tier, not a fault)")
     return alive
 
 
