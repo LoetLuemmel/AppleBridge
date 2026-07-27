@@ -94,6 +94,10 @@ GUEST_RESOLVER = "10.0.2.3"
 GUEST_PREFS_HFS = ":System Folder:Preferences:AppleBridge Prefs"
 
 # Emulator bundles, most authoritative first. A running process beats any guess.
+# Gatekeeper runs a quarantined app from a per-launch throwaway mount. Anything
+# under this is a path with an expiry date, never configuration.
+TRANSLOCATED = "/AppTranslocation/"
+
 BUNDLE_CANDIDATES = (
     "/Applications/BasiliskII.app",
     "~/Documents/Basilisk/BasiliskII.app",
@@ -145,12 +149,23 @@ def probe_emulator_bundle(run=None, exists=None, candidates=BUNDLE_CANDIDATES):
     run = run or _run
     exists = exists or os.path.exists
 
-    found, source = None, None
+    found, source, note = None, None, None
     for line in run(["pgrep", "-fl", "BasiliskII|SheepShaver"]).splitlines():
         m = re.search(r"(/.*?\.app)/Contents/MacOS/", line)
-        if m and exists(m.group(1)):
-            found, source = m.group(1), "running process"
-            break
+        if not (m and exists(m.group(1))):
+            continue
+        # Gatekeeper TRANSLOCATION: a quarantined app is run from a randomly
+        # named read-only mount under .../T/AppTranslocation/<uuid>/d/, created
+        # per launch and gone afterwards. The path is real right now and
+        # worthless tomorrow — recording it in local.env would have
+        # start_stack.sh launch something that no longer exists. Observed on
+        # this project's own machine 2026-07-27, where the uuid had already
+        # changed between two launches an hour apart.
+        if TRANSLOCATED in m.group(1):
+            note = m.group(1)
+            continue
+        found, source = m.group(1), "running process"
+        break
     if not found:
         for cand in candidates:
             path = os.path.expanduser(cand)
@@ -164,9 +179,13 @@ def probe_emulator_bundle(run=None, exists=None, candidates=BUNDLE_CANDIDATES):
                 found, source = line, "mdfind"
                 break
 
-    helper = bool(found) and exists(
-        os.path.join(found, "Contents", "Resources", "etherhelpertool"))
-    return {"app": found, "helper": helper, "source": source}
+    probe_target = found or note      # the helper question is about the bundle,
+    helper = bool(probe_target) and exists(   # and a translocated copy carries
+        os.path.join(probe_target, "Contents", "Resources", "etherhelpertool"))
+    out = {"app": found, "helper": helper, "source": source}
+    if note:
+        out["translocated"] = note
+    return out
 
 
 def probe(run=None, read=None, exists=None, addresses=None,
@@ -246,6 +265,17 @@ def decide(probes, force_slirp=False, want_agent=True):
             "does not exist on this machine at all (R8), which settles the "
             "backend before the interface count is consulted."))
 
+    if bundle.get("translocated"):
+        notes.append(_item(
+            NOTE, "emulator_translocated",
+            "the running emulator is Gatekeeper-TRANSLOCATED: macOS is running "
+            "it from a throwaway copy under .../T/AppTranslocation/, a path that "
+            "changes on every launch. That path is not written to local.env, "
+            "because a launcher pointed at it would fail the moment the app "
+            "quits. Clear the quarantine to make the bundle findable: "
+            "`xattr -dr com.apple.quarantine <BasiliskII.app>`, then move it out "
+            "of the folder it was unzipped into and relaunch."))
+
     if len(ifaces) < 2:
         notes.append(_item(
             NOTE, "single_interface",
@@ -254,18 +284,41 @@ def decide(probes, force_slirp=False, want_agent=True):
             "in (D-015), so slirp is the only branch that can work here."))
 
     # --- the emulator backend ---------------------------------------------
-    if emulator_running(probes):
+    # Two different writes hide behind "set the backend", and only one of them
+    # is dangerous while an emulator runs. Rewriting the PREFS file underneath a
+    # live emulator is pointless (it read them at launch) and asks for a lost
+    # edit; recording the INTENT in .netmode touches nothing the emulator reads.
+    # Refusing both was too broad — it locked the installer out of the machine
+    # it was built for, a host already sitting on slirp with its guest up.
+    prefs_rewrite = current != SLIRP
+    intent_stale = emu.get("intended") != SLIRP
+
+    if prefs_rewrite and emulator_running(probes):
         refusals.append(_item(
             REFUSE, "emulator_running",
-            "an emulator is running; its prefs were read at launch and must not "
-            "be rewritten underneath it.",
+            "an emulator is running, and the backend must be rewritten in prefs "
+            "it read at launch.",
             "Quit the emulator cleanly first — `mac_shutdown`, or Special -> Shut "
             "Down in the guest. Never hard-kill it (D-004)."))
         return {"refusals": refusals, "steps": steps, "notes": notes}
 
-    if current == SLIRP and emu.get("intended") == SLIRP:
+    if not prefs_rewrite and not intent_stale:
         notes.append(_item(NOTE, "backend_already_slirp",
-                           "emulator backend is already `ether slirp`."))
+                           "emulator backend is already `ether slirp`, and that "
+                           "is what this stack records as intended."))
+    elif not prefs_rewrite:
+        # The trap this closes: prefs say slirp, .netmode still says something
+        # else, so the NEXT start_stack.sh silently "repairs" a deliberate slirp
+        # machine back to the other backend. Drift is judged against the record,
+        # so the record has to be corrected — and nothing else here needs to be.
+        steps.append(_item(
+            STEP, "set_backend",
+            f"record `{SLIRP}` as the intended backend",
+            f"prefs already say `ether {SLIRP}`, but "
+            f"{os.path.basename(probes['paths']['netmode'])} says "
+            f"`{emu.get('intended') or '<nothing>'}` — so the next launcher run "
+            "would repair this machine away from slirp without being asked.",
+            current=emu.get("intended"), desired=SLIRP))
     else:
         steps.append(_item(
             STEP, "set_backend",

@@ -73,21 +73,26 @@ class Report:
 
 
 def check_link(rep):
-    """Liveness is 'the daemon authored the reply', NOT status == 0.
+    """Liveness is 'the daemon answered', NOT status == 0.
 
-    STATUS reports the result of the daemon's Apple Events / ToolServer probe
-    (`Trace(diag, "initAE=", err)`, mac/src/command.c), so on a guest with no
-    ToolServer it is non-zero **by design** — which is exactly the case this
-    tool exists to measure. `initAE=` is written by the daemon itself, so its
-    presence proves the reply came from the guest and not from the host's
-    daemon-is-down sentinel.
+    Asked via **MACSTATUS**, which the host answers from its own view of the
+    link (`daemon_responding=1` means the daemon replied to a STAT just now).
+
+    This used to ask `STATUS` and look for the daemon's `initAE=` trace. That
+    worked on the machine it was written for — a guest with no ToolServer —
+    and inverted itself on a guest that has one: `STATUS` has no host route, so
+    it falls through to ToolServer, which swallows it and answers `STATUS:0`
+    with empty output. The liveness check then failed *because* the command
+    tier was working (observed 2026-07-27). A probe must not depend on the
+    absence of the thing it is measuring around.
     """
-    status, out, err = send("STATUS", timeout=20.0)
+    status, out, err = send("MACSTATUS", timeout=20.0)
     text = (out + " " + err).strip()
-    alive = "initAE=" in text
+    alive = "daemon_responding=1" in text
     rep.add("bridge link", alive, text[:120] or f"status={status}")
     if alive:
-        tier = "ToolServer present" if "no-ToolServer" not in text else "native verbs only"
+        has_ts = "toolserver=1" in text
+        tier = "ToolServer present" if has_ts else "native verbs only"
         rep.add("command tier", True, f"{tier} (an absent ToolServer is a tier, not a fault)")
     return alive
 

@@ -82,15 +82,34 @@ def test_an_etherhelper_config_without_a_helper_is_not_the_refusal_case():
 
 # --- the other refusal ------------------------------------------------------
 
-def test_a_running_emulator_blocks_every_write():
-    plan = ib.decide(probes(running=True))
+def test_a_running_emulator_blocks_a_prefs_rewrite():
+    plan = ib.decide(probes(ether="etherhelper/en8", helper=False, running=True))
     assert keys(plan["refusals"]) == ["emulator_running"]
     assert not plan["steps"]
 
 
+def test_a_running_emulator_does_not_block_what_it_never_reads():
+    # The machine this was built for: already on slirp, guest up, only the
+    # INTENT record stale. Refusing here locked the installer out of the exact
+    # configuration it exists to produce — the prefs need no rewrite, and
+    # .netmode is not a file the emulator reads.
+    plan = ib.decide(probes(ether="slirp", intended="etherhelper/en8",
+                            running=True))
+    assert not plan["refusals"]
+    assert "set_backend" in keys(plan["steps"])
+
+
+def test_a_stale_intent_record_is_named_as_the_silent_repair_it_causes():
+    step = [s for s in ib.decide(probes(ether="slirp", intended="etherhelper/en8"))
+            ["steps"] if s["key"] == "set_backend"][0]
+    assert "would repair this machine away from slirp" in step["detail"]
+    assert step["desired"] == "slirp"
+
+
 def test_the_running_emulator_refusal_does_not_suggest_killing_it():
     # D-004: hard-terminating BasiliskII can corrupt the guest's disk image.
-    detail = ib.decide(probes(running=True))["refusals"][0]["detail"]
+    detail = ib.decide(probes(ether="etherhelper/en8", helper=False,
+                              running=True))["refusals"][0]["detail"]
     assert "mac_shutdown" in detail and "Never hard-kill" in detail
 
 
@@ -301,6 +320,45 @@ def test_the_bundle_probe_detects_the_helper_and_its_absence():
         candidates=("/Applications/BasiliskII.app",))
     assert absent["helper"] is False
     assert absent["app"] == "/Applications/BasiliskII.app"
+
+
+TRANSLOC = ("/private/var/folders/kz/T/AppTranslocation/6E49C8B5-86BD/d/"
+            "BasiliskII_letzter.app")
+
+
+def test_a_translocated_bundle_is_never_recorded_as_configuration():
+    # Observed on this project's own machine, 2026-07-27: a quarantined
+    # emulator runs from a per-launch throwaway mount, and the uuid had already
+    # changed between two launches an hour apart. Writing that into local.env
+    # gives start_stack.sh a path that expires when the app quits.
+    def run(argv, **kw):
+        return (f"21573 {TRANSLOC}/Contents/MacOS/BasiliskII\n"
+                if argv[0] == "pgrep" else "")
+
+    out = ib.probe_emulator_bundle(run, exists=lambda p: TRANSLOC in p,
+                                   candidates=())
+    assert out["app"] is None, "an expiring path is not configuration"
+    assert out["translocated"] == TRANSLOC
+    assert out["helper"] is True, \
+        "the helper question is about the bundle, and the copy carries one"
+
+
+def test_the_translocation_is_reported_with_the_way_out():
+    p = probes(app=None, ether="slirp", intended="slirp")
+    p["bundle"]["translocated"] = TRANSLOC
+    note = [n for n in ib.decide(p)["notes"]
+            if n["key"] == "emulator_translocated"][0]
+    assert "xattr -dr com.apple.quarantine" in note["message"]
+
+
+def test_a_real_bundle_still_wins_over_a_translocated_one():
+    def run(argv, **kw):
+        return (f"1 {TRANSLOC}/Contents/MacOS/BasiliskII\n"
+                "2 /Applications/BasiliskII.app/Contents/MacOS/BasiliskII\n"
+                if argv[0] == "pgrep" else "")
+
+    out = ib.probe_emulator_bundle(run, exists=lambda p: True, candidates=())
+    assert out["app"] == "/Applications/BasiliskII.app"
 
 
 def test_a_host_with_no_emulator_at_all_is_not_an_exception():
