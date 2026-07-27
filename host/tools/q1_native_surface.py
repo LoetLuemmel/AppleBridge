@@ -151,6 +151,37 @@ def _get(mac_path):
     return (data, rsrc), None
 
 
+def _diff_report(sent, got, mac_path):
+    """Describe *how* two forks differ, and whether the difference is stable.
+
+    Same length with different content is a transformation, not a truncation,
+    and the two candidate causes leave different fingerprints. A few altered
+    bytes clustered at the start or end look like a Resource Manager rewriting
+    a map — in which case random bytes were never a legitimate payload, since
+    they are not a valid resource fork. Differences spread across the whole
+    range look like a data-handling fault. A second read distinguishes "the
+    write transformed it, stably" from "the read is not reproducible".
+    """
+    n = min(len(sent), len(got))
+    diffs = [i for i in range(n) if sent[i] != got[i]]
+    if not diffs:
+        return f"lengths differ only: sent {len(sent)} B, got {len(got)} B"
+
+    first, last = diffs[0], diffs[-1]
+    span = "front" if last < n * 0.25 else "back" if first > n * 0.75 else "spread"
+    again, err = _get(mac_path)
+    if err:
+        stable = f"second read failed ({err})"
+    else:
+        stable = "stable across two reads" if again[1] == got else "NOT reproducible between two reads"
+
+    lo = max(0, first - 8)
+    return (f"same length ({len(sent)} B), {len(diffs)} bytes differ "
+            f"({100.0 * len(diffs) / n:.1f}%), first at offset {first}, last at {last} "
+            f"[{span}]; {stable}; at {first}: sent {sent[lo:first + 8].hex()} "
+            f"got {got[lo:first + 8].hex()}")
+
+
 def check_roundtrip(rep, base_path, keep):
     for size in SIZES:
         name = f"{base_path}ABQ1_{size}"
@@ -176,9 +207,7 @@ def check_roundtrip(rep, base_path, keep):
                       f"first difference at offset {first}")
         rep.add(f"round trip {size} B", ok, detail)
         if ok and back_rsrc != rsrc:
-            rep.add(f"resource fork {size} B", False,
-                    f"sent {len(rsrc)} B, got {len(back_rsrc)} B — investigate "
-                    f"(D-013: a rename rewrites the map's name field; nothing was renamed here)")
+            rep.add(f"resource fork {size} B", False, _diff_report(rsrc, back_rsrc, name))
         if not keep:
             try:                                              # best effort: truncate to 0 B
                 _put(name, b"", b"")
