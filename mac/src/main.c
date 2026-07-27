@@ -1167,6 +1167,19 @@ static OSErr LaunchAppAtPath(const char *macPath)
     err = FSMakeFSSpec(0, 0, pPath, &spec);
     if (err != noErr) return err;
 
+    /* Refuse anything that is not an application. `launchNoFileFlags` below
+     * tells the Launch Manager NOT to check the file's flags, so if we do not
+     * check, nobody does — and handing it a document is not merely an error:
+     * on 2026-07-27 a LAUNCH of a THINK C project file ('PROJ') took the whole
+     * emulator down. A verb reachable from the host must not be able to do
+     * that, so the guard belongs here rather than in the caller. */
+    {
+        FInfo fi;
+        err = FSpGetFInfo(&spec, &fi);
+        if (err != noErr) return err;
+        if (fi.fdType != 'APPL') return errAENotAnObjSpec;   /* -1727: not launchable */
+    }
+
     lpb.launchBlockID = extendedBlock;
     lpb.launchEPBLength = extendedBlockLen;
     lpb.launchFileFlags = 0;

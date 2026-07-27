@@ -173,29 +173,50 @@ def _parse_aete(buf, align):
     for _ in range(c.u16()):
         name = c.pstr(align); desc = c.pstr(align)
         c.ostype(); c.u16(); c.u16()                 # suite id, level, version
+
         declared = c.u16()
         events = []
-        # Report what parses and stop where it stops. A vocabulary read halfway
-        # is worth far more than "could not parse": the events an application
-        # actually accepts are the point, and the first few are usually the
-        # ones being looked for.
+        # Tolerant: a vocabulary read halfway beats a refusal.
         try:
             for _ in range(declared):
                 ev = c.pstr(align); ed = c.pstr(align)
                 cls, eid = c.ostype(), c.ostype()
                 if not (cls.isprintable() and eid.isprintable()):
-                    break
+                    raise ValueError("implausible event code")
                 c.ostype(); c.pstr(align); c.u16()   # reply type, desc, flags
                 c.ostype(); c.pstr(align); c.u16()   # direct parameter
                 for _ in range(c.u16()):             # named parameters
                     c.pstr(align); c.ostype(); c.ostype(); c.pstr(align); c.u16()
                 events.append((ev, cls, eid, ed))
         except (EOFError, IndexError, ValueError):
-            pass
-        if not events:
-            return None
+            suites.append((name, desc, events, declared))
+            break
+
         suites.append((name, desc, events, declared))
-        break                                        # first suite is the app's own
+
+        # Skip the rest of the suite to reach the next one. Not optional: the
+        # FIRST suite is usually the Required Suite with NO events, so a parser
+        # that stops there reports nothing at all — which is what this did.
+        try:
+            for _ in range(c.u16()):                 # classes
+                c.pstr(align); c.ostype(); c.pstr(align)
+                for _ in range(c.u16()):             # properties
+                    c.pstr(align); c.ostype(); c.ostype(); c.pstr(align); c.u16()
+                for _ in range(c.u16()):             # elements
+                    c.ostype()
+                    for _ in range(c.u16()):         # key forms
+                        c.ostype()
+            for _ in range(c.u16()):                 # comparisons
+                c.pstr(align); c.ostype(); c.pstr(align)
+            for _ in range(c.u16()):                 # enumerations
+                c.ostype()
+                for _ in range(c.u16()):             # enumerators
+                    c.pstr(align); c.ostype(); c.pstr(align)
+        except (EOFError, IndexError, ValueError):
+            break
+
+    if not any(ev for _, _, ev, _ in suites):
+        return None
     return suites
 
 
@@ -216,6 +237,9 @@ def cmd_aete(args):
         print("  could not parse the terminology")
         return 1
     for name, desc, events, declared in suites:
+        if not events:
+            print(f"\n  suite: {name}  —  (no events)")
+            continue
         print(f"\n  suite: {name}  —  {desc[:60]}")
         shown = f"{len(events)} of {declared}" if len(events) != declared else f"{declared}"
         print(f"  {shown} events:")
