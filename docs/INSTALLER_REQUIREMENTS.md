@@ -111,17 +111,24 @@ with the prefs, as one derived set.
 
 ## R8 — privileges: required for one backend, not the other
 
-`etherhelpertool` is not setuid and `/dev/bpf*` are `root:wheel 0600`, so the
-emulator must be launched with elevated rights for that backend. `slirp` needs
-none. `start_stack.sh` elevates only its `ifconfig` block and then launches the
-emulator unprivileged, which contradicts the operating practice on both
-machines — either the documented one-shot path starts an emulator without guest
-networking, or the requirement is subtler than it looks. Unresolved.
+**Resolved 2026-07-27: the emulator does not need elevated rights.** Launched
+with a plain unprivileged `open -a`, BasiliskII ran as the normal user, its
+`etherhelpertool` child came up **as root**, opened a BPF device, and the guest
+daemon connected — so `start_stack.sh` is right to launch it unprivileged and
+the `sudo open -a` in the operator's own start script is ritual, like the kext
+in R9.
 
-A one-time `ChmodBPF`-style LaunchDaemon (`/dev/bpf*` → `root:access_bpf 0640`)
-would remove the per-launch password. Untested here; the `access_bpf` group
-already exists on the developer machine with the user in it, and nothing sets
-the permissions, so it currently grants nothing.
+The mechanism matters more than the verdict, because "it works" without one is
+what made the kext survive for years. `etherhelpertool` is **not** setuid and
+`/dev/bpf*` are `root:wheel 0600`, yet the helper runs as root: BasiliskII
+elevates it itself, evidently through Authorization Services. No password was
+requested during that launch, which means a stored authorisation already exists
+on this machine.
+
+**What the installer must therefore anticipate:** a *first* launch on a machine
+with no stored authorisation will most likely prompt, and a headless or
+scripted install cannot answer that prompt. That case is untested here — the
+answer above is for a machine that has already been authorised once.
 
 ## R9 — do not require a kernel extension
 
@@ -213,3 +220,23 @@ GUI-driving loop repeats constantly. The bridge carries the **raw** PixMap while
 the resulting PNG is ~17 KB, which bounds how compressible the content is. The
 compressor already exists in `host/tools/gif_to_rez.py`, applied in the other
 direction. For this tier that is less an optimisation than a precondition.
+
+## R14 — the daemon overwrites the prefs file it is reading
+
+Editing `AppleBridge Prefs` over the bridge does not reliably stick: the daemon
+holds its own copy in memory and writes it back, so an external edit can be
+silently replaced by the values the daemon started with. Observed 2026-07-27
+while demonstrating R2 — a `mac_write_file` reported 115 bytes written and a
+read immediately afterwards returned the *previous* content; the file recovered
+from the powered-off disk image later carried the daemon's own header and its
+`WIN=` geometry, with only the field it had never held in memory changed.
+
+This is the reason the demonstration had to blank the address twice, and it is
+a trap for anyone who edits configuration over the bridge and reads success
+back. A write is only durable once the daemon has re-read it — which for `IP=`
+means at startup, since the periodic re-read adopts transport fields only.
+
+**Requirement:** a configuration change made over the bridge is applied through
+the daemon (so its in-memory copy is the one that gets written), or the daemon
+re-reads before every save. Writing the file underneath it is not a supported
+edit, and the tooling should not present it as one.
