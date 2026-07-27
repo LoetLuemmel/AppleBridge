@@ -22,6 +22,32 @@ The one-line summary: **the installer's job is mostly derivation, not
 installation.** Every value this project hardcoded is correct on exactly one
 machine, and the failures they cause do not look like configuration errors.
 
+## Where the requirements live in code
+
+The installer is `host/install_bridge.py`, built on the `bridge_doctor.py` shape:
+`run`/`read`/`write`/`exists` are injectable, so every branch — the refusals
+above all — is driven from canned output by `tests/test_installer.py` with no
+live stack. `decide()` returns a declarative plan and `apply_plan()` is the only
+code that writes, so `--dry-run` is the same computation minus its last stage
+rather than a second path that can drift from it.
+
+| requirement | mechanism |
+|---|---|
+| R1, R2 | `host_config.resolve_host_ip()`; `render_local_env()` emits **no** address |
+| R3 | `guest_checklist()` names `:System Folder:Preferences:AppleBridge Prefs` |
+| R5 | the checklist labels every field by *whose* address it is |
+| R6, R8 | `probe_emulator_bundle()` — the bundle is asked before the NIC count |
+| R7 | the slirp triple, resolver included, and the `0.0.0.0` bind in `local.env` |
+| R9 | no kernel extension is loaded, and no bridge created, on this branch |
+| R10 | `exposure_report()` — the token pair, guest first, host second |
+| R11 | `tier_report()` — ToolServer is a tier you may not have, not a failure |
+| R12, R13 | `--no-agent` prints the `< /dev/null` form; the default installs the agent, so the doctor's launchd advice is true here |
+| R14 | `seed_guest_prefs()` refuses while an emulator runs |
+| R15 | one launch path per installation; `start_stack.sh` skips the privileged block entirely on slirp |
+| R20 | `rewrite_ip_line()` works in bytes and preserves CR endings |
+
+Whether any of this has *shipped* is the ledger's question, not this document's.
+
 ## R1 — derive every address; ship none
 
 `host/host_server.py` binds `HOST_INTERFACE = "192.168.3.154"`. That address

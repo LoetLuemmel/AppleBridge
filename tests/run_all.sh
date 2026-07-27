@@ -17,7 +17,18 @@ files=(test_macbinary.py test_screenshot_decode.py test_encoding_convert.py
        test_ether_backend.py test_guest_input.py
        test_host_input_tools.py test_afp_mount.py
        test_native_verbs.py test_doc_claims.py test_hardware_findings.py
-       test_process_mutations.py)
+       test_process_mutations.py
+       test_host_ip_config.py test_installer.py)
+
+# test_host_ip_config.py was written with the R1/R2 repair and never added
+# here, so CI ran none of its 23 ratchets — including "no host-address literal
+# in the runtime files", the one holding the defect that suite exists for. It
+# passed the whole time; nothing was executing it. A green run that runs
+# nothing is this project's own named failure class, so: every tests/test_*.py
+# belongs in this list, and test_registration_is_complete() below enforces it.
+#
+# smoke_e2e.py is deliberately NOT here — it drives the live stack and needs an
+# emulator, so it is a manual pre-release gate rather than a CI suite.
 
 fail=0
 for f in "${files[@]}"; do

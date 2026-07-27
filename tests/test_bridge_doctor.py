@@ -193,6 +193,25 @@ def test_slirp_warns_about_appletalk_even_though_tcp_works():
     assert rep["ok"] is True                    # TCP works: not a hard failure
 
 
+def test_a_deliberately_installed_slirp_host_is_informed_not_warned():
+    # D-018: the installer configures this branch on purpose, so warning about
+    # it would tell an operator their correct installation is broken. The cost
+    # is still stated, because TCP keeps working and the gap is otherwise
+    # invisible — it shows up as an empty Chooser, not as a network error.
+    rep = report(ether="slirp", netmode="slirp")
+    f = [x for x in rep["findings"] if x["key"] == "ether_slirp_by_design"][0]
+    assert f["level"] == "info" and "AppleTalk" in f["message"]
+    assert "ether_slirp" not in keys(rep) and "ether_drift" not in keys(rep)
+
+
+def test_the_slirp_warning_no_longer_names_one_machines_interface():
+    # `set 'ether etherhelper/en8'` was advice as machine-specific as the
+    # addresses R1 removed, and wrong on any host without that NIC.
+    rep = report(ether="slirp", netmode=None)
+    fix = [x for x in rep["findings"] if x["key"] == "ether_slirp"][0]["fix"]
+    assert "en8" not in fix
+
+
 def test_backend_drift_against_netmode_is_flagged():
     rep = report(ether="slirp", netmode="etherhelper/en8")
     assert {"ether_slirp", "ether_drift"} <= keys(rep)

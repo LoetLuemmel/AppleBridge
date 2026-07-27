@@ -319,15 +319,29 @@ def interpret(probes):
     # --- emulator transport backend ----------------------------------------
     ether, intended = emu["ether"], emu["intended"]
     emulator_running = bool(proc["basilisk"] or proc["sheepshaver"])
-    if ether == "slirp":
+    if ether == "slirp" and intended == "slirp":
+        # A CONFIGURED slirp host is a supported installation, not a fault
+        # (D-018) — warning about it here would contradict the branch the
+        # installer deliberately sets up. What still deserves saying is the cost,
+        # because it is invisible: TCP keeps working, so the gap shows up as an
+        # empty Chooser rather than as a network error.
+        out.append(_finding(
+            INFO, "ether_slirp_by_design",
+            "Emulator is on the slirp backend, as configured. TCP is unaffected; "
+            "AppleTalk is not carried at all — no Chooser, no AFP mounts, no "
+            "mac_appletalk_browse. That is the branch's stated cost, not a fault."))
+    elif ether == "slirp":
         out.append(_finding(
             WARN, "ether_slirp",
-            "Emulator is on the slirp backend: the guest gets a 10.0.2.x address "
-            "behind an IP-only NAT. TCP still works — so the bridge itself looks "
-            "healthy — but AppleTalk frames are dropped (Chooser finds no "
-            "AppleShare server) and bulk throughput is ~80 % down.",
-            f"set 'ether etherhelper/en8' in {emu['prefs_path']}, then relaunch "
-            "BasiliskII (host/start_stack.sh)"))
+            "Emulator is on the slirp backend, which is NOT what this stack "
+            "recorded: the guest gets a 10.0.2.x address behind an IP-only NAT. "
+            "TCP still works — so the bridge itself looks healthy — but AppleTalk "
+            "frames are dropped (Chooser finds no AppleShare server).",
+            (f"set 'ether {intended}' in {emu['prefs_path']} and relaunch"
+             if intended else
+             "record the intended backend (host/install_bridge.py writes "
+             f"{os.path.basename(NETMODE_PATH)}) or set {emu['prefs_path']} back "
+             "to the backend this stack was set up for, then relaunch")))
     if ether and intended and ether != intended:
         out.append(_finding(
             WARN, "ether_drift",
