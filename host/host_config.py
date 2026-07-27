@@ -124,3 +124,53 @@ def explain_bind_failure(wanted, addresses=None):
     else:
         lines.append("  no non-loopback IPv4 addresses found at all — is the network up?")
     return "\n".join(lines)
+
+
+# --- the control port -------------------------------------------------------
+
+CTRL_ENV_VAR = "APPLEBRIDGE_CTRL_BIND"
+CTRL_LOOPBACK = "127.0.0.1"
+_LOCAL_ONLY = {"127.0.0.1", "localhost", "::1"}
+
+
+def resolve_control_bind(env=None, local_env_path=LOCAL_ENV):
+    """-> (address, source) for the :9001 control port. Loopback unless told otherwise.
+
+    The port has always bound loopback, and that was the right default when it
+    was the *only* protection. It is not the only one any more: the control-port
+    token (fail-closed, `APPLEBRIDGE_CTRL_TOKEN`) has been in place since PR #62.
+    Loopback stays the default; a wider bind becomes a deliberate, authenticated
+    choice — which lets one agent session drive bridges on several machines
+    instead of one session per machine.
+    """
+    env = os.environ if env is None else env
+    from_env = (env.get(CTRL_ENV_VAR) or "").strip()
+    if from_env:
+        return from_env, CTRL_ENV_VAR
+    from_file = (read_local_env(local_env_path).get(CTRL_ENV_VAR) or "").strip()
+    if from_file:
+        return from_file, os.path.basename(local_env_path)
+    return CTRL_LOOPBACK, "default (loopback)"
+
+
+def control_bind_is_local(address):
+    return address in _LOCAL_ONLY
+
+
+def check_control_exposure(address, token):
+    """-> None if this combination may run, else the reason it must not.
+
+    The one rule worth enforcing in code rather than documenting: a control port
+    reachable beyond this machine is a command channel into the guest, so it may
+    not be opened without a token. Refusing to start is deliberate — an
+    unauthenticated open port that *works* would be discovered by no one, which
+    is exactly the failure class this project keeps finding.
+    """
+    if control_bind_is_local(address) or token:
+        return None
+    return (f"refusing to start: {CTRL_ENV_VAR}={address} exposes the control port "
+            f"beyond this machine, but APPLEBRIDGE_CTRL_TOKEN is not set.\n"
+            f"  The control port is a command channel into the guest; open and "
+            f"unauthenticated is not a combination this will run.\n"
+            f"  Either set APPLEBRIDGE_CTRL_TOKEN on both sides, or leave "
+            f"{CTRL_ENV_VAR} unset to bind {CTRL_LOOPBACK}.")

@@ -81,6 +81,149 @@ def resource_types(rsrc):
         return []
 
 
+
+def extract(rsrc, want):
+    """-> [(id, bytes)] for one resource type, read out of the map's ref lists.
+
+    Needed because the interesting resource is rarely the whole fork: an `aete`
+    is a few hundred bytes inside half a megabyte of CODE and artwork.
+    """
+    out = []
+    try:
+        data_off = int.from_bytes(rsrc[0:4], "big")
+        map_off = int.from_bytes(rsrc[4:8], "big")
+        m = rsrc[map_off:]
+        type_list_off = int.from_bytes(m[24:26], "big")
+        n = int.from_bytes(m[type_list_off:type_list_off + 2], "big") + 1
+        for i in range(n):
+            e = type_list_off + 2 + i * 8
+            if m[e:e + 4] != want:
+                continue
+            count = int.from_bytes(m[e + 4:e + 6], "big") + 1
+            ref_off = type_list_off + int.from_bytes(m[e + 6:e + 8], "big")
+            for j in range(count):
+                r = ref_off + j * 12
+                rid = int.from_bytes(m[r:r + 2], "big", signed=True)
+                doff = int.from_bytes(m[r + 5:r + 8], "big")
+                start = data_off + doff
+                ln = int.from_bytes(rsrc[start:start + 4], "big")
+                out.append((rid, rsrc[start + 4:start + 4 + ln]))
+    except Exception:                                 # noqa: BLE001
+        pass
+    return out
+
+
+class _Cur:
+    """Byte cursor for the aete's packed layout."""
+
+    def __init__(self, buf):
+        self.b, self.i = buf, 0
+
+    def _need(self, n):
+        if self.i + n > len(self.b):
+            raise EOFError("aete: read past end")
+
+    def _even(self):
+        # Strings are packed, but a numeric field starts on an even boundary —
+        # Rez's alignment rule. Getting this wrong shifts everything after the
+        # first empty description by one byte and the terminology turns to
+        # noise, which is what "could not parse" was.
+        if self.i % 2:
+            self.i += 1
+
+    def u16(self):
+        self._even(); self._need(2)
+        v = int.from_bytes(self.b[self.i:self.i + 2], "big"); self.i += 2; return v
+
+    def ostype(self):
+        self._even(); self._need(4)
+        v = self.b[self.i:self.i + 4].decode("mac_roman", "replace"); self.i += 4; return v
+
+    def pstr(self, align):
+        self._need(1)
+        n = self.b[self.i]
+        self._need(1 + n)
+        s = self.b[self.i + 1:self.i + 1 + n]
+        self.i += 1 + n
+        if align and self.i % 2:
+            self.i += 1
+        return s.decode("mac_roman", "replace")
+
+
+def parse_aete(buf, align):
+    """-> [(suite, [(name, class, id, description)])] or None if it looks wrong.
+
+    Only the event vocabulary is parsed; classes and enumerations are what an
+    application can be *asked about*, while events are what it can be *told to
+    do*, and the latter is the question here. `align` covers the one ambiguity
+    in the layout — whether Pascal strings are padded to even boundaries — by
+    being tried both ways and judged on whether the four-character codes come
+    out printable.
+    """
+    try:
+        return _parse_aete(buf, align)
+    except (EOFError, IndexError, ValueError):
+        return None                                  # wrong alignment guess
+
+
+def _parse_aete(buf, align):
+    c = _Cur(buf)
+    c.u16(); c.u16(); c.u16()                        # version, language, script
+    suites = []
+    for _ in range(c.u16()):
+        name = c.pstr(align); desc = c.pstr(align)
+        c.ostype(); c.u16(); c.u16()                 # suite id, level, version
+        declared = c.u16()
+        events = []
+        # Report what parses and stop where it stops. A vocabulary read halfway
+        # is worth far more than "could not parse": the events an application
+        # actually accepts are the point, and the first few are usually the
+        # ones being looked for.
+        try:
+            for _ in range(declared):
+                ev = c.pstr(align); ed = c.pstr(align)
+                cls, eid = c.ostype(), c.ostype()
+                if not (cls.isprintable() and eid.isprintable()):
+                    break
+                c.ostype(); c.pstr(align); c.u16()   # reply type, desc, flags
+                c.ostype(); c.pstr(align); c.u16()   # direct parameter
+                for _ in range(c.u16()):             # named parameters
+                    c.pstr(align); c.ostype(); c.ostype(); c.pstr(align); c.u16()
+                events.append((ev, cls, eid, ed))
+        except (EOFError, IndexError, ValueError):
+            pass
+        if not events:
+            return None
+        suites.append((name, desc, events, declared))
+        break                                        # first suite is the app's own
+    return suites
+
+
+def cmd_aete(args):
+    st, out, err = send("READFILE:" + args.path)
+    if st != 0:
+        print(f"READFILE failed: {err or st}")
+        return 1
+    _, rsrc = _macbinary_forks(out)
+    found = extract(rsrc, b"aete")
+    if not found:
+        print("no 'aete' resource — this application is not scriptable")
+        return 1
+    rid, buf = found[0]
+    print(f"{args.path}\n  aete({rid}), {len(buf)} B")
+    suites = parse_aete(buf, align=False)
+    if not suites:
+        print("  could not parse the terminology")
+        return 1
+    for name, desc, events, declared in suites:
+        print(f"\n  suite: {name}  —  {desc[:60]}")
+        shown = f"{len(events)} of {declared}" if len(events) != declared else f"{declared}"
+        print(f"  {shown} events:")
+        for ev, cls, eid, ed in events:
+            print(f"    {cls}/{eid}  {ev:<22} {ed[:44]}")
+    return 0
+
+
 # --- verbs -------------------------------------------------------------------
 
 def cmd_volumes(_args):
@@ -175,13 +318,15 @@ def main():
     p_ls.add_argument("path")
     p_pr = sub.add_parser("probe", help="fork sizes + resource types; is it scriptable?")
     p_pr.add_argument("path")
+    p_ae = sub.add_parser("aete", help="the Apple Event vocabulary an app accepts")
+    p_ae.add_argument("path")
     p_gt = sub.add_parser("get", help="save a file's forks locally")
     p_gt.add_argument("path"); p_gt.add_argument("local")
     args = ap.parse_args()
 
     try:
-        return {"volumes": cmd_volumes, "ls": cmd_ls,
-                "probe": cmd_probe, "get": cmd_get}[args.verb](args)
+        return {"volumes": cmd_volumes, "ls": cmd_ls, "probe": cmd_probe,
+                "aete": cmd_aete, "get": cmd_get}[args.verb](args)
     except OSError as e:
         print(f"control port unreachable: {e}")
         print("Run this on the machine whose host server is running.")

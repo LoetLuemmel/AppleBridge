@@ -186,6 +186,51 @@ def test_every_module_host_server_imports_is_deployed():
                          "deploy_host.sh's RUNTIME_FILES: " + ", ".join(missing))
 
 
+
+# --- the control port: loopback by default, never open without a token -------
+
+def test_control_port_defaults_to_loopback():
+    addr, src = host_config.resolve_control_bind(env={}, local_env_path="/nonexistent")
+    assert addr == "127.0.0.1"
+    assert "default" in src
+
+
+def test_control_bind_can_be_widened_deliberately():
+    addr, src = host_config.resolve_control_bind(
+        env={"APPLEBRIDGE_CTRL_BIND": "0.0.0.0"}, local_env_path="/nonexistent")
+    assert addr == "0.0.0.0"
+    assert src == "APPLEBRIDGE_CTRL_BIND"
+
+
+def test_loopback_needs_no_token():
+    for addr in ("127.0.0.1", "localhost", "::1"):
+        assert host_config.check_control_exposure(addr, "") is None, addr
+
+
+def test_an_exposed_control_port_without_a_token_is_refused():
+    """Fail closed. An open, unauthenticated command channel into the guest
+    would work perfectly and be noticed by nobody — the failure class this
+    project keeps rediscovering. So the combination must not be able to run."""
+    why = host_config.check_control_exposure("0.0.0.0", "")
+    assert why, "an exposed control port with no token must be refused"
+    assert "APPLEBRIDGE_CTRL_TOKEN" in why, "the refusal must name the fix"
+    assert "0.0.0.0" in why, "the refusal must name the address that caused it"
+
+
+def test_an_exposed_control_port_with_a_token_is_allowed():
+    assert host_config.check_control_exposure("192.168.3.154", "s3cret") is None
+
+
+def test_the_server_actually_enforces_the_refusal():
+    """The rule is worthless if it lives only in host_config."""
+    src = _read("host/host_server.py")
+    assert "check_control_exposure" in src, \
+        "host_server.py must consult the exposure rule before binding :9001"
+    assert "resolve_control_bind" in src, \
+        "host_server.py must resolve the control bind rather than hardcode it"
+    assert '(("127.0.0.1", CONTROL_PORT))' not in src, \
+        "the control bind address must no longer be a literal"
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
