@@ -88,8 +88,12 @@ def make_read(ether="etherhelper/en8", netmode="etherhelper/en8"):
 
 def report(**kw):
     read_kw = {k: kw.pop(k) for k in ("ether", "netmode") if k in kw}
+    # Whether the launchd agent is INSTALLED is now a separate input from
+    # whether it is loaded; default True so every pre-existing case keeps its
+    # meaning, and the two cases that care state it.
+    installed = kw.pop("agent_installed", True)
     return bd.collect(run=make_run(**kw), read=make_read(**read_kw), uid=UID,
-                      host_ip=HOST_IP)
+                      host_ip=HOST_IP, exists=lambda _p: installed)
 
 
 def keys(rep):
@@ -126,9 +130,33 @@ def test_launchd_disabled_is_named_as_deliberate():
 
 
 def test_launchd_absent_reported_without_disabled_claim():
+    """An INSTALLED agent that is not loaded: bootstrap advice is correct."""
     rep = report(launchd_loaded=False, listening=False, established=False)
     assert "launchd_absent" in keys(rep)
     assert "launchd_disabled" not in keys(rep)
+
+
+def test_a_machine_without_the_agent_is_not_told_to_bootstrap_it():
+    """R13: most installations have no plist and start the server by hand.
+
+    Telling their owner to bootstrap one names a component they never had — a
+    false lead in an authoritative tone, which is worse than silence.
+    """
+    rep = report(launchd_loaded=False, listening=False, established=False,
+                 agent_installed=False)
+    k = keys(rep)
+    assert "launchd_absent" not in k, "must not advise bootstrapping an absent plist"
+    assert "host_server_not_running" in k, "the real problem is that nothing listens"
+    remedy = [f for f in rep["findings"] if f["key"] == "host_server_not_running"][0]
+    assert "run_server.sh" in remedy["fix"]
+    assert "/dev/null" in remedy["fix"], "the R12 trap must not be walked into here"
+
+
+def test_a_hand_started_server_that_IS_listening_is_not_an_error():
+    """No agent and no complaint: this is simply how that machine is run."""
+    rep = report(launchd_loaded=False, agent_installed=False)
+    assert "host_server_not_running" not in keys(rep)
+    assert "launchd_absent" not in keys(rep)
 
 
 def test_loaded_but_no_control_port_flags_crash_loop():

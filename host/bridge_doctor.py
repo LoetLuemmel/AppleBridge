@@ -96,7 +96,7 @@ def _finding(level, key, message, fix=None):
 # --------------------------------------------------------------------------
 # probes — each takes the injected runner/reader and returns a plain dict
 # --------------------------------------------------------------------------
-def probe_launchd(run, uid):
+def probe_launchd(run, uid, exists=None):
     """launchd agent state: loaded (with pid), or absent, or explicitly disabled.
 
     `launchctl list` shows loaded jobs; `print-disabled` shows the separate
@@ -119,11 +119,13 @@ def probe_launchd(run, uid):
             break
 
     # Whether the agent is INSTALLED at all is a different question from whether
-    # it is loaded, and the two call for opposite advice. A machine that starts
-    # the server by hand has no plist, and telling its owner to bootstrap one is
-    # a false lead with an authoritative tone (R13).
-    installed = os.path.exists(
-        os.path.expanduser(f"~/Library/LaunchAgents/{LAUNCHD_LABEL}.plist"))
+    # it is loaded, and the two call for opposite advice (R13). Injectable like
+    # run/read: reading the real filesystem here made the probe behave one way
+    # on the developer's machine (plist present) and another on a fresh one —
+    # the exact defect class this tool exists to catch, so not in the tool.
+    exists = exists or os.path.exists
+    installed = exists(
+        os.path.expanduser("~/Library/LaunchAgents/" + LAUNCHD_LABEL + ".plist"))
 
     return {"label": LAUNCHD_LABEL, "loaded": loaded, "pid": pid,
             "disabled": disabled, "installed": installed}
@@ -263,16 +265,16 @@ def interpret(probes):
             f"gui/{uid} ~/Library/LaunchAgents/{LAUNCHD_LABEL}.plist"))
     elif not ld["loaded"] and not ld.get("installed", True):
         # No plist on this machine: the server is meant to be started by hand,
-        # which is the normal state of any installation but the developer's.
-        # Only the ABSENCE of a listener is worth reporting here.
+        # which is the normal state of every installation but the developer's.
+        # Advising a bootstrap here names a component the reader never had, so
+        # only the ABSENCE of a listener is worth reporting (R13).
         if not sk["listen"]["daemon_port"] and not sk["listen"]["control_port"]:
             out.append(_finding(
                 ERROR, "host_server_not_running",
-                "No host server is listening, and no launchd agent is installed "
-                "on this machine — this installation starts the server by hand.",
-                "cd host && ./run_server.sh < /dev/null &   "
-                "(the redirect matters: a TTY gives the interactive prompt and "
-                "no control port)"))
+                "Nothing is listening, and no launchd agent is installed on this "
+                "machine — this installation starts the host server by hand.",
+                "cd host && ./run_server.sh < /dev/null &   (the redirect matters: "
+                "a terminal gives the interactive prompt and no control port)"))
     elif not ld["loaded"]:
         out.append(_finding(
             ERROR, "launchd_absent",
@@ -368,7 +370,7 @@ def verdict(findings):
 # public entry point
 # --------------------------------------------------------------------------
 def collect(run=None, read=None, uid=None, host_ip=DEFAULT_HOST_IP,
-            prefs_path=PREFS_PATH, netmode_path=NETMODE_PATH):
+            prefs_path=PREFS_PATH, netmode_path=NETMODE_PATH, exists=None):
     """Run the full sweep and return {probes, findings, verdict, ok}.
 
     `run`/`read` are injectable so the test suite can drive every failure mode
@@ -380,7 +382,7 @@ def collect(run=None, read=None, uid=None, host_ip=DEFAULT_HOST_IP,
 
     probes = {
         "uid": uid,
-        "launchd": probe_launchd(run, uid),
+        "launchd": probe_launchd(run, uid, exists),
         "sockets": probe_sockets(run, host_ip),
         "network": probe_network(run, host_ip),
         "processes": probe_processes(run),
