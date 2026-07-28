@@ -14,6 +14,7 @@ Run: python3 tests/test_installer.py   (or via pytest)
 """
 
 import os
+import re
 import sys
 import tempfile
 
@@ -145,9 +146,38 @@ def test_a_single_nic_host_is_told_why_slirp_is_the_only_option():
 
 def test_the_generated_local_env_carries_no_host_address():
     # R2: a wrong default address is worse than none. R7: slirp needs 0.0.0.0.
+    #
+    # Assert on an ASSIGNMENT LINE, not on the substring. The file explains its
+    # own omission in a comment, so `APPLEBRIDGE_HOST_IP` legitimately appears
+    # once — and `grep -c APPLEBRIDGE_HOST_IP local.env` returning 1 on the 2013
+    # MacBook (2026-07-28) read as a failed install until the file was opened.
+    # A substring test is right by luck here: it passes because the comment has
+    # no `=` after the name, which is a property of today's wording, not of the
+    # thing being checked.
     text = ib.render_local_env("/Applications/BasiliskII.app")
-    assert "APPLEBRIDGE_HOST_IP=" not in text
+    assignments = [ln for ln in text.splitlines()
+                   if re.match(r"\s*(export\s+)?APPLEBRIDGE_HOST_IP\s*=", ln)]
+    assert not assignments, assignments
     assert "0.0.0.0" in text
+
+
+def test_the_generated_local_env_says_why_the_address_is_absent():
+    # The omission is the deliberate part (R7), so the file has to say so —
+    # otherwise the next person to read it adds the variable back.
+    text = ib.render_local_env("/Applications/BasiliskII.app")
+    explains = [ln for ln in text.splitlines()
+                if ln.lstrip().startswith("#") and "APPLEBRIDGE_HOST_IP" in ln]
+    assert explains, "nothing in the file explains the missing address"
+
+
+def test_a_commented_out_assignment_would_still_be_caught():
+    # The guard must not be satisfiable by parking the old value behind a `#`,
+    # which is how a "removed" setting comes back.
+    import re as _re
+    line = "#APPLEBRIDGE_HOST_IP=192.168.3.154"
+    assert _re.match(r"\s*(export\s+)?APPLEBRIDGE_HOST_IP\s*=", line) is None
+    # ...so the comment form is caught by the separate literal check instead:
+    assert "192.168.3.154" not in ib.render_local_env("/Applications/B.app")
 
 
 def test_the_generated_local_env_records_the_discovered_emulator():
