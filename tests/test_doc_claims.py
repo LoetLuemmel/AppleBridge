@@ -89,9 +89,25 @@ _NAME_RE = re.compile(r"\b(mac_[a-z_]+|mpw_execute|launch_app|run_applescript|br
 # numbers, "Phase 1 shipped") and each had to be maintained at the tempo of its
 # fastest-changing sentence. This is a RATCHET: the named debt below is frozen,
 # new markers anywhere else fail.
-DESIGN_DOCS_GLOB = "docs/*.md"
+DESIGN_DOCS_GLOB = "docs/**/*.md"          # recursive: a subdirectory is not an escape
 DESIGN_DOCS_EXTRA = ["RX_TX_LEDS.md"]
 _STATUS_MARKER_RE = re.compile(r"✅|\bPR #\d+|\bSHIPPED\b|^Status:.*(?:[Ss]hipped|[Dd]one)")
+
+# Frozen historical snapshots. NOT debt — these are progress journals on purpose
+# and will never be cleaned up, because their whole value is being a verbatim
+# record of what a page said on one date. The rule they are exempt from exists to
+# stop status DRIFTING between two live places, and a dated snapshot cannot
+# drift: nothing will ever be updated here.
+#
+# Deliberately a separate set from STATUS_DEBT, which means "should shrink to
+# empty" and has. Filing a permanent, correct exception as debt would either
+# make that set look unfinished forever or invite somebody to "fix" the archive
+# by deleting it.
+#
+# The glob became recursive in the same change. Putting the archive in a
+# subdirectory would have silently exempted it — and every future file beside
+# it — which is a hole rather than a decision.
+ARCHIVES = {"docs/archive/LEDGER_ARCHIVE.md"}
 
 # Whole files that already carry a progress journal — known debt, listed so it
 # cannot grow silently. Stripping a file's journal removes it from this set, and
@@ -225,15 +241,19 @@ def test_tool_names_are_unique():
 
 def _design_docs():
     import glob
+    # recursive=True is load-bearing: without it `**` behaves as a single `*`,
+    # which would match docs/<sub>/*.md and STOP matching docs/*.md — quietly
+    # dropping every file the check was written for while still passing.
     rels = [os.path.relpath(p, _ROOT).replace(os.sep, "/")
-            for p in glob.glob(os.path.join(_ROOT, DESIGN_DOCS_GLOB))]
+            for p in glob.glob(os.path.join(_ROOT, DESIGN_DOCS_GLOB),
+                               recursive=True)]
     return sorted(rels + DESIGN_DOCS_EXTRA)
 
 
 def test_design_docs_carry_no_status_markers():
     bad = []
     for rel in _design_docs():
-        if rel in STATUS_DEBT:
+        if rel in STATUS_DEBT or rel in ARCHIVES:
             continue
         ok_lines = STATUS_OK_LINES.get(rel, [])
         for n, line in enumerate(_read(rel).split("\n"), 1):
@@ -243,6 +263,35 @@ def test_design_docs_carry_no_status_markers():
                 bad.append(f"{rel}:{n} journals progress in a design doc: {line.strip()[:90]}")
     assert not bad, ("status belongs on the ledger, not in design docs:\n  "
                      + "\n  ".join(bad))
+
+
+def test_the_recursive_glob_still_sees_the_top_level_docs():
+    # The guard on the guard. `docs/**/*.md` without recursive=True matches only
+    # subdirectories, so this check would examine an empty-ish set and pass
+    # while every real design doc went unread — the project's own named failure
+    # mode, a check that reports success while looking at nothing.
+    found = _design_docs()
+    assert "docs/SETUP.md" in found or any(
+        f.startswith("docs/") and f.count("/") == 1 for f in found), \
+        "the glob stopped matching top-level docs/*.md"
+
+
+def test_an_archive_must_declare_itself_frozen():
+    # The exemption is for snapshots, and nothing stops someone dropping a LIVE
+    # document into docs/archive/ to escape the status rule. Require the file to
+    # say what it is and when it was taken, so the exemption cannot be borrowed.
+    for rel in sorted(ARCHIVES):
+        text = _read(rel)
+        assert "snapshot" in text.lower(), \
+            f"{rel} is exempt as an archive but never calls itself a snapshot"
+        assert re.search(r"as of \d{4}-\d{2}-\d{2}", text), \
+            f"{rel} is exempt as an archive but carries no 'as of <date>'"
+
+
+def test_archives_that_no_longer_exist_are_not_still_exempt():
+    for rel in sorted(ARCHIVES):
+        assert os.path.exists(os.path.join(_ROOT, rel)), \
+            f"{rel} is exempt as an archive but is gone — drop it from ARCHIVES"
 
 
 def test_status_exemptions_have_not_outlived_their_lines():
