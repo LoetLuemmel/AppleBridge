@@ -1292,6 +1292,33 @@ static void NoteErr(const char *tag)
     gLastErr[i] = '\0';
 }
 
+/* The same, with the failing code appended: "AESEND -1712" instead of "cmd fail".
+ *
+ * Three verbs used to share the literal tag "cmd fail", which is the least
+ * useful thing a counter can remember: the footer showed ERR 2 and the operator
+ * could not tell a compile error from an Apple Event timeout from a dropped
+ * ToolServer without reproducing it. The number is the part that identifies the
+ * failure, so it belongs in the tag. */
+static void NoteErrCode(const char *tag, long code)
+{
+    short i = 0, j;
+    char  nb[16];
+    long  n = code;
+    Boolean neg = false;
+
+    gErrCount++;
+    while (tag[i] && i < (short)sizeof(gLastErr) - 8) { gLastErr[i] = tag[i]; i++; }
+    gLastErr[i++] = ' ';
+
+    if (n < 0) { neg = true; n = -n; }
+    j = 0;
+    if (n == 0) nb[j++] = '0';
+    while (n > 0) { nb[j++] = (char)('0' + (n % 10)); n /= 10; }
+    if (neg) gLastErr[i++] = '-';
+    while (j > 0 && i < (short)sizeof(gLastErr) - 1) gLastErr[i++] = nb[--j];
+    gLastErr[i] = '\0';
+}
+
 /*
  * Footer telemetry: a one-line diagnostic strip drawn in the empty 15px band
  * below the log body (MonitorBodyRect reserves it) and left of the grow box —
@@ -2644,12 +2671,19 @@ msinstall_reply:
     }
 
     /* AESEND verb: send an arbitrary Apple Event and harvest its reply.
-     * AESEND:<targetHex8>:<classHex8>:<idHex8>:<doLen>\n<directObjectBytes>
-     * (length-framed; the reply rides the normal command response path). */
+     * AESEND:<targetHex8>:<classHex8>:<idHex8>:<doLen>[:<waitTicks>]\n<directObjectBytes>
+     * (length-framed; the reply rides the normal command response path).
+     *
+     * waitTicks is OPTIONAL and new — an older host omits it and gets
+     * AE_SEND_DEFAULT_TIMEOUT, which is the interactive bound, not the five
+     * minutes this verb used to inherit from 'dosc'. 0 means "do not wait at
+     * all" (kAENoReply): the honest choice for an event whose 'aete' declares
+     * its reply 'null', and the one that cannot starve the guest. */
     if (strncmp(request, PROTO_AESEND, strlen(PROTO_AESEND)) == 0) {
         OSType tgt, cls, eid;
         long p = (long)strlen(PROTO_AESEND);
         long doLen = 0, headerEnd, total;
+        long waitTicks = -1;                    /* -1 = caller stated no bound */
         SetActivity("AESEND");
         tgt = ParseHexType(request + p); p += 8;
         if (request[p] == ':') p++;
@@ -2658,6 +2692,12 @@ msinstall_reply:
         eid = ParseHexType(request + p); p += 8;
         if (request[p] == ':') p++;
         while (request[p] >= '0' && request[p] <= '9') doLen = doLen * 10 + (request[p++] - '0');
+        if (request[p] == ':') {
+            p++;
+            waitTicks = 0;
+            while (request[p] >= '0' && request[p] <= '9')
+                waitTicks = waitTicks * 10 + (request[p++] - '0');
+        }
         if (request[p] == '\n' || request[p] == '\r') p++;
         headerEnd = p;
         total = headerEnd + doLen;
@@ -2675,9 +2715,9 @@ msinstall_reply:
         }
         if (doLen > requestLen - headerEnd) doLen = requestLen - headerEnd;
         if (doLen < 0) doLen = 0;
-        ExecuteAppleEvent(tgt, cls, eid, request + headerEnd, doLen, &cmdResult);
+        ExecuteAppleEvent(tgt, cls, eid, request + headerEnd, doLen, waitTicks, &cmdResult);
         err = SendCommandResult(conn, &cmdResult);
-    if (cmdResult.exitCode != 0) NoteErr("cmd fail");
+        if (cmdResult.exitCode != 0) NoteErrCode("AESEND", cmdResult.exitCode);
         gLastTX = TickCount();
         gTXCount++;
         CleanupCommandResult(&cmdResult);
@@ -2707,7 +2747,7 @@ msinstall_reply:
             else { DisposeHandle(h); }         /* no TEXT on the scrap: empty reply */
         }
         err = SendCommandResult(conn, &cmdResult);
-    if (cmdResult.exitCode != 0) NoteErr("cmd fail");
+        if (cmdResult.exitCode != 0) NoteErrCode("CLIPGET", cmdResult.exitCode);
         gLastTX = TickCount();
         gTXCount++;
         CleanupCommandResult(&cmdResult);
@@ -2895,7 +2935,7 @@ msinstall_reply:
 
     /* Stream response straight from the (possibly multi-MB) result handle. */
     err = SendCommandResult(conn, &cmdResult);
-    if (cmdResult.exitCode != 0) NoteErr("cmd fail");
+    if (cmdResult.exitCode != 0) NoteErrCode("COMMAND", cmdResult.exitCode);
 
     /* Mark TX activity */
     gLastTX = TickCount();

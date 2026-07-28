@@ -545,14 +545,23 @@ object, and harvest the reply text. Examples:
   - Run an AppleScript-aware app's custom verb, etc.
 
 4-char codes shorter than 4 are space-padded (Mac convention, e.g. 'MPS '). The
-target app must be running. Returns the reply in `reply`.""",
+target app must be running. Returns the reply in `reply`.
+
+WAITING IS A CHOICE, AND IT COSTS THE GUEST. System 7 schedules cooperatively:
+while the daemon waits for a reply, an application that is not yielding holds
+the whole machine, bridge included. Read the target's vocabulary first
+(`host/tools/guest_explore.py aete <path>`) — if the event declares its reply
+'null', as KAHL/RUN and KAHL/MAKE do, pass expect_reply=false and nothing can
+block. Otherwise wait_seconds bounds it (default 30, max 180).""",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "target_creator": {"type": "string", "description": "4-char creator of the target app (e.g. MPSX, ttxt)"},
                 "event_class": {"type": "string", "description": "4-char event class (e.g. misc, aevt, core)"},
                 "event_id": {"type": "string", "description": "4-char event id (e.g. dosc, quit, getd)"},
-                "direct_object": {"type": "string", "description": "Optional text direct object (e.g. a script or property spec)"}
+                "direct_object": {"type": "string", "description": "Optional text direct object (e.g. a script or property spec)"},
+                "expect_reply": {"type": "boolean", "description": "False = send kAENoReply and return at once (correct when the aete says reply 'null'; cannot block the guest). Default true."},
+                "wait_seconds": {"type": "number", "description": "How long the DAEMON may block waiting for the reply, 1-180. Default 30 (interactive). Ignored when expect_reply is false."}
             },
             "required": ["target_creator", "event_class", "event_id"]
         }
@@ -1426,9 +1435,22 @@ def _ostype_hex(code: str) -> str:
     return b.hex()
 
 
+AE_WAIT_DEFAULT_SECONDS = 30.0     # interactive; the daemon's own default
+AE_WAIT_MAX_SECONDS = 180.0        # the daemon clamps here too — see applebridge.h
+
+
 def mac_send_apple_event(target_creator: str, event_class: str, event_id: str,
-                         direct_object: Optional[str] = None) -> Dict[str, Any]:
-    """Send an arbitrary Apple Event to a scriptable app and return its reply."""
+                         direct_object: Optional[str] = None,
+                         expect_reply: bool = True,
+                         wait_seconds: float = AE_WAIT_DEFAULT_SECONDS) -> Dict[str, Any]:
+    """Send an arbitrary Apple Event to a scriptable app and return its reply.
+
+    The wait is bounded and stated, because on a cooperative scheduler blocking
+    the daemon blocks the guest: `expect_reply=False` sends kAENoReply and
+    cannot block at all, and `wait_seconds` (<= 180) caps the rest. Sending an
+    event whose vocabulary declares reply 'null' and then waiting for one is how
+    the 2026-07-27 KAHL/RUN took the emulator down.
+    """
     try:
         conn = get_connection()
         if not conn.is_connected():
@@ -1441,14 +1463,24 @@ def mac_send_apple_event(target_creator: str, event_class: str, event_id: str,
         if direct_object:
             do_b64 = base64.b64encode(
                 direct_object.encode("mac_roman", errors="replace")).decode("ascii")
+        if expect_reply:
+            secs = max(1.0, min(AE_WAIT_MAX_SECONDS, float(wait_seconds)))
+        else:
+            secs = 0.0
+        ticks = int(secs * 60)
         verb = (f"AESEND:{_ostype_hex(target_creator)}:{_ostype_hex(event_class)}:"
-                f"{_ostype_hex(event_id)}:{do_b64}")
-        status, stdout, stderr = conn.send_command(verb, timeout=300.0)
+                f"{_ostype_hex(event_id)}:{do_b64}:{ticks}")
+        # Our own read has to outlast the daemon's bound, or we would report a
+        # timeout the daemon has not reached yet and leave the caller unsure
+        # which side gave up.
+        status, stdout, stderr = conn.send_command(verb, timeout=secs + 20.0)
         return {
             "success": status == 0,
             "status": status,
             "target": target_creator,
             "event": f"{event_class}/{event_id}",
+            "waited_for_reply": expect_reply,
+            "wait_seconds": secs if expect_reply else 0,
             "reply": stdout if stdout else None,
             "error": stderr if stderr else None,
         }

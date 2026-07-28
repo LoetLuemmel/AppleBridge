@@ -312,4 +312,4 @@ caveats for real hardware are in [SERIAL_TRANSPORT.md](SERIAL_TRANSPORT.md).
 ---
 
 **Last Updated:** July 26, 2026
-**Target:** AppleBridge 0.8d30 (protocol v0.2), Python host via launchd, 30 MCP tools
+**Target:** AppleBridge 0.8d32 (protocol v0.2), Python host via launchd, 30 MCP tools

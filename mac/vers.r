@@ -6,7 +6,23 @@
  * the classic way to tell builds apart (replacing ad-hoc names like
  * "AppleBridge5"). One 'vers' file stamps the whole suite uniformly.
  *
- * This build: 0.8 development — d27 adds two small verbs that both came out of using
+ * This build: 0.8 development — d32 makes a failure legible. Three verbs shared the tag
+ * "cmd fail", so the monitor footer's ERR count named nothing: reading "ERR 2" off the
+ * screen told you two commands had failed and gave you no way to learn which, or why,
+ * short of reproducing them. NoteErrCode now records the verb and the OSErr — "AESEND
+ * -1712" — and the host logs a non-zero STATUS with the daemon's own error text, which it
+ * used to discard entirely (the request was logged, the outcome was not, so a failure and
+ * a success left the same trace). d31 bounds how long AESEND may block. The verb inherited
+ * AE_SCRIPT_TIMEOUT (~5 min) from 'dosc', a figure reasoned about for ToolServer — an
+ * application we own and that always answers. AESEND addresses ANY application, and on a
+ * cooperative scheduler the one that is not yielding holds the whole guest: a KAHL/RUN on
+ * a project that could not link took the emulator down with the disk image open
+ * (2026-07-27, R16). The request now carries an optional wait in ticks — 0 sends
+ * kAENoReply and cannot block at all, which is the honest choice for the many events whose
+ * 'aete' declares reply 'null' — and an omitted field means the interactive default (30 s)
+ * rather than five minutes, clamped at 180 s so the daemon always gives up before the host
+ * stops listening. 'dosc' keeps its five minutes; long Link/SC builds still need them.
+ * d27 adds two small verbs that both came out of using
  * the bridge: DISKINFO[:<vol>] reports size/free per volume via PBHGetVInfo (the sibling
  * of LISTDIR — no ToolServer, so it also answers where none is installed, and it is the
  * question that follows every AFPMOUNT), and MONITOR:0|1 hides/shows the Verbose console
@@ -83,14 +99,14 @@ resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
     development, 0x28,   /* development stage, non-release revision 27 (BCD) */
     verUS,
-    "0.8d30",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d30 - names the host it reached"  /* long -> Get Info */
+    "0.8d32",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d32 - a failure now says which verb and which code"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
     development, 0x28,
     verUS,
-    "0.8d30",
+    "0.8d32",
     "AppleBridge"        /* the shared/suite version line */
 };
