@@ -450,6 +450,95 @@ def test_apply_stops_at_the_first_failure():
     assert len(results) == 1, "a failed backend rewrite must not be followed by more"
 
 
+# --- argument parsing: the safety flag must not fail open -------------------
+# `--dry-run` was matched with `"--dry-run" in argv`, and anything unrecognised
+# was ignored. So `--help` — the first thing a stranger types at an unfamiliar
+# program — was not a flag: it fell through and the installer INSTALLED.
+# Observed 2026-07-28 on the development machine, which rewrote local.env, took
+# a backup and restarted the launchd agent in answer to a request for usage.
+# Every misspelling had the same effect: `--dryrun` meant apply.
+#
+# A safety flag that disappears when mistyped is worse than none, because it is
+# trusted. On an unconfigured host the difference is the whole install rather
+# than a description of it.
+
+def _parse(args):
+    """-> (exit_code, parsed) — exit code None when parsing succeeded."""
+    try:
+        return None, ib.build_parser().parse_args(args)
+    except SystemExit as e:
+        return e.code, None
+
+
+def test_an_unknown_flag_is_refused_not_ignored():
+    for bad in ("--dryrun", "--dry_run", "--helpp", "-n", "--force_slirp"):
+        code, _ = _parse([bad])
+        assert code == 2, f"{bad} was accepted (exit {code})"
+
+
+def test_help_is_a_flag_and_not_an_installation():
+    code, _ = _parse(["--help"])
+    assert code == 0, f"--help exited {code}"
+
+
+def test_a_misspelled_safety_flag_never_reaches_the_prober():
+    # The behavioural claim, not just the parse: nothing that touches the host
+    # may run before the arguments are understood.
+    called = []
+    real = ib.probe
+    ib.probe = lambda *a, **k: called.append(1) or (_ for _ in ()).throw(
+        AssertionError("probe() ran despite bad arguments"))
+    try:
+        try:
+            ib.main(["--dryrun"])
+        except SystemExit as e:
+            assert e.code == 2, e.code
+        else:
+            raise AssertionError("main() accepted --dryrun")
+    finally:
+        ib.probe = real
+    assert not called
+
+
+def test_every_documented_flag_still_parses():
+    # Renaming or dropping one silently would be the same class of surprise.
+    code, ns = _parse(["--dry-run", "--json", "--force-slirp", "--no-agent",
+                       "--seed-guest-prefs", "/tmp/x.dmg"])
+    assert code is None
+    assert (ns.dry_run, ns.json, ns.force_slirp, ns.no_agent) == \
+        (True, True, True, True)
+    assert ns.seed_guest_prefs == "/tmp/x.dmg"
+
+
+def test_seeding_without_an_image_is_an_argument_error():
+    code, _ = _parse(["--seed-guest-prefs"])
+    assert code == 2
+
+
+def test_no_arguments_still_means_apply():
+    # The documented contract is unchanged: --dry-run describes, bare applies.
+    # Only the failure mode moved, from "apply" to "exit 2".
+    code, ns = _parse([])
+    assert code is None and ns.dry_run is False
+
+
+def test_the_hand_rolled_matching_is_gone():
+    # CODE only. Searching the raw source matched the docstring that explains
+    # the old behaviour — the fourth assertion today to match prose about the
+    # thing instead of the thing, so: drop comments and string literals first.
+    import io
+    import tokenize
+    path = os.path.join(os.path.dirname(__file__), "..", "host",
+                        "install_bridge.py")
+    src = open(path, encoding="utf-8").read()
+    code = "".join(
+        tok.string for tok in tokenize.generate_tokens(io.StringIO(src).readline)
+        if tok.type not in (tokenize.COMMENT, tokenize.STRING))
+    assert "--dry-run" not in code, \
+        "substring matching is back; unknown flags are ignored again"
+    assert "build_parser" in code, "the parser is not being used"
+
+
 # --- the launcher the installer configures (R15) ----------------------------
 
 def _start_stack():
