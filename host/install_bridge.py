@@ -59,6 +59,7 @@ Stdlib only, so `/usr/bin/python3` remains sufficient (D-007).
     host/install_bridge.py --json
 """
 
+import argparse
 import json
 import os
 import re
@@ -708,20 +709,55 @@ def format_text(probes, plan, results=None, dry_run=True):
 # --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
+def build_parser():
+    """The argument parser — strict, because the safety flag used to fail OPEN.
+
+    Arguments were matched with `"--dry-run" in argv` and anything unrecognised
+    was ignored. So `--help` — the single most likely thing a stranger types at
+    a program they have not run before — was not a flag at all: it fell through
+    and the installer PERFORMED THE INSTALLATION. Observed 2026-07-28 on the
+    development machine, which rewrote local.env, took a backup and restarted
+    the launchd agent in response to a request for usage text.
+
+    The same hole covers every typo. `--dryrun`, `--dry_run`, `--dry-run=1` all
+    meant "apply", and on an unconfigured host that is the whole install rather
+    than a description of it. A safety flag that vanishes when misspelled is
+    worse than no safety flag, because it is trusted.
+
+    argparse rejects an unknown option and prints usage, so the failure mode is
+    now exit 2 and no writes.
+    """
+    p = argparse.ArgumentParser(
+        prog="install_bridge.py",
+        description="AppleBridge host installer — configures the slirp branch "
+                    "(D-018). Run with --dry-run first: it performs the same "
+                    "computation and stops before the only stage that writes.",
+        epilog="Exit codes: 0 ok, 1 a step failed, 2 bad arguments, "
+               "3 refused (nothing was written).")
+    p.add_argument("--dry-run", action="store_true",
+                   help="derive and print the plan; change nothing")
+    p.add_argument("--json", action="store_true",
+                   help="machine-readable probes, plan and results")
+    p.add_argument("--force-slirp", action="store_true",
+                   help="convert a host already configured for etherhelper "
+                        "(refused by default — that branch is somebody's "
+                        "working AppleTalk setup)")
+    p.add_argument("--no-agent", action="store_true",
+                   help="configure only; do not install the launchd agent")
+    p.add_argument("--seed-guest-prefs", metavar="IMAGE.DMG",
+                   help="write IP= into a POWERED-OFF disk image's "
+                        "AppleBridge Prefs (refused while an emulator runs)")
+    return p
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    dry_run = "--dry-run" in argv
-    as_json = "--json" in argv
-    force = "--force-slirp" in argv
-    want_agent = "--no-agent" not in argv
-
-    seed_image = None
-    if "--seed-guest-prefs" in argv:
-        i = argv.index("--seed-guest-prefs")
-        if i + 1 >= len(argv):
-            print("--seed-guest-prefs needs a disk-image path", file=sys.stderr)
-            return 2
-        seed_image = argv[i + 1]
+    args = build_parser().parse_args(argv)
+    dry_run = args.dry_run
+    as_json = args.json
+    force = args.force_slirp
+    want_agent = not args.no_agent
+    seed_image = args.seed_guest_prefs
 
     probes = probe()
     plan = decide(probes, force_slirp=force, want_agent=want_agent)
