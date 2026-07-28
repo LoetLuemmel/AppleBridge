@@ -18,7 +18,8 @@ files=(test_macbinary.py test_screenshot_decode.py test_encoding_convert.py
        test_host_input_tools.py test_afp_mount.py
        test_native_verbs.py test_doc_claims.py test_hardware_findings.py
        test_process_mutations.py
-       test_host_ip_config.py test_installer.py test_ae_wait_bound.py)
+       test_host_ip_config.py test_installer.py test_ae_wait_bound.py
+       test_command_timeout.py)
 
 # test_host_ip_config.py was written with the R1/R2 repair and never added
 # here, so CI ran none of its 23 ratchets — including "no host-address literal
