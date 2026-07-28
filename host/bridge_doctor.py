@@ -179,6 +179,65 @@ def probe_sockets(run):
     return {"listen": listen, "guest_peer_ip": peer}
 
 
+LOCAL_ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "local.env")
+DEPLOY_DIR = os.path.expanduser("~/Library/Application Support/AppleBridge")
+
+
+def probe_installation(read=None, exists=None, local_env=LOCAL_ENV_PATH,
+                       deploy_dir=DEPLOY_DIR):
+    """What the INSTALLER left behind — its contract, not its reasoning.
+
+    The rest of this module diagnoses a running stack. Nothing checked whether
+    the machine is correctly *installed*, and the two are different questions:
+    `install_bridge.py --dry-run` proves the plan is right, the test suite
+    proves every branch of the plan is right, and neither says anything about
+    the state of this computer afterwards.
+
+    Three ways that state goes wrong silently, all observed:
+
+      * `local.env` gains a host address. On slirp the server must bind
+        `0.0.0.0`; a specific address binds SUCCESSFULLY and then waits forever
+        for a connection arriving on a different one (R1, R2).
+      * `APPLEBRIDGE_EMULATOR_APP` goes stale — the recorded bundle is moved or
+        renamed, which is exactly what happens after clearing a Gatekeeper
+        quarantine and relocating the app (2026-07-28), and `start_stack.sh`
+        then hands `open` a path that is not there.
+      * the DEPLOYED copy drifts from the repo. launchd cannot read the repo
+        under TCC-protected ~/Documents, so it runs a synced copy; editing the
+        repo and forgetting `deploy_host.sh` means the fix you are testing is
+        not the code that is running. That one cost a long detour.
+    """
+    read = read or _read
+    exists = exists or os.path.exists
+
+    text = read(local_env)
+    present = bool(text)
+    host_ip_line = None
+    emulator_app = None
+    for line in text.splitlines():
+        bare = line.strip()
+        if bare.startswith("#") or "=" not in bare:
+            continue
+        key, _, value = bare.partition("=")
+        key = key.replace("export ", "").strip()
+        if key == "APPLEBRIDGE_HOST_IP":
+            host_ip_line = value.strip()
+        elif key == "APPLEBRIDGE_EMULATOR_APP":
+            emulator_app = value.strip()
+
+    return {
+        "local_env": local_env,
+        "local_env_present": present,
+        "host_ip_assigned": host_ip_line,          # None = correct on slirp
+        "emulator_app": emulator_app,
+        "emulator_app_exists": bool(emulator_app) and exists(emulator_app),
+        "deploy_dir": deploy_dir,
+        "deploy_present": exists(os.path.join(deploy_dir, "host_server.py")),
+        "deploy_stamp": (read(os.path.join(deploy_dir, ".deploy_stamp")) or "").strip(),
+    }
+
+
 def probe_network(run, host_ip):
     """Where the host IP lives vs. where the default route exits.
 
@@ -404,6 +463,49 @@ def interpret(probes):
             "the daemon retries roughly every 30 s after a boot or a dropped "
             "link."))
 
+    # --- the installer's contract -------------------------------------------
+    # Everything above diagnoses a RUNNING stack. These ask a different
+    # question: is this machine correctly INSTALLED? A plan can be right and
+    # the result still wrong, and each of these fails without saying so.
+    inst = probes.get("installation")
+    if inst:
+        if inst["host_ip_assigned"]:
+            out.append(_finding(
+                ERROR, "local_env_has_host_ip",
+                f"local.env assigns APPLEBRIDGE_HOST_IP="
+                f"{inst['host_ip_assigned']}, but this host is configured for "
+                "slirp, where the guest's connection arrives from 127.0.0.1 or "
+                "from a LAN address depending on which it dialled. A specific "
+                "address BINDS SUCCESSFULLY and then waits forever (R1, R2).",
+                f"delete that line from {inst['local_env']} and restart the "
+                "server, or re-run install_bridge.py"))
+
+        if inst["emulator_app"] and not inst["emulator_app_exists"]:
+            out.append(_finding(
+                WARN, "emulator_app_stale",
+                f"local.env records an emulator at {inst['emulator_app']}, and "
+                "nothing is there. start_stack.sh will hand `open` a path that "
+                "does not exist — usually because the bundle was moved after "
+                "clearing its Gatekeeper quarantine.",
+                "cd host && ./install_bridge.py     # re-discovers and records it"))
+
+        if not inst["local_env_present"]:
+            out.append(_finding(
+                INFO, "no_local_env",
+                "No host/local.env. Defaults apply (wildcard bind, no emulator "
+                "path), which is workable but means nothing was derived for "
+                "this machine.",
+                "cd host && ./install_bridge.py --dry-run"))
+
+        if ld["installed"] and not inst["deploy_present"]:
+            out.append(_finding(
+                ERROR, "deploy_missing",
+                f"The launchd agent is installed but {inst['deploy_dir']} has no "
+                "host_server.py. launchd cannot read the repo under "
+                "TCC-protected ~/Documents, so it runs a synced copy — and "
+                "there is none.",
+                "cd host && ./deploy_host.sh"))
+
     return out
 
 
@@ -435,6 +537,7 @@ def collect(run=None, read=None, uid=None, host_ip=DEFAULT_HOST_IP,
         "network": probe_network(run, host_ip),
         "processes": probe_processes(run),
         "emulator_prefs": probe_emulator_prefs(read, prefs_path, netmode_path),
+        "installation": probe_installation(read, exists),
     }
     findings = interpret(probes)
     v = verdict(findings)
@@ -487,6 +590,21 @@ def format_text(report):
     lines.append(f"emulator ether:   {emu['ether'] or '—'}"
                  + (f"   (intended: {emu['intended']})" if emu["intended"] else ""))
     lines.append(f"guest peer IP:    {sk['guest_peer_ip'] or '—'}")
+    # The installer's contract, PRINTED and not merely checked. A silent check
+    # is one nobody trusts and everybody re-does by hand; showing the three
+    # values it examined is what makes "verdict: info" mean something.
+    inst = report["probes"].get("installation")
+    if inst:
+        env = "—"
+        if inst["local_env_present"]:
+            env = ("host address SET (wrong on slirp)" if inst["host_ip_assigned"]
+                   else "no host address (correct)")
+        lines.append(f"local.env:        {env}")
+        app = inst["emulator_app"] or "—"
+        if inst["emulator_app"] and not inst["emulator_app_exists"]:
+            app += "   (MISSING)"
+        lines.append(f"emulator app:     {app}")
+        lines.append(f"deployed copy:    {inst['deploy_stamp'] or '—'}")
     lines.append("")
     lines.append(f"verdict: {report['verdict']}")
     for f in report["findings"]:
