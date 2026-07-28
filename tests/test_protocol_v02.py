@@ -17,6 +17,7 @@ Run: python3 tests/test_protocol_v02.py   (or via pytest)
 """
 
 import os
+import socket
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "host"))
@@ -263,6 +264,126 @@ def test_negotiate_no_token_sends_empty_nonce():
     srv = _server_with(V01_INVALID)
     srv.negotiate_version()
     assert srv.client_socket.sent == b"HELLO:2:\n"
+
+
+# --- a version verdict needs a version reply -------------------------------
+# Found on a Macintosh SE/30 over MacTCP, 2026-07-28. The host sends a priming
+# PING after accept and deliberately discards its reply, because the first packet
+# over a fresh connection is often corrupt. But when that PING *times out*
+# instead of being read, nothing is discarded: the reply is still in flight,
+# _drain() finds nothing, and the HELLO read collects `STATUS:0…PONG…`. No
+# ABVERSION, so the old code concluded "peer is legacy (v1)" — about a daemon
+# that had negotiated v2 minutes earlier.
+#
+# A verdict that depends on timing is not a verdict. And it is not cosmetic:
+# with a token configured the host requires v2 + FEAT=auth and drops the link
+# otherwise, fail-closed, so auth on that machine would loop forever while the
+# log blamed an old daemon.
+
+TIMEOUT = object()   # sentinel: this request gets no reply in time
+
+PONG_FRAME = b"STATUS:0\rSTDOUT:4\rPONG\rSTDERR:0\r\r"
+V2_STDOUT = (b"ABVERSION:2;FEAT=auth;NONCE=1122334455667788;"
+             b"PROOF=0011223344556677")
+
+
+class SequencedDaemon(ScriptedDaemon):
+    """Dispenses a DIFFERENT reply per request, so a retry can be answered."""
+
+    def __init__(self, replies, chunk=65536):
+        first = replies[0]
+        super().__init__(b"" if first is TIMEOUT else first, chunk=chunk)
+        self.silent = False
+        self._replies = list(replies)
+        self._n = 0
+
+    def sendall(self, data):
+        self.sent += data
+        nxt = (self._replies[self._n] if self._n < len(self._replies) else b"")
+        self._n += 1
+        self.silent = nxt is TIMEOUT
+        self.reply = b"" if self.silent else bytes(nxt)
+        self.pos = 0
+        self.armed = True
+
+    def recv(self, n):
+        if self.silent:
+            # Three distinct events, three distinct signals — a real socket
+            # never confuses them, so the fake must not either:
+            #   non-blocking + nothing pending -> BlockingIOError  (the drain)
+            #   blocking     + deadline passed -> socket.timeout   (a bounded read)
+            #   peer closed                    -> b""              (not this case)
+            # Raising timeout during the drain made the drain report a CLOSED
+            # socket, and the test then measured a teardown instead of a retry.
+            if not self.blocking:
+                raise BlockingIOError()
+            raise socket.timeout()
+        return super().recv(n)
+
+
+def _server_with_sequence(replies, chunk=65536):
+    # Same construction as _server_with: a real AppleBridgeServer, so the
+    # disconnect bookkeeping (last_command &c.) exists.
+    srv = host_server.AppleBridgeServer()
+    srv.client_socket = SequencedDaemon(replies, chunk=chunk)
+    srv.connected = True
+    return srv
+
+
+def test_the_classifier_keeps_the_four_cases_apart():
+    c = host_server.classify_hello_reply
+    assert c(None) == host_server.HELLO_SILENT
+    assert c("") == host_server.HELLO_SILENT
+    assert c(_status_frame(0, V2_STDOUT).decode("latin-1")) == host_server.HELLO_V2
+    assert c(V01_INVALID.decode("latin-1")) == host_server.HELLO_LEGACY
+    assert c(PONG_FRAME.decode("latin-1")) == host_server.HELLO_STALE
+
+
+def test_a_stale_pong_is_not_a_version_verdict():
+    # The SE/30 sequence exactly: the priming PING's late reply arrives first,
+    # then the real HELLO answer. The peer is v2 and must be reported as v2.
+    srv = _server_with_sequence([PONG_FRAME, _status_frame(0, V2_STDOUT)])
+    srv.negotiate_version()
+    assert srv.peer_version == 2, "a stale frame was mistaken for a legacy peer"
+    assert srv.peer_feat == {"auth"}
+    assert srv.connected is True
+
+
+def test_silence_then_an_answer_is_the_answer():
+    srv = _server_with_sequence([TIMEOUT, _status_frame(0, V2_STDOUT)])
+    srv.negotiate_version()
+    assert srv.peer_version == 2
+    assert srv.connected is True
+
+
+def test_two_stale_frames_drop_the_link_rather_than_guess():
+    # A link two frames out of step will give every later command the wrong
+    # reply. Dropping it is the only honest recovery: the daemon reconnects and
+    # the stream starts clean. Claiming "legacy" would keep a broken link AND
+    # mislabel the peer.
+    srv = _server_with_sequence([PONG_FRAME, PONG_FRAME])
+    srv.negotiate_version()
+    assert srv.connected is False, "a desynchronised link must not be kept"
+    assert srv.peer_version == 1
+
+
+def test_a_real_v01_daemon_is_still_legacy_without_a_retry():
+    # The genuine case must not become slower or noisier: 'Invalid command
+    # format' IS an answer, so it decides immediately.
+    srv = _server_with_sequence([V01_INVALID])
+    srv.negotiate_version()
+    assert srv.peer_version == 1
+    assert srv.connected is True
+    assert srv.client_socket.sent == b"HELLO:2:\n", "no retry should have been sent"
+
+
+def test_the_retry_waits_longer_than_the_first_attempt():
+    # The first attempt may simply have been outrun by a 68030 over MacTCP,
+    # where a reply after 4 s is normal. Retrying with the same bound would
+    # reproduce the same timeout.
+    assert host_server.HELLO_RETRY_FACTOR > 1
+    src = open(host_server.__file__.replace(".pyc", ".py")).read()
+    assert "HELLO_TIMEOUT * HELLO_RETRY_FACTOR" in src
 
 
 # --- auth handshake (mutual challenge/response) ----------------------------

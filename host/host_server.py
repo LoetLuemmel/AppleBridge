@@ -112,6 +112,9 @@ MAC_ACCEPT_POLL = 0.5
 # token, but nothing gates command flow on it here.
 AB_PROTOCOL_VERSION = 2
 HELLO_TIMEOUT = 4.0
+# A retry gets a longer bound: the first attempt may simply have been
+# outrun by a 68030 over MacTCP, where a reply after 4 s is normal.
+HELLO_RETRY_FACTOR = 3
 # Reject any peer-declared payload length above this BEFORE reading/allocating,
 # so a corrupt or hostile length can neither hang a reader nor exhaust memory.
 # Matches the guest's MAX_FILE_BYTES / MAX_DYNAMIC_RESPONSE ceilings.
@@ -331,6 +334,45 @@ def fnv1a64(data):
 def ab_digest(nonce, token):
     """Auth proof = H(nonce || token), nonce/token as bytes -> 16 hex chars."""
     return fnv1a64(bytes(nonce) + bytes(token))
+
+
+# The three things an absent ABVERSION can mean. Collapsing them is what made a
+# slow peer look like an old one: see classify_hello_reply.
+HELLO_V2, HELLO_LEGACY, HELLO_SILENT, HELLO_STALE = "v2", "legacy", "silent", "stale"
+
+
+def classify_hello_reply(resp):
+    """Which of FOUR things happened, not which of two.
+
+    `parse_hello_reply` answers "v1" for anything without an `ABVERSION:` token,
+    which folds three different events into one verdict:
+
+      * a genuine v0.1 daemon, which replies `Invalid command format`
+      * NO reply inside the deadline
+      * somebody ELSE's reply — the link is a frame behind
+
+    On real hardware the third one happens routinely and is the reason this
+    exists. The host sends a priming PING after accept and deliberately discards
+    its reply, because the first packet over a fresh connection is often corrupt.
+    But if that PING *times out* rather than being read, nothing is discarded:
+    the reply is still in flight, `_drain()` finds nothing to remove, and the
+    HELLO read then collects `STATUS:0…PONG…` — no ABVERSION, so "legacy v1".
+
+    Observed on a Macintosh SE/30 over MacTCP, 2026-07-28: the same daemon that
+    had negotiated **v2** minutes earlier was reported legacy on the next
+    connect. A version verdict that depends on timing is not a verdict.
+
+    It is not cosmetic. With a token configured the host requires v2 + FEAT=auth
+    and drops the link otherwise, fail-closed — so authentication on that machine
+    would have looped forever while the log blamed an old daemon.
+    """
+    if not resp:
+        return HELLO_SILENT
+    if "ABVERSION:" in resp:
+        return HELLO_V2
+    if "Invalid command format" in resp:
+        return HELLO_LEGACY
+    return HELLO_STALE
 
 
 def parse_hello_reply(resp):
@@ -995,7 +1037,36 @@ class AppleBridgeServer:
         except OSError as e:
             self._mark_disconnected(f"HELLO send failed: {e}")
             return
+        # Read, classify, and RETRY when the answer is not an answer. A stale
+        # frame means the link is behind, not that the peer is old; silence means
+        # we did not wait long enough, not that the peer is old. Neither is
+        # evidence about a version, so neither is allowed to decide one.
         resp = self._read_framed_response(HELLO_TIMEOUT, label="HELLO")
+        kind = classify_hello_reply(resp)
+        if kind in (HELLO_STALE, HELLO_SILENT) and self.connected:
+            log(f"HELLO: {kind} reply "
+                + (f"({(resp or '')[:24]!r}) " if kind == HELLO_STALE else "")
+                + "— draining and retrying once before judging the version")
+            if not self._drain():
+                self._mark_disconnected("drain detected closed socket")
+                return
+            try:
+                self.client_socket.sendall(hello.encode("ascii"))
+            except OSError as e:
+                self._mark_disconnected(f"HELLO resend failed: {e}")
+                return
+            resp = self._read_framed_response(HELLO_TIMEOUT * HELLO_RETRY_FACTOR,
+                                              label="HELLO(retry)")
+            kind = classify_hello_reply(resp)
+            if kind == HELLO_STALE:
+                # Two frames out of step: this link cannot be trusted for
+                # anything, and every command after would read the wrong reply.
+                # Dropping it is the only honest recovery — the daemon
+                # reconnects and we start from a clean stream.
+                self._mark_disconnected("HELLO still out of step; link desynced")
+                log("HELLO: link is desynchronised (a reply behind); dropped so "
+                    "the daemon reconnects with a clean stream")
+                return
         version, feat, daemon_nonce, daemon_proof = parse_hello_reply(resp or "")
         self.peer_version = min(AB_PROTOCOL_VERSION, version)
         self.peer_feat = feat
@@ -1004,8 +1075,16 @@ class AppleBridgeServer:
             if self.peer_version >= 2:
                 log(f"HELLO: negotiated protocol v{self.peer_version} "
                     f"feat={sorted(self.peer_feat)}")
+            elif kind == HELLO_LEGACY:
+                log("HELLO: peer answered as v0.1 (Invalid command format) — "
+                    "legacy, proceeding without negotiation")
             else:
-                log("HELLO: peer is legacy (v1); proceeding without negotiation")
+                # Say what we know: nothing. The old line claimed the peer was
+                # legacy, which is a statement about the daemon made from a
+                # timeout on the host.
+                log("HELLO: no usable reply after a retry — ASSUMING v1. This is "
+                    "an assumption, not an observation; a slow peer looks the "
+                    "same from here.")
             return
 
         # --- auth required (a token is configured): fail closed on any problem.
