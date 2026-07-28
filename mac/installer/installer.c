@@ -442,8 +442,34 @@ static void DoInstall(void)
     FSSpecToPath(&folderSpec, gDestPath);
     mystrcat(gDestPath, ":");
 
-    /* Seed prefs: keep any existing IP, set HOME, pick the detected stack. */
+    /* Seed prefs in three LAYERS, weakest first. The order is the whole point.
+     *
+     *   1. PrefsDefaults   — compiled-in fallbacks.
+     *   2. the kit's prefs — shipped beside this installer by the host, which
+     *      is the only party that knows which address the guest should dial.
+     *   3. the machine's own prefs — whatever is already in the Preferences
+     *      folder, which must WIN.
+     *
+     * Layer 2 is new (2026-07-28) and it closes an R2 hole. Until now nothing
+     * read the kit's prefs file at all: LoadPrefs resolves its path through
+     * FindFolder and looks nowhere else, so a fresh machine took its `IP=`
+     * from the installer's COMPILED-IN default. That default was one
+     * developer's address, so the install looked perfect on that LAN and
+     * would have pointed a stranger's daemon at a stranger's computer — while
+     * reporting full health, which is why nobody would have caught it.
+     *
+     * Layer 3 must come last, or reinstalling from a kit built on another host
+     * would silently repoint a working daemon and drop its `APP=` chain-launch
+     * list. A kit supplies what a machine does not know; it does not overrule
+     * a machine that already knows. LoadPrefs resets `appCount` only after it
+     * has opened a file, so a machine with no prefs keeps the kit's list.
+     */
     PrefsDefaults(&gPrefs);
+    {
+        FSSpec kitPrefs;
+        if (FSMakeFSSpec(srcV, srcD, "\pAppleBridge Prefs", &kitPrefs) == noErr)
+            (void)LoadPrefsFrom(&gPrefs, &kitPrefs);   /* absent is fine */
+    }
     LoadPrefs(&gPrefs);
     mystrncpy(gPrefs.home, gDestPath, PREFS_PATH_LEN - 1);
     gPrefs.home[PREFS_PATH_LEN - 1] = '\0';
@@ -489,7 +515,12 @@ static void DoInstall(void)
      * installation folder — they go to the System Folder's Preferences folder —
      * and somebody looking for them beside the binaries finds a template
      * instead, edits it, and changes nothing (R3). */
-    mystrcat(gStatus, "; prefs in System Folder:Preferences:AppleBridge Prefs");
+    /* "the Preferences folder", not a spelled-out English path: the folder is
+     * located with FindFolder and is called whatever this System calls it. On
+     * the German System 7.5 of the SE/30 it is `Systemordner:Preferences:`,
+     * and printing `System Folder:…` sent a reader looking for a folder that
+     * does not exist on their machine (2026-07-28). */
+    mystrcat(gStatus, "; prefs in the Preferences folder (AppleBridge Prefs)");
     if (gPrefs.ip[0] == '\0')
         mystrcat(gStatus, " - now set the host IP in AppleBridgeConfig.");
     else

@@ -18,6 +18,7 @@
 #define PREFS_H
 
 #include <Types.h>
+#include <Files.h>         /* FSSpec, for LoadPrefsFrom's parameter */
 #include <transport.h>     /* kTransportOT / kTransportMacTCP for the `transport` field */
 
 #define PREFS_MAX_APPS  8
@@ -54,6 +55,13 @@ void PrefsDefaults(AppPrefs *p);
  * file. Returns true if a file was found and read, false otherwise (callers
  * keep the seeded defaults and may write a fresh file with SavePrefs). */
 Boolean LoadPrefs(AppPrefs *p);
+
+/* Same, from an arbitrary file — for the prefs a kit ships beside its
+ * installer. Only the keys present in that file are touched, so calls LAYER:
+ * read the kit first as defaults, then the machine's own file on top, and a
+ * configured machine keeps its configuration. `appCount` is reset only once a
+ * file has actually been opened, so a missing file changes nothing at all. */
+Boolean LoadPrefsFrom(AppPrefs *p, const FSSpec *spec);
 
 /* Write prefs to the Preferences folder, creating the file if needed. */
 OSErr SavePrefs(const AppPrefs *p);
