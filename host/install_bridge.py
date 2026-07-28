@@ -330,14 +330,25 @@ def decide(probes, force_slirp=False, want_agent=True):
             current=current or None, desired=SLIRP))
 
     # --- host/local.env ----------------------------------------------------
-    steps.append(_item(
-        STEP, "write_local_env",
-        "write host/local.env with no host address and the discovered emulator",
-        "slirp needs the wildcard bind: the guest's connection arrives from "
-        "127.0.0.1 or from this machine's LAN address depending on which "
-        "destination it dialled (R7). A DERIVED address would bind successfully "
-        "and wait forever, so none is written (R1, R2).",
-        emulator_app=bundle["app"]))
+    # Say which of the two files it will write. Announcing "the discovered
+    # emulator" while the header two lines above reads `— not found —` is the
+    # same defect this installer exists to remove: text asserting something it
+    # did not check. Seen on the 2013 MacBook, 2026-07-28, where the emulator
+    # was translocated and therefore deliberately NOT recorded.
+    why = ("slirp needs the wildcard bind: the guest's connection arrives from "
+           "127.0.0.1 or from this machine's LAN address depending on which "
+           "destination it dialled (R7). A DERIVED address would bind successfully "
+           "and wait forever, so none is written (R1, R2).")
+    if bundle["app"]:
+        what = "write host/local.env with no host address and the discovered emulator"
+    else:
+        what = "write host/local.env with no host address and NO emulator path"
+        why += (" No emulator bundle was found, so APPLEBRIDGE_EMULATOR_APP is "
+                "left unset and start_stack.sh cannot launch the emulator for "
+                "you — launch it by hand, or make the bundle findable (see the "
+                "note above) and re-run this installer.")
+    steps.append(_item(STEP, "write_local_env", what, why,
+                       emulator_app=bundle["app"]))
 
     # --- who starts the server (R15: one launch path per installation) -----
     if want_agent:

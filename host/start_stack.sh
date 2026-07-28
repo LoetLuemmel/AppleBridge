@@ -56,7 +56,18 @@ NETMASK="255.255.255.0"
 BRIDGE="${APPLEBRIDGE_BRIDGE:-bridge100}"   # REQUIRED by the etherhelper backend
 # The emulator bundle is one machine's path unless it is configured (R1);
 # install_bridge.py discovers it and writes APPLEBRIDGE_EMULATOR_APP.
-BASILISK_APP="${APPLEBRIDGE_EMULATOR_APP:-/Users/pitforster/Documents/Basilisk/BasiliskII.app}"
+#
+# The fallback below is the developer machine's path, and it is exactly the R1
+# defect this variable exists to remove — so it is used ONLY if it is really
+# there. On the 2013 MacBook (2026-07-28) the emulator was Gatekeeper-
+# translocated, so the installer correctly recorded no path, and this line would
+# have handed `open -a` a directory belonging to a different computer. `open`
+# then fails with its own message about that foreign path, which sends you
+# looking for a Basilisk install that was never supposed to be there.
+BASILISK_APP="${APPLEBRIDGE_EMULATOR_APP:-}"
+if [ -z "$BASILISK_APP" ] && [ -d "/Users/pitforster/Documents/Basilisk/BasiliskII.app" ]; then
+    BASILISK_APP="/Users/pitforster/Documents/Basilisk/BasiliskII.app"
+fi
 SERVER_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # The interface .154 must live on = the host's default-route interface (where the
@@ -177,7 +188,15 @@ else
 fi
 
 echo "[5/5] Launching Basilisk II…"
-open -a "$BASILISK_APP"
+if [ -n "$BASILISK_APP" ]; then
+    open -a "$BASILISK_APP"
+else
+    echo "      SKIPPED — no emulator bundle configured on this machine."
+    echo "      Everything above is up; launch the emulator yourself, or:"
+    echo "        cd $SERVER_DIR && ./install_bridge.py     # discovers + records it"
+    echo "      A translocated app is never recorded (its path changes per launch):"
+    echo "        xattr -dr com.apple.quarantine <BasiliskII.app>, move it, relaunch."
+fi
 
 echo
 echo "  Host-side stack is up. Now, INSIDE the emulator:"

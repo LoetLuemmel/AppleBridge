@@ -426,6 +426,41 @@ def test_the_launcher_takes_the_emulator_path_from_configuration():
     assert "APPLEBRIDGE_EMULATOR_APP" in _start_stack()
 
 
+def test_the_launcher_never_hands_open_another_machines_path():
+    # The fallback IS the R1 defect the variable exists to remove, so it may be
+    # used only when it is really present. On the 2013 MacBook (2026-07-28) the
+    # emulator was Gatekeeper-translocated, the installer correctly recorded no
+    # path, and this line would have passed `open -a` a directory belonging to a
+    # different computer — whose error message then sends you looking for a
+    # Basilisk install that was never supposed to be there.
+    text = _start_stack()
+    assert 'BASILISK_APP="${APPLEBRIDGE_EMULATOR_APP:-}"' in text, \
+        "the developer path must not be an unconditional default"
+    fallback = text.index("/Users/pitforster/Documents/Basilisk/BasiliskII.app")
+    guard = text.index('[ -d "/Users/pitforster/Documents/Basilisk/BasiliskII.app" ]')
+    assert guard <= fallback + 200, "the fallback must be guarded by -d"
+
+
+def test_the_launcher_says_so_instead_of_launching_nothing():
+    # With no bundle it must NAME the situation, not run `open -a ""` and leave
+    # the operator to interpret whatever open says about an empty argument.
+    text = _start_stack()
+    launch = text.index("[5/5] Launching")
+    tail = text[launch:launch + 700]
+    assert 'if [ -n "$BASILISK_APP" ]' in tail
+    assert "SKIPPED" in tail and "install_bridge.py" in tail
+
+
+def test_the_plan_does_not_promise_an_emulator_it_did_not_find():
+    # The plan step read "…and the discovered emulator" while the header two
+    # lines above said `— not found —`. Text asserting something it did not
+    # check is the defect class this whole installer exists to remove.
+    src = open(os.path.join(os.path.dirname(__file__), "..", "host",
+                            "install_bridge.py"), encoding="utf-8").read()
+    assert 'NO emulator path' in src, \
+        "the write_local_env step must say which of the two cases it is in"
+
+
 def test_the_launcher_matches_a_wildcard_listener_the_way_lsof_prints_it():
     # First slirp launch, 2026-07-27: step 4 reported "not listening" two lines
     # below its own log saying it was. lsof renders a wildcard bind as `*:9000`,
