@@ -133,12 +133,29 @@ def probe_launchd(run, uid, exists=None):
             "disabled": disabled, "installed": installed}
 
 
-def probe_sockets(run, host_ip):
+def probe_sockets(run):
     """Listening sockets for :9000/:9001 plus the daemon's established peer.
 
     The peer address is the one authoritative answer to "what IP does the guest
     actually have" — it is observed, not configured, so it also catches a guest
     that silently fell back to DHCP.
+
+    That is exactly why the match must NOT be anchored on the configured host
+    address. It was, and on the slirp branch there is no configured address (the
+    server binds 0.0.0.0 by design, D-018), so the pattern never matched and the
+    doctor reported "no guest is connected to :9000 yet" while `lsof` showed the
+    link ESTABLISHED and the bridge was answering commands. Observed 2026-07-28
+    on a freshly booted guest. A diagnostic that states a fact it did not check
+    is worse than one that says nothing, and the whole branch the installer
+    configures was affected.
+
+    Anchoring on the port alone is also strictly more correct on the etherhelper
+    branch: an established connection whose LOCAL end is :9000 is the daemon
+    link, whatever address the server happens to be bound to.
+
+    On slirp the peer is the host's OWN LAN address — the guest's traffic leaves
+    through the host's stack — so `guest_peer_ip == host address` is normal
+    there and not a sign of a misconfigured guest.
     """
     listen = {"daemon_port": None, "control_port": None}
     for line in run(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"]).splitlines():
@@ -154,9 +171,9 @@ def probe_sockets(run, host_ip):
     peer = None
     for line in run(["lsof", "-nP", f"-iTCP:{DAEMON_PORT}",
                      "-sTCP:ESTABLISHED"]).splitlines():
-        m = re.search(rf"{re.escape(host_ip)}:{DAEMON_PORT}->(\S+):\d+", line)
+        m = re.search(rf"\s(\S+):{DAEMON_PORT}->(\S+):\d+", line)
         if m:
-            peer = m.group(1)
+            peer = m.group(2)
             break
 
     return {"listen": listen, "guest_peer_ip": peer}
@@ -414,7 +431,7 @@ def collect(run=None, read=None, uid=None, host_ip=DEFAULT_HOST_IP,
     probes = {
         "uid": uid,
         "launchd": probe_launchd(run, uid, exists),
-        "sockets": probe_sockets(run, host_ip),
+        "sockets": probe_sockets(run),
         "network": probe_network(run, host_ip),
         "processes": probe_processes(run),
         "emulator_prefs": probe_emulator_prefs(read, prefs_path, netmode_path),
