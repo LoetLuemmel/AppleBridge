@@ -82,6 +82,30 @@ AE_SEND_DEFAULT_TIMEOUT_TICKS = 1800    # 30 s — the daemon's default when we 
 AE_SEND_MAX_TIMEOUT_TICKS = 10800       # 180 s — the daemon clamps to this; asking for more is a lie
 AE_SEND_READ_MARGIN = 15.0              # seconds of round-trip room on top of the daemon's bound
 
+# Resynchronisation after an abandoned read. The daemon link is PERSISTENT, so a
+# timed-out read does not merely fail its own command: the rest of that reply is
+# still coming, and the next command reads it instead of its own answer. Every
+# reply after that is one behind, which surfaces as nonsense — a LISTDIR that
+# returns ten bytes, a screenshot answered by STATUS:-1, a WRITEFILE reporting
+# "Invalid command format". Measured on a Macintosh SE/30, 2026-07-28: 117
+# unparseable requests reached the daemon in one three-minute window.
+#
+# The old `_drain()` was non-blocking, so it removed only what had ALREADY
+# arrived and missed exactly the reply still in flight. After an abandoned read
+# the drain therefore WAITS for the late bytes, discards them, and says whose
+# reply they were. If they keep coming past the budget the link is dropped
+# instead: a stream that cannot be realigned gives every later command a wrong
+# answer, and the daemon redials with a clean one within about a minute.
+# Opt-in frame tracing: APPLEBRIDGE_FRAME_DEBUG=1 logs every recv boundary and
+# the length-framed breakdown of each reply. Added because the SE/30's desync
+# left ten bytes behind with NO timeout logged, and the ordinary log could not
+# say which branch of the reader had returned early — "the log gives no hint" is
+# the point at which instrumentation stops being optional.
+FRAME_DEBUG = os.environ.get("APPLEBRIDGE_FRAME_DEBUG") == "1"
+
+RESYNC_QUIET = 0.4      # seconds of silence that mean the late reply has all arrived
+RESYNC_BUDGET = 3.0     # seconds to spend realigning before dropping the link
+
 # Application-level heartbeat (design: /applebridge/designing-an-application-level-heartbeat/).
 # The host is the ACTIVE party: during idle it PINGs the daemon every
 # HEARTBEAT_INTERVAL s so the daemon's passive last-RX watchdog stays fed and so
@@ -495,6 +519,11 @@ class AppleBridgeServer:
         # process => any identifier from before is void, without comparing counts.
         self.link_epoch = os.urandom(4).hex()
         self.link_generation = 0
+        # Label of the command whose reply we stopped waiting for, or None. This
+        # is also the instrumentation that was missing: the drain used to report
+        # how many bytes it discarded but never what had left them there, which
+        # is why a desync read as random verb failure.
+        self.desynced = None
         self.serial_dev = serial_dev      # None => TCP :9000; else a serial device path
         self.serial_baud = serial_baud
         self.client_socket = None
@@ -587,11 +616,17 @@ class AppleBridgeServer:
         finally:
             self.server_socket.settimeout(None)
         self.connected = True
+        self.desynced = None          # a fresh stream is aligned by definition
         self.link_generation += 1
         log(f"Mac connected from {addr} (link {self.link_epoch}:{self.link_generation})")
         return addr
 
     def _mark_disconnected(self, reason):
+        # Idempotent: callers of _drain() follow a False with their own generic
+        # "drain detected closed socket", which would replace a specific reason
+        # (an unrecoverable desync, say) with a vague one in the log.
+        if not self.connected and self.client_socket is None:
+            return
         log(f"Mac disconnected: {reason}")
         # Crash correlation: if a command was in flight, name it. A drop within a
         # couple of seconds of sending is the classic "this verb faulted the guest
@@ -618,6 +653,12 @@ class AppleBridgeServer:
         """
         if not self.client_socket:
             return False
+        # After an abandoned read, wait for the late reply rather than sweeping
+        # only what has already landed — that sweep is what missed it before.
+        resync = self.desynced
+        deadline = time.monotonic() + RESYNC_BUDGET if resync else None
+        quiet_until = time.monotonic() + RESYNC_QUIET if resync else None
+        discarded = 0
         alive = True
         try:
             self.client_socket.setblocking(False)
@@ -625,20 +666,60 @@ class AppleBridgeServer:
                 try:
                     chunk = self.client_socket.recv(65536)
                 except BlockingIOError:
-                    break          # nothing pending -> healthy idle socket
+                    if not resync:
+                        break      # nothing pending -> healthy idle socket
+                    now = time.monotonic()
+                    if now >= quiet_until:
+                        break      # silent long enough: the late reply is all in
+                    if now >= deadline:
+                        # Still arriving after the whole budget. This stream
+                        # cannot be realigned, and continuing would give every
+                        # later command somebody else's answer.
+                        self._mark_disconnected(
+                            f"link out of step after {resync!r} and still "
+                            f"streaming after {RESYNC_BUDGET:.0f}s "
+                            f"({discarded}B discarded); dropped so the daemon "
+                            f"redials with a clean stream")
+                        self.desynced = None
+                        return False
+                    time.sleep(0.02)
+                    continue
                 except OSError:
                     alive = False
                     break
                 if not chunk:
                     alive = False  # peer closed
                     break
-                log(f"drained {len(chunk)} stale bytes (anti-desync)")
+                discarded += len(chunk)
+                if resync:
+                    # The budget must be checked HERE too. Checking it only in
+                    # the "nothing pending" branch means a peer that keeps
+                    # sending is never tested against the deadline at all — an
+                    # unbounded loop, which is how this was first written and
+                    # what hung the test that now covers it.
+                    if time.monotonic() >= deadline:
+                        self._mark_disconnected(
+                            f"link out of step after {resync!r} and still "
+                            f"streaming after {RESYNC_BUDGET:.0f}s "
+                            f"({discarded}B discarded); dropped so the daemon "
+                            f"redials with a clean stream")
+                        self.desynced = None
+                        return False
+                    quiet_until = time.monotonic() + RESYNC_QUIET
+                    log(f"resync: discarded {len(chunk)}B left by {resync!r}")
+                else:
+                    log(f"drained {len(chunk)} stale bytes (anti-desync)")
         finally:
             try:
                 if self.client_socket:
                     self.client_socket.setblocking(True)
             except OSError:
                 alive = False
+        if resync and alive:
+            log(f"resync: link realigned after {resync!r} "
+                f"({discarded}B discarded)" if discarded
+                else f"resync: nothing arrived after {resync!r}; link looks aligned")
+            self.desynced = None
         return alive
 
     def send_command(self, command):
@@ -672,10 +753,15 @@ class AppleBridgeServer:
         legacy terminator read. Shared by send_command and send_apple_event."""
         buf = bytearray()
 
+        fills = []
+
         def _fill():
             chunk = self.client_socket.recv(65536)   # large reads for MB-scale stdout
             if not chunk:
                 raise ConnectionError("peer closed mid-response")
+            if FRAME_DEBUG:
+                fills.append(len(chunk))
+                log(f"  [frame] recv {len(chunk)}B {chunk[:48]!r}")
             buf.extend(chunk)
 
         def _read_line():
@@ -730,8 +816,46 @@ class AppleBridgeServer:
                     return None
                 if olen >= 0:
                     stdout = _read_exact(olen)       # exact — no false early stop
-                    rest = _read_until_terminator()  # \r + STDERR hdr + data + end (small)
+                    # STDERR is length-framed too, and reading it by TERMINATOR
+                    # SEARCH was the defect. The daemon emits each piece as its
+                    # own send:
+                    #   STATUS:<c>| STDOUT:<n>| [<n bytes>|] STDERR:<m>| [<m bytes>|] |
+                    # so on a fragmented link they arrive as separate recv()s.
+                    # The search could then return before the STDERR section had
+                    # arrived, leaving it in the socket — and the link is
+                    # PERSISTENT, so the next command read those leftovers and
+                    # every reply after was one behind.
+                    #
+                    # Measured on a Macintosh SE/30, 2026-07-28: a DISKINFO whose
+                    # 142-byte payload was consumed correctly returned only ONE
+                    # further byte, abandoning `STDERR:0||` — exactly the ten
+                    # bytes the following LISTDIR then read as its own reply.
+                    # Basilisk never showed it because the whole frame lands in
+                    # one recv there. This is the project's own documented rule
+                    # ("read by declared length, not by terminator") applied to
+                    # the half that was still guessing.
+                    rest = b""
+                    if olen > 0:
+                        rest += _read_line() + b"\r"      # trailer after the payload
+                    err_hdr = _read_line()
+                    rest += err_hdr + b"\r"
+                    try:
+                        elen = int(err_hdr.split(b":", 1)[1].strip() or b"0")
+                    except (ValueError, IndexError):
+                        elen = -1
+                    if 0 <= elen <= MAX_DECLARED:
+                        if elen > 0:
+                            rest += _read_exact(elen) + _read_line() + b"\r"
+                        rest += _read_line()              # end marker
+                    else:
+                        # Not a STDERR header we understand: fall back rather
+                        # than read a length we did not parse.
+                        rest += _read_until_terminator()
                     raw = status_line + b"\r" + out_hdr + b"\r" + stdout + rest
+                    if FRAME_DEBUG:
+                        log(f"  [frame] olen={olen} stdout={len(stdout)}B "
+                            f"err_hdr={err_hdr!r} elen={elen} rest={len(rest)}B "
+                            f"{rest[:48]!r} buf_left={len(buf)}B fills={fills}")
                 else:
                     rest = _read_until_terminator()
                     raw = status_line + b"\r" + out_hdr + b"\r" + rest
@@ -741,6 +865,10 @@ class AppleBridgeServer:
         except socket.timeout:
             outcome = "timeout"
             log(f"command timeout after {to:.0f}s: {str(label)[:48]!r}")
+            # The remainder of this reply is still in flight on a persistent
+            # link. Record it so the next drain realigns instead of handing the
+            # leftovers to whatever command comes next.
+            self.desynced = str(label)[:48] or "unlabelled read"
             raw = bytes(buf) if buf else None
         except (OSError, ConnectionError) as e:
             outcome = "closed"
@@ -757,6 +885,30 @@ class AppleBridgeServer:
             return None
         if len(raw) > 1000 or outcome != "framed":
             log(f"recv {len(raw)}B outcome={outcome} req={str(label)[:32]!r}")
+        if FRAME_DEBUG:
+            try:
+                self.client_socket.setblocking(False)
+                extra = b""
+                while True:
+                    try:
+                        c = self.client_socket.recv(65536)
+                    except (BlockingIOError, InterruptedError):
+                        break
+                    if not c:
+                        break
+                    extra += c
+                if extra:
+                    log(f"  [frame] *** {len(extra)}B STILL IN THE SOCKET after "
+                        f"{str(label)[:24]!r}: {extra[:64]!r} — the next command "
+                        f"would read this as its own reply")
+                    buf.extend(extra)     # put it back into the frame we return
+            except OSError:
+                pass
+            finally:
+                try:
+                    self.client_socket.setblocking(True)
+                except OSError:
+                    pass
         text = bytes(raw).decode("mac_roman", errors="replace")
         # A FAILING command left no trace here at all: the request was logged,
         # the response was not, so the log showed a verb going out and nothing
@@ -924,28 +1076,27 @@ class AppleBridgeServer:
             self._mark_disconnected(f"send failed: {e}")
             return None
 
-        response = b""
-        try:
-            self.client_socket.settimeout(timeout)
-            while True:
-                chunk = self.client_socket.recv(4096)
-                if not chunk:
-                    self._mark_disconnected("recv 0 (peer closed mid-response)")
-                    break
-                response += chunk
-                if b"\n\n" in response or b"\r\r" in response or b"\r\n\r\n" in response:
-                    break
-        except socket.timeout:
-            log(f"raw verb timeout: {data[:48]!r}")
-        except OSError as e:
-            self._mark_disconnected(f"recv error: {e}")
-        finally:
-            try:
-                if self.client_socket:
-                    self.client_socket.settimeout(None)
-            except OSError:
-                pass
-        return response.decode("mac_roman", errors="replace") if response else None
+        # Read by DECLARED LENGTH, not by terminator scan. This used to loop on
+        # recv until the buffer contained "\n\n"/"\r\r" — and that pair occurs
+        # INSIDE a normal reply, because the payload's final line ends with a
+        # separator and the frame adds another one straight after it. The scan
+        # therefore stopped before the STDERR section, which stayed in the
+        # socket; the link is persistent, so the NEXT command read those
+        # leftovers as its own reply and everything after was a frame behind.
+        #
+        # It only bites on a fragmented link. The daemon streams each piece as
+        # its own ABSend (protocol.c), so on a slow peer they arrive as separate
+        # recv()s and the loop breaks with the tail still unread. On Basilisk the
+        # whole frame lands in ONE recv, so the break happens after everything is
+        # already buffered and nothing is left — which is why this survived so
+        # long and only ever appeared on real hardware.
+        #
+        # Measured on a Macintosh SE/30, 2026-07-28: DISKINFO with five mounted
+        # volumes left exactly `STDERR:0\n\n` — ten bytes — and the following
+        # LISTDIR returned them as its answer. `request_log` immediately below
+        # already reads by declared length and says why; send_raw never got the
+        # lesson.
+        return self._read_framed_response(timeout, label=data)
 
     def request_log(self, max_bytes=0, timeout=DEFAULT_TIMEOUT):
         """Fetch the daemon's Verbose console ring as text via the LOG verb.
