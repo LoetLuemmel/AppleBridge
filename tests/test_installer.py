@@ -450,6 +450,85 @@ def test_apply_stops_at_the_first_failure():
     assert len(results) == 1, "a failed backend rewrite must not be followed by more"
 
 
+# --- the requirements register must not lose a row --------------------------
+# R4 and R16-R19 had no row in the mechanism table for weeks. Three different
+# states were rendered identically as absence: done elsewhere (R4, R16, in the
+# daemon), and not implementable at all (R17-R19, practice rules on how the
+# tooling is used). A reader could not tell "covered" from "nobody looked" —
+# the same defect as a check that reports without examining, in a table.
+
+def _requirements_doc():
+    path = os.path.join(os.path.dirname(__file__), "..", "docs",
+                        "INSTALLER_REQUIREMENTS.md")
+    return open(path, encoding="utf-8").read()
+
+
+def _numbered_requirements(doc):
+    return {m for m in re.findall(r"^## (R\d+)", doc, re.M)}
+
+
+def _table_rows(doc):
+    """Requirement ids named in the mechanism table (one row may cover several)."""
+    start = doc.index("| requirement | mechanism |")
+    end = doc.index("\n\n", start)
+    ids = set()
+    for line in doc[start:end].splitlines():
+        if line.startswith("|"):
+            ids |= set(re.findall(r"\bR\d+\b", line.split("|")[1]))
+    return ids
+
+
+def test_every_requirement_has_a_row_in_the_table():
+    doc = _requirements_doc()
+    missing = sorted(_numbered_requirements(doc) - _table_rows(doc),
+                     key=lambda r: int(r[1:]))
+    assert not missing, (
+        "requirement(s) with no row in the mechanism table: " + ", ".join(missing)
+        + " — add one saying where the mechanism is, or why this requirement is "
+          "not the installer's to satisfy. Omission reads as 'nobody looked'.")
+
+
+def test_the_table_names_no_requirement_that_does_not_exist():
+    # The other direction: a row for a requirement that was renamed or removed
+    # claims coverage of nothing.
+    doc = _requirements_doc()
+    stray = sorted(_table_rows(doc) - _numbered_requirements(doc),
+                   key=lambda r: int(r[1:]))
+    assert not stray, f"table rows for non-existent requirements: {stray}"
+
+
+def _row_for(doc, req):
+    """The table row naming `req`, or None. Returning None rather than raising
+    is deliberate: a bare next() turned a deleted row into StopIteration, so the
+    suite died with a traceback instead of naming the missing requirement."""
+    start = doc.index("| requirement | mechanism |")
+    table = doc[start:doc.index("\n\n", start)]
+    for line in table.splitlines():
+        if line.startswith("|") and re.search(rf"\b{req}\b", line.split("|")[1]):
+            return line
+    return None
+
+
+def test_a_row_that_is_not_the_installers_says_so_rather_than_going_quiet():
+    doc = _requirements_doc()
+    for req, phrase in (("R4", "not the installer"), ("R16", "not the installer"),
+                        ("R17", "practice rule"), ("R18", "practice rule"),
+                        ("R19", "practice rule")):
+        row = _row_for(doc, req)
+        assert row is not None, f"{req} has no row at all"
+        assert phrase in row, (
+            f"{req}'s row must say '{phrase}' — otherwise a requirement nobody "
+            "can implement is indistinguishable from one nobody did")
+
+
+def test_the_scan_found_the_requirements_at_all():
+    # A renamed heading style or a moved file empties both sets and every
+    # assertion above passes while examining nothing.
+    doc = _requirements_doc()
+    assert len(_numbered_requirements(doc)) >= 20, "requirement headings not found"
+    assert len(_table_rows(doc)) >= 20, "mechanism table not found"
+
+
 # --- argument parsing: the safety flag must not fail open -------------------
 # `--dry-run` was matched with `"--dry-run" in argv`, and anything unrecognised
 # was ignored. So `--help` — the first thing a stranger types at an unfamiliar

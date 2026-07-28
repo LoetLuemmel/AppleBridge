@@ -31,11 +31,19 @@ live stack. `decide()` returns a declarative plan and `apply_plan()` is the only
 code that writes, so `--dry-run` is the same computation minus its last stage
 rather than a second path that can drift from it.
 
+**Every requirement has a row.** Some are satisfied outside the installer and
+some are not the installer's to satisfy at all — but each says which, because a
+table that silently omits a requirement cannot be read: "covered" and "nobody
+looked" render identically as absence. Five rows (R4, R16–R19) were missing on
+that basis until 2026-07-28, on the same day four defects were traced to checks
+that reported without examining anything.
+
 | requirement | mechanism |
 |---|---|
 | R1, R2 | `host_config.resolve_host_ip()`; `render_local_env()` emits **no** address |
 | R3 | `guest_checklist()` names `:System Folder:Preferences:AppleBridge Prefs` |
-| R5 | the checklist labels every field by *whose* address it is |
+| **R4** | **not the installer's.** Daemon-side: `main.c` logs `connected to <addr>:<port>` on the success path, so a console cannot look healthy while talking to a stranger |
+| R5 | the checklist labels every field by *whose* address it is; the guest step now leads with DHCP, which supplies all four values and cannot omit the resolver |
 | R6, R8 | `probe_emulator_bundle()` — the bundle is asked before the NIC count |
 | R7 | the slirp triple, resolver included, and the `0.0.0.0` bind in `local.env` |
 | R9 | no kernel extension is loaded, and no bridge created, on this branch |
@@ -44,7 +52,18 @@ rather than a second path that can drift from it.
 | R12, R13 | `--no-agent` prints the `< /dev/null` form; the default installs the agent, so the doctor's launchd advice is true here |
 | R14 | `seed_guest_prefs()` refuses while an emulator runs |
 | R15 | one launch path per installation; `start_stack.sh` skips the privileged block entirely on slirp |
-| R20 | `rewrite_ip_line()` works in bytes and preserves CR endings |
+| **R16** | **not the installer's.** Daemon-side, two verbs: `LAUNCH` reads the Finder info and refuses anything not `'APPL'`; `AESEND` carries an optional wait, defaults to the interactive bound rather than `'dosc'`'s five minutes, and `0` sends `kAENoReply`. `AE_SEND_MAX_TIMEOUT` sits below the host's read timeout so the daemon is the side that gives up. Pinned by `tests/test_ae_wait_bound.py` |
+| **R17** | **a practice rule on tooling, with nothing to implement.** A read-back over the bridge proves the guest agrees about the content, not that it survives a power cut. Where a write must be durable, verify it after a clean shutdown |
+| **R18** | **a practice rule.** An open application builds from its editor buffer, so close a file in the guest before writing it over the bridge |
+| **R19** | **a practice rule.** `NOUI` suppresses the errors along with the interface: judge a headless build by its artifact, never by the absence of complaints |
+| R20 | `rewrite_ip_line()` works in bytes and preserves CR endings. **Corollary learned by using it:** the guest's own prefs file is LF-terminated, because MPW C maps `'\n'` to CR — so the rule is *preserve what is there*, not *convert to CR* |
+| **CLI** | `build_parser()` — arguments are parsed strictly. Unknown or misspelled flags exit 2 and write nothing; `--help` is a flag rather than an unrecognised token falling through to a real install |
+
+Rows marked *not the installer's* are here to be findable, not to claim credit:
+this document is the requirements register, so a requirement satisfied in the
+daemon still needs a line saying where. Rows marked *a practice rule* have no
+code and never will — they are constraints on how the tooling is used, and
+their being unimplementable is itself the fact worth recording.
 
 Whether any of this has *shipped* is the ledger's question, not this document's.
 
