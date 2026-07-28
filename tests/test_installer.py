@@ -471,6 +471,46 @@ def test_the_launcher_never_hands_open_another_machines_path():
     assert guard <= fallback + 200, "the fallback must be guarded by -d"
 
 
+def test_the_closing_advice_matches_the_branch_it_is_printed_on():
+    # The interface rule is an ETHERHELPER rule. Printed unconditionally, it
+    # sent a slirp operator whose daemon would not connect to go and fix an
+    # alias their branch does not have and never places. Seen on the 2013
+    # MacBook, 2026-07-28, at the end of an otherwise clean install.
+    text = _start_stack()
+    tail = text[text.index("Host-side stack is up"):]
+    # Assert the guard EXISTS before indexing on it: removing it made this test
+    # raise ValueError instead of failing, so the suite went red with a
+    # traceback rather than with the reason. A red build that does not say why
+    # is only half a test.
+    assert 'ETHER_BACKEND" = "slirp"' in tail, \
+        "the closing advice is not branch-aware at all"
+    guard = tail.index('ETHER_BACKEND" = "slirp"')
+    rule = tail.index("wrong interface")
+    assert guard < rule, "the interface rule must sit in the non-slirp branch"
+    assert "10.0.2.2" in tail[guard:rule], \
+        "the slirp branch needs its OWN failure hint, not silence"
+
+
+def test_toolserver_is_offered_as_a_tier_not_a_step():
+    # install_bridge.py says "absent MPW is a tier you do not have, not a failed
+    # install" — and this text contradicted it two commands later, including a
+    # smoke test (`Echo HELLO`) that NEEDS ToolServer. On a guest without one,
+    # the suggested proof of a working bridge returns nothing.
+    # Only what is PRINTED counts. Reading the whole tail matched the comment
+    # above the fix, which mentions `Echo HELLO` while explaining why it is not
+    # the right first suggestion — the assertion then failed on correct code.
+    # Third variant of the same near-miss today: check the thing, not prose
+    # about the thing.
+    tail = _start_stack()
+    tail = tail[tail.index("Host-side stack is up"):]
+    printed = "\n".join(ln for ln in tail.splitlines()
+                        if ln.lstrip().startswith("echo "))
+    assert "OPTIONAL" in printed, "ToolServer is a tier, not a required step"
+    assert "MACSTATUS" in printed, "the tier-independent smoke test must be offered"
+    assert printed.index("MACSTATUS") < printed.index("Echo HELLO"), \
+        "offer the check that works on either tier first"
+
+
 def test_the_launcher_says_so_instead_of_launching_nothing():
     # With no bundle it must NAME the situation, not run `open -a ""` and leave
     # the operator to interpret whatever open says about an empty argument.

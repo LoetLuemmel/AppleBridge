@@ -201,12 +201,34 @@ fi
 echo
 echo "  Host-side stack is up. Now, INSIDE the emulator:"
 echo "    1. launch  :bin:AppleBridge   (daemon dials the IP= in its prefs:9000)"
-echo "    2. start   ToolServer ('MPSX')  — only ToolServer returns command output"
+# ToolServer is a TIER, not a step. install_bridge.py says so plainly — "absent
+# MPW is a tier you do not have, not a failed install" — and this line used to
+# contradict it two commands later, on the 2013 MacBook (2026-07-28) where there
+# is no MPW at all. The same went for the smoke test: `Echo HELLO` needs
+# ToolServer, so on that machine the suggested proof of a working bridge returns
+# nothing and reads as a broken install.
+echo "    2. start   ToolServer ('MPSX')  — OPTIONAL. Only ToolServer returns"
+echo "               command output, so mpw_execute / mac_compile / mac_build"
+echo "               need it. The native surface (transfer, screenshot, input,"
+echo "               LISTDIR, DISKINFO) does not."
 echo
-echo "  Then smoke-test from the host:"
-echo "    cd $SERVER_DIR && /usr/bin/python3 send_command.py 'Echo HELLO'    # expect STATUS:0"
+echo "  Then smoke-test from the host — this one works on either tier:"
+echo "    printf 'MACSTATUS\\n\\n' | nc -w 5 localhost 9001    # expect host_connected=1"
+echo "    cd $SERVER_DIR && /usr/bin/python3 send_command.py 'Echo HELLO'   # ToolServer only"
 echo
-echo "  If the daemon hangs on CONNECTING at 100% CPU, the host address is on the"
-echo "  wrong interface — it must be on ${DEFAULT_IF} (the default route). On a"
-echo "  machine with only ONE interface, etherhelper cannot reach the host at all"
-echo "  and the backend must be slirp (D-015)."
+# Branch-specific, because the two branches fail in ways that have nothing to do
+# with each other. The interface rule below is an ETHERHELPER rule: it was
+# printed unconditionally, so a slirp operator whose daemon would not connect
+# was sent to fix an alias their branch does not have and never places.
+if [ "$ETHER_BACKEND" = "slirp" ]; then
+    echo "  If the daemon does not connect: the guest's IP= must name THIS machine's"
+    echo "  LAN address, never 10.0.2.2 — that is slirp's router, and a connection"
+    echo "  to it is refused. The guest's own address is 10.0.2.15; those are two"
+    echo "  different addresses three lines apart in the installer's checklist (R5)."
+    echo "  Run ./install_bridge.py --dry-run to see the value this machine needs."
+else
+    echo "  If the daemon hangs on CONNECTING at 100% CPU, the host address is on the"
+    echo "  wrong interface — it must be on ${DEFAULT_IF} (the default route). On a"
+    echo "  machine with only ONE interface, etherhelper cannot reach the host at all"
+    echo "  and the backend must be slirp (D-015)."
+fi
