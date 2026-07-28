@@ -87,19 +87,61 @@ def file_exists(path: str) -> bool:
     return 'Got:' in response and 'NoDir' not in response
 
 
+def mpw_quote(path: str) -> str:
+    """Quote a path for MPW if it needs it, and only then.
+
+    `Files MeinMac:My Folder:` is two arguments to the MPW shell, so a path
+    with a space has to be quoted on the way OUT as well as unquoted on the way
+    back. A path the caller already quoted is left alone rather than quoted
+    twice.
+    """
+    if not path or path[0] in "'\"":
+        return path
+    if any(c in path for c in " \t"):
+        return "'" + path.replace("'", "∂'") + "'"
+    return path
+
+
+def parse_files_output(stdout: str) -> list:
+    """Names out of an MPW `Files` listing — one per LINE, never per token.
+
+    This used to `.split()` on whitespace, and classic-Mac names are full of
+    spaces ('System Folder', 'AppleBridge old'). `Files` prints one name per
+    line and QUOTES any name that needs it, so a real listing came back as:
+
+        AppleBridge, 'AppleBridge, old', AppleBridgeConfig
+
+    — the space-bearing name silently replaced by two entries that name
+    nothing. Everything downstream then compiles, links or deletes against a
+    file list that is wrong in a way no status code reports. `mac_list_files`
+    learned this and parses by column; this function never got the lesson.
+
+    Verified against live `Files` output from Basilisk II, 2026-07-28.
+    """
+    names = []
+    for raw in stdout.replace('\r', '\n').split('\n'):
+        name = raw.strip()
+        if not name:
+            continue
+        if len(name) >= 2 and name[0] == "'" and name[-1] == "'":
+            # MPW escapes an embedded quote with the partial-diff character.
+            name = name[1:-1].replace("∂'", "'")
+        if name.startswith(':'):
+            # Carried over from the original. No live `Files` output has been
+            # seen to start with a colon — kept because dropping a filter on
+            # the strength of "I could not make it fire" is how the four
+            # unfalsifiable rules in this project's first commit happened.
+            continue
+        names.append(name)
+    return names
+
+
 def get_file_list(directory: str, pattern: str = '') -> list:
     """Get list of files in directory"""
-    cmd = f'Files {directory}'
-    if pattern:
-        cmd = f'Files {directory}{pattern}'
+    cmd = f'Files {mpw_quote(directory + pattern)}'
     response = send_command(cmd)
     result = parse_response(response)
-
-    if result['stdout']:
-        # Files are space or newline separated
-        files = result['stdout'].replace('\r', '\n').split()
-        return [f for f in files if f and not f.startswith(':')]
-    return []
+    return parse_files_output(result['stdout'])
 
 
 def compile_file(source: str, output: str, err_file: str) -> tuple[bool, str]:
