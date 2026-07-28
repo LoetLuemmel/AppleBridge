@@ -20,6 +20,7 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "host"))
 import install_bridge as ib  # noqa: E402
+import macbinary  # noqa: E402
 
 HOST_ADDRS = [("en0", "192.168.3.213")]
 TWO_NICS = [("en0", "192.168.3.213"), ("en8", "192.168.3.154")]
@@ -540,9 +541,16 @@ def test_the_scan_found_the_requirements_at_all():
 # The alternative considered and rejected was writing the suite straight into
 # the guest's disk image with hfsutils. It works, and it is not something a
 # stranger should run: a program that edits other people's volumes has a blast
-# radius equal to their whole machine. The kit goes to the emulator's shared
-# folder instead, which the guest already sees as `Unix:`, and nothing of theirs
-# is touched.
+# radius equal to their whole machine. The kit is a SEPARATE image the operator
+# mounts, and nothing of theirs is touched.
+#
+# It shipped first as a folder in the emulator's shared directory, and that was
+# undeliverable: measured 2026-07-28, Basilisk's `extfs` presents 68K
+# applications to the guest as DOCUMENTS, so the installer could not be launched
+# from there at all. Confirmed twice, the second time on a folder the guest had
+# never seen, after a full restart. The tests below hold the disk-image shape,
+# because the failure was invisible from the host — every file was present and
+# correct, and the kit still could not be used.
 
 def test_the_prefs_carry_the_address_and_nothing_machine_specific():
     txt = ib.guest_prefs_text("192.168.3.240")
@@ -594,6 +602,56 @@ def test_a_running_emulator_blocks_the_export():
     assert ok is False and "running" in msg
 
 
+def test_an_idle_image_can_be_read_while_another_guest_runs():
+    # The guard used to be "any emulator is running", which is right about the
+    # danger and wrong about the scope. A machine with a working guest and a
+    # test guest could not build a kit from the idle image because the OTHER
+    # one was up — measured 2026-07-28, and the reason this test exists.
+    p = probes(running=True)
+    p["emulator_prefs"]["disks"] = ["/img/idle.dmg"]
+    io = KitIO()
+    io.run = lambda a: ("PID  CMD  /img/other.dmg\n" if a[0] == "lsof"
+                        else KitIO.run(io, a))
+    ok, msg, _ = ib.export_guest_kit(
+        "/tmp/kitdir", "1.2.3.4", p, run=io.run, exists=lambda p_: True,
+        read_bytes=lambda p_: b"z" * 10,
+        write_bytes=lambda p_, d: io.written.__setitem__(p_, d),
+        staging="/tmp/kitstage")
+    assert ok is True, msg
+
+
+def test_the_image_the_running_emulator_has_open_is_refused():
+    p = probes(running=True)
+    p["emulator_prefs"]["disks"] = ["/img/live.dmg"]
+    ok, msg, _ = ib.export_guest_kit(
+        "/tmp/kitdir", "1.2.3.4", p,
+        run=lambda a: ("n 32884 x /img/live.dmg\n" if a[0] == "lsof" else ""),
+        exists=lambda p_: True)
+    assert ok is False and "live.dmg" in msg
+
+
+def test_a_filename_with_spaces_is_matched_whole():
+    # "System761 weiter.dmg". Splitting the lsof line on whitespace compares
+    # "weiter.dmg" against the full path and never matches, so the guard would
+    # pass a LIVE image as idle — the exact case it exists to catch.
+    p = probes(running=True)
+    p["emulator_prefs"]["disks"] = ["/img/System761 weiter.dmg"]
+    assert ib.image_in_use(
+        "/img/System761 weiter.dmg", p,
+        run=lambda a: "BasiliskII 32884 pit txt REG /img/System761 weiter.dmg\n")
+
+
+def test_lsof_telling_us_nothing_is_treated_as_in_use():
+    # Silence is not "the file is closed". A torn read of somebody's System 7
+    # volume is not worth saving one shutdown.
+    p = probes(running=True)
+    assert ib.image_in_use("/img/x.dmg", p, run=lambda a: "") is True
+
+
+def test_no_emulator_means_no_image_is_in_use():
+    assert ib.image_in_use("/img/x.dmg", probes(), run=lambda a: "") is False
+
+
 def test_no_readable_image_is_refused_rather_than_half_done():
     ok, msg, _ = ib.export_guest_kit("/tmp/kit", "1.2.3.4", probes(),
                                      run=lambda a: "", exists=lambda p: False)
@@ -610,6 +668,146 @@ def test_a_missing_required_binary_fails_the_whole_kit():
         write_bytes=lambda p, d: None)
     assert ok is False
     assert "REQUIRED" in msg and "cannot ship a kit" in msg
+
+
+# --- the kit is a mountable HFS image ---------------------------------------
+class KitIO:
+    """Injected IO for the kit builder: records calls, invents no filesystem."""
+
+    FULL = ("AppleBridge\nAppleBridgeWatchdog\nAppleBridgeConfig\n"
+            "AppleBridgeInstaller\nAppleBridge Prefs\n")
+
+    def __init__(self, listing=None):
+        self.calls = []
+        self.written = {}
+        self.listing = self.FULL if listing is None else listing
+
+    def run(self, argv):
+        self.calls.append(list(argv))
+        if argv[0] == "hmount":
+            return "Volume name is whatever\n"
+        if argv[0] == "hls":
+            return self.listing
+        return ""
+
+    def build(self, dest="/tmp/kitdir", host_ip="192.168.3.154", **kw):
+        return ib.export_guest_kit(
+            dest, host_ip, kw.pop("probes_", None) or probes(),
+            run=self.run, exists=lambda p: True,
+            read_bytes=lambda p: b"z" * 1000,
+            write_bytes=lambda p, d: self.written.__setitem__(p, d),
+            staging="/tmp/kitstage", **kw)
+
+    def argv_for(self, verb):
+        return [c for c in self.calls if c[0] == verb]
+
+
+def test_the_kit_is_a_disk_image_not_a_folder_of_files():
+    # The whole point. A folder in the shared directory was measured
+    # undeliverable: extfs shows the applications as documents.
+    io = KitIO()
+    ok, msg, placed = io.build()
+    assert ok is True, msg
+    assert any(c[0] == "hformat" for c in io.calls), \
+        "no volume was formatted — this is not a mountable kit"
+    assert "/tmp/kitdir/" + ib.KIT_IMAGE_NAME in io.written
+
+
+def test_the_volume_is_named_so_the_operator_can_find_it():
+    io = KitIO()
+    io.build()
+    fmt = io.argv_for("hformat")[0]
+    assert "-l" in fmt and ib.KIT_VOLUME in fmt
+
+
+def test_the_payload_is_copied_onto_the_new_volume_as_macbinary():
+    # -m is what carries BOTH forks and the Finder info. Without it the guest
+    # gets a data fork only, which for a 68K app is empty (D-013) — the exact
+    # failure that made the shared-folder kit useless.
+    io = KitIO()
+    io.build()
+    inbound = [c for c in io.argv_for("hcopy") if c[-1] == ":"]
+    assert len(inbound) == 5, f"expected 4 apps + prefs, got {len(inbound)}"
+    assert all("-m" in c for c in inbound)
+
+
+def test_the_message_tells_the_operator_the_disk_line_and_to_relaunch():
+    # Basilisk reads its disk list at LAUNCH. Leaving that out means the kit is
+    # built, the line is added, nothing appears, and the tool looks broken.
+    io = KitIO()
+    ok, msg, _ = io.build()
+    assert "disk /tmp/kitdir/" + ib.KIT_IMAGE_NAME in msg
+    assert "LAUNCH" in msg or "relaunch" in msg
+
+
+def test_the_message_does_not_tell_anyone_to_install_from_the_shared_folder():
+    # The instruction that shipped and could not be followed.
+    io = KitIO()
+    ok, msg, _ = io.build()
+    assert "Unix:" not in msg and "shared folder" not in msg.lower()
+
+
+def test_a_volume_that_did_not_receive_the_payload_is_refused():
+    # Every hfsutils step can report success and leave an empty volume. Without
+    # this check the failure surfaces as a person double-clicking an empty disk.
+    io = KitIO(listing="")
+    ok, msg, _ = io.build()
+    assert ok is False
+    assert "did not land" in msg
+
+
+def test_a_previously_built_kit_is_not_used_as_its_own_source():
+    # Once the `disk` line is added the kit is in the emulator's disk list. A
+    # second run that read it as the source would find no binaries and report a
+    # missing REQUIRED file about a volume nobody meant to search.
+    p = probes()
+    p["emulator_prefs"]["disks"] = ["/img/" + ib.KIT_IMAGE_NAME, "/img/guest.dmg"]
+    io = KitIO()
+    io.build(probes_=p)
+    assert ["hmount", "/img/guest.dmg"] in io.calls
+    assert ["hmount", "/img/" + ib.KIT_IMAGE_NAME] not in io.calls
+
+
+def test_an_explicit_dmg_path_is_used_as_given():
+    io = KitIO()
+    ok, msg, _ = io.build(dest="/somewhere/MyKit.dmg")
+    assert "/somewhere/MyKit.dmg" in io.written
+    assert "/somewhere/MyKit.dmg/" not in msg
+
+
+def test_the_prefs_land_as_a_TEXT_file_and_keep_their_LF_endings():
+    # A typeless prefs file will not open in AppleBridgeConfig, and a CR
+    # conversion would corrupt the very configuration the bridge depends on
+    # (R20). hcopy -t would have done exactly that, which is why it is not used.
+    io = KitIO()
+    io.build()
+    blob = next(v for k, v in io.written.items() if k.endswith(".macbin"))
+    parts = macbinary.decode(blob)
+    assert parts["type"] == b"TEXT"
+    assert b"\r" not in parts["data"], "prefs must stay LF-terminated"
+    assert b"IP=192.168.3.154" in parts["data"]
+
+
+def test_the_volume_is_unmounted_even_when_a_step_fails():
+    # A left-mounted volume poisons every later hfsutils call in the process.
+    io = KitIO(listing="")
+    io.build()
+    assert io.argv_for("humount"), "never unmounted"
+    assert len(io.argv_for("humount")) == len(io.argv_for("hmount"))
+
+
+# --- sizing ------------------------------------------------------------------
+def test_the_volume_has_room_for_the_desktop_database():
+    # Sized exactly to its contents, the volume has nowhere to put the desktop
+    # database the Finder writes on mount, and it fails inside the emulator
+    # where nobody will connect the symptom back to the size calculation.
+    assert ib.kit_image_size(1000) >= ib.KIT_MIN_BYTES
+    assert ib.kit_image_size(50 * 1024 * 1024) > 50 * 1024 * 1024
+
+
+def test_the_volume_size_is_a_whole_number_of_blocks():
+    for payload in (0, 1, 12345, 3 * 1024 * 1024 + 7):
+        assert ib.kit_image_size(payload) % 512 == 0
 
 
 # --- choosing the address the guest dials -----------------------------------

@@ -66,12 +66,14 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import bridge_doctor                                   # noqa: E402  (path first)
 import host_config                                     # noqa: E402
+import macbinary                                       # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -625,7 +627,24 @@ KIT_APPS = [
 # thing this replaces.
 KIT_DIRS = [":AppleBridge:", ":MPW:AppleBridge:bin:"]
 KIT_REQUIRED = {"AppleBridge", "AppleBridgeInstaller"}
-KIT_SUBDIR = "AppleBridge Kit"
+
+# The kit ships as an HFS DISK IMAGE, not as a folder in the shared directory.
+# Measured 2026-07-28 on System 7.6.1: Basilisk's `extfs` does not present a
+# 68K application to the guest AS an application. The four binaries appear as
+# documents, cannot be launched, and the installer therefore cannot be started
+# at all — so the folder-in-the-shared-directory kit was undeliverable in the
+# one way that mattered. Confirmed twice, the second time on a folder the guest
+# had never seen before, after a full restart, to rule out a stale desktop
+# database. Sidecar `.finf`/`.rsrc` files did not change it.
+#
+# A mounted HFS volume has real forks and real Finder info, so the Finder shows
+# applications and launches them. Verified end to end the same day: the guest
+# ran `AppleBridgeInstaller` straight off the mounted volume — no copying to
+# local storage first — and produced a complete install.
+KIT_VOLUME = "AppleBridge Kit"          # what the operator sees on the desktop
+KIT_IMAGE_NAME = "AppleBridgeKit.dmg"   # the file they add as a `disk` line
+KIT_SLACK_BYTES = 512 * 1024
+KIT_MIN_BYTES = 2 * 1024 * 1024
 
 
 def guest_prefs_text(host_ip, net="OT"):
@@ -661,83 +680,211 @@ def guest_prefs_text(host_ip, net="OT"):
             "DEBUG=0\n")
 
 
-def export_guest_kit(dest, host_ip, probes, run=None, exists=None,
-                     read_bytes=None, write_bytes=None):
-    """Assemble a guest kit on the HOST. -> (ok, message, [placed]).
+def image_in_use(image, probes, run=None):
+    """Does a running emulator have THIS disk image open? -> True/False.
 
-    Why a kit and not a write into the guest's disk image: a program that edits
-    other people's disk volumes is not one strangers should run, whatever
+    The guard this replaces refused whenever any emulator was running at all,
+    which is right about the danger and wrong about the scope: reading a
+    POWERED-OFF image is perfectly safe while a different guest runs on a
+    different image, and that is the normal case on a machine with a working
+    guest and a test guest. The broad version blocked building a kit from the
+    idle image because the *other* one was up.
+
+    Precise when it can be, conservative when it cannot: if `lsof` gives no
+    usable answer — missing, permission-denied, an emulator whose pid we did
+    not get — this returns True and the caller refuses, exactly as before. A
+    torn read of somebody's System 7 volume is not a risk worth taking for the
+    convenience of skipping one shutdown.
+    """
+    run = run or _run
+    pids = [p["pid"] for p in (probes["processes"].get("basilisk"),
+                               probes["processes"].get("sheepshaver"))
+            if p and p.get("pid")]
+    if not pids:
+        return False
+    target = os.path.realpath(image)
+    for pid in pids:
+        out = run(["lsof", "-p", str(pid)])
+        # No output at all means lsof told us nothing — not that the file is
+        # closed. Treat silence as "unknown", which is a refusal.
+        if not out.strip():
+            return True
+        for line in out.splitlines():
+            # The path is the remainder of the line, not the last field: these
+            # filenames contain spaces ("System761 weiter.dmg"), and splitting
+            # on whitespace silently compares the wrong string.
+            idx = line.find("/")
+            if idx >= 0 and os.path.realpath(line[idx:].strip()) == target:
+                return True
+    return False
+
+
+def kit_image_size(payload_bytes):
+    """How big to make the kit volume. -> byte count, a multiple of 512.
+
+    Generous on purpose. The payload is a couple of hundred kilobytes and the
+    floor is two megabytes, because a volume sized exactly to its contents has
+    nowhere to put the desktop database the Finder writes the moment the volume
+    is mounted — and a full volume fails in the guest, far from here, where the
+    only symptom is a Finder complaint nobody will connect back to this line.
+    Disk is free; a failure mode reported inside an emulator is not.
+    """
+    size = max(KIT_MIN_BYTES, int(payload_bytes) + KIT_SLACK_BYTES)
+    return (size + 511) // 512 * 512
+
+
+def export_guest_kit(dest, host_ip, probes, run=None, exists=None,
+                     read_bytes=None, write_bytes=None, staging=None):
+    """Build a mountable guest kit on the HOST. -> (ok, message, [placed]).
+
+    Why a kit and not a write into the guest's system image: a program that
+    edits other people's disk volumes is not one strangers should run, whatever
     hfsutils makes technically possible. The guest already HAS a real installer
     — Gestalt preflight, fork-aware copy, prefs seeding, Startup Items alias —
     and it refuses environments that cannot work, which is its whole value. What
-    was missing was never installation; it was DISTRIBUTION: nobody assembled
-    the folder that installer expects.
+    was missing was never installation; it was DISTRIBUTION.
 
-    So the host builds the folder and puts it where the guest can already see
-    it (Basilisk's `extfs`, which the guest mounts as `Unix:`). The operator
-    opens it inside the guest and double-clicks. Nothing of theirs is written.
+    Why a DISK IMAGE and not a folder in the shared directory: see KIT_VOLUME
+    above. The short version is that `extfs` hands the guest documents where
+    applications should be, so the folder kit could not be launched at all. This
+    writes one new file of its own and still touches nothing of theirs — the
+    operator adds a `disk` line, and deleting the file undoes everything.
 
     The binaries come out of a POWERED-OFF image as MacBinary (`hcopy -m`),
     because the repository tracks source, not 68K artifacts — so this clones a
-    working install rather than building one. A release payload would drop into
-    the same folder unchanged.
+    working install rather than building one. MacBinary is the right container
+    here precisely because it is a container in TRANSIT: it carries both forks
+    and the Finder info between two HFS volumes, and is unwrapped again by
+    `hcopy -m` on the way in. It is only wrong when left as the final artifact.
     """
     run = run or _run
     exists = exists or os.path.exists
-    if probes["processes"]["basilisk"] or probes["processes"]["sheepshaver"]:
-        return (False, "an emulator is running — its image cannot be read "
-                       "safely; quit it first (mac_shutdown, or Special > Shut "
-                       "Down in the guest)", [])
-    images = [d for d in probes["emulator_prefs"].get("disks", []) if exists(d)]
+    read_bytes = read_bytes or _read_bytes
+    write_bytes = write_bytes or _write_bytes
+
+    # Skip a previously-built kit when choosing the SOURCE. Once the operator
+    # adds the `disk` line this tool prints, the kit is itself in the emulator's
+    # disk list — and a second run would otherwise read the kit as its own
+    # source, find no binaries, and report a missing REQUIRED file about a
+    # volume nobody meant to search.
+    images = [d for d in probes["emulator_prefs"].get("disks", [])
+              if exists(d) and os.path.basename(d) != KIT_IMAGE_NAME]
     if not images:
         return (False, "no readable disk image in the emulator prefs to take "
                        "the binaries from", [])
 
-    # Its own subfolder: the shared folder is somebody's working directory, and
-    # scattering four files across it is not a kit, it is litter.
-    dest = os.path.join(dest, KIT_SUBDIR)
-    os.makedirs(dest, exist_ok=True)
+    # Per-image, not per-machine: a powered-off image is safe to read while a
+    # different guest runs on a different image (see image_in_use).
+    open_images = [d for d in images if image_in_use(d, probes, run=run)]
+    images = [d for d in images if d not in open_images]
+    if not images:
+        return (False, "an emulator is running with "
+                       + ", ".join(os.path.basename(d) for d in open_images)
+                       + " open — reading a live image gives a torn "
+                         "filesystem; quit it first (mac_shutdown, or "
+                         "Special > Shut Down in the guest)", [])
 
-    placed, missing = [], []
-    src = images[0]
-    out = run(["hmount", src])
-    if "Volume" not in out:
-        return (False, f"hmount failed on {src}: {out.strip()[:160]}", [])
+    image_path = (dest if dest.lower().endswith((".dmg", ".img", ".hfs"))
+                  else os.path.join(dest, KIT_IMAGE_NAME))
+    own_staging = staging is None
+    staging = staging or tempfile.mkdtemp(prefix="applebridge-kit-")
+
     try:
-        for label, names in KIT_APPS:
-            target = os.path.join(dest, label + ".bin")
-            for folder in KIT_DIRS:
-                for name in names:
-                    run(["hcopy", "-m", folder + name, target])
-                    if exists(target):
+        # --- 1. take the binaries out of the working volume -----------------
+        staged, missing = [], []
+        src = images[0]
+        out = run(["hmount", src])
+        if "Volume" not in out:
+            return (False, f"hmount failed on {src}: {out.strip()[:160]}", [])
+        try:
+            for label, names in KIT_APPS:
+                blob = os.path.join(staging, label + ".macbin")
+                for folder in KIT_DIRS:
+                    for name in names:
+                        run(["hcopy", "-m", folder + name, blob])
+                        if exists(blob):
+                            break
+                    if exists(blob):
                         break
-                if exists(target):
-                    break
-            if exists(target):
-                placed.append(label + ".bin")
-            else:
-                missing.append(label + (" — REQUIRED" if label in KIT_REQUIRED
-                                        else " (optional)"))
+                if exists(blob):
+                    staged.append((label, blob))
+                else:
+                    missing.append(label + (" — REQUIRED"
+                                            if label in KIT_REQUIRED
+                                            else " (optional)"))
+        finally:
+            run(["humount"])
+
+        short = [m for m in missing if "REQUIRED" in m]
+        if short:
+            # Fail BEFORE creating the image. Half a kit is worse than none: it
+            # mounts, it looks installable, and it is not.
+            return (False, "cannot ship a kit without " + ", ".join(short)
+                           + " — searched " + " and ".join(KIT_DIRS),
+                    [lbl for lbl, _ in staged])
+
+        # --- 2. the prefs, as a real TEXT file rather than a bare blob -------
+        # Wrapped in MacBinary for the same reason as the binaries: it is how
+        # type and creator survive the trip onto the HFS volume. Without them
+        # the guest gets a typeless file, which AppleBridgeConfig will not open.
+        prefs_blob = os.path.join(staging, "AppleBridgePrefs.macbin")
+        write_bytes(prefs_blob, macbinary.encode(
+            guest_prefs_text(host_ip).encode("mac_roman"),
+            name="AppleBridge Prefs", type_="TEXT", creator="ttxt"))
+        staged.append(("AppleBridge Prefs", prefs_blob))
+
+        # --- 3. make the volume ---------------------------------------------
+        payload = sum(len(read_bytes(p)) for _, p in staged)
+        size = kit_image_size(payload)
+        write_bytes(image_path, b"\0" * size)
+        out = run(["hformat", "-l", KIT_VOLUME, image_path])
+        if "rror" in out or not exists(image_path):
+            return (False, f"hformat failed on {image_path}: "
+                           f"{out.strip()[:160]}", [])
+
+        # --- 4. put the payload in -------------------------------------------
+        out = run(["hmount", image_path])
+        if "Volume" not in out:
+            return (False, f"hmount failed on the new kit image {image_path}: "
+                           f"{out.strip()[:160]}", [])
+        try:
+            for _, blob in staged:
+                run(["hcopy", "-m", blob, ":"])
+            listing = run(["hls", ":"])
+        finally:
+            run(["humount"])
     finally:
-        run(["humount"])
+        if own_staging:
+            shutil.rmtree(staging, ignore_errors=True)
 
-    prefs_path = os.path.join(dest, "AppleBridge Prefs")
-    (write_bytes or _write_bytes)(prefs_path,
-                                  guest_prefs_text(host_ip).encode("mac_roman"))
-    placed.append("AppleBridge Prefs")
+    # Verify by the artifact, not by the exit status of the last command. Every
+    # step above can report success and leave an empty volume, and an empty kit
+    # is discovered by a person in an emulator rather than here.
+    placed = [label for label, _ in staged if label.split()[0] in listing
+              or label in listing]
+    absent = [label for label, _ in staged
+              if label not in placed]
+    if absent:
+        return (False, "the kit image was built but " + ", ".join(absent)
+                       + " did not land on it — refusing to ship a volume "
+                         "that mounts and cannot install", placed)
 
-    short = [m for m in missing if "REQUIRED" in m]
-    if short:
-        return (False, "cannot ship a kit without " + ", ".join(short)
-                       + " — searched " + " and ".join(KIT_DIRS), placed)
-    msg = (f"kit for a guest to install itself: {len(placed)} files in {dest}. "
-           f"Open that folder INSIDE the guest (Basilisk shows it as `Unix:`) "
-           f"and run `AppleBridge Installer` — it preflights the machine, "
-           f"copies the suite and sets up autostart. Prefs already carry "
-           f"IP={host_ip}.")
+    msg = (f"kit image with {len(placed)} items: {image_path}. "
+           f"Add it to the emulator's config as a second disk, then relaunch "
+           f"(the disk list is read at LAUNCH only):\n"
+           f"        disk {image_path}\n"
+           f"    Inside the guest a `{KIT_VOLUME}` volume appears; run "
+           f"`AppleBridgeInstaller` from it directly — no copying needed. It "
+           f"preflights the machine, copies the suite and sets up autostart. "
+           f"Prefs already carry IP={host_ip}.")
     if missing:
         msg += "  Not found: " + ", ".join(missing) + "."
     return (True, msg, placed)
+
+
+def _read_bytes(path):
+    with open(path, "rb") as fh:
+        return fh.read()
 
 
 def _write_bytes(path, data):
@@ -915,11 +1062,11 @@ def build_parser():
                    help="configure only; do not install the launchd agent")
     p.add_argument("--export-guest-kit", metavar="DIR", nargs="?",
                    const="", default=None,
-                   help="assemble a folder the guest can install itself from: "
-                        "the suite plus a prefs file already carrying this "
-                        "host's address. Defaults to the emulator's shared "
-                        "folder, which the guest sees as `Unix:`. Writes "
-                        "nothing into any disk image.")
+                   help="build a mountable disk image the guest can install "
+                        "itself from: the suite plus a prefs file already "
+                        "carrying this host's address. Defaults to the folder "
+                        "holding the emulator's own disk images. Writes one "
+                        "new file and nothing into any existing image.")
     p.add_argument("--seed-guest-prefs", metavar="IMAGE.DMG",
                    help="write IP= into a POWERED-OFF disk image's "
                         "AppleBridge Prefs (refused while an emulator runs)")
@@ -967,18 +1114,30 @@ def main(argv=None):
 
     kit = None
     if kit_dir is not None:
-        dest = kit_dir or (probes["emulator_prefs"].get("shared_folder") or "")
+        # Default beside the emulator's own disk images, not in the shared
+        # folder: the kit is now a disk image the operator adds a `disk` line
+        # for, so it belongs where their other images live. The shared folder
+        # was the right home for the folder-shaped kit, and that kit could not
+        # be launched from there at all (see KIT_VOLUME).
+        siblings = [d for d in probes["emulator_prefs"].get("disks", [])
+                    if os.path.basename(d) != KIT_IMAGE_NAME]
+        dest = kit_dir or (os.path.dirname(siblings[0]) if siblings else "")
         host_ip = os.environ.get("APPLEBRIDGE_GUEST_DIALS") or \
             dialable_address(probes["addresses"],
                              probes.get("default_route_interface")) or ""
         if not dest:
-            kit = (False, "no shared folder configured in the emulator prefs "
-                          "(`extfs`) — give --export-guest-kit a directory", [])
+            kit = (False, "no disk image in the emulator prefs to place the "
+                          "kit beside — give --export-guest-kit a directory",
+                   [])
         elif not host_ip:
             kit = (False, "no usable host address to put in the kit's prefs", [])
         elif dry_run:
-            kit = (True, f"dry run: would assemble a guest kit in {dest} "
-                         f"with IP={host_ip} ({', '.join(KIT_APPS)} + prefs)", [])
+            names = ", ".join(label for label, _ in KIT_APPS)
+            target = (dest if dest.lower().endswith((".dmg", ".img", ".hfs"))
+                      else os.path.join(dest, KIT_IMAGE_NAME))
+            kit = (True, f"dry run: would build the kit image {target} "
+                         f"(volume `{KIT_VOLUME}`) with IP={host_ip} "
+                         f"({names} + prefs)", [])
         else:
             kit = export_guest_kit(dest, host_ip, probes)
 
