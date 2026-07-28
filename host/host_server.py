@@ -29,6 +29,7 @@ import errno
 import hmac
 import json
 import os
+import re
 import select
 import socket
 import sys
@@ -394,9 +395,31 @@ def build_stamp():
 
 
 def timeout_for(command):
-    parts = command.strip().split(None, 1)
-    tok = parts[0].lower() if parts else ""
-    return LONG_TIMEOUT if tok in LONG_CMDS else DEFAULT_TIMEOUT
+    """How long to wait for this command line — the longest budget any verb in
+    it warrants.
+
+    It used to read the FIRST token only, which is wrong for the compound lines
+    this bridge is actually driven with. `Directory "…"; Rez … ; SetFile …` was
+    classified as `Directory` — 15 s — so a `Rez` that needs the 240 s budget
+    was abandoned mid-reply. Twice on 2026-07-28 that surfaced as
+    `command timeout after 15s` followed by `drained N stale bytes`, and the
+    caller was told "Mac daemon not connected" about a command that had in fact
+    completed: the guest was fine, the host simply stopped listening. Being told
+    a successful command failed is the more expensive direction of this error,
+    because the obvious response is to run it again.
+
+    Splitting on `;` alone would not do: MPW also separates with newline — CR
+    over the wire — and with `&&` / `||`.
+
+    Only each segment's FIRST token is tested, so a long-command name appearing
+    as an argument (`Echo "rez"`) does not inflate the budget. Erring long is
+    cheap anyway: the timeout is an upper bound, not a delay.
+    """
+    for seg in re.split(r"[;\r\n]|&&|\|\|", command):
+        tok = seg.strip().lstrip("(").split(None, 1)
+        if tok and tok[0].lower() in LONG_CMDS:
+            return LONG_TIMEOUT
+    return DEFAULT_TIMEOUT
 
 
 def screenshot_png(shot, region=None):

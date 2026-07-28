@@ -323,6 +323,40 @@ def test_format_text_lists_the_probe_lines_and_verdict():
         assert expected in text, text
 
 
+# --- the peer probe must not depend on a configured host address ------------
+# Observed 2026-07-28 on a freshly booted slirp guest: `lsof` showed the link
+# ESTABLISHED and the bridge was answering commands, while the doctor said
+# "Emulator is up but no guest is connected to :9000 yet". The peer pattern was
+# anchored on the CONFIGURED host IP, and the slirp branch has none — the server
+# binds 0.0.0.0 by design (D-018). So the probe silently matched nothing across
+# the entire branch the installer configures, and reported that as a fact about
+# the guest.
+SLIRP_ESTABLISHED = (
+    "COMMAND    PID       USER   FD   TYPE  DEVICE SIZE/OFF NODE NAME\n"
+    "Python    4590 pitforster    6u  IPv4  0x6554      0t0  TCP "
+    "192.168.3.240:9000->192.168.3.240:49492 (ESTABLISHED)\n"
+    "BasiliskI 4604 pitforster   14u  IPv4  0x6ec0      0t0  TCP "
+    "192.168.3.240:49492->192.168.3.240:9000 (ESTABLISHED)\n")
+
+
+def test_the_peer_is_seen_on_a_wildcard_bind_with_no_configured_address():
+    p = bd.probe_sockets(lambda argv: SLIRP_ESTABLISHED)
+    assert p["guest_peer_ip"] == "192.168.3.240", p
+
+
+def test_the_peer_is_the_remote_end_not_the_local_one():
+    # Both directions of the same connection appear in lsof output. Taking the
+    # first address on the line would report the SERVER's address as the guest's.
+    p = bd.probe_sockets(lambda argv: SLIRP_ESTABLISHED)
+    assert p["guest_peer_ip"] != "0.0.0.0"
+    p2 = bd.probe_sockets(lambda argv: LSOF_ESTABLISHED)
+    assert p2["guest_peer_ip"] == "192.168.3.244", p2
+
+
+def test_no_established_link_still_reports_no_peer():
+    assert bd.probe_sockets(lambda argv: "")["guest_peer_ip"] is None
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
