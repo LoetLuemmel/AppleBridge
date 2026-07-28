@@ -43,7 +43,11 @@ guest link needs no "persistence" work; it is already persistent.
 - **Length-framed:** `COMMAND:<len>\n<payload>` — reassembled by declared length
   (`TopUpCommand`), validated `0 < len < MAX_COMMAND_LENGTH` (8192) in
   `ParseCommand`. Also length-framed: `AESEND:…\n<do>`, `CLIPSET:<len>\n<data>`,
-  `WRITEFILE:…\n<forks>`.
+  `WRITEFILE:…\n<forks>`. `AESEND` is
+  `AESEND:<targetHex8>:<classHex8>:<idHex8>:<doLen>[:<waitTicks>]\n<do>`; the
+  wait is **optional and additive**, so an older daemon parses the request
+  unchanged and applies its own default (0.8d31 — see R16 in
+  `docs/INSTALLER_REQUIREMENTS.md` for why the wait is bounded at all).
 - **Single-recv verbs**, prefix-matched by `strncmp` in `ProcessRequest`:
   `PING`, `STAT`, `SCREENSHOT`, `LAUNCH:`, `QUIT:`, `QUITDAEMON`, `REBOOT`,
   `KEY:`, `TYPE:`, `CLICK:`, `CLIPGET`, `READFILE:`, `LISTDIR:`.

@@ -249,7 +249,7 @@ AppleBridge/
 
 ## Status
 
-**Current daemon:** 0.8d30 ("names the host it reached") — the version the daemon itself reports, from `mac/vers.r`
+**Current daemon:** 0.8d32 ("a failure now says which verb and which code") — the version the daemon itself reports, from `mac/vers.r`
 **Status:** Production Ready ✅
 
 All core features working:

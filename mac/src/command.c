@@ -342,9 +342,16 @@ void CleanupCommandResult(CommandResult *result)
  * Send an ARBITRARY Apple Event (any class/ID) with an optional text direct
  * object to a process, harvesting the reply text — the generalisation of
  * SendDoScript behind mac_send_apple_event. Same reply-stealing Handle logic.
+ *
+ * waitTicks bounds how long the daemon may block, because blocking here blocks
+ * the guest: with waitTicks == 0 the event goes kAENoReply and this returns as
+ * soon as the Apple Event Manager has queued it, which is the correct call for
+ * an event whose vocabulary declares reply 'null' (KAHL/RUN, KAHL/MAKE and most
+ * of the THINK suite). Anything else waits, but only for as long as it said it
+ * would — see AE_SEND_DEFAULT_TIMEOUT in applebridge.h for what that cost.
  */
 static OSErr SendGenericAE(ProcessSerialNumber *psn, OSType evtClass, OSType evtID,
-						   const char *directObj, long doLen,
+						   const char *directObj, long doLen, long waitTicks,
 						   Handle *outH, long *outLen, Boolean *capped)
 {
 	OSErr err;
@@ -370,8 +377,19 @@ static OSErr SendGenericAE(ProcessSerialNumber *psn, OSType evtClass, OSType evt
 		if (err != noErr) { AEDisposeDesc(&event); return err; }
 	}
 
+	if (waitTicks <= 0) {
+		/* Queue it and go. No reply to harvest, so the daemon never sits in the
+		 * Apple Event Manager waiting on an application it does not own. */
+		err = AESend(&event, &reply, kAENoReply | kAECanSwitchLayer,
+					 kAENormalPriority, kAEDefaultTimeout, NULL, NULL);
+		AEDisposeDesc(&event);
+		return err;
+	}
+
+	if (waitTicks > AE_SEND_MAX_TIMEOUT) waitTicks = AE_SEND_MAX_TIMEOUT;
+
 	err = AESend(&event, &reply, kAEWaitReply | kAECanSwitchLayer,
-				 kAENormalPriority, AE_SCRIPT_TIMEOUT, NULL, NULL);
+				 kAENormalPriority, waitTicks, NULL, NULL);
 	AEDisposeDesc(&event);
 	if (err != noErr) return err;
 
@@ -409,7 +427,8 @@ static OSErr SendGenericAE(ProcessSerialNumber *psn, OSType evtClass, OSType evt
  * return its reply text as a CommandResult — reusing the command response path.
  */
 BridgeResult ExecuteAppleEvent(OSType targetSig, OSType evtClass, OSType evtID,
-							   const char *directObj, long doLen, CommandResult *result)
+							   const char *directObj, long doLen, long waitTicks,
+							   CommandResult *result)
 {
 	OSErr err;
 	ProcessSerialNumber psn;
@@ -435,9 +454,25 @@ BridgeResult ExecuteAppleEvent(OSType targetSig, OSType evtClass, OSType evtID,
 		return kBridgeCommandErr;
 	}
 
-	err = SendGenericAE(&psn, evtClass, evtID, directObj, doLen, &h, &len, &capped);
+	/* A caller that did not state a bound gets the interactive one, not the
+	 * five minutes 'dosc' needs — the whole point of R16's second verb. */
+	if (waitTicks < 0) waitTicks = AE_SEND_DEFAULT_TIMEOUT;
+
+	err = SendGenericAE(&psn, evtClass, evtID, directObj, doLen, waitTicks,
+						&h, &len, &capped);
 	if (err != noErr) {
-		strcpy(result->errData, "AESend failed");
+		/* -1712 here is the guard doing its job, not a fault: the target did not
+		 * answer inside the bound. Say which, so the caller can tell a timeout
+		 * from a refusal without reading the daemon source. */
+		if (err == errAETimeout) {
+			char nb[16];
+			IntToStr(waitTicks, nb);
+			strcpy(result->errData, "AESend timed out after ");
+			StrAppend(result->errData, nb);
+			StrAppend(result->errData, " ticks - target did not reply");
+		} else {
+			strcpy(result->errData, "AESend failed");
+		}
 		result->exitCode = err;
 		return kBridgeCommandErr;
 	}

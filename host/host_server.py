@@ -72,6 +72,15 @@ NBP_TIMEOUT = 20.0
 # open), so it needs more room than a local File Manager call.
 AFP_TIMEOUT = 45.0
 
+# AESEND addresses ANY application, not just the ToolServer we own, so the wait
+# is bounded on both sides and the DAEMON's bound is the shorter one — it is the
+# side that must let the guest go. These two mirror AE_SEND_DEFAULT_TIMEOUT and
+# AE_SEND_MAX_TIMEOUT in mac/include/applebridge.h; tests/test_native_verbs.py
+# checks they still agree.
+AE_SEND_DEFAULT_TIMEOUT_TICKS = 1800    # 30 s — the daemon's default when we send no bound
+AE_SEND_MAX_TIMEOUT_TICKS = 10800       # 180 s — the daemon clamps to this; asking for more is a lie
+AE_SEND_READ_MARGIN = 15.0              # seconds of round-trip room on top of the daemon's bound
+
 # Application-level heartbeat (design: /applebridge/designing-an-application-level-heartbeat/).
 # The host is the ACTIVE party: during idle it PINGs the daemon every
 # HEARTBEAT_INTERVAL s so the daemon's passive last-RX watchdog stays fed and so
@@ -133,6 +142,45 @@ SERIAL_CHUNK = int(os.environ.get("APPLEBRIDGE_SERIAL_CHUNK", "0"))
 SERIAL_GAP = float(os.environ.get("APPLEBRIDGE_SERIAL_GAP", "0.015"))
 
 _logf = open(LOG_PATH, "a", buffering=1)  # line-buffered
+
+
+def _framed_failure(text):
+    """'<status> <stderr>' if a framed response reports failure, else None.
+
+    The response frame carries both the code and the daemon's own explanation,
+    and until 0.8d31 the host discarded both — a failed command was visible in
+    the log only as a request with no matching outcome. Returns None for a
+    success or for anything that is not a STATUS frame, so callers can log
+    unconditionally without adding noise to the normal path.
+    """
+    # Line endings are NOT uniform inside one frame: classic-Mac C maps '\n' to
+    # CR and '\r' to LF, so the daemon emits STATUS/STDOUT terminated by CR and
+    # STDERR's length by LF. Splitting on CR alone found the code and silently
+    # dropped the explanation — which is the half worth logging.
+    def _split1(s):
+        cr, lf = s.find("\r"), s.find("\n")
+        i = min(x for x in (cr, lf) if x >= 0) if (cr >= 0 or lf >= 0) else -1
+        return (s, "") if i < 0 else (s[:i], s[i + 1:])
+
+    if not text.startswith("STATUS:"):
+        return None
+    head, rest = _split1(text)
+    try:
+        status = int(head.split(":", 1)[1].strip())
+    except (ValueError, IndexError):
+        return None
+    if status == 0:
+        return None
+    detail = ""
+    if "STDERR:" in rest:
+        nstr, body = _split1(rest.split("STDERR:", 1)[1])
+        try:
+            n = int(nstr.strip())
+        except ValueError:
+            n = 0
+        if n > 0:
+            detail = body[:n]
+    return f"STATUS:{status}" + (f" {detail.strip()[:160]}" if detail else "")
 
 
 def redact_secrets(text):
@@ -626,28 +674,62 @@ class AppleBridgeServer:
             return None
         if len(raw) > 1000 or outcome != "framed":
             log(f"recv {len(raw)}B outcome={outcome} req={str(label)[:32]!r}")
-        return bytes(raw).decode("mac_roman", errors="replace")
+        text = bytes(raw).decode("mac_roman", errors="replace")
+        # A FAILING command left no trace here at all: the request was logged,
+        # the response was not, so the log showed a verb going out and nothing
+        # coming back — indistinguishable from a verb that worked. Log the
+        # status and the daemon's own error text whenever it is not 0, which is
+        # rare enough to stay quiet and is the line you want when it is not.
+        failure = _framed_failure(text)
+        if failure:
+            log(f"{label or 'command'} failed: {failure}")
+        return text
 
-    def send_apple_event(self, target_hex, class_hex, id_hex, do_bytes):
+    def send_apple_event(self, target_hex, class_hex, id_hex, do_bytes,
+                         wait_ticks=None):
         """AESEND: send an arbitrary Apple Event (event class/ID) to the app with
         the given creator signature, with an optional text direct object, and
         return the daemon's STATUS reply (the AE reply text rides STDOUT). The
-        OSTypes go as 8-hex; the direct object is length-framed raw bytes."""
+        OSTypes go as 8-hex; the direct object is length-framed raw bytes.
+
+        `wait_ticks` bounds how long the DAEMON may block inside AESend, which is
+        how long the guest is unavailable to everything else — on a cooperative
+        scheduler an application that does not yield takes the machine with it.
+        None leaves the daemon's own interactive default in force; 0 sends the
+        event kAENoReply, which is correct whenever the target's vocabulary
+        declares the reply 'null'.
+
+        Our read timeout is derived from that bound rather than fixed at
+        LONG_TIMEOUT, so the daemon is always the side that gives up first: if
+        the host abandoned the read while the daemon was still waiting, we would
+        report a timeout about a guest that is still starving."""
         if not self.connected or not self.client_socket:
             return None
         if not self._drain():
             self._mark_disconnected("drain detected closed socket")
             return None
+        suffix = "" if wait_ticks is None else f":{int(wait_ticks)}"
         header = (f"AESEND:{target_hex}:{class_hex}:{id_hex}:"
-                  f"{len(do_bytes)}\n").encode("ascii")
+                  f"{len(do_bytes)}{suffix}\n").encode("ascii")
         try:
             self.client_socket.sendall(header + do_bytes)
         except OSError as e:
             self._mark_disconnected(f"send failed: {e}")
             return None
         log(f"AESEND target={target_hex} class={class_hex} id={id_hex} "
-            f"do={len(do_bytes)}B")
-        return self._read_framed_response(LONG_TIMEOUT, label="AESEND")
+            f"do={len(do_bytes)}B wait={'default' if wait_ticks is None else wait_ticks}")
+        return self._read_framed_response(self._ae_read_timeout(wait_ticks),
+                                          label="AESEND")
+
+    @staticmethod
+    def _ae_read_timeout(wait_ticks):
+        """Seconds to wait for an AESEND reply: the daemon's own bound plus room
+        for the round trip, never more than LONG_TIMEOUT."""
+        if wait_ticks is None:
+            ticks = AE_SEND_DEFAULT_TIMEOUT_TICKS
+        else:
+            ticks = max(0, int(wait_ticks))
+        return min(LONG_TIMEOUT, ticks / 60.0 + AE_SEND_READ_MARGIN)
 
     def clipboard_get(self):
         """CLIPGET: return the guest's TEXT scrap (clipboard) reply frame."""
@@ -1398,16 +1480,26 @@ def run_control_server(server):
                             msg = str(e)
                             out = f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(msg)}\r{msg}\r\r"
                     elif cmd.startswith("AESEND:"):
-                        # AESEND:<targetHex8>:<classHex8>:<idHex8>:<directObjB64>
+                        # AESEND:<targetHex8>:<classHex8>:<idHex8>:<directObjB64>[:<waitTicks>]
                         # (direct object base64 so it stays colon/newline-safe on
                         # the text control hop; the daemon hop length-frames it.)
+                        # waitTicks is optional and caps how long the DAEMON may
+                        # block — 0 means kAENoReply. Omitted keeps the daemon's
+                        # interactive default; an out-of-range value is clamped
+                        # here rather than trusted, because it decides how long
+                        # the guest can be starved.
                         try:
                             f = cmd.split(":")
                             target_hex, class_hex, id_hex = f[1], f[2], f[3]
                             do_bytes = (base64.b64decode(f[4])
                                         if len(f) > 4 and f[4] else b"")
+                            wait_ticks = None
+                            if len(f) > 5 and f[5] != "":
+                                wait_ticks = max(0, min(AE_SEND_MAX_TIMEOUT_TICKS,
+                                                        int(f[5])))
                             resp = server.send_apple_event(target_hex, class_hex,
-                                                           id_hex, do_bytes)
+                                                           id_hex, do_bytes,
+                                                           wait_ticks=wait_ticks)
                             out = resp if resp is not None else "No response"
                         except Exception as e:
                             log(f"AESEND parse/send error: {e}")

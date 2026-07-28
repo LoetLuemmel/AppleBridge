@@ -31,6 +31,20 @@
 #define RESP_SCRATCH 128                   /* small fixed verb/error replies; replaces the 64 KB stack frame */
 #define AE_SCRIPT_TIMEOUT (18000L)         /* ticks (~5 min) for the 'dosc' AESend; kAEDefaultTimeout (~60 s) gave spurious -1712 on long Link/SC */
 
+/* AESEND's wait is NOT AE_SCRIPT_TIMEOUT. That five minutes was reasoned about
+ * for 'dosc' -> ToolServer: an application we own, that always answers. AESEND
+ * addresses ANY application, and a cooperative scheduler gives the whole guest
+ * to whichever one is not yielding. On 2026-07-27 a KAHL/RUN on a project that
+ * could not link left the daemon inside AESend for the full five minutes and
+ * the emulator had to be force-quit with the disk image open (R16).
+ *   DEFAULT is the interactive figure, because that is what the verb usually
+ * carries; MAX must stay clear of the host's own 240 s read timeout, so the
+ * daemon gives up first and the guest is released rather than merely reported
+ * on. A caller that knows better passes its own bound; 0 ticks means
+ * kAENoReply, the right choice for an event whose 'aete' declares reply 'null'. */
+#define AE_SEND_DEFAULT_TIMEOUT (1800L)    /* ticks (30 s) — the interactive default for AESEND */
+#define AE_SEND_MAX_TIMEOUT (10800L)       /* ticks (180 s) — hard ceiling, under the host's 240 s */
+
 /* Protocol constants */
 #define PROTO_COMMAND "COMMAND:"
 #define PROTO_STATUS "STATUS:"
@@ -116,8 +130,11 @@ BridgeResult SendScreenshot(ABConn *conn, const ScreenshotData *screenshot);
 
 /* Command execution */
 BridgeResult ExecuteCommand(const char *command, CommandResult *result);
+/* waitTicks: <0 = AE_SEND_DEFAULT_TIMEOUT, 0 = kAENoReply (do not block at all),
+ * otherwise the caller's bound, clamped to AE_SEND_MAX_TIMEOUT. */
 BridgeResult ExecuteAppleEvent(OSType targetSig, OSType evtClass, OSType evtID,
-							   const char *directObj, long doLen, CommandResult *result);
+							   const char *directObj, long doLen, long waitTicks,
+							   CommandResult *result);
 void CleanupCommandResult(CommandResult *result);
 
 /* Send a Quit Apple Event to a running app by creator signature (QUIT: verb) */

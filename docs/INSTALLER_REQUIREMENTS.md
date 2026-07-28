@@ -390,15 +390,27 @@ builds (`mac/include/applebridge.h`). The defect is that a value reasoned about
 for **ToolServer**, an application we control and that always answers, was
 inherited by a verb that can address **any** application.
 
-Two guards follow, neither of which needs the argument validation R16 added:
+Two guards follow, neither of which needs the argument validation R16 added.
+**Both shipped in 0.8d31**, and the wire format grew one optional field to carry
+them: `AESEND:<target>:<class>:<id>:<doLen>[:<waitTicks>]`.
 
 * **Do not wait for a reply that the vocabulary says is empty.** `RUN`, `MAKE`
   and most of the THINK suite declare `reply: 'null'`; `command.c` already has a
   `kAENoReply` path for the other sender. Waiting is the caller's choice, so it
-  belongs in the verb, not in a constant.
+  belongs in the verb, not in a constant. `waitTicks = 0` takes that path, and
+  `mac_send_apple_event(expect_reply=False)` is how a caller asks for it.
 * **Bound the wait by what the caller can tolerate.** Five minutes is a build;
-  an interactive event is seconds. The host's own command timeout must be the
-  shorter of the two, so the bridge gives up before the guest is starved.
+  an interactive event is seconds. An omitted field now means 30 s
+  (`AE_SEND_DEFAULT_TIMEOUT`), not five minutes, and 180 s is the ceiling
+  (`AE_SEND_MAX_TIMEOUT`) whatever the caller asks for.
+
+  **Correction to this section as first written:** it said the *host's* timeout
+  must be the shorter of the two. That is the wrong way round. A host that gives
+  up first reports a timeout while the daemon is still inside `AESend` and the
+  guest is still starving — a true statement about the wrong layer, and the
+  guest is no better off. The **daemon** must be the side that gives up, so its
+  ceiling sits below the host's read timeout and the host's read budget is
+  derived from the bound it sent (`_ae_read_timeout`).
 
 **Requirement:** a verb that blocks the daemon states how long it may block, and
 the default is the interactive one. "It answered last time" is not a property of
