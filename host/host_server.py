@@ -480,6 +480,21 @@ class AppleBridgeServer:
                  serial_dev=None, serial_baud=SERIAL_BAUD):
         self.interface = interface
         self.port = port
+        # A client cannot otherwise tell that a reconnect happened: uptime, rx, tx
+        # and err are all cumulative for the daemon PROCESS, so after a redial
+        # they simply continue (err=117 included, observed on the SE/30
+        # 2026-07-28). So an identifier issued before a reconnect is
+        # indistinguishable from one issued after, and "your job belonged to a
+        # link that no longer exists" is a statement the bridge cannot make.
+        #
+        # link_generation counts accepted daemon links. It is paired with an
+        # EPOCH because a bare counter restarts at 1 with the host server, which
+        # would make generation 3 of today collide with generation 3 of an hour
+        # ago — a value that looks continuous and is not, which is the failure
+        # this project keeps finding in itself. Epoch differs => different host
+        # process => any identifier from before is void, without comparing counts.
+        self.link_epoch = os.urandom(4).hex()
+        self.link_generation = 0
         self.serial_dev = serial_dev      # None => TCP :9000; else a serial device path
         self.serial_baud = serial_baud
         self.client_socket = None
@@ -553,7 +568,9 @@ class AppleBridgeServer:
                 try:
                     self.client_socket = SerialConn(self.serial_dev, self.serial_baud)
                     self.connected = True
-                    log(f"Serial link open on {self.serial_dev}")
+                    self.link_generation += 1
+                    log(f"Serial link open on {self.serial_dev} "
+                        f"(link {self.link_epoch}:{self.link_generation})")
                     return self.serial_dev
                 except (OSError, ValueError) as e:
                     if timeout is not None:
@@ -570,7 +587,8 @@ class AppleBridgeServer:
         finally:
             self.server_socket.settimeout(None)
         self.connected = True
-        log(f"Mac connected from {addr}")
+        self.link_generation += 1
+        log(f"Mac connected from {addr} (link {self.link_epoch}:{self.link_generation})")
         return addr
 
     def _mark_disconnected(self, reason):
@@ -1522,6 +1540,12 @@ def run_control_server(server):
                             f"host_connected={1 if server.connected else 0}",
                             f"idle_seconds={now - last_io:.1f}",
                             f"missed_heartbeats={missed}",
+                            # Host-side on purpose: it identifies the LINK, so it
+                            # must still be reported when the daemon is silent —
+                            # which is exactly when a caller needs to know its
+                            # long-running work has been orphaned.
+                            f"link_epoch={server.link_epoch}",
+                            f"link_generation={server.link_generation}",
                         ]
                         daemon_ok = 0
                         if server.connected:

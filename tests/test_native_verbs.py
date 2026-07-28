@@ -88,6 +88,71 @@ def test_apple_menu_items_reach_opendeskacc():
     assert "OpenDeskAcc(daName)" in DAEMON_SRC
 
 
+# --- link identity: the one field that survives a reconnect meaningfully -----
+# Everything else MACSTATUS reports about the daemon (uptime, rx, tx, err) is
+# cumulative for the daemon PROCESS and continues unchanged through a redial —
+# measured on the SE/30, 2026-07-28, where err=117 carried straight across a
+# reconnect. So nothing told a caller that the link its long-running work
+# started on was gone. link_epoch:link_generation does.
+
+def _server():
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "host"))
+    return host_server.AppleBridgeServer()
+
+
+def test_a_fresh_server_has_generation_zero():
+    srv = _server()
+    assert srv.link_generation == 0, "no link accepted yet"
+
+
+def test_each_accepted_link_increments_the_generation():
+    srv = _server()
+    srv.link_generation = 0
+    for expected in (1, 2, 3):
+        srv.link_generation += 1        # what accept_mac does
+        assert srv.link_generation == expected
+
+
+def test_the_epoch_differs_between_host_processes():
+    # A bare counter restarts at 1 with the host server, so generation 3 of
+    # today would collide with generation 3 of an hour ago — a value that looks
+    # continuous and is not. Two servers stand in for two processes.
+    a, b = _server(), _server()
+    assert a.link_epoch != b.link_epoch, "epochs collide; a counter alone is ambiguous"
+    assert len(a.link_epoch) == 8 and int(a.link_epoch, 16) >= 0
+
+
+def test_both_link_kinds_increment_it():
+    # TCP accept and a serial open are both "a new link". Counting only one
+    # would make the field silently wrong on the other transport.
+    src = open(host_server.__file__.replace(".pyc", ".py")).read()
+    assert src.count("self.link_generation += 1") == 2, \
+        "expected exactly two increment sites: TCP accept and serial open"
+
+
+def test_it_is_reported_host_side_so_a_silent_daemon_still_answers():
+    # The point of the field is to be readable when work has been orphaned —
+    # i.e. possibly while the daemon is not answering at all. Sourcing it from
+    # the daemon's STAT would make it unavailable exactly then.
+    # Assert each landmark EXISTS before indexing on it. Without that, deleting
+    # the field raises ValueError and the runner — which catches AssertionError
+    # only — dies with a traceback instead of naming what went missing. That is
+    # a red build that does not say why, and it has now happened three times in
+    # one day, so it is written out here rather than remembered.
+    emit = 'f"link_generation={server.link_generation}"'
+    assert emit in HOST_SRC, "link_generation is not reported at all"
+    assert 'server.send_raw("STAT"' in HOST_SRC, "STAT probe missing"
+    assert HOST_SRC.index(emit) < HOST_SRC.index('server.send_raw("STAT"'), \
+        "link_generation must be emitted independently of the daemon's STAT"
+
+
+def test_the_mcp_tool_exposes_a_single_comparable_id():
+    tools_src = open(os.path.join(os.path.dirname(__file__), "..", "mcp",
+                                  "tools.py"), encoding="utf-8").read()
+    assert '"link_id"' in tools_src
+    assert '"link_generation": _int("link_generation")' in tools_src
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
