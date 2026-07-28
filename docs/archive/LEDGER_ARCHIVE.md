@@ -2,7 +2,10 @@
 
 This is a **verbatim snapshot** of the [AppleBridge roadmap
 ledger](https://pit.390er.de/applebridge/applebridge-roadmap-ledger-progress-and-status-tracker/)
-taken before its first subtraction pass, at 108,964 characters.
+taken before its **second** subtraction pass, at 108,964 characters.
+(The first, on 2026-07-26, retired a 36,000-character per-session
+changelog from the same page — this one addresses the same failure
+regrown in a different shape.)
 
 ## Why it exists
 
