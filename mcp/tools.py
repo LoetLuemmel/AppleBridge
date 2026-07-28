@@ -349,6 +349,13 @@ daemon is down (so you can tell WHICH layer is broken):
   - daemon_responding    — did the daemon answer a STAT this call
   - toolserver_running   — is ToolServer ('MPSX') alive (mpw_execute needs it)
   - idle_seconds / missed_heartbeats — link freshness
+  - link_id ("<epoch>:<n>") — identifies THIS daemon link. It changes on every
+    reconnect, and across a host-server restart too. Everything else here
+    (uptime, rx, tx, err) is cumulative for the daemon PROCESS and continues
+    unchanged through a redial, so link_id is the only field that answers "is
+    this still the connection my long-running work started on?" Capture it
+    before slow work and compare afterwards; a different value means whatever
+    was in flight was orphaned.
   - rx_count / tx_count / err_count — daemon counters (err = STATUS != 0 responses)
   - last_latency_ms / uptime_seconds — last command's RX->TX time; daemon uptime
 
@@ -1573,6 +1580,16 @@ def mac_status() -> Dict[str, Any]:
         "last_latency_ms": _int("lat"),        # last real command's RX->TX round-trip, ms
         "last_error": (f.get("lasterr") or None),   # short tag of the most recent error (auth/launch/cmd fail/...)
         "uptime_seconds": _int("uptime"),
+        # WHICH link this is. uptime/rx/tx/err are cumulative for the daemon
+        # PROCESS and simply continue across a redial, so they cannot answer
+        # "did the connection I started my work on survive?". These can:
+        # `link_id` changes on every accepted link, and changes even across a
+        # host-server restart, where a bare counter would restart at 1 and
+        # silently collide with an earlier link of the same number.
+        "link_generation": _int("link_generation"),
+        "link_epoch": f.get("link_epoch") or None,
+        "link_id": (f"{f['link_epoch']}:{f['link_generation']}"
+                    if f.get("link_epoch") and f.get("link_generation") else None),
         "home": f.get("home") or None,   # daemon install folder (for self-update staging)
         "raw": stdout,
     }
