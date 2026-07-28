@@ -193,6 +193,37 @@ def test_the_config_points_at_the_copy_and_never_the_source(tmp=None):
     assert "ramsize 130023424" in body, "unrelated settings must survive"
 
 
+def test_the_kit_gets_its_own_disk_line_because_extfs_cannot_carry_apps():
+    # Without this the test machine boots perfectly and simply has no kit
+    # volume — which reads as "the image failed to mount" and sends you looking
+    # at the image. It cost a long detour on 2026-07-28.
+    import tempfile
+    src = os.path.join(tempfile.gettempdir(), "src_prefs_kit")
+    with open(src, "w") as fh:
+        fh.write("disk /Users/x/original.dmg\nether etherhelper/en8\n")
+    dest = os.path.join(tempfile.gettempdir(), "test_prefs_kit_out")
+    mtg.write_test_config(src, "/Users/x/copy.dmg", dest,
+                          kit_image="/Users/x/AppleBridgeKit.dmg")
+    body = open(dest).read()
+    assert "disk /Users/x/copy.dmg" in body
+    assert "disk /Users/x/AppleBridgeKit.dmg" in body
+    assert "ether slirp" in body, "the backend line must survive the insertion"
+    assert body.count("ether ") == 1, "duplicate ether key"
+
+
+def test_no_kit_means_no_stray_disk_line():
+    # A `disk` line pointing at a file that does not exist is worse than none.
+    import tempfile
+    src = os.path.join(tempfile.gettempdir(), "src_prefs_nokit")
+    with open(src, "w") as fh:
+        fh.write("disk /Users/x/original.dmg\nether slirp\n")
+    dest = os.path.join(tempfile.gettempdir(), "test_prefs_nokit_out")
+    mtg.write_test_config(src, "/Users/x/copy.dmg", dest)
+    body = open(dest).read()
+    assert body.count("disk ") == 1
+    assert "ether slirp" in body
+
+
 def test_the_source_image_is_never_written_to():
     # The safety argument in one assertion: no hfsutils write verb may ever name
     # the source. The tool copies first and strips only the copy.

@@ -370,9 +370,11 @@ def probe_emulator_prefs(read, prefs_path, netmode_path):
         if line.startswith("ether "):
             ether = line.split(None, 1)[1].strip() if len(line.split()) > 1 else ""
         elif line.startswith("extfs "):
-            # The host folder the guest sees as `Unix:`. It is the channel a
-            # guest kit travels on — no disk image is written, the operator
-            # opens the folder inside the guest and runs the installer there.
+            # The host folder the guest sees as `Unix:`. Good for moving
+            # documents and sources; NOT a channel for applications — `extfs`
+            # presents a 68K app to the guest as a document, so it cannot be
+            # launched from here (measured 2026-07-28). The guest kit therefore
+            # ships as its own mountable disk image instead.
             e = line[len("extfs "):].strip()
             if e:
                 shared = e

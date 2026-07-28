@@ -3,10 +3,16 @@
 
 Why this exists
 ---------------
-`install_bridge.py --export-guest-kit` assembles a folder the guest installs
+`install_bridge.py --export-guest-kit` builds a disk image the guest installs
 itself from, and nothing had ever installed *from* one: the payload was verified
 at the destination, but the end-to-end run needs a machine with no AppleBridge
 on it. Every emulator here already has one.
+
+That first run is also what disproved the original delivery channel: the kit
+shipped as a folder in the shared directory, and `extfs` hands the guest
+documents where applications should be, so the installer could not be started at
+all. It is a mountable image now, and the test config gets a second `disk` line
+rather than relying on `extfs`.
 
 So: copy a working image, strip AppleBridge out of the COPY, and write a
 separate Basilisk config pointing at it. The original is never opened for
@@ -18,8 +24,9 @@ from destroying somebody's System 7 install.
     host/tools/make_test_guest.py
     BasiliskII --config ~/.basilisk_ii_prefs_test
 
-Then inside that guest: open `Unix:AppleBridge Kit` and run
-`AppleBridgeInstaller`. The host log shows the daemon connecting if it worked.
+Then inside that guest: open the `AppleBridge Kit` volume and run
+`AppleBridgeInstaller` from it. The host log shows the daemon connecting if it
+worked.
 
 What "pristine" means here
 --------------------------
@@ -140,12 +147,19 @@ def strip_applebridge(image, run=run):
         run(["humount"])
 
 
-def write_test_config(source_prefs, image, dest=TEST_PREFS):
+def write_test_config(source_prefs, image, dest=TEST_PREFS, kit_image=None):
     """A Basilisk config for the test machine: the copy, same everything else.
 
-    Same `extfs` on purpose — the guest kit is delivered through the shared
-    folder, so the test machine must see the same one. `ether slirp` because
-    that is the shipping branch (D-019).
+    `ether slirp` because that is the shipping branch (D-019). `extfs` is kept
+    as-is — useful for moving documents, but NOT how the kit arrives: an
+    application delivered through `extfs` reaches the guest as a document and
+    cannot be launched, so the kit gets its own `disk` line here.
+
+    Adding that line is not a convenience. Without it the test machine has no
+    way to see the kit at all, and the omission does not look like an omission:
+    the guest boots perfectly and simply has no kit volume, which reads as "the
+    image failed to mount" and sends you looking at the image. It cost a long
+    detour on 2026-07-28 for exactly that reason.
     """
     lines = []
     for line in (bridge_doctor._read(source_prefs) or "").splitlines():
@@ -155,7 +169,9 @@ def write_test_config(source_prefs, image, dest=TEST_PREFS):
             continue
         lines.append(line)
     lines.insert(0, f"disk {image}")
-    lines.insert(1, "ether slirp")
+    if kit_image:
+        lines.insert(1, f"disk {kit_image}")
+    lines.insert(2 if kit_image else 1, "ether slirp")
     body = "\n".join(lines).rstrip() + "\n"
     with open(dest, "w") as fh:
         fh.write(body)
@@ -176,6 +192,10 @@ def main(argv=None):
                          "source, named …-pristine.dmg)")
     ap.add_argument("--keep", action="store_true",
                     help="reuse an existing test image instead of re-copying")
+    ap.add_argument("--kit", default=None, metavar="KIT.DMG",
+                    help="guest kit image to add as a second disk, so the test "
+                         "machine can actually install (build one with "
+                         "install_bridge.py --export-guest-kit)")
     args = ap.parse_args(argv)
 
     if emulator_running():
@@ -228,13 +248,18 @@ def main(argv=None):
               file=sys.stderr)
         return 1
 
-    cfg = write_test_config(PREFS, dest)
+    cfg = write_test_config(PREFS, dest, kit_image=args.kit)
     print(f"\nwrote {cfg}")
     print("\nA machine that has never heard of AppleBridge. To use it:")
     print(f"  1. stop any running guest (only one may hold :9000)")
     print(f"  2. BasiliskII --config {cfg}")
-    print(f"  3. in the guest, open `Unix:AppleBridge Kit` and run "
-          "`AppleBridgeInstaller`")
+    if args.kit:
+        print(f"  3. in the guest, open the `AppleBridge Kit` volume and run "
+              "`AppleBridgeInstaller` from it (no copying needed)")
+    else:
+        print("  3. build a kit first — install_bridge.py --export-guest-kit — "
+              "then re-run with --kit <image>; the guest cannot be given "
+              "applications through the shared folder")
     print(f"  4. watch /tmp/applebridge_server.log for the daemon connecting")
     return 0
 
