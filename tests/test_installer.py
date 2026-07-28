@@ -14,6 +14,7 @@ Run: python3 tests/test_installer.py   (or via pytest)
 """
 
 import os
+import re
 import sys
 import tempfile
 
@@ -145,9 +146,38 @@ def test_a_single_nic_host_is_told_why_slirp_is_the_only_option():
 
 def test_the_generated_local_env_carries_no_host_address():
     # R2: a wrong default address is worse than none. R7: slirp needs 0.0.0.0.
+    #
+    # Assert on an ASSIGNMENT LINE, not on the substring. The file explains its
+    # own omission in a comment, so `APPLEBRIDGE_HOST_IP` legitimately appears
+    # once — and `grep -c APPLEBRIDGE_HOST_IP local.env` returning 1 on the 2013
+    # MacBook (2026-07-28) read as a failed install until the file was opened.
+    # A substring test is right by luck here: it passes because the comment has
+    # no `=` after the name, which is a property of today's wording, not of the
+    # thing being checked.
     text = ib.render_local_env("/Applications/BasiliskII.app")
-    assert "APPLEBRIDGE_HOST_IP=" not in text
+    assignments = [ln for ln in text.splitlines()
+                   if re.match(r"\s*(export\s+)?APPLEBRIDGE_HOST_IP\s*=", ln)]
+    assert not assignments, assignments
     assert "0.0.0.0" in text
+
+
+def test_the_generated_local_env_says_why_the_address_is_absent():
+    # The omission is the deliberate part (R7), so the file has to say so —
+    # otherwise the next person to read it adds the variable back.
+    text = ib.render_local_env("/Applications/BasiliskII.app")
+    explains = [ln for ln in text.splitlines()
+                if ln.lstrip().startswith("#") and "APPLEBRIDGE_HOST_IP" in ln]
+    assert explains, "nothing in the file explains the missing address"
+
+
+def test_a_commented_out_assignment_would_still_be_caught():
+    # The guard must not be satisfiable by parking the old value behind a `#`,
+    # which is how a "removed" setting comes back.
+    import re as _re
+    line = "#APPLEBRIDGE_HOST_IP=192.168.3.154"
+    assert _re.match(r"\s*(export\s+)?APPLEBRIDGE_HOST_IP\s*=", line) is None
+    # ...so the comment form is caught by the separate literal check instead:
+    assert "192.168.3.154" not in ib.render_local_env("/Applications/B.app")
 
 
 def test_the_generated_local_env_records_the_discovered_emulator():
@@ -424,6 +454,81 @@ def test_the_launcher_reads_local_env_before_it_uses_the_values():
 
 def test_the_launcher_takes_the_emulator_path_from_configuration():
     assert "APPLEBRIDGE_EMULATOR_APP" in _start_stack()
+
+
+def test_the_launcher_never_hands_open_another_machines_path():
+    # The fallback IS the R1 defect the variable exists to remove, so it may be
+    # used only when it is really present. On the 2013 MacBook (2026-07-28) the
+    # emulator was Gatekeeper-translocated, the installer correctly recorded no
+    # path, and this line would have passed `open -a` a directory belonging to a
+    # different computer — whose error message then sends you looking for a
+    # Basilisk install that was never supposed to be there.
+    text = _start_stack()
+    assert 'BASILISK_APP="${APPLEBRIDGE_EMULATOR_APP:-}"' in text, \
+        "the developer path must not be an unconditional default"
+    fallback = text.index("/Users/pitforster/Documents/Basilisk/BasiliskII.app")
+    guard = text.index('[ -d "/Users/pitforster/Documents/Basilisk/BasiliskII.app" ]')
+    assert guard <= fallback + 200, "the fallback must be guarded by -d"
+
+
+def test_the_closing_advice_matches_the_branch_it_is_printed_on():
+    # The interface rule is an ETHERHELPER rule. Printed unconditionally, it
+    # sent a slirp operator whose daemon would not connect to go and fix an
+    # alias their branch does not have and never places. Seen on the 2013
+    # MacBook, 2026-07-28, at the end of an otherwise clean install.
+    text = _start_stack()
+    tail = text[text.index("Host-side stack is up"):]
+    # Assert the guard EXISTS before indexing on it: removing it made this test
+    # raise ValueError instead of failing, so the suite went red with a
+    # traceback rather than with the reason. A red build that does not say why
+    # is only half a test.
+    assert 'ETHER_BACKEND" = "slirp"' in tail, \
+        "the closing advice is not branch-aware at all"
+    guard = tail.index('ETHER_BACKEND" = "slirp"')
+    rule = tail.index("wrong interface")
+    assert guard < rule, "the interface rule must sit in the non-slirp branch"
+    assert "10.0.2.2" in tail[guard:rule], \
+        "the slirp branch needs its OWN failure hint, not silence"
+
+
+def test_toolserver_is_offered_as_a_tier_not_a_step():
+    # install_bridge.py says "absent MPW is a tier you do not have, not a failed
+    # install" — and this text contradicted it two commands later, including a
+    # smoke test (`Echo HELLO`) that NEEDS ToolServer. On a guest without one,
+    # the suggested proof of a working bridge returns nothing.
+    # Only what is PRINTED counts. Reading the whole tail matched the comment
+    # above the fix, which mentions `Echo HELLO` while explaining why it is not
+    # the right first suggestion — the assertion then failed on correct code.
+    # Third variant of the same near-miss today: check the thing, not prose
+    # about the thing.
+    tail = _start_stack()
+    tail = tail[tail.index("Host-side stack is up"):]
+    printed = "\n".join(ln for ln in tail.splitlines()
+                        if ln.lstrip().startswith("echo "))
+    assert "OPTIONAL" in printed, "ToolServer is a tier, not a required step"
+    assert "MACSTATUS" in printed, "the tier-independent smoke test must be offered"
+    assert printed.index("MACSTATUS") < printed.index("Echo HELLO"), \
+        "offer the check that works on either tier first"
+
+
+def test_the_launcher_says_so_instead_of_launching_nothing():
+    # With no bundle it must NAME the situation, not run `open -a ""` and leave
+    # the operator to interpret whatever open says about an empty argument.
+    text = _start_stack()
+    launch = text.index("[5/5] Launching")
+    tail = text[launch:launch + 700]
+    assert 'if [ -n "$BASILISK_APP" ]' in tail
+    assert "SKIPPED" in tail and "install_bridge.py" in tail
+
+
+def test_the_plan_does_not_promise_an_emulator_it_did_not_find():
+    # The plan step read "…and the discovered emulator" while the header two
+    # lines above said `— not found —`. Text asserting something it did not
+    # check is the defect class this whole installer exists to remove.
+    src = open(os.path.join(os.path.dirname(__file__), "..", "host",
+                            "install_bridge.py"), encoding="utf-8").read()
+    assert 'NO emulator path' in src, \
+        "the write_local_env step must say which of the two cases it is in"
 
 
 def test_the_launcher_matches_a_wildcard_listener_the_way_lsof_prints_it():
