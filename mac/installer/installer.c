@@ -333,6 +333,55 @@ static OSErr CopyOneFork(const FSSpec *src, const FSSpec *dst, Boolean resFork)
 }
 
 /* Fork-aware copy of one file (both forks + type/creator + Finder flags). */
+/* "<name> old", clamped to HFS's 31-character limit. */
+static void AsideName(ConstStr255Param base, Str255 out)
+{
+    const char *suffix = " old";
+    short n = base[0], i;
+
+    if (n > 31 - 4) n = 31 - 4;
+    for (i = 1; i <= n; i++) out[i] = base[i];
+    for (i = 0; i < 4; i++) out[n + 1 + i] = (unsigned char)suffix[i];
+    out[0] = (unsigned char)(n + 4);
+}
+
+/* Make `dst` replaceable. -> noErr when the name is free to be re-created.
+ *
+ * The old code called FSpDelete and IGNORED the result, which is wrong in the
+ * one case that matters. Installing over an existing AppleBridge means the
+ * destination is the RUNNING daemon: FSpDelete fails with fBsyErr, FSpCreate
+ * then returns dupFNErr — which was treated as success — and the copy went on
+ * to write into the open application's forks. It happened to fail at the first
+ * fork open rather than corrupting a running binary, which is luck, not design.
+ *
+ * Renaming an open file IS allowed: it edits the catalog entry, not the forks.
+ * That is exactly the trick `SWAPSELF` uses to let the daemon replace itself
+ * (docs/SELF_UPDATE.md), proven on System 7 and Mac OS 9. Reusing it here is
+ * what lets the installer upgrade a machine without stopping its bridge first —
+ * and a bridge cannot be stopped by the thing driving the install, because
+ * stopping it is what takes the driver away.
+ */
+static OSErr ClearDestination(const FSSpec *dst)
+{
+    FInfo  fi;
+    OSErr  err;
+    Str255 aside;
+    FSSpec asideSpec;
+
+    if (FSpGetFInfo(dst, &fi) != noErr) return noErr;   /* nothing in the way */
+
+    err = FSpDelete(dst);
+    if (err == noErr) return noErr;
+    if (err != fBsyErr && err != opWrErr && err != permErr && err != fLckdErr)
+        return err;                                      /* a real failure */
+
+    AsideName(dst->name, aside);
+    if (FSMakeFSSpec(dst->vRefNum, dst->parID, aside, &asideSpec) == noErr)
+        FSpDelete(&asideSpec);      /* a previous aside; if it is open too, the
+                                     * rename below fails and we report that */
+    return FSpRename(dst, aside);
+}
+
 static OSErr CopyForks(const FSSpec *src, const FSSpec *dst)
 {
     FInfo fi;
@@ -340,7 +389,8 @@ static OSErr CopyForks(const FSSpec *src, const FSSpec *dst)
 
     if (FSpGetFInfo(src, &fi) != noErr) return fnfErr;
 
-    FSpDelete(dst);   /* ignore: may not exist */
+    err = ClearDestination(dst);
+    if (err != noErr) return err;
     err = FSpCreate(dst, fi.fdCreator, fi.fdType, 0);
     if (err != noErr && err != dupFNErr) return err;
     /* Lay down a proper resource map first (a raw FSpOpenRF write onto a bare
@@ -398,14 +448,20 @@ static OSErr InstallAutostart(const FSSpec *watchdog)
 
 /* ---- the install ------------------------------------------------------- */
 
-static Boolean CopyBinary(short srcV, long srcD, short dstV, long dstD, const char *leaf)
+/* -> noErr, or fnfErr when the file is not beside the installer, or whatever
+ * the copy itself failed with. Returning a Boolean merged those two into one
+ * verdict, and the caller then printed "are the binaries beside this
+ * installer?" for BOTH — advice that points at the one thing which is not the
+ * problem when the real cause is a busy destination. Measured on the SE/30,
+ * 2026-07-28: the binaries were demonstrably beside it. */
+static OSErr CopyBinary(short srcV, long srcD, short dstV, long dstD, const char *leaf)
 {
     Str255 pLeaf;
     FSSpec src, dst;
     CtoP(leaf, pLeaf);
-    if (FSMakeFSSpec(srcV, srcD, pLeaf, &src) != noErr) return false;  /* not in payload */
+    if (FSMakeFSSpec(srcV, srcD, pLeaf, &src) != noErr) return fnfErr;
     FSMakeFSSpec(dstV, dstD, pLeaf, &dst);
-    return CopyForks(&src, &dst) == noErr;
+    return CopyForks(&src, &dst);
 }
 
 static void DoInstall(void)
@@ -429,12 +485,30 @@ static void DoInstall(void)
         return;
     }
 
-    /* Copy the three binaries (daemon, watchdog, config). */
-    if (!CopyBinary(srcV, srcD, dstV, dstD, LEAF_DAEMON) ||
-        !CopyBinary(srcV, srcD, dstV, dstD, LEAF_WATCHDOG) ||
-        !CopyBinary(srcV, srcD, dstV, dstD, LEAF_CONFIG)) {
-        mystrcpy(gStatus, "Copy failed - are the binaries beside this installer?");
-        return;
+    /* Copy the three binaries (daemon, watchdog, config), naming whichever one
+     * fails and why. One message for every cause is how "are the binaries
+     * beside this installer?" came to be printed about a busy destination. */
+    {
+        static const char *kLeaves[3] = { LEAF_DAEMON, LEAF_WATCHDOG, LEAF_CONFIG };
+        short i;
+        for (i = 0; i < 3; i++) {
+            OSErr cerr = CopyBinary(srcV, srcD, dstV, dstD, kLeaves[i]);
+            if (cerr == noErr) continue;
+            gStatus[0] = '\0';
+            mystrcat(gStatus, "Copy failed for ");
+            mystrcat(gStatus, kLeaves[i]);
+            if (cerr == fnfErr) {
+                mystrcat(gStatus, " - it is not beside this installer.");
+            } else {
+                mystrcat(gStatus, " - error ");
+                if (cerr < 0) { mystrcat(gStatus, "-"); CatNum(gStatus, -(long)cerr); }
+                else          { CatNum(gStatus, (long)cerr); }
+                if (cerr == fBsyErr || cerr == opWrErr || cerr == permErr)
+                    mystrcat(gStatus, " (in use, and could not be renamed aside)");
+                mystrcat(gStatus, ".");
+            }
+            return;
+        }
     }
 
     /* Build the destination folder path string for HOME=. */
