@@ -365,9 +365,17 @@ def probe_emulator_prefs(read, prefs_path, netmode_path):
     """
     ether = None
     disks = []
+    shared = None
     for line in _read_lines(read, prefs_path):
         if line.startswith("ether "):
             ether = line.split(None, 1)[1].strip() if len(line.split()) > 1 else ""
+        elif line.startswith("extfs "):
+            # The host folder the guest sees as `Unix:`. It is the channel a
+            # guest kit travels on — no disk image is written, the operator
+            # opens the folder inside the guest and runs the installer there.
+            e = line[len("extfs "):].strip()
+            if e:
+                shared = e
         elif line.startswith("disk "):
             # The guest's disk image, which the installer had been asking the
             # operator to supply by hand for --seed-guest-prefs even though it
@@ -379,7 +387,7 @@ def probe_emulator_prefs(read, prefs_path, netmode_path):
                 disks.append(d)
     intended = (read(netmode_path) or "").strip() or None
     return {"ether": ether, "intended": intended, "prefs_path": prefs_path,
-            "disks": disks}
+            "disks": disks, "shared_folder": shared}
 
 
 def _read_lines(read, path):

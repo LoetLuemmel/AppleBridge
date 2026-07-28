@@ -33,7 +33,9 @@ def probes(ether="slirp", intended="slirp", helper=False, running=False,
         "processes": {"basilisk": {"pid": 1, "cmd": "BasiliskII"} if running else None,
                       "sheepshaver": None, "etherhelpertool": None},
         "emulator_prefs": {"ether": ether, "intended": intended,
-                           "prefs_path": "/tmp/prefs"},
+                           "prefs_path": "/tmp/prefs",
+                           "disks": ["/tmp/guest.dmg"],
+                           "shared_folder": "/tmp/Share"},
         "addresses": HOST_ADDRS if addresses is None else addresses,
         "host_ip": ("0.0.0.0", "default"),
         "local_env_exists": False,
@@ -529,6 +531,87 @@ def test_the_scan_found_the_requirements_at_all():
     assert len(_table_rows(doc)) >= 20, "mechanism table not found"
 
 
+# --- the guest kit: distribution, not image surgery -------------------------
+# The guest already HAS a real installer — Gestalt preflight, fork-aware copy,
+# prefs seeding, Startup Items alias — and it refuses environments that cannot
+# work, which is its entire value. What was missing was never installation; it
+# was DISTRIBUTION: nobody assembled the folder that installer expects.
+#
+# The alternative considered and rejected was writing the suite straight into
+# the guest's disk image with hfsutils. It works, and it is not something a
+# stranger should run: a program that edits other people's volumes has a blast
+# radius equal to their whole machine. The kit goes to the emulator's shared
+# folder instead, which the guest already sees as `Unix:`, and nothing of theirs
+# is touched.
+
+def test_the_prefs_carry_the_address_and_nothing_machine_specific():
+    txt = ib.guest_prefs_text("192.168.3.240")
+    assert "IP=192.168.3.240" in txt
+    # HOME= names the folder the suite landed in, which only the guest installer
+    # knows. Shipping one meant shipping THIS developer's volume name onto a
+    # stranger's machine — an R1 literal smuggled in through a template.
+    assert "HOME=" not in txt.replace("# HOME=", ""), \
+        "HOME= belongs to the guest installer, not to the kit"
+
+
+def test_the_generated_prefs_are_ascii_and_lf():
+    # Read by a 68K daemon through a MacRoman path; CR/LF matters (R20) and a
+    # decorative character in a comment is a risk with no upside.
+    raw = ib.guest_prefs_text("192.168.3.240").encode("mac_roman")
+    assert all(b < 128 for b in raw), "non-ASCII in a generated config file"
+    assert b"\r" not in raw, "must stay LF-terminated like the guest's own file"
+
+
+def test_the_transport_default_is_stated_not_hidden():
+    assert "NET=OT" in ib.guest_prefs_text("1.2.3.4")
+    assert ib.guest_prefs_text("1.2.3.4", net="MacTCP").count("NET=MacTCP") == 1
+
+
+def test_the_installer_itself_is_required_not_optional():
+    # A kit of binaries with no installer is a pile of files and a manual
+    # procedure — exactly what this replaces.
+    assert "AppleBridgeInstaller" in ib.KIT_REQUIRED
+    assert "AppleBridge" in ib.KIT_REQUIRED
+
+
+def test_both_the_deployed_and_the_build_folder_are_searched():
+    # The suite lives in :AppleBridge: on a deployed machine and in
+    # :MPW:AppleBridge:bin: on a build machine; the installer is only in the
+    # latter here. Searching one would have shipped an incomplete kit.
+    assert ":AppleBridge:" in ib.KIT_DIRS and ":MPW:AppleBridge:bin:" in ib.KIT_DIRS
+
+
+def test_the_installer_is_looked_for_under_both_spellings():
+    names = dict((label, names) for label, names in ib.KIT_APPS)
+    assert "AppleBridgeInstaller" in names["AppleBridgeInstaller"]
+    assert "AppleBridge Installer" in names["AppleBridgeInstaller"]
+
+
+def test_a_running_emulator_blocks_the_export():
+    ok, msg, placed = ib.export_guest_kit("/tmp/kit", "1.2.3.4",
+                                          probes(running=True),
+                                          run=lambda a: "", exists=lambda p: True)
+    assert ok is False and "running" in msg
+
+
+def test_no_readable_image_is_refused_rather_than_half_done():
+    ok, msg, _ = ib.export_guest_kit("/tmp/kit", "1.2.3.4", probes(),
+                                     run=lambda a: "", exists=lambda p: False)
+    assert ok is False and "no readable disk image" in msg
+
+
+def test_a_missing_required_binary_fails_the_whole_kit():
+    # Half a kit is worse than none: it looks installable and is not.
+    ok, msg, _ = ib.export_guest_kit(
+        "/tmp/kit", "1.2.3.4",
+        probes(),
+        run=lambda a: "Volume ..." if a[0] == "hmount" else "",
+        exists=lambda p: p.endswith(".dmg"),        # image yes, copies no
+        write_bytes=lambda p, d: None)
+    assert ok is False
+    assert "REQUIRED" in msg and "cannot ship a kit" in msg
+
+
 # --- choosing the address the guest dials -----------------------------------
 # This was `addresses[0]` — whichever interface ifconfig listed first. On a
 # multi-homed host that is a coin toss, and losing it produces R2 in its purest
@@ -585,9 +668,15 @@ def test_no_disk_line_is_not_an_error():
     assert ib.bridge_doctor.probe_emulator_prefs(read, "/tmp/p", "/tmp/n")["disks"] == []
 
 
-def test_no_seed_is_offered_as_an_opt_out():
-    code, ns = _parse(["--no-seed"])
-    assert code is None and ns.no_seed is True
+def test_seeding_is_opt_in_so_there_is_nothing_to_opt_out_of():
+    # PR #127 made seeding automatic whenever an image was discoverable, and
+    # --no-seed existed to escape it. Writing into somebody's disk volume
+    # because you can is not shipped behaviour, so the default is back to
+    # explicit and the escape hatch is unnecessary.
+    code, _ = _parse(["--no-seed"])
+    assert code == 2, "--no-seed should no longer exist"
+    code, ns = _parse([])
+    assert code is None and ns.seed_guest_prefs is None
 
 
 # --- argument parsing: the safety flag must not fail open -------------------
