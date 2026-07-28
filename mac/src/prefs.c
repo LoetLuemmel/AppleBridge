@@ -107,17 +107,32 @@ static void ParseLine(AppPrefs *p, const char *line)
     }
 }
 
-Boolean LoadPrefs(AppPrefs *p)
+/* Parse a prefs file at an ARBITRARY location onto `p`.
+ *
+ * Split out from LoadPrefs so the installer can read the prefs file shipped
+ * beside it in a kit. That file existed and was generated with care, and
+ * nothing ever read it: LoadPrefs resolves its path through
+ * FindFolder(kPreferencesFolderType) and looks nowhere else, so a kit's `IP=`
+ * reached a freshly-installed machine only by coincidence — the installer's
+ * COMPILED-IN default happened to be the same developer's address. On anyone
+ * else's machine that seeds a foreign address and the daemon then dials the
+ * wrong computer while reporting full health, which is R2 exactly. Measured
+ * 2026-07-28: `strings` on the shipped installer showed `192.168.3.154` while
+ * the kit's own prefs said something else, and the installed file matched the
+ * binary rather than the kit.
+ *
+ * Values are LAYERED, not overwritten wholesale — see the call site in
+ * installer.c for why the order matters.
+ */
+Boolean LoadPrefsFrom(AppPrefs *p, const FSSpec *spec)
 {
-    FSSpec spec;
     short  refNum;
     OSErr  err;
     long   count;
     char   buf[PREFS_BUF_SIZE];
     short  i, lineStart;
 
-    if (PrefsSpec(&spec) != noErr) return false;
-    if (FSpOpenDF(&spec, fsRdPerm, &refNum) != noErr) return false;
+    if (FSpOpenDF(spec, fsRdPerm, &refNum) != noErr) return false;
 
     count = PREFS_BUF_SIZE - 1;
     err = FSRead(refNum, &count, buf);   /* eofErr at end-of-file is normal */
@@ -145,6 +160,15 @@ Boolean LoadPrefs(AppPrefs *p)
         }
     }
     return true;
+}
+
+/* The machine's own preferences, in the Preferences folder. */
+Boolean LoadPrefs(AppPrefs *p)
+{
+    FSSpec spec;
+
+    if (PrefsSpec(&spec) != noErr) return false;
+    return LoadPrefsFrom(p, &spec);
 }
 
 /* Append a signed decimal integer to buf (this file avoids sprintf). */

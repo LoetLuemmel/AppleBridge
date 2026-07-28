@@ -691,10 +691,12 @@ class KitIO:
         return ""
 
     def build(self, dest="/tmp/kitdir", host_ip="192.168.3.154", **kw):
+        # read_bytes is overridable so a test can hand back a binary with an
+        # address baked into it — the defect the scan exists for.
         return ib.export_guest_kit(
             dest, host_ip, kw.pop("probes_", None) or probes(),
             run=self.run, exists=lambda p: True,
-            read_bytes=lambda p: b"z" * 1000,
+            read_bytes=kw.pop("read_bytes", lambda p: b"z" * 1000),
             write_bytes=lambda p, d: self.written.__setitem__(p, d),
             staging="/tmp/kitstage", **kw)
 
@@ -794,6 +796,44 @@ def test_the_volume_is_unmounted_even_when_a_step_fails():
     io.build()
     assert io.argv_for("humount"), "never unmounted"
     assert len(io.argv_for("humount")) == len(io.argv_for("hmount"))
+
+
+# --- no baked-in host address may ship in a binary ---------------------------
+# The kit shipped one on 2026-07-28. `AppleBridgeInstaller` had not been rebuilt
+# since 2026-07-02 — five days before the commit that emptied DEFAULT_HOST_IP —
+# so it still carried 192.168.3.154, and because nothing read the kit's prefs
+# file that literal WAS the address a fresh install received. It looked perfect
+# on the one LAN where the number is right.
+
+def test_a_hardcoded_address_in_a_binary_is_found():
+    assert ib.payload_host_literals(b"\x00\x01192.168.3.154\x00junk") == ["192.168.3.154"]
+
+
+def test_version_strings_are_not_mistaken_for_addresses():
+    for benign in (b"0.8d32", b"v1.2.3", b"MPW 3.5", b"1.2.3"):
+        assert ib.payload_host_literals(benign) == [], benign
+
+
+def test_an_impossible_octet_is_not_an_address():
+    assert ib.payload_host_literals(b"999.1.1.1 and 1.2.3.999") == []
+
+
+def test_the_kit_is_refused_when_a_binary_carries_an_address():
+    # Refuse, not warn. A wrong address is worse than none: the daemon connects
+    # to whatever answers and every status field reads healthy.
+    io = KitIO()
+    ok, msg, _ = io.build(read_bytes=lambda p: b"prefix 192.168.3.154 suffix")
+    assert ok is False
+    assert "192.168.3.154" in msg and "hardcoded host address" in msg
+
+
+def test_the_prefs_file_may_carry_the_address_because_that_is_its_job():
+    # The scan must run BEFORE the prefs are staged, or every kit is rejected:
+    # the prefs file is the one place an address belongs.
+    io = KitIO()
+    ok, msg, placed = io.build()          # read_bytes returns address-free bytes
+    assert ok is True, msg
+    assert "AppleBridge Prefs" in placed
 
 
 # --- sizing ------------------------------------------------------------------

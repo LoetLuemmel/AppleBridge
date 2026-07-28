@@ -719,6 +719,37 @@ def image_in_use(image, probes, run=None):
     return False
 
 
+_IPV4_RE = re.compile(rb"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+
+
+def payload_host_literals(blob):
+    """IPv4 addresses compiled into a 68K binary. -> sorted list of strings.
+
+    R1 and R2 exist because a *wrong* host address is worse than none: the
+    daemon connects to whatever answers and reports full health — protocol
+    negotiated, heartbeat running, zero errors — so nothing downstream can tell
+    you it is talking to the wrong computer.
+
+    The kit shipped exactly that on 2026-07-28. `AppleBridgeInstaller` had not
+    been rebuilt since 2026-07-02, five days before `66470a5` emptied
+    `DEFAULT_HOST_IP`, so it still carried `192.168.3.154` — and because nothing
+    read the kit's prefs file, that literal *was* the address a fresh install
+    received. It looked flawless on the LAN where the number happens to be
+    right.
+
+    Dates would be the obvious staleness check and are the wrong one: a rebuild
+    from unchanged sources refreshes the date and fixes nothing, and a correct
+    old binary would be rejected. This looks for the defect itself.
+    """
+    out = set()
+    for m in _IPV4_RE.finditer(blob or b""):
+        s = m.group().decode("ascii", "replace")
+        octets = s.split(".")
+        if all(o.isdigit() and int(o) <= 255 for o in octets) and not s.startswith("0."):
+            out.add(s)
+    return sorted(out)
+
+
 def kit_image_size(payload_bytes):
     """How big to make the kit volume. -> byte count, a multiple of 512.
 
@@ -821,6 +852,25 @@ def export_guest_kit(dest, host_ip, probes, run=None, exists=None,
             # mounts, it looks installable, and it is not.
             return (False, "cannot ship a kit without " + ", ".join(short)
                            + " — searched " + " and ".join(KIT_DIRS),
+                    [lbl for lbl, _ in staged])
+
+        # --- 1b. no baked-in host address may leave in an APPLICATION -------
+        # Checked before the prefs are added on purpose: the prefs file is the
+        # ONE place an address belongs, so scanning it would reject every kit.
+        baked = {}
+        for label, blob in staged:
+            lits = payload_host_literals(read_bytes(blob))
+            if lits:
+                baked[label] = lits
+        if baked:
+            detail = "; ".join(f"{k} carries {', '.join(v)}" for k, v in
+                               sorted(baked.items()))
+            return (False,
+                    "refusing to ship a kit with a hardcoded host address in a "
+                    "binary — " + detail + ". A stale build does this: the "
+                    "address ends up on a stranger's machine, the daemon dials "
+                    "the wrong computer and reports full health (R1, R2). "
+                    "Rebuild it from current sources.",
                     [lbl for lbl, _ in staged])
 
         # --- 2. the prefs, as a real TEXT file rather than a bare blob -------
