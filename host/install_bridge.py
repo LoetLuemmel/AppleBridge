@@ -204,6 +204,12 @@ def probe(run=None, read=None, exists=None, addresses=None,
         "addresses": (host_config.ipv4_addresses(
             lambda cmd: run(cmd)) if addresses is None else addresses),
         "host_ip": host_config.resolve_host_ip(local_env_path=local_env_path),
+        # Which interface the guest's traffic actually reaches this host on.
+        # Without it, "the address to dial" degrades to whichever ifconfig
+        # listed first — a coin toss on a multi-homed host, and the R2 failure
+        # when it lands wrong.
+        "default_route_interface": bridge_doctor.probe_network(
+            run, "0.0.0.0").get("default_route_interface"),
         "local_env_exists": (exists or os.path.exists)(local_env_path),
         "paths": {"prefs": prefs_path, "netmode": netmode_path,
                   "local_env": local_env_path},
@@ -475,6 +481,29 @@ def render_local_env(emulator_app=None):
 # --------------------------------------------------------------------------
 # the guest half — what this program cannot do, said exactly
 # --------------------------------------------------------------------------
+def dialable_address(addresses, default_iface=None):
+    """The address to tell the guest to dial — chosen, not stumbled into.
+
+    This used to be `addresses[0]`, i.e. whichever interface ifconfig happened to
+    list first. On a multi-homed host that is a coin toss, and picking the wrong
+    one produces the R2 failure in its purest form: the daemon binds nothing,
+    dials, and waits forever while every status field reads healthy.
+
+    The guest reaches this machine the same way anything else on the segment
+    does, so prefer the DEFAULT-ROUTE interface's address. Loopback is never a
+    candidate — a guest cannot reach the host's 127.0.0.1, whatever the host
+    thinks of it.
+    """
+    usable = [(i, a) for i, a in addresses if not a.startswith("127.")]
+    if not usable:
+        return None
+    if default_iface:
+        for iface, addr in usable:
+            if iface == default_iface:
+                return addr
+    return usable[0][1]
+
+
 def guest_checklist(addresses):
     """-> lines naming every guest-side value, labelled by WHOSE address it is.
 
@@ -744,6 +773,9 @@ def build_parser():
                         "working AppleTalk setup)")
     p.add_argument("--no-agent", action="store_true",
                    help="configure only; do not install the launchd agent")
+    p.add_argument("--no-seed", action="store_true",
+                   help="do not write IP= into the guest's disk image, even "
+                        "when one is discoverable and the emulator is off")
     p.add_argument("--seed-guest-prefs", metavar="IMAGE.DMG",
                    help="write IP= into a POWERED-OFF disk image's "
                         "AppleBridge Prefs (refused while an emulator runs)")
@@ -758,6 +790,7 @@ def main(argv=None):
     force = args.force_slirp
     want_agent = not args.no_agent
     seed_image = args.seed_guest_prefs
+    no_seed = args.no_seed
 
     probes = probe()
     plan = decide(probes, force_slirp=force, want_agent=want_agent)
@@ -766,13 +799,27 @@ def main(argv=None):
     if not dry_run and not plan["refusals"]:
         results = apply_plan(plan, probes)
 
+    # The image is in the prefs file this installer already reads, so asking the
+    # operator for a path it could find itself was a gap rather than a design.
+    # Seeding is still refused while an emulator runs (R14) and by --no-seed.
+    auto_seeded = False
+    if not seed_image and not no_seed:
+        for candidate in probes["emulator_prefs"].get("disks", []):
+            if os.path.exists(candidate):
+                seed_image = candidate
+                auto_seeded = True
+                break
+
     seed = None
     if seed_image:
         host_ip = os.environ.get("APPLEBRIDGE_GUEST_DIALS") or \
-            (probes["addresses"][0][1] if probes["addresses"] else "")
+            dialable_address(probes["addresses"],
+                             probes.get("default_route_interface")) or ""
         if dry_run:
             seed = (True, f"dry run: would seed IP={host_ip} into "
-                          f"{seed_image}{GUEST_PREFS_HFS}")
+                          f"{seed_image}{GUEST_PREFS_HFS}"
+                          + ("  (image discovered from the emulator prefs)"
+                             if auto_seeded else ""))
         else:
             seed = seed_guest_prefs(seed_image, host_ip, probes)
 

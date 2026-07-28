@@ -475,6 +475,68 @@ def test_the_report_prints_what_it_examined():
         assert label in text, label
 
 
+# --- is the guest dialling an address this host still answers on? -----------
+# The daemon dials OUT, so a stale IP= presents as a daemon hanging on
+# CONNECTING with no explanation — or, on a LAN where the stale address answers,
+# as a bridge that reaches somebody ELSE'S machine and reports full health (R2).
+# Until now that value lived only inside the guest, and reading it meant booting
+# the guest — exactly what a broken bridge prevents. hfsutils reads a
+# POWERED-OFF image directly, so the check costs nothing.
+
+def _with_guest_ip(ip, addrs=("192.168.3.154", "192.168.3.240")):
+    """A report whose guest_ip probe is stubbed, so the FINDING is under test
+    rather than hfsutils."""
+    real = bd.probe_guest_ip
+    bd.probe_guest_ip = lambda *a, **k: {"ip": ip, "image": "/tmp/img.dmg",
+                                         "checked": True, "why": ""}
+    try:
+        return report(en0=addrs)
+    finally:
+        bd.probe_guest_ip = real
+
+
+def test_a_guest_dialling_an_address_we_do_not_have_is_an_error():
+    rep = _with_guest_ip("10.9.9.9")
+    assert "guest_ip_stale" in keys(rep)
+    f = [x for x in rep["findings"] if x["key"] == "guest_ip_stale"][0]
+    assert f["level"] == "error"
+    assert "10.9.9.9" in f["message"]
+    assert "--seed-guest-prefs" in f["fix"], "the fix must be runnable"
+
+
+def test_a_guest_dialling_one_of_our_addresses_is_silent():
+    assert "guest_ip_stale" not in keys(_with_guest_ip("192.168.3.240"))
+
+
+def test_the_check_compares_against_the_addresses_we_actually_have():
+    # The first version read net["addresses"], a key that does not exist — so
+    # the finding could NEVER fire. A check that cannot fail is precisely what
+    # this module exists to catch, and it was written into the check for
+    # catching it. This test fails if that regresses.
+    rep = _with_guest_ip("10.9.9.9")
+    f = [x for x in rep["findings"] if x["key"] == "guest_ip_stale"][0]
+    assert "192.168.3.240" in f["message"], \
+        "the host's real addresses must appear; an empty set makes this inert"
+
+
+def test_a_running_emulator_means_the_image_is_not_touched():
+    # Mounting a live image risks the HFS volume, and the running daemon holds
+    # its own copy of the prefs anyway (R14).
+    got = bd.probe_guest_ip(lambda argv: "", ["/tmp/x.dmg"], emulator_running=True)
+    assert got["checked"] is False
+    assert "running" in got["why"]
+
+
+def test_no_disk_image_is_reported_as_not_checked_not_as_healthy():
+    got = bd.probe_guest_ip(lambda argv: "", [], emulator_running=False)
+    assert got["checked"] is False and got["ip"] is None
+
+
+def test_the_header_prints_what_the_guest_dials():
+    text = bd.format_text(_with_guest_ip("192.168.3.240"))
+    assert "guest dials:" in text
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

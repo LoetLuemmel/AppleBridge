@@ -38,6 +38,7 @@ Design notes
 
 import json
 import os
+import tempfile
 import re
 import subprocess
 
@@ -238,6 +239,66 @@ def probe_installation(read=None, exists=None, local_env=LOCAL_ENV_PATH,
     }
 
 
+GUEST_PREFS_HFS = ":System Folder:Preferences:AppleBridge Prefs"
+
+
+def probe_guest_ip(run, disks, emulator_running, exists=None, read=None):
+    """The address the GUEST is configured to dial, read out of its disk image.
+
+    Closes a loop nothing else could. The daemon dials the host, so a stale
+    `IP=` presents as a daemon that hangs on CONNECTING with no explanation —
+    and on a LAN where the stale address answers, it presents as something
+    worse: a bridge that connects to somebody else's machine and reports full
+    health (R2). Until now the only way to see that value was to boot the guest
+    and look, which is precisely what a broken bridge prevents.
+
+    hfsutils reads a POWERED-OFF image directly, so the check costs nothing and
+    needs no guest. It is skipped while an emulator runs: mounting a live image
+    risks the HFS volume, and the running daemon holds its own copy of the prefs
+    anyway (R14).
+
+    -> {"ip": <str|None>, "image": <path|None>, "checked": bool, "why": <str>}
+    """
+    exists = exists or os.path.exists
+    if emulator_running:
+        return {"ip": None, "image": None, "checked": False,
+                "why": "an emulator is running; a live image is not read"}
+    for image in disks:
+        if not exists(image):
+            continue
+        out = run(["hmount", image])
+        if "Volume" not in out:
+            continue
+        try:
+            # hcopy, not hcat: hcat returns nothing on this hfsutils build, and
+            # hcopy -r is what seed_guest_prefs already uses to read the same
+            # file. -r keeps the bytes raw — the guest's prefs are LF-terminated
+            # even though prefs.c writes "\r", because MPW C maps '\r' to 0x0A,
+            # and a helpful conversion would corrupt the bridge's own config
+            # (R20).
+            tmp = os.path.join(tempfile.gettempdir(), "ab_guest_prefs.probe")
+            run(["hcopy", "-r", GUEST_PREFS_HFS, tmp])
+            text = (read or _read)(tmp)
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            if not text:
+                return {"ip": None, "image": image, "checked": True,
+                        "why": "the guest's AppleBridge Prefs is empty or absent"}
+            for line in text.splitlines():
+                line = line.strip()
+                if line.startswith("IP="):
+                    return {"ip": line[3:].strip(), "image": image,
+                            "checked": True, "why": ""}
+            return {"ip": None, "image": image, "checked": True,
+                    "why": "no IP= line in the guest's AppleBridge Prefs"}
+        finally:
+            run(["humount"])
+    return {"ip": None, "image": None, "checked": False,
+            "why": "no readable disk image in the emulator prefs"}
+
+
 def probe_network(run, host_ip):
     """Where the host IP lives vs. where the default route exits.
 
@@ -303,12 +364,22 @@ def probe_emulator_prefs(read, prefs_path, netmode_path):
     field exists to catch.
     """
     ether = None
+    disks = []
     for line in _read_lines(read, prefs_path):
         if line.startswith("ether "):
             ether = line.split(None, 1)[1].strip() if len(line.split()) > 1 else ""
-            break
+        elif line.startswith("disk "):
+            # The guest's disk image, which the installer had been asking the
+            # operator to supply by hand for --seed-guest-prefs even though it
+            # sits in the prefs file this function already reads. A path with
+            # spaces is normal here ("System761 weiter.dmg"), so take the whole
+            # remainder rather than splitting on whitespace.
+            d = line[len("disk "):].strip()
+            if d:
+                disks.append(d)
     intended = (read(netmode_path) or "").strip() or None
-    return {"ether": ether, "intended": intended, "prefs_path": prefs_path}
+    return {"ether": ether, "intended": intended, "prefs_path": prefs_path,
+            "disks": disks}
 
 
 def _read_lines(read, path):
@@ -506,6 +577,30 @@ def interpret(probes):
                 "there is none.",
                 "cd host && ./deploy_host.sh"))
 
+    # --- is the guest dialling an address this host still answers on? -------
+    # The daemon dials OUT, so a stale IP= presents as a daemon that hangs on
+    # CONNECTING with no explanation — or, on a LAN where the stale address
+    # answers, as a bridge that connects to somebody ELSE'S machine and reports
+    # full health (R2). Neither is visible from the host until now: the value
+    # lived only inside the guest, and reading it meant booting the guest, which
+    # is exactly what a broken bridge prevents.
+    gip = probes.get("guest_ip") or {}
+    if gip.get("ip"):
+        # net has "interfaces" (iface -> [addr]), not "addresses". The first
+        # version of this read net["addresses"], which is always absent — so the
+        # finding could never fire. A check that cannot fail is the very thing
+        # this file exists to catch, written into the check for catching it.
+        ours = {a for addrs in (net.get("interfaces") or {}).values() for a in addrs}
+        if ours and gip["ip"] not in ours:
+            out.append(_finding(
+                ERROR, "guest_ip_stale",
+                f"The guest is configured to dial {gip['ip']}, and this host "
+                f"answers on {', '.join(sorted(ours))}. The daemon will wait "
+                "forever — or worse, reach a different machine on this LAN that "
+                "does answer there, and report full health.",
+                f"cd host && ./install_bridge.py --seed-guest-prefs "
+                f"'{gip['image']}'   # rewrites IP= with the emulator powered off"))
+
     return out
 
 
@@ -539,6 +634,10 @@ def collect(run=None, read=None, uid=None, host_ip=DEFAULT_HOST_IP,
         "emulator_prefs": probe_emulator_prefs(read, prefs_path, netmode_path),
         "installation": probe_installation(read, exists),
     }
+    probes["guest_ip"] = probe_guest_ip(
+        run, probes["emulator_prefs"]["disks"],
+        bool(probes["processes"]["basilisk"] or probes["processes"]["sheepshaver"]),
+        exists=exists, read=read)
     findings = interpret(probes)
     v = verdict(findings)
     return {"probes": probes, "findings": findings, "verdict": v,
@@ -605,6 +704,11 @@ def format_text(report):
             app += "   (MISSING)"
         lines.append(f"emulator app:     {app}")
         lines.append(f"deployed copy:    {inst['deploy_stamp'] or '—'}")
+    gip = report["probes"].get("guest_ip") or {}
+    if gip.get("checked"):
+        lines.append(f"guest dials:      {gip['ip'] or '— (' + gip['why'] + ')'}")
+    elif gip.get("why"):
+        lines.append(f"guest dials:      not read ({gip['why']})")
     lines.append("")
     lines.append(f"verdict: {report['verdict']}")
     for f in report["findings"]:

@@ -529,6 +529,67 @@ def test_the_scan_found_the_requirements_at_all():
     assert len(_table_rows(doc)) >= 20, "mechanism table not found"
 
 
+# --- choosing the address the guest dials -----------------------------------
+# This was `addresses[0]` — whichever interface ifconfig listed first. On a
+# multi-homed host that is a coin toss, and losing it produces R2 in its purest
+# form: the daemon dials, waits forever, and every status field reads healthy.
+
+def test_the_default_route_interface_wins():
+    addrs = [("en8", "10.0.0.5"), ("en0", "192.168.3.240")]
+    assert ib.dialable_address(addrs, "en0") == "192.168.3.240"
+
+
+def test_loopback_is_never_offered_to_a_guest():
+    # A guest cannot reach the host's 127.0.0.1, whatever the host thinks.
+    addrs = [("lo0", "127.0.0.1"), ("en0", "192.168.3.240")]
+    assert ib.dialable_address(addrs, "lo0") == "192.168.3.240"
+    assert ib.dialable_address([("lo0", "127.0.0.1")], "lo0") is None
+
+
+def test_an_unknown_default_route_falls_back_but_still_skips_loopback():
+    addrs = [("lo0", "127.0.0.1"), ("en5", "192.168.9.9")]
+    assert ib.dialable_address(addrs, "en0") == "192.168.9.9"
+
+
+def test_no_addresses_yields_none_rather_than_a_guess():
+    assert ib.dialable_address([], "en0") is None
+
+
+# --- finding the guest's disk image without being told ----------------------
+# The path sits in the same prefs file the installer already reads for `ether`.
+# Asking the operator to supply it was a gap, not a design.
+
+def test_the_disk_image_is_read_from_the_emulator_prefs():
+    read = lambda path: ("disk /Users/x/System761 weiter.dmg\n"
+                         "ether slirp\nramsize 130023424\n")
+    got = ib.bridge_doctor.probe_emulator_prefs(read, "/tmp/p", "/tmp/n")
+    assert got["disks"] == ["/Users/x/System761 weiter.dmg"], got
+    assert got["ether"] == "slirp", "reading disks must not break the ether parse"
+
+
+def test_an_image_path_with_spaces_survives():
+    # "System761 weiter.dmg" — splitting on whitespace would truncate it.
+    read = lambda path: "disk /Users/x/My Disk Image.dmg\n"
+    got = ib.bridge_doctor.probe_emulator_prefs(read, "/tmp/p", "/tmp/n")
+    assert got["disks"] == ["/Users/x/My Disk Image.dmg"], got
+
+
+def test_several_disks_are_all_offered():
+    read = lambda path: "disk /a.dmg\ndisk /b.dmg\nether slirp\n"
+    assert ib.bridge_doctor.probe_emulator_prefs(read, "/tmp/p", "/tmp/n")["disks"] \
+        == ["/a.dmg", "/b.dmg"]
+
+
+def test_no_disk_line_is_not_an_error():
+    read = lambda path: "ether slirp\n"
+    assert ib.bridge_doctor.probe_emulator_prefs(read, "/tmp/p", "/tmp/n")["disks"] == []
+
+
+def test_no_seed_is_offered_as_an_opt_out():
+    code, ns = _parse(["--no-seed"])
+    assert code is None and ns.no_seed is True
+
+
 # --- argument parsing: the safety flag must not fail open -------------------
 # `--dry-run` was matched with `"--dry-run" in argv`, and anything unrecognised
 # was ignored. So `--help` — the first thing a stranger types at an unfamiliar
