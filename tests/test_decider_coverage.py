@@ -53,6 +53,10 @@ HERE = pathlib.Path(__file__).resolve().parent
 HOST = HERE.parent / "host"
 SELF = pathlib.Path(__file__).resolve()
 
+# Appears in this file and nowhere else in tests/ — see
+# test_the_corpus_excludes_this_file for what it guards.
+_SELF_MARKER = "decider~coverage~self~marker"
+
 # Roots whose call means the function reaches outside the process, so a unit
 # test would need something stood up first. `os.path` is pure and stays in.
 _BLOCK_PREFIX = ("socket.", "subprocess.", "sys.", "shutil.", "urllib.",
@@ -153,8 +157,6 @@ def untested_deciders():
 # an untested decider is now a thing somebody chose, not a thing nobody noticed.
 # --------------------------------------------------------------------------
 BASELINE = {
-    ("build.py", "get_file_list"):
-        "genuine debt — parses a ToolServer listing, exactly the shape that broke",
     ("guest_input.py", "_osascript"):
         "wraps the host's own osascript; the wrappers around it are tested",
     ("guest_input.py", "frontmost_app"):
@@ -166,7 +168,12 @@ BASELINE = {
     ("guest_input.py", "cmd_shot"): "argparse entry point, not a decision",
     ("macbinary.py", "_selftest"): "is itself a test",
 }
-HIGH_WATER = len(BASELINE)   # 9 on 2026-07-28. This number may go DOWN.
+# A LITERAL, deliberately. Written first as `len(BASELINE)`, which makes
+# `len(BASELINE) <= HIGH_WATER` true for every possible BASELINE — a check
+# that examines nothing, in the file whose whole subject is checks that
+# examine nothing. Caught 2026-07-28 while taking get_file_list off the list.
+# Lower it when an entry leaves; raising it is the change that needs an argument.
+HIGH_WATER = 8   # was 9 until get_file_list was tested (PR #117)
 
 
 # --- the ratchet ------------------------------------------------------------
@@ -242,7 +249,13 @@ def test_the_corpus_excludes_this_file():
     # BASELINE names appear verbatim above. If this file joined the corpus,
     # every one of them would read as "mentioned in a test" and the ratchet
     # would pass by reading its own debt list.
-    assert "get_file_list" not in _test_corpus(), (
+    #
+    # The canary is a marker that exists ONLY here. It was first a real
+    # BASELINE name (`get_file_list`) — which broke the moment that function
+    # was genuinely tested and the name legitimately appeared elsewhere, so the
+    # canary reported "the ratchet is vacuous" about a repair. A canary that
+    # fires on good news is one somebody eventually deletes.
+    assert _SELF_MARKER not in _test_corpus(), (
         "this file is in its own test corpus — the ratchet is now vacuous")
 
 
