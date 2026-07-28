@@ -45,10 +45,13 @@ cd host && ./install_bridge.py
 
 | where | value | whose address |
 |---|---|---|
-| guest TCP/IP control panel | `10.0.2.15` / `255.255.255.0`, router `10.0.2.2`, name server **`10.0.2.3`** | the **guest's own** |
+| guest TCP/IP control panel | **`Configure: Using DHCP Server`** — slirp answers it and supplies all four | the **guest's own** |
+| …if your build does not | `10.0.2.15` / `255.255.255.0`, router `10.0.2.2`, name server **`10.0.2.3`** | the **guest's own** |
 | `AppleBridge Prefs`, `IP=` | this machine's LAN address | the **host's** |
 
-Those two are the trap: the same word means opposite things three lines apart, and swapping them is silent. The name server is the field that gets left empty — without it DNS fails as iCab `-23045`, which reads like a routing fault.
+Those two are the trap: the same word means opposite things three lines apart, and swapping them is silent.
+
+**Prefer DHCP** (measured 2026-07-28: slirp handed out address, mask, router *and* name server `10.0.2.3`, and the daemon completed its v0.2 handshake on it). The reason is not the saved typing. Entered by hand, the name server is the field that gets left empty — and without it DNS fails as iCab `-23045`, which reads like a routing fault rather than a name one. DHCP cannot forget it.
 
 **The cost of this branch, stated plainly: no AppleTalk.** No Chooser, no AFP mounts, no `mac_appletalk_browse`. TCP is unaffected, which is exactly how the gap disguises itself as something else.
 

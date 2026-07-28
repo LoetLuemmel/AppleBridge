@@ -202,6 +202,31 @@ def test_the_guest_checklist_labels_whose_address_each_field_is():
         "R5 is one word with two meanings; the labels are the fix"
 
 
+def test_the_checklist_leads_with_dhcp():
+    # Measured 2026-07-28 on a live guest: slirp answers BOOTP/DHCP and hands
+    # out all four values INCLUDING the name server, and the daemon reconnected
+    # and completed the v0.2 handshake on it. Leading with the manual values
+    # made the operator type the one field they are most likely to omit.
+    lines = "\n".join(ib.guest_checklist(HOST_ADDRS))
+    assert "Using DHCP Server" in lines
+    assert lines.index("Using DHCP Server") < lines.index("Configure     Manually"), \
+        "DHCP is the recommended path, so it comes first"
+
+
+def test_the_manual_values_survive_as_the_fallback():
+    # Not every emulator build answers DHCP, and a checklist that only works on
+    # the machine it was written on is this project's oldest defect (R1).
+    # Scoped to the MANUAL block. "the value appears somewhere in the text"
+    # passed with the fallback deleted, because the DHCP paragraph names the
+    # same addresses while explaining that DHCP supplies them — the third time
+    # today an assertion matched prose about the thing instead of the thing.
+    lines = "\n".join(ib.guest_checklist(HOST_ADDRS))
+    assert "Manually" in lines, "no manual fallback at all"
+    manual = lines[lines.index("Manually"):]
+    for value in (ib.GUEST_ADDR, ib.GUEST_MASK, ib.GUEST_ROUTER, ib.GUEST_RESOLVER):
+        assert value in manual, f"{value} missing from the manual fallback"
+
+
 def test_the_checklist_carries_the_resolver_that_gets_forgotten():
     lines = "\n".join(ib.guest_checklist(HOST_ADDRS))
     assert ib.GUEST_RESOLVER in lines and "23045" in lines
