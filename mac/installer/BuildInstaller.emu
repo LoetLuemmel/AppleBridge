@@ -6,5 +6,10 @@
 SC -i :include: -model far :src:installer.c -o :obj:installer.c.o
 Link -model far -o :bin:AppleBridgeInstaller :obj:installer.c.o :obj:prefs.c.o :obj:mystring.c.o "MeinMac:Interfaces&Libraries:Libraries:CLibraries:StdCLib.o" "MeinMac:Interfaces&Libraries:Libraries:Libraries:Interface.o" "MeinMac:Interfaces&Libraries:Libraries:Libraries:MacRuntime.o"
 Rez installer_res.r -a -o :bin:AppleBridgeInstaller
+Rez installer_logo.r -a -o :bin:AppleBridgeInstaller
+Rez installer_icon.r -a -o :bin:AppleBridgeInstaller
 Rez vers.r -a -o :bin:AppleBridgeInstaller
-SetFile -t APPL -c 'ABis' :bin:AppleBridgeInstaller
+# -a B sets the BUNDLE bit. Without it the Finder never looks for the
+# BNDL/FREF and the app keeps the generic icon, with every resource
+# present and correct — a silent no-effect that looks like a bad icon.
+SetFile -t APPL -c 'ABis' -a B :bin:AppleBridgeInstaller
