@@ -37,6 +37,7 @@
 #include <Files.h>
 #include <Folders.h>
 #include <Aliases.h>
+#include <Shutdown.h>       /* ShutDwnStart - the post-install restart */
 #include <Resources.h>
 #include <Memory.h>
 #include <Gestalt.h>
@@ -55,6 +56,10 @@ QDGlobals qd;
 #define kGestaltMacTCP    'mtcp'   /* MacTCP version */
 
 #define kInstallerCreator 'ABis'
+#define kDaemonCreator    'ABrg'
+#define kConfigCreator    'ABcf'
+#define kWatchdogCreator  'ABwd'
+
 #define DEST_FOLDER_NAME  "\pAppleBridge"
 
 /* Binary leaf names — same in the payload folder and the destination. */
@@ -78,7 +83,10 @@ typedef struct {
 static Boolean      gRunning = true;
 static WindowPtr    gWin = NULL;
 static AppPrefs     gPrefs;
-static ControlHandle gInstallBtn, gQuitBtn;
+static ControlHandle gInstallBtn, gQuitBtn, gRebootBtn;
+static short   gLogoFrame = 0;
+static long    gLogoNext  = 0;    /* TickCount of the next frame */
+static Rect    gLogoRect;
 
 static Check   gChecks[MAX_CHECKS];
 static short   gNumChecks = 0;
@@ -86,7 +94,119 @@ static Boolean gCanInstall = false;
 static Boolean gHasOT = false, gHasMacTCP = false, gHasSerial = false;
 static Boolean gInstalled = false;
 static char    gDestPath[PREFS_PATH_LEN];   /* "Vol:AppleBridge:" once known */
-static char    gStatus[160];
+static char    gStatus[160];    /* line 1: what happened */
+static char    gStatus2[160];   /* line 2: where the prefs went */
+static char    gStatus3[160];   /* line 3: what is still needed */
+static char    gStatus4[160];   /* line 4: the optional extra */
+
+/* ---- animated logo, top right ------------------------------------------
+   Ported verbatim from mac/claudeapp (the About-box party GIF), because that
+   code is already proven on this guest: 'GFin' info + 'clut' + PackBits'd
+   'Gfrm' frames, unpacked into one buffer and CopyBits'd through an offscreen
+   PixMap. Sized 104x39 x 10 frames here — 20 KB of resources on a 33 KB app,
+   which a 2 MB kit will not notice.
+
+   The animation ticks on the installer's existing WaitNextEvent loop and never
+   spins: a busy loop here would starve the daemon and freeze the bridge, which
+   is the rule that governs every guest program in this project. */
+#define kLogoBase 200
+/* ---- animated About-box logo (the party GIF) -------------------------- */
+
+typedef struct {
+    short count;    /* number of frames            */
+    short w;        /* frame width  (== rowBytes)  */
+    short h;        /* frame height                */
+    short baseID;   /* 'Gfrm' id of frame 0        */
+    short delay;    /* ticks between frames        */
+    short packed;   /* 1 => rows are PackBits'd    */
+} GifInfo;
+
+static GifInfo    gGif;
+static Boolean    gGifReady = false;
+static CTabHandle gClut     = 0L;
+static Ptr        gFrameBuf = 0L;      /* one unpacked frame, w*h bytes */
+static PixMap     gSrcPM;              /* source pixmap over gFrameBuf   */
+static Handle     gFrames[64];         /* the 'Gfrm' resources           */
+
+static void GifLoad(void)
+{
+    Handle info;
+    short  i;
+
+    if (gGifReady) return;
+
+    info = GetResource('GFin', kLogoBase);
+    if (info == 0L) return;
+    BlockMove(*info, &gGif, (long)sizeof(GifInfo));
+    if (gGif.count <= 0 || gGif.count > 64) return;
+
+    gClut = (CTabHandle) GetResource('clut', kLogoBase);
+    if (gClut == 0L) return;
+    HNoPurge((Handle)gClut);
+
+    for (i = 0; i < gGif.count; i++) {
+        gFrames[i] = GetResource('Gfrm', gGif.baseID + i);
+        if (gFrames[i] == 0L) return;
+        HNoPurge(gFrames[i]);
+    }
+
+    gFrameBuf = NewPtr((long)gGif.w * (long)gGif.h);
+    if (gFrameBuf == 0L) return;
+
+    gSrcPM.baseAddr   = gFrameBuf;
+    gSrcPM.rowBytes   = (short)(gGif.w | 0x8000);   /* high bit => PixMap */
+    SetRect(&gSrcPM.bounds, 0, 0, gGif.w, gGif.h);
+    gSrcPM.pmVersion  = 0;
+    gSrcPM.packType   = 0;
+    gSrcPM.packSize   = 0;
+    gSrcPM.hRes       = 0x00480000L;                /* 72 dpi */
+    gSrcPM.vRes       = 0x00480000L;
+    gSrcPM.pixelType  = 0;                          /* chunky */
+    gSrcPM.pixelSize  = 8;
+    gSrcPM.cmpCount   = 1;
+    gSrcPM.cmpSize    = 8;
+    gSrcPM.planeBytes = 0;
+    gSrcPM.pmTable    = gClut;
+    gSrcPM.pmReserved = 0;
+
+    gGifReady = true;
+}
+
+static void GifDrawFrame(WindowPtr w, short idx, Rect *dst)
+{
+    Handle   h;
+    Ptr      src, dp;
+    short    row;
+    RGBColor savedFore, savedBack;
+
+    h = gFrames[idx];
+    if (h == 0L) return;
+
+    HLock(h);
+    src = *h;
+    dp  = gFrameBuf;
+    if (gGif.packed) {
+        for (row = 0; row < gGif.h; row++)
+            UnpackBits(&src, &dp, gGif.w);
+    } else {
+        BlockMove(src, gFrameBuf, (long)gGif.w * (long)gGif.h);
+    }
+    HUnlock(h);
+
+    GetForeColor(&savedFore);
+    GetBackColor(&savedBack);
+    ForeColor(blackColor);
+    BackColor(whiteColor);
+    CopyBits((BitMap *)&gSrcPM,
+             (BitMap *)*(((CGrafPtr)w)->portPixMap),
+             &gSrcPM.bounds, dst, srcCopy, 0L);
+    RGBForeColor(&savedFore);
+    RGBBackColor(&savedBack);
+}
+
+
+static void DrawWrapped(const char *text, short left, short *y,
+                        short right);
 
 /* ---- small string/struct helpers --------------------------------------- */
 
@@ -204,7 +324,12 @@ static void RunChecks(void)
     }
 
     /* ToolServer: no Gestalt; located optionally during install (advisory) */
-    AddCheck("ToolServer", ST_WARN, false, "locate during install (optional)");
+    /* Says what happens, not what used to. The installer stopped opening a
+       picker for this (a file dialog nobody asked for), so a preflight line
+       promising to "locate during install" would be describing a step that no
+       longer exists — the kind of stale claim that sends somebody looking for
+       a dialog that never comes. */
+    AddCheck("ToolServer", ST_WARN, false, "optional - add later in the config panel");
 
     gCanInstall = true;
     for (i = 0; i < gNumChecks; i++)
@@ -470,7 +595,6 @@ static void DoInstall(void)
     long   srcD, dstD;
     FSSpec folderSpec, wdSpec;
     Str255 pName;
-    StandardFileReply reply;
 
     if (!gCanInstall) {
         mystrcpy(gStatus, "Cannot install: a required check failed.");
@@ -559,17 +683,16 @@ static void DoInstall(void)
         gPrefs.serialBaud  = 9600;
     }
 
-    /* Optional: let the user locate ToolServer -> APP= chain-launch entry. */
-    StandardGetFile(NULL, -1, NULL, &reply);
-    if (reply.sfGood && gPrefs.appCount < PREFS_MAX_APPS) {
-        char tsPath[PREFS_PATH_LEN];
-        FSSpecToPath(&reply.sfFile, tsPath);
-        if (tsPath[0]) {
-            mystrncpy(gPrefs.apps[gPrefs.appCount], tsPath, PREFS_PATH_LEN - 1);
-            gPrefs.apps[gPrefs.appCount][PREFS_PATH_LEN - 1] = '\0';
-            gPrefs.appCount++;
-        }
-    }
+    /* NO helper picker here, deliberately (operator's call, 2026-07-29).
+       This used to open Standard File in the middle of the install, and a file
+       dialog nobody asked for is confusing exactly because it is unexpected —
+       a first-time user cannot know it wants ToolServer, and adding an alert to
+       explain it was treating the symptom. Helpers are an OPTIONAL extra, so
+       they belong where somebody goes looking for them: the Add Helper App
+       button in AppleBridgeConfig (and the control panel), which is where the
+       guidance and the guards live. The status line below points there, and
+       README/docs/SETUP.md carry it too. */
+
     SavePrefs(&gPrefs);
 
     /* Install autostart: alias to the freshly-copied watchdog. */
@@ -594,11 +717,25 @@ static void DoInstall(void)
      * the German System 7.5 of the SE/30 it is `Systemordner:Preferences:`,
      * and printing `System Folder:…` sent a reader looking for a folder that
      * does not exist on their machine (2026-07-28). */
-    mystrcat(gStatus, "; prefs in the Preferences folder (AppleBridge Prefs)");
+    /* ONE FACT PER LINE. This was a single sentence drawn with one DrawString
+       at x=16 in a 460-pixel window, and it ran off the right edge: the reader
+       saw "...prefs in the Preferences folder (AppleB" and could not discover
+       how it ended. Reported 2026-07-29 by someone reading the window instead
+       of the source. The destination path is machine-specific and unbounded,
+       so no single line can be guaranteed to fit — splitting it is what makes
+       the layout predictable rather than lucky. */
+    gStatus2[0] = '\0';
+    mystrcat(gStatus2, "Prefs in the Preferences folder (AppleBridge Prefs).");
+
+    gStatus3[0] = '\0';
     if (gPrefs.ip[0] == '\0')
-        mystrcat(gStatus, " - now set the host IP in AppleBridgeConfig.");
+        mystrcat(gStatus3, "Now set the host IP in the AppleBridge config panel.");
     else
-        mystrcat(gStatus, " - reboot to start the bridge.");
+        mystrcat(gStatus3, "Reboot to start the bridge.");
+
+    /* Name the optional extra rather than performing it uninvited. */
+    gStatus4[0] = '\0';
+    mystrcat(gStatus4, "Helper apps (ToolServer): add them in the AppleBridge config panel.");
 }
 
 /* ---- UI ---------------------------------------------------------------- */
@@ -635,21 +772,71 @@ static void DrawContent(void)
     }
 
     y += 6;
-    MoveTo(16, y);
-    if (!gCanInstall)
+    if (!gCanInstall) {
+        MoveTo(16, y);
         DrawString("\pA required check failed - install is disabled.");
-    else if (gInstalled)
-        { Str255 p; CtoP(gStatus, p); DrawString(p); }
-    else
+    } else if (gInstalled) {
+        DrawWrapped(gStatus,  16, &y, gWin->portRect.right - 16);
+        DrawWrapped(gStatus2, 16, &y, gWin->portRect.right - 16);
+        DrawWrapped(gStatus3, 16, &y, gWin->portRect.right - 16);
+        DrawWrapped(gStatus4, 16, &y, gWin->portRect.right - 16);
+    } else {
+        MoveTo(16, y);
         DrawString("\pReady to install. Binaries must sit beside this app.");
-
-    if (gCanInstall && !gInstalled && gStatus[0]) {
-        Str255 p;
-        MoveTo(16, y + 15);
-        CtoP(gStatus, p); DrawString(p);
+        y += 15;
+        if (gStatus[0])
+            DrawWrapped(gStatus, 16, &y, gWin->portRect.right - 16);
     }
 
     DrawControls(gWin);
+    if (gGifReady) GifDrawFrame(gWin, gLogoFrame, &gLogoRect);
+}
+
+/* Draw `text` from `left` to `right`, wrapping on word boundaries and
+   advancing *y per line.
+
+   The status line used to be one DrawString at x=16 in a 460-pixel window,
+   and it says things like "Installed to <path>; prefs in the Preferences
+   folder (AppleBridge Prefs) - now set the host IP in AppleBridgeConfig."
+   That runs past the right edge and the tail is simply unreachable — the
+   operator sees a sentence stop mid-word and cannot find out how it ends.
+   Reported 2026-07-29 by somebody reading the window rather than the source.
+   The destination path is machine-specific and unbounded, so no fixed window
+   width can be "wide enough": it has to wrap. */
+static void DrawWrapped(const char *text, short left, short *y, short right)
+{
+    Str255 line, test;
+    short  i = 0, w, k, n;
+    char   word[80];
+
+    line[0] = 0;
+    while (text[i]) {
+        w = 0;
+        while (text[i] && text[i] != ' ' && w < 78) word[w++] = text[i++];
+        while (text[i] == ' '            && w < 78) word[w++] = text[i++];
+
+        n = line[0];
+        for (k = 1; k <= n; k++) test[k] = line[k];
+        for (k = 0; k < w && n < 254; k++) test[++n] = word[k];
+        test[0] = (unsigned char) n;
+
+        if (line[0] > 0 && StringWidth(test) > right - left) {
+            MoveTo(left, *y);
+            DrawString(line);
+            *y += 15;
+            n = 0;
+            for (k = 0; k < w && n < 254; k++) line[++n] = word[k];
+            line[0] = (unsigned char) n;
+        } else {
+            for (k = 0; k <= n; k++) line[k] = test[k];
+            line[0] = (unsigned char) n;
+        }
+    }
+    if (line[0]) {
+        MoveTo(left, *y);
+        DrawString(line);
+        *y += 15;
+    }
 }
 
 static void MakeButtons(void)
@@ -659,6 +846,9 @@ static void MakeButtons(void)
 
     SetRect(&r, 16, top, 140, top + 20);
     gInstallBtn = NewControl(gWin, &r, "\pInstall", true, 0, 0, 1, 0, 0);
+    /* Hidden until there is something to reboot INTO; shown by DoInstall. */
+    SetRect(&r, 268, top, 364, top + 20);
+    gRebootBtn = NewControl(gWin, &r, "\pReboot", false, 0, 0, 1, 0, 0);
     SetRect(&r, 380, top, 444, top + 20);
     gQuitBtn = NewControl(gWin, &r, "\pQuit", true, 0, 0, 1, 0, 0);
 
@@ -682,6 +872,20 @@ static void HandleClick(EventRecord *ev)
                     DoInstall();
                     /* disable only on success; a failed attempt stays retryable */
                     HiliteControl(gInstallBtn, gInstalled ? 255 : 0);
+                    /* Once the install has happened, Reboot is the only
+                       action that leads anywhere: the daemon comes up through
+                       Startup Items and nothing else starts it, so an installed
+                       machine that is merely quit out of is an install that
+                       does not work yet. Operator's call (2026-07-29): show
+                       Reboot, take Quit away. The cost is stated rather than
+                       hidden — somebody who wants out without restarting has to
+                       quit the emulator instead. */
+                    if (gInstalled) {
+                        ShowControl(gRebootBtn);
+                        HideControl(gQuitBtn);
+                    }
+                } else if (ctl == gRebootBtn) {
+                    ShutDwnStart();          /* restart; the bridge comes up */
                 } else if (ctl == gQuitBtn) {
                     gRunning = false;
                 }
@@ -713,15 +917,30 @@ int main(void)
     gStatus[0] = '\0';
     RunChecks();
 
-    SetRect(&bounds, 40, 60, 500, 340);
+    SetRect(&bounds, 40, 60, 500, 372);   /* +32: the status is 3 lines now */
     gWin = NewCWindow(NULL, &bounds, "\pAppleBridge Installer", true,
                       documentProc, (WindowPtr)-1L, true, 0);
     SetPort(gWin);
     MakeButtons();
+
+    /* Top right, inside the window, clear of the check list. */
+    GifLoad();
+    if (gGifReady) {
+        short right = gWin->portRect.right - 12;
+        SetRect(&gLogoRect, right - gGif.w, 12, right, 12 + gGif.h);
+        gLogoNext = TickCount();
+    }
     DrawContent();
 
     while (gRunning) {
-        if (WaitNextEvent(everyEvent, &ev, 30L, NULL)) {
+        /* One frame per delay, driven by the event loop's own idle. The sleep
+           below is 30 ticks, so ask for a shorter one while animating. */
+        if (gGifReady && TickCount() >= gLogoNext) {
+            GifDrawFrame(gWin, gLogoFrame, &gLogoRect);
+            gLogoFrame = (short)((gLogoFrame + 1) % gGif.count);
+            gLogoNext  = TickCount() + gGif.delay;
+        }
+        if (WaitNextEvent(everyEvent, &ev, gGifReady ? 2L : 30L, NULL)) {
             switch (ev.what) {
                 case mouseDown:
                     HandleClick(&ev);

@@ -354,7 +354,13 @@ def test_seeding_says_so_when_the_guest_has_no_prefs_file_yet():
     tmp = os.path.join(tempfile.mkdtemp(), "absent")
     ok, msg = ib.seed_guest_prefs("/tmp/img.dmg", "192.168.3.213", probes(),
                                   run=run, hfs={"tmp": tmp})
-    assert not ok and "installer creates it" in msg
+    # Asserts the PROPERTY, not the sentence: it refuses, and it says where it
+    # looked. The wording changed when the seeder learned about kit volumes,
+    # and a test pinned to a phrase would have failed for no defect — while one
+    # pinned to "refuses" alone would pass even if the message went blank.
+    assert not ok
+    assert ib.GUEST_PREFS_HFS in msg, msg
+    assert "installer" in msg, msg
 
 
 # --- the bundle probe -------------------------------------------------------
@@ -694,7 +700,7 @@ class KitIO:
             return self.listing
         return ""
 
-    def build(self, dest="/tmp/kitdir", host_ip="192.168.3.154", **kw):
+    def build(self, dest="/tmp/kitdir", host_ip="192.168.3.154", release=False, **kw):
         # read_bytes is overridable so a test can hand back a binary with an
         # address baked into it — the defect the scan exists for.
         return ib.export_guest_kit(
@@ -702,7 +708,7 @@ class KitIO:
             run=self.run, exists=lambda p: True,
             read_bytes=kw.pop("read_bytes", lambda p: b"z" * 1000),
             write_bytes=lambda p, d: self.written.__setitem__(p, d),
-            staging="/tmp/kitstage", **kw)
+            staging="/tmp/kitstage", release=release, **kw)
 
     def argv_for(self, verb):
         return [c for c in self.calls if c[0] == verb]
@@ -1244,6 +1250,32 @@ def test_seeding_prefs_without_hfsutils_refuses_the_same_way():
     assert ok is False and "brew install hfsutils" in msg, msg
 
 
+def test_the_seed_refusal_names_the_route_that_needs_no_hfsutils():
+    """Measured 2026-07-29 on a host with neither Homebrew nor MacPorts.
+
+    "brew install hfsutils, then run this again" was the message's only exit,
+    and on that machine it is not an exit — there is nothing to run brew with.
+    Seeding is a CONVENIENCE (it saves typing the address on the guest), so a
+    refusal that withholds the alternative turns a detour into a dead end for
+    exactly the person a released kit is aimed at.
+    """
+    ok, msg = ib.seed_guest_prefs("/tmp/x.dmg", "192.168.3.1",
+                                  probes(hfs_missing=list(ib.HFS_TOOLS)),
+                                  run=lambda argv: "")
+    assert ok is False
+    assert "AppleBridgeConfig" in msg, "name the guest-side route"
+    assert "do not have to seed" in msg, "say that seeding is optional"
+
+
+def test_a_kit_export_refusal_offers_no_false_alternative():
+    # The export has no way round: a kit cannot be built without reading an
+    # HFS image. Only the seed message gets the alternative, so this one must
+    # not grow a copy of it and promise something that does not work.
+    io = KitIO()
+    _, msg, _ = io.build(probes_=probes(hfs_missing=["hmount"]))
+    assert "AppleBridgeConfig" not in msg, msg
+
+
 def test_an_hmount_that_produces_no_output_says_so_instead_of_a_bare_colon():
     # The runner degrades to "" on OSError, so the old message ended at the
     # colon and pointed at the disk image -- which was never the problem.
@@ -1277,6 +1309,121 @@ def test_the_report_states_whether_hfsutils_is_present():
     assert "hfsutils:" in text and "MISSING" in text and "hformat" in text, text
     assert "hfsutils:         present" in ib.format_text(
         probes(), ib.decide(probes()))
+
+
+# --- the release kit: an artifact that may be handed to a stranger ----------
+
+def test_a_release_kit_ships_no_address_at_all():
+    # The whole point. An address baked into a PUBLISHED kit points every
+    # downloader's guest at the machine that built it -- and on any LAN where
+    # that number answers, it connects and reports full health (R2), once per
+    # user instead of once.
+    text = ib.guest_prefs_text("")
+    assert "\nIP=\n" in text, text
+    assert not ib.payload_host_literals(text.encode("mac_roman")), text
+
+
+def test_a_normal_kit_still_carries_the_address_because_that_is_its_job():
+    text = ib.guest_prefs_text("192.168.3.240")
+    assert "IP=192.168.3.240" in text
+
+
+def test_the_release_prefs_say_where_the_address_comes_from_instead():
+    # An empty field with no explanation reads as a bug. Name both ways out.
+    text = ib.guest_prefs_text("")
+    assert "--seed-guest-prefs" in text and "AppleBridgeConfig" in text
+
+
+def test_the_release_export_refuses_prefs_that_carry_an_address():
+    # A guard on the ONE file where an address legitimately lives, so it cannot
+    # be smuggled into a release by a future edit of the template. Simulated by
+    # making the template return an address even in release mode.
+    real = ib.guest_prefs_text
+    ib.guest_prefs_text = lambda ip, net="OT": "IP=192.168.3.240\nNET=OT\n"
+    try:
+        io = KitIO()
+        ok, msg, _ = io.build(release=True)
+    finally:
+        ib.guest_prefs_text = real
+    assert ok is False
+    assert "192.168.3.240" in msg and "release kit" in msg, msg
+    assert not any(c[0] == "hformat" for c in io.calls), \
+        "it must refuse BEFORE writing an image somebody could publish"
+
+
+def test_a_release_kit_builds_and_says_the_address_is_missing_on_purpose():
+    io = KitIO()
+    ok, msg, _ = io.build(release=True)
+    assert ok is True, msg
+    assert "carry NO address" in msg and "--seed-guest-prefs" in msg, msg
+
+
+def test_the_seeder_finds_the_prefs_in_a_KIT_as_well_as_an_installed_guest():
+    # A downloaded release kit is stamped before it is ever mounted, so the
+    # seeder must handle a volume that has no System Folder at all.
+    assert ib.KIT_PREFS_HFS == ":AppleBridge Prefs"
+    assert ib.GUEST_PREFS_HFS.startswith(":System Folder:")
+
+    seen = []
+
+    def run(argv):
+        seen.append(list(argv))
+        if argv[0] == "hmount":
+            return "Volume name is whatever\n"
+        if argv[0] == "hcopy" and argv[2] == ib.GUEST_PREFS_HFS:
+            return ""                      # absent: this is a kit, not a guest
+        if argv[0] == "hcopy" and argv[2] == ib.KIT_PREFS_HFS:
+            open(argv[3], "wb").write(b"# prefs\nIP=\nNET=OT\n")
+        return ""
+
+    ok, msg = ib.seed_guest_prefs("/tmp/kit.dmg", "192.168.3.158", probes(),
+                                  run=run,
+                                  hfs={"tmp": "/tmp/_ab_seed_test"})
+    assert ok is True, msg
+    assert ib.KIT_PREFS_HFS in msg, msg
+    copied_back = [c for c in seen if c[0] == "hcopy" and c[-1] == ib.KIT_PREFS_HFS]
+    assert copied_back, "the edited file was never written back to the kit"
+
+
+def test_the_seeder_says_both_places_it_looked_when_it_finds_neither():
+    ok, msg = ib.seed_guest_prefs(
+        "/tmp/x.dmg", "192.168.3.1", probes(),
+        run=lambda a: "Volume name is x\n" if a[0] == "hmount" else "",
+        hfs={"tmp": "/tmp/_ab_seed_missing"})
+    assert ok is False
+    assert ib.GUEST_PREFS_HFS in msg and ib.KIT_PREFS_HFS in msg, msg
+
+
+def test_seeding_preserves_the_prefs_type_and_creator():
+    # `hcopy -r` moves bytes and nothing else, so a seeded file came back as
+    # ????/UNIX — and a typeless prefs file is one AppleBridgeConfig will not
+    # open, while the daemon reads by path and carries on. Invisible until a
+    # kit was listed after seeding (2026-07-29).
+    calls = []
+
+    def run(argv):
+        calls.append(list(argv))
+        if argv[0] == "hmount":
+            return "Volume name is whatever\n"
+        if argv[0] == "hls":
+            return "f  TEXT/ABrg    0    441 Jul 29 11:46 AppleBridge Prefs\n"
+        if argv[0] == "hcopy" and argv[2] == ib.GUEST_PREFS_HFS:
+            open(argv[3], "wb").write(b"# prefs\nIP=1.2.3.4\nNET=OT\n")
+        return ""
+
+    ok, msg = ib.seed_guest_prefs("/tmp/g.dmg", "192.168.3.9", probes(),
+                                  run=run, hfs={"tmp": "/tmp/_ab_tc_test"})
+    assert ok is True, msg
+    fix = [c for c in calls if c[0] == "hattrib"]
+    assert fix, "type/creator were never restored"
+    assert "-t" in fix[0] and "TEXT" in fix[0], fix
+    assert "ABrg" in fix[0], "it must restore what was THERE, not a hardcoded pair"
+
+
+def test_the_type_creator_probe_reads_what_hls_reports():
+    run = lambda a: "f  TEXT/ttxt   0   441 Jul 29 11:46 AppleBridge Prefs\n"
+    assert ib.hfs_type_creator(run, ":x") == ("TEXT", "ttxt")
+    assert ib.hfs_type_creator(lambda a: "", ":x") is None
 
 
 if __name__ == "__main__":

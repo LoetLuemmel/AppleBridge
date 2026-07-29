@@ -64,7 +64,11 @@ Examples:
         "description": """Write a text file to the Mac filesystem.
 
 Path uses : separator (e.g., "MeinMac:Temp:myfile.c").
-Content will be converted to MacRoman encoding with CR line endings.""",
+Content is converted to MacRoman with CR line endings.
+
+Goes through the daemon's native WRITEFILE verb, so it needs no ToolServer
+and multi-line content is safe. Returns the byte count actually sent, which
+differs from len(content) when a character does not survive MacRoman.""",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -75,6 +79,14 @@ Content will be converted to MacRoman encoding with CR line endings.""",
                 "content": {
                     "type": "string",
                     "description": "File content to write"
+                },
+                "type": {
+                    "type": "string",
+                    "description": "4-char file type (default TEXT)"
+                },
+                "creator": {
+                    "type": "string",
+                    "description": "4-char creator (default 'MPS ', the MPW editor)"
                 }
             },
             "required": ["path", "content"]
@@ -779,25 +791,52 @@ def mpw_execute(command: str, timeout: int = 30) -> Dict[str, Any]:
         }
 
 
-def mac_write_file(path: str, content: str) -> Dict[str, Any]:
-    """Write file to Mac filesystem using Echo command."""
+def mac_write_file(path: str, content: str, type: str = "TEXT",
+                   creator: str = "MPS ") -> Dict[str, Any]:
+    """Write a text file via the daemon's native WRITEFILE verb.
+
+    This used to be `Echo '<content>' > '<path>'` through ToolServer, and that
+    could not write a file with more than one line in it. A CR inside the
+    quoted argument ends the whole ToolServer script: the redirect never runs,
+    every later command in the same request is dropped, and ToolServer still
+    answers STATUS:0 — so the tool reported success, having done nothing.
+    `bytes_written` was `len(content)`, the length of what was ASKED, so it
+    agreed. Measured 2026-07-29: a two-line write vanished, and the `Echo done`
+    chained after it vanished with it.
+
+    The native verb has none of that in the path — no shell, no quoting, no
+    ToolServer at all, so this also works on a guest that has none. It is the
+    same transport `mac_put_file` uses; the only thing added here is the text
+    conversion the old docstring already promised: UTF-8 -> MacRoman, LF -> CR.
+    """
     try:
         conn = get_connection()
         if not conn.is_connected():
             return {"success": False, "path": path, "error": "Mac not connected"}
 
-        # Escape single quotes in content
-        escaped_content = content.replace("'", "'\"'\"'")
+        # Normalise CRLF/LF to the Mac's CR, then encode. Done in this order so
+        # a file that already has CRs (round-tripped off the guest) is not given
+        # a doubled line ending.
+        text = content.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r")
+        data = text.encode("mac_roman", errors="replace")
 
-        # Use Echo to write file (handles encoding automatically)
-        command = f"Echo '{escaped_content}' > '{path}'"
-
-        status, stdout, stderr = conn.send_command(command, timeout=30.0)
+        cmd = "WRITEFILE:" + ":".join((
+            base64.b64encode(path.encode("mac_roman", errors="replace")).decode("ascii"),
+            _ostype(type, "TEXT").hex(),
+            _ostype(creator, "MPS ").hex(),
+            base64.b64encode(data).decode("ascii"),
+            base64.b64encode(b"").decode("ascii"),      # no resource fork
+        ))
+        status, stdout, stderr = conn.send_command(cmd, timeout=120.0)
 
         return {
             "success": status == 0,
             "path": path,
-            "bytes_written": len(content),
+            # The bytes actually put on the wire, not len(content): the two
+            # differ whenever a character does not survive MacRoman.
+            "bytes_written": len(data),
+            "type": _ostype(type, "TEXT").decode("mac_roman", errors="replace"),
+            "creator": _ostype(creator, "MPS ").decode("mac_roman", errors="replace"),
             "error": stderr if status != 0 else None
         }
     except Exception as e:

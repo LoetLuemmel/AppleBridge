@@ -117,9 +117,19 @@ sequenceDiagram
 
 **Mac (Basilisk II):**
 - System 7.6.1 with OpenTransport installed
-- MPW Golden Master
-- ToolServer running (for command output capture)
-- Network configured (DHCP or manual IP)
+- Network configured (DHCP — slirp answers it and supplies all four values)
+- **MPW + ToolServer — optional.** They add the *command tier* (`mpw_execute`,
+  `mac_compile`, `mac_build`). Without them everything else still works:
+  screenshots, fork-aware file transfer, input injection, directory listings,
+  clipboard, launch and shutdown. An absent ToolServer is a tier you do not
+  have, not a broken install.
+
+The guest software installs from a **kit** — a small disk image you mount in the
+emulator and run `AppleBridgeInstaller` from. No compiler on the Mac, nothing
+typed by hand: `install_bridge.py --seed-guest-prefs <kit.dmg>` writes your
+host's address into it first. Helper applications like ToolServer are added
+later, optionally, with **Add Helper App…** in the AppleBridge config panel.
+See [docs/SETUP.md](docs/SETUP.md) Part 3.
 
 ### 1. Configure MCP
 
