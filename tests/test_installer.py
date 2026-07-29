@@ -1368,6 +1368,38 @@ def test_the_seeder_says_both_places_it_looked_when_it_finds_neither():
     assert ib.GUEST_PREFS_HFS in msg and ib.KIT_PREFS_HFS in msg, msg
 
 
+def test_seeding_preserves_the_prefs_type_and_creator():
+    # `hcopy -r` moves bytes and nothing else, so a seeded file came back as
+    # ????/UNIX — and a typeless prefs file is one AppleBridgeConfig will not
+    # open, while the daemon reads by path and carries on. Invisible until a
+    # kit was listed after seeding (2026-07-29).
+    calls = []
+
+    def run(argv):
+        calls.append(list(argv))
+        if argv[0] == "hmount":
+            return "Volume name is whatever\n"
+        if argv[0] == "hls":
+            return "f  TEXT/ABrg    0    441 Jul 29 11:46 AppleBridge Prefs\n"
+        if argv[0] == "hcopy" and argv[2] == ib.GUEST_PREFS_HFS:
+            open(argv[3], "wb").write(b"# prefs\nIP=1.2.3.4\nNET=OT\n")
+        return ""
+
+    ok, msg = ib.seed_guest_prefs("/tmp/g.dmg", "192.168.3.9", probes(),
+                                  run=run, hfs={"tmp": "/tmp/_ab_tc_test"})
+    assert ok is True, msg
+    fix = [c for c in calls if c[0] == "hattrib"]
+    assert fix, "type/creator were never restored"
+    assert "-t" in fix[0] and "TEXT" in fix[0], fix
+    assert "ABrg" in fix[0], "it must restore what was THERE, not a hardcoded pair"
+
+
+def test_the_type_creator_probe_reads_what_hls_reports():
+    run = lambda a: "f  TEXT/ttxt   0   441 Jul 29 11:46 AppleBridge Prefs\n"
+    assert ib.hfs_type_creator(run, ":x") == ("TEXT", "ttxt")
+    assert ib.hfs_type_creator(lambda a: "", ":x") is None
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

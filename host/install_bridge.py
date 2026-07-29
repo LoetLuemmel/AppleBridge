@@ -1147,6 +1147,28 @@ def _write_bytes(path, data):
         fh.write(data)
 
 
+def hfs_type_creator(run, path):
+    """-> ("TEXT", "ttxt") for a file on the MOUNTED volume, or None.
+
+    Needed because `hcopy -r` moves bytes and nothing else: copying a file back
+    in gives it hfsutils' default `????/UNIX`, and a typeless prefs file is one
+    AppleBridgeConfig will not open. The daemon reads by PATH and carries on
+    regardless, which is exactly why this was invisible until a kit was listed
+    after seeding (2026-07-29).
+
+    Read rather than assumed: a kit's prefs are `TEXT/ttxt` while an installed
+    guest's are `TEXT/ABrg` (installer.c creates them with the daemon's
+    creator), so a hardcoded pair would quietly rewrite one of the two.
+    """
+    for line in run(["hls", "-l", path]).splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and "/" in parts[1]:
+            kind, _, creator = parts[1].partition("/")
+            if len(kind) == 4:
+                return kind, (creator or "").ljust(4)[:4]
+    return None
+
+
 def seed_guest_prefs(image, host_ip, probes, run=None, hfs=None):
     """Rewrite `IP=` in a POWERED-OFF disk image's AppleBridge Prefs. -> (ok, msg).
 
@@ -1211,9 +1233,15 @@ def seed_guest_prefs(image, host_ip, probes, run=None, hfs=None):
             return True, f"IP= was already {host_ip}; nothing to change."
         with open(tmp, "wb") as fh:
             fh.write(updated)
+        # Capture Finder info BEFORE the overwrite, restore it after: `hcopy -r`
+        # would otherwise leave the file `????/UNIX`.
+        finfo = hfs_type_creator(run, where)
         run(["hcopy", "-r", tmp, where])
+        if finfo:
+            run(["hattrib", "-t", finfo[0], "-c", finfo[1], where])
+        restored = f" ({finfo[0]}/{finfo[1]} preserved)" if finfo else ""
         return True, (f"seeded IP={host_ip} into {where}; every other "
-                      f"key preserved. Original kept at {tmp}.orig")
+                      f"key preserved{restored}. Original kept at {tmp}.orig")
     finally:
         run(["humount"])
 
