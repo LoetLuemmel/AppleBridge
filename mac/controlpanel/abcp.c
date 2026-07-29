@@ -36,6 +36,7 @@
 #include <Files.h>          /* FSSpec, FSMakeFSSpec, FSpOpenDF/Create, FSRead/Write, SetEOF, PBGetCatInfo */
 #include <Folders.h>        /* FindFolder, kStartupFolderType, kPreferencesFolderType */
 #include <StandardFile.h>   /* SFGetFile, SFReply (inline-trap form) */
+#include <Resources.h>      /* CurResFile / UseResFile - inline traps */
 
 #define macDev    8
 #define initDev   0
@@ -69,6 +70,7 @@ enum { kLabel = 1, kStatus, kAutostart, kIP, kHelperList, kAddBtn, kRemoveBtn };
 
 /* per-instance state, kept in the cdevValue handle (no globals). */
 typedef struct {
+    short cdevRes;                          /* OUR resource file (see initDev) */
     short lastDaemon;                       /* -1 unknown; 0/1 last shown */
     short lastAuto;
     short helpersShown;                     /* 0 = re-read helper leaves from prefs */
@@ -84,7 +86,7 @@ static Boolean DaemonRunning(void);
 static Boolean AutostartInstalled(void);
 static OSErr   PrefsSpec(FSSpec *spec);
 static void    FSSpecToPath(const FSSpec *spec, char *path);
-static void    AddHelper(void);
+static void    AddHelper(short cdevRes);
 static void    RemoveSelectedHelper(Handle h);
 static void    DaemonString(Str255 d, Boolean running);
 static void    AutoString(Str255 d, Boolean installed);
@@ -109,6 +111,13 @@ pascal long CDevMain(short message, short item, short numItems, short rsrcID,
             Handle h = NewHandle(sizeof(CPState));
             if (h) {
                 CPState *st = (CPState *)(*h);
+                /* The host has made OUR resource file current for initDev,
+                   and only for initDev. Hold on to it: by the time a click
+                   arrives the chain's current file is whatever the Control
+                   Panel last used, so an unqualified Alert() would search
+                   from there -- missing our ALRT, or finding another
+                   panel's resource of the same id. */
+                st->cdevRes      = CurResFile();
                 st->lastDaemon   = -1;             /* force first poll to draw */
                 st->lastAuto     = -1;
                 st->helpersShown = 0;              /* re-read helpers */
@@ -123,7 +132,7 @@ pascal long CDevMain(short message, short item, short numItems, short rsrcID,
             if (cdevValue) {
                 short which = item - numItems;
                 if (which == kAddBtn) {
-                    AddHelper();                   /* SFGetFile -> append APP= to prefs */
+                    AddHelper(((CPState *)(*(Handle)cdevValue))->cdevRes);
                     ((CPState *)(*(Handle)cdevValue))->helpersShown = 0;   /* re-read */
                 } else if (which == kRemoveBtn) {
                     RemoveSelectedHelper((Handle) cdevValue);   /* drop selected APP= line */
@@ -261,7 +270,7 @@ static void FSSpecToPath(const FSSpec *spec, char *path)
 }
 
 /* Standard File picker -> append an "APP=<path>" line to the prefs file. */
-static void AddHelper(void)
+static void AddHelper(short cdevRes)
 {
     Point       where;
     Str255      prompt, line;
@@ -270,7 +279,7 @@ static void AddHelper(void)
     FSSpec      spec;
     CInfoPBRec  cpb;
     OSErr       err;
-    short       refNum, li = 0, k;
+    short       refNum, li = 0, k, saved;
     long        count;
     char        path[kPathBufSize];
 
@@ -280,7 +289,10 @@ static void AddHelper(void)
        SFGetFile's prompt (Inside Macintosh — only SFPutFile displays one), so a
        string here would change nothing on screen while looking like guidance. */
     prompt[0] = 0;
+    saved = CurResFile();
+    UseResFile(cdevRes);
     NoteAlert(kAddHelperAlert, (ModalFilterProcPtr) 0);
+    UseResFile(saved);                      /* leave the chain as we found it */
 
     /* Refuse a choice that cannot work and hand the picker straight back, so
        the operator stays in the task instead of being dropped out of it with a
@@ -311,11 +323,17 @@ static void AddHelper(void)
             || cpb.hFileInfo.ioFlFndrInfo.fdCreator == kConfigCreator
             || cpb.hFileInfo.ioFlFndrInfo.fdCreator == kWatchdogCreator
             || cpb.hFileInfo.ioFlFndrInfo.fdCreator == kInstallerCreator) {
+            saved = CurResFile();
+            UseResFile(cdevRes);
             NoteAlert(kOwnSuiteAlert, (ModalFilterProcPtr) 0);
+            UseResFile(saved);
             continue;
         }
         if (cpb.hFileInfo.ioFlFndrInfo.fdType != 'APPL') {
+            saved = CurResFile();
+            UseResFile(cdevRes);
             NoteAlert(kNotAnAppAlert, (ModalFilterProcPtr) 0);
+            UseResFile(saved);
             continue;
         }
         break;
