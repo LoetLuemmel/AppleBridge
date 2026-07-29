@@ -34,6 +34,8 @@
 #include <StandardFile.h>
 #include <Processes.h>
 #include <AppleEvents.h>
+#include <AEObjects.h>      /* object specifiers - see CloseMyWindow() */
+#include <AERegistry.h>     /* cWindow, kAEClose */
 #include <Files.h>
 #include <Folders.h>
 #include <Aliases.h>
@@ -353,6 +355,103 @@ static OSErr MyFolder(short *vRef, long *dirID)
     *vRef = appSpec.vRefNum;
     *dirID = appSpec.parID;
     return noErr;
+}
+
+/* The name of the volume this installer was launched from. */
+static OSErr MyVolumeName(Str255 name)
+{
+    HParamBlockRec pb;
+    short vRef;
+    long  dirID;
+
+    if (MyFolder(&vRef, &dirID) != noErr) return ioErr;
+    pb.volumeParam.ioCompletion = NULL;
+    pb.volumeParam.ioNamePtr = name;
+    pb.volumeParam.ioVRefNum = vRef;
+    pb.volumeParam.ioVolIndex = 0;          /* 0 = use ioVRefNum */
+    return PBHGetVInfoSync(&pb);
+}
+
+/* Ask the Finder to close the window of the volume we were run from, before
+ * restarting. Requested by the operator: tidy first, then restart.
+ *
+ * Closing the WINDOW rather than unmounting the volume: the Finder holds a
+ * volume's desktop database open, so PBUnmountVol answers -47 (fBsyErr) for
+ * the same reason AFPUNMOUNT does on a mounted share.
+ *
+ * The object specifier -- `window "<volume>"` -- is built by hand. The Object
+ * Support Library is only needed to RESOLVE a specifier, which is the Finder's
+ * side of this; the sender merely constructs the descriptor, and if the
+ * coercion is unavailable the record is relabelled directly, since a
+ * typeObjectSpecifier IS an AERecord with these four keys.
+ *
+ * kAEWaitReply is load-bearing, not caution: AESend with kAENoReply returns as
+ * soon as the event is QUEUED, so ShutDwnStart() began the restart before the
+ * Finder had run and nothing was closed. Measured 2026-07-29 -- identical code
+ * closed the window perfectly with the restart taken out, and not at all with
+ * it left in. A one-second yield loop was tried first and was not enough.
+ *
+ * Bounded (2 s) and best-effort throughout: a Finder that will not answer is a
+ * cosmetic loss and must never hold up the restart.
+ */
+static void CloseMyWindow(void)
+{
+    AEAddressDesc target;
+    AppleEvent   ev, reply;
+    AEDesc       nullDesc, rec, keyData, objSpec;
+    Str255       vol;
+    OSType       finderSig = 'MACS';
+    DescType     want = cWindow;
+    DescType     form = formName;
+    Boolean      coerced;
+
+    if (MyVolumeName(vol) != noErr || vol[0] == 0) return;
+    if (AECreateDesc(typeNull, NULL, 0, &nullDesc) != noErr) return;
+    if (AECreateList(NULL, 0, true, &rec) != noErr) {          /* true = record */
+        AEDisposeDesc(&nullDesc);
+        return;
+    }
+    AEPutKeyPtr(&rec, keyAEDesiredClass, typeType, (Ptr)&want, sizeof(want));
+    AEPutKeyDesc(&rec, keyAEContainer, &nullDesc);
+    AEPutKeyPtr(&rec, keyAEKeyForm, typeEnumerated, (Ptr)&form, sizeof(form));
+    if (AECreateDesc(typeChar, (Ptr)&vol[1], vol[0], &keyData) == noErr) {
+        AEPutKeyDesc(&rec, keyAEKeyData, &keyData);
+        AEDisposeDesc(&keyData);
+    }
+    /* Either a fresh descriptor (dispose it) or an ALIAS of the record
+       (must not be disposed twice). Track which, rather than leaking one case
+       and double-freeing the other. */
+    coerced = (AECoerceDesc(&rec, typeObjectSpecifier, &objSpec) == noErr);
+    if (!coerced) {
+        objSpec = rec;                              /* relabel, no OSL needed */
+        objSpec.descriptorType = typeObjectSpecifier;
+    }
+    if (AECreateDesc(typeApplSignature, (Ptr)&finderSig, sizeof(finderSig),
+                     &target) == noErr) {
+        if (AECreateAppleEvent(kAECoreSuite, kAEClose, &target,
+                               kAutoGenerateReturnID, kAnyTransactionID,
+                               &ev) == noErr) {
+            AEPutParamDesc(&ev, keyDirectObject, &objSpec);
+            /* Initialise the reply and only dispose it if AESend actually
+               filled it in. AESend leaves the reply UNTOUCHED when it fails,
+               so disposing unconditionally hands AEDisposeDesc whatever was on
+               the stack. That crashed the installer with a system error on a
+               System 7.5.3 guest, where the Finder refuses this event — and
+               never showed on 7.6.1, where it succeeds. A crash that only
+               happens on the machine that cannot do the thing anyway. */
+            reply.descriptorType = typeNull;
+            reply.dataHandle     = NULL;
+            if (AESend(&ev, &reply, kAEWaitReply, kAENormalPriority,
+                       120, NULL, NULL) == noErr) {
+                AEDisposeDesc(&reply);
+            }
+            AEDisposeDesc(&ev);
+        }
+        AEDisposeDesc(&target);
+    }
+    if (coerced) AEDisposeDesc(&objSpec);   /* else it aliases rec */
+    AEDisposeDesc(&rec);
+    AEDisposeDesc(&nullDesc);
 }
 
 /* Build a "Vol:dir:...:name" HFS path from an FSSpec by walking parents. */
@@ -914,6 +1013,10 @@ static void HandleClick(EventRecord *ev)
                         HideControl(gQuitBtn);
                     }
                 } else if (ctl == gRestartBtn) {
+                    /* Operator's sequence: close the kit's window first, then
+                       restart. CloseMyWindow waits for the Finder's reply, so
+                       by the time we get here the window is shut. */
+                    CloseMyWindow();
                     ShutDwnStart();   /* restart; the bridge comes up */
                 } else if (ctl == gQuitBtn) {
                     gRunning = false;
