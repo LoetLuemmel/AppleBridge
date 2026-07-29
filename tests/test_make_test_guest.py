@@ -45,13 +45,38 @@ HLS_LONG = (
 
 MISSING = 'hls: ":AppleBridge:": no such file or directory\n'
 
+# A GERMAN volume, transcribed from the 2013 MacBook's guest. The System Folder
+# is "Systemordner" and Startup Items is "Startobjekte"; nothing here is called
+# what the tool used to look for.
+GERMAN = {
+    ":": ("d          8 items               Apr 14  2020 Anwendungen\n"
+          "d          6 items               Jul 29 16:06 AppleBridge\n"
+          "d         42 items               Dec 29  2025 Systemordner\n"),
+    ":AppleBridge:": HLS_LONG,
+    ":Systemordner:": (
+        "f  zsys/MACS   2613348     20864 Dec 29  2025 System\n"
+        "d         30 items               Jul 29 16:37 Preferences\n"
+        "d          2 items               Jul 29 16:37 Startobjekte\n"),
+    ":Systemordner:Preferences:": (
+        "f  TEXT/ABrg         0       103 Jul 29 16:37 'AppleBridge Prefs'\n"
+        "f  pref/MACS       123         0 Jan  1  2020 'Finder Preferences'\n"),
+    ":Systemordner:Startobjekte:": (
+        "f  adrp/ABwd       727         0 Jul 29 16:37 'AppleBridge Watchdog'\n"
+        "f  APPL/KEPS     58379         0 Jun 12  1995 'KODAK PRECISION Startup'\n"),
+    ":Anwendungen:": "",
+}
+
 
 class FakeHfs:
     """Records every hfsutils call and answers from a simple volume model."""
 
-    def __init__(self, present=(), listing=HLS_LONG, mountable=True):
+    def __init__(self, present=(), listing=HLS_LONG, mountable=True, tree=None):
         self.present = set(present)
         self.listing = listing
+        # tree: path -> `hls -l` output, so a whole volume can be modelled.
+        # Without it every path answers with `listing`, which is enough for the
+        # parsing tests but cannot express a System Folder.
+        self.tree = tree
         self.mountable = mountable
         self.calls = []
 
@@ -65,6 +90,8 @@ class FakeHfs:
         if cmd == "hls":
             path = argv[-1]
             if argv[1:2] == ["-l"]:
+                if self.tree is not None:
+                    return self.tree.get(path, MISSING)
                 return self.listing
             return (path + "\n") if path in self.present else MISSING
         if cmd in ("hdel", "hrmdir"):
@@ -130,7 +157,10 @@ def test_directories_in_the_listing_are_not_passed_to_hdel():
 def test_a_surviving_install_folder_fails_the_strip():
     # If this passes while a daemon is still there, a later "the install worked"
     # proves nothing.
-    fake = FakeHfs(present={mtg.INSTALL_FOLDER})
+    tree = {":": "d  42 items  Dec 29  2025 Systemordner\n",
+            ":Systemordner:": "f  zsys/MACS 2613348 20864 Dec 29  2025 System\n",
+            ":AppleBridge:": ""}
+    fake = FakeHfs(present={mtg.INSTALL_FOLDER}, tree=tree)
     fake.calls.append(["sentinel"])
 
     def stubborn(argv, timeout=600):
@@ -145,18 +175,25 @@ def test_a_surviving_install_folder_fails_the_strip():
 
 
 def test_a_clean_strip_reports_verified():
-    fake = FakeHfs(present={mtg.INSTALL_FOLDER, mtg.GUEST_PREFS, mtg.STARTUP_ITEM})
+    fake = FakeHfs(present={mtg.INSTALL_FOLDER}, tree=dict(GERMAN))
+    fake.tree[":AppleBridge:"] = ""          # emptied by the deletes above
+    fake.tree[":Systemordner:Preferences:"] = ""
+    fake.tree[":Systemordner:Startobjekte:"] = ""
+    fake.present = set()
     ok, notes = mtg.strip_applebridge("/tmp/x.dmg", run=fake)
     assert ok is True
-    assert any("verified" in n for n in notes), notes
+    assert any("verified by rescan" in n for n in notes), notes
 
 
 def test_nothing_to_remove_is_success_not_failure():
     # A machine that never had AppleBridge is the GOAL, so absence is the win.
-    fake = FakeHfs(present=set(), listing="")
+    clean = {":": "d  42 items  Dec 29  2025 Systemordner\n",
+             ":Systemordner:": "f  zsys/MACS 2613348 20864 Dec 29  2025 System\n",
+             ":AppleBridge:": ""}
+    fake = FakeHfs(present=set(), tree=clean)
     ok, notes = mtg.strip_applebridge("/tmp/x.dmg", run=fake)
     assert ok is True
-    assert any("no guest prefs to remove" in n for n in notes), notes
+    assert not fake.deleted(), "nothing to delete on a clean volume"
 
 
 def test_an_unmountable_image_fails_before_deleting_anything():
@@ -266,6 +303,66 @@ def test_a_silent_hmount_is_explained_rather_than_ending_at_a_colon():
     ok, notes = mtg.strip_applebridge("/tmp/copy.dmg", run=run)
     assert ok is False
     assert "could not be run" in notes[0], notes
+
+
+# --- localisation: the defect that made a non-pristine image "verified" -----
+# Measured 2026-07-29 on a GERMAN guest. The tool looked for
+# ":System Folder:Preferences:AppleBridge Prefs" and
+# ":System Folder:Startup Items:AppleBridge Watchdog", found neither, said
+# "no guest prefs to remove" / "no Startup Items alias to remove", and then
+# printed "verified: no install folder, no prefs, no startup item" -- while
+# ":Systemordner:Preferences:AppleBridge Prefs" (carrying the HOST'S IP) and
+# the ":Systemordner:Startobjekte:" alias were both still on the image.
+#
+# The guest-side code never had this bug: installer.c and prefs.c use
+# FindFolder(kSystemFolderType / kPreferencesFolderType / kStartupFolderType),
+# which is language-agnostic. Only this host-side tool, reaching in with
+# hfsutils where FindFolder does not exist, had to guess a name.
+
+def test_the_system_folder_is_found_by_content_not_by_name():
+    fake = FakeHfs(tree=GERMAN)
+    assert mtg.find_system_folder(fake) == ":Systemordner:"
+
+
+def test_a_volume_with_no_system_file_is_refused_not_assumed():
+    # Better to fail loudly than to "verify" an image nobody inspected.
+    fake = FakeHfs(tree={":": "d  2 items  Jan 1  2020 Anwendungen\n",
+                         ":Anwendungen:": ""})
+    assert mtg.find_system_folder(fake) is None
+    ok, notes = mtg.strip_applebridge("/tmp/x.dmg", run=fake)
+    assert ok is False
+    assert any("System Folder" in n for n in notes), notes
+
+
+def test_a_german_guest_loses_its_prefs_and_startup_alias():
+    fake = FakeHfs(present={mtg.INSTALL_FOLDER}, tree=dict(GERMAN))
+    mtg.strip_applebridge("/tmp/x.dmg", run=fake)
+    deleted = fake.deleted()
+    assert ":Systemordner:Preferences:AppleBridge Prefs" in deleted, deleted
+    assert ":Systemordner:Startobjekte:AppleBridge Watchdog" in deleted, deleted
+
+
+def test_unrelated_system_files_are_left_alone():
+    fake = FakeHfs(present={mtg.INSTALL_FOLDER}, tree=dict(GERMAN))
+    mtg.strip_applebridge("/tmp/x.dmg", run=fake)
+    for path in fake.deleted():
+        assert "KODAK" not in path and "Finder Preferences" not in path, path
+
+
+def test_a_leftover_in_the_system_folder_fails_the_strip():
+    # The rescan must SEE it. The old verification re-tested the same two
+    # hard-coded paths that caused the miss, so it confirmed its own blind spot.
+    fake = FakeHfs(present=set(), tree=dict(GERMAN))
+
+    def stubborn(argv, timeout=600):
+        out = fake(argv, timeout)
+        if argv[0] == "hdel":
+            return out          # the model keeps the tree unchanged: nothing goes
+        return out
+
+    ok, notes = mtg.strip_applebridge("/tmp/x.dmg", run=stubborn)
+    assert ok is False
+    assert any("STILL PRESENT" in n for n in notes), notes
 
 
 if __name__ == "__main__":

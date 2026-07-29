@@ -66,8 +66,23 @@ STARTUP_ITEM = ":System Folder:Startup Items:AppleBridge Watchdog"
 
 
 def run(argv, timeout=600):
+    """hfsutils, decoded so that MacRoman filenames survive a round trip.
+
+    `text=True` alone means UTF-8, and an HFS volume is full of names that are
+    not UTF-8: listing the root of a real German guest hit `Adobe Illustrator®
+    6.0` — byte 0xA8 — and raised UnicodeDecodeError, killing the strip. The
+    old code never saw it because it only ever listed `:AppleBridge:`, whose
+    names are ASCII; widening the scan to find the System Folder walked
+    straight into it.
+
+    `surrogateescape` is the fix rather than `replace`: it preserves the
+    original bytes, so a path read out of a listing can be passed straight back
+    to `hdel`. `replace` would corrupt any name outside ASCII and delete
+    nothing — or, worse, the wrong thing.
+    """
     try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(argv, capture_output=True, timeout=timeout,
+                           encoding="utf-8", errors="surrogateescape")
         return (p.stdout or "") + (p.stderr or "")
     except (OSError, subprocess.SubprocessError) as e:
         return f"<<{e}>>"
@@ -100,6 +115,71 @@ def _present(run, path):
     return bool(out.strip()) and "no such file" not in out.lower()
 
 
+def _entries(run, path):
+    """[(kind, name)] for an HFS directory; kind is 'd' or 'f'.
+
+    Two line shapes, and they differ in field count:
+        d          8 items               Apr 14  2020 Adobe Acrobat
+        f  APPL/ABrg    41696         0  Jun 30 12:55 AppleBridge
+    Names may contain spaces, so the name is taken as the remainder.
+    """
+    out = []
+    for line in run(["hls", "-l", path]).splitlines():
+        if line.startswith("d"):
+            parts = line.split(None, 6)
+            if len(parts) == 7:
+                out.append(("d", parts[6].strip().strip("'")))
+        elif line.startswith("f"):
+            parts = line.split(None, 7)
+            if len(parts) == 8:
+                out.append(("f", parts[7].strip().strip("'")))
+    return out
+
+
+def find_system_folder(run):
+    """The System Folder, whatever the guest calls it. -> ':<name>:' or None.
+
+    It is 'System Folder' in English, 'Systemordner' in German, 'Dossier
+    Système' in French. So it is found by CONTENT — the root-level folder
+    holding a file of type 'zsys' (the System itself) — and never by name.
+
+    WHY this is not over-engineering: the English names were hard-coded here
+    until 2026-07-29, when a German guest was stripped and the tool reported
+    `no guest prefs to remove`, `no Startup Items alias to remove` and then
+    `verified: no install folder, no prefs, no startup item` — while
+    `:Systemordner:Preferences:AppleBridge Prefs` (carrying the host's IP) and
+    the `:Systemordner:Startobjekte:` alias were both still there. The
+    verification could not catch it because it re-checked the SAME wrong paths
+    that caused the miss. A check that shares the failing assumption is not a
+    check.
+    """
+    for kind, name in _entries(run, ":"):
+        if kind != "d":
+            continue
+        if "zsys/" in run(["hls", "-l", ":%s:" % name]):
+            return ":%s:" % name
+    return None
+
+
+def _applebridge_files_in_system(run, sysf):
+    """[full path] of everything AppleBridge left inside the System Folder.
+
+    Matched by NAME PREFIX across every immediate subfolder, rather than at two
+    known paths: the prefs live in Preferences and the autostart alias in
+    Startup Items, and both of those folder names are localised too.
+    """
+    found = []
+    for kind, name in _entries(run, sysf):
+        if kind == "f" and name.startswith("AppleBridge"):
+            found.append(sysf + name)
+        elif kind == "d":
+            sub = sysf + name + ":"
+            for k2, fn in _entries(run, sub):
+                if k2 == "f" and fn.startswith("AppleBridge"):
+                    found.append(sub + fn)
+    return found
+
+
 def strip_applebridge(image, run=run):
     """Remove the three things an install leaves. -> (ok, [what happened]).
 
@@ -129,22 +209,29 @@ def strip_applebridge(image, run=run):
         if removed:
             notes.append(f"removed {removed} file(s) from {INSTALL_FOLDER}")
         run(["hrmdir", INSTALL_FOLDER])
-        for path, label in ((GUEST_PREFS, "guest prefs"),
-                            (STARTUP_ITEM, "Startup Items alias")):
-            before = _present(run, path)
-            run(["hdel", path])
-            if before and not _present(run, path):
-                notes.append(f"removed the {label}")
-            elif not before:
-                notes.append(f"no {label} to remove")
 
-        # Verify, rather than trust the deletes. A test image that still has a
-        # daemon on it would make the whole exercise report a false success.
-        leftovers = [p for p in (INSTALL_FOLDER, GUEST_PREFS, STARTUP_ITEM)
-                     if _present(run, p)]
+        sysf = find_system_folder(run)
+        if sysf is None:
+            return False, notes + ["could not find the System Folder — no "
+                                   "root-level folder holds a 'zsys' file, so "
+                                   "the prefs and the autostart alias cannot "
+                                   "be located and this image is NOT pristine"]
+        notes.append(f"System Folder: {sysf}")
+        for path in _applebridge_files_in_system(run, sysf):
+            run(["hdel", path])
+            notes.append(f"removed {path}")
+
+        # Verify by RE-SCANNING, not by re-testing the paths we just used. The
+        # previous version checked two hard-coded English paths -- the same
+        # assumption that made it miss a localised guest entirely -- so it
+        # confirmed its own blind spot.
+        leftovers = _applebridge_files_in_system(run, sysf)
+        if _present(run, INSTALL_FOLDER):
+            leftovers.append(INSTALL_FOLDER)
         if leftovers:
             return False, notes + [f"STILL PRESENT: {', '.join(leftovers)}"]
-        notes.append("verified: no install folder, no prefs, no startup item")
+        notes.append(f"verified by rescan: nothing named AppleBridge* under "
+                     f"{sysf}, no install folder")
         return True, notes
     finally:
         run(["humount"])
