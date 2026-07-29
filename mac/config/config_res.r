@@ -44,17 +44,14 @@ resource 'SIZE' (-1) {
  */
 resource 'DITL' (300, purgeable) {
     {
-        {120, 300, 140, 370}, Button  { enabled, "OK" };
-        {8,   70,  112, 370}, StaticText { disabled,
-            "Choose an application to launch together with the daemon — "
-            "ToolServer first, if this guest has it. It must be a real "
-            "application: an entry that opens a full-screen window freezes "
-            "the guest at startup." };
+        {58, 240, 78, 310}, Button  { enabled, "OK" };
+        {10, 70,  46, 320}, StaticText { disabled,
+            "Choose a helper application like ToolServer." };
     }
 };
 
 resource 'ALRT' (300, purgeable) {
-    {60, 60, 212, 450}, 300,
+    {60, 60, 156, 400}, 300,
     { OK, visible, silent, OK, visible, silent,
       OK, visible, silent, OK, visible, silent },
     alertPositionMainScreen
