@@ -976,8 +976,24 @@ int main(void)
                     break;
                 case keyDown:
                 case autoKey:
-                    if ((ev.modifiers & cmdKey) &&
-                        (ev.message & charCodeMask) == 'q') gRunning = false;
+                    if (ev.modifiers & cmdKey) {
+                        char k = (char)(ev.message & charCodeMask);
+                        /* Cmd-W as well as Cmd-Q, and both cases of each. The
+                         * window has a close box, so a Mac user reaches for
+                         * Cmd-W first and it did nothing; Cmd-Q matched only
+                         * lowercase, so Caps Lock defeated it too.
+                         *
+                         * Gated on !gInstalled deliberately, mirroring the Quit
+                         * BUTTON, which is hidden once the install succeeds: the
+                         * bridge does not run until the machine restarts, so
+                         * leaving by any door would leave a machine that looks
+                         * installed and is not. The keyboard equivalent exists
+                         * exactly when the button does — no hidden escape, and
+                         * no key that silently disagrees with the UI. */
+                        if ((k == 'q' || k == 'Q' || k == 'w' || k == 'W') &&
+                            !gInstalled)
+                            gRunning = false;
+                    }
                     break;
                 case updateEvt:
                     BeginUpdate((WindowPtr)ev.message);
