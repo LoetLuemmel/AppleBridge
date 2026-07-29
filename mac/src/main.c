@@ -106,11 +106,6 @@ static WindowPtr gStatusWindow = NULL;
  * gesture that always works, so the window names it. */
 static WindowPtr gWelcomeWindow = NULL;
 static Boolean   gWelcomeChecked = false;   /* the marker is looked for once */
-/* Whoever was frontmost when the greeting appeared, so the front can be handed
- * back when it is dismissed rather than leaving a faceless service in charge
- * of the menu bar. */
-static ProcessSerialNumber gWelcomePrev;
-static Boolean             gWelcomeHavePrev = false;
 static void DrawWelcome(void);
 static void ShowWelcomeIfFresh(void);
 static Boolean gMenuInstalled = false;   /* minimal Apple menu, installed lazily */
@@ -937,28 +932,7 @@ static void ShowWelcomeIfFresh(void)
                (short)((qd.screenBits.bounds.bottom - 150) / 2));
     gWelcomeWindow = NewCWindow(NULL, &r, "\pAppleBridge", true,
                                 noGrowDocProc, (WindowPtr)-1L, true, 0);
-    if (gWelcomeWindow == NULL) return;
-    SelectWindow(gWelcomeWindow);
-
-    /* SelectWindow alone is not enough, and the reason is structural: this is a
-     * BACKGROUND application, and a background app's window is never activated
-     * by ShowWindow or SelectWindow -- it appears behind the front app with a
-     * grey, inactive title bar. Reported 2026-07-29: the greeting came up
-     * behind the Finder, half of it hidden under the kit's own window.
-     *
-     * The daemon's SIZE resource is backgroundAndForeground (not
-     * onlyBackground), so it is ALLOWED to come forward; it simply never asked.
-     * SetFrontProcess is asynchronous -- the switch lands when the current
-     * front app next yields -- which is fine here because the very next thing
-     * this daemon does is WaitNextEvent. No pump is needed and none is used:
-     * nothing modal follows, so a switch that never lands costs a grey title
-     * bar, not a spin. (That is the difference from the JSF path, where the
-     * modal MUST NOT be opened unless the switch is confirmed.) */
-    if (GetFrontProcess(&gWelcomePrev) == noErr) gWelcomeHavePrev = true;
-    {
-        ProcessSerialNumber self;
-        if (GetCurrentProcess(&self) == noErr) SetFrontProcess(&self);
-    }
+    if (gWelcomeWindow != NULL) SelectWindow(gWelcomeWindow);
 }
 
 void OpenMonitor(void)
@@ -1119,13 +1093,6 @@ Boolean CheckUserAbort(void)
                             if (TrackGoAway(window, event.where)) {
                                 DisposeWindow(window);
                                 gWelcomeWindow = NULL;
-                                /* Hand the front back to whoever had it. A
-                                   faceless service should not keep the menu
-                                   bar once its one window is gone. */
-                                if (gWelcomeHavePrev) {
-                                    SetFrontProcess(&gWelcomePrev);
-                                    gWelcomeHavePrev = false;
-                                }
                             }
                             break;
                         }
