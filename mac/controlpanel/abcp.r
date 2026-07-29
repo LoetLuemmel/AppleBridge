@@ -63,10 +63,17 @@ data 'mach' (-4064) {
 /*
  * Add-picker guidance and refusals (2026-07-29), mirroring AppleBridgeConfig.
  *
- * IDs stay inside the cdev's OWN range (-4064..-4033). The Control Panel merges
- * every cdev's resources into one chain, so an id outside that range can collide
- * with another panel's and put somebody else's dialog on screen. -4064 is
- * already this cdev's DITL.
+ * IDs are allocated from the cdev's base, kCdevBase in abcp.c — the range runs
+ * UPWARD from -4064 to -4033, so these are base+1, base+2, base+3. Rez cannot
+ * see the C constants, so the literals here and the #defines there must be kept
+ * in step BY HAND; the mapping is written in both files for that reason.
+ *
+ *   -4064  panel DITL, nrct, mach, ICN#   (four types, one id: types have
+ *                                          separate id spaces)
+ *   -4063  this guidance alert
+ *   -4062  "part of AppleBridge"
+ *   -4061  "not an application"
+ *   -4060..-4033  free
  *
  * The alert exists because SFGetFile's prompt parameter is IGNORED by the
  * Standard File package (only SFPutFile shows one) — filling that string in

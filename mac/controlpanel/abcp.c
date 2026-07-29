@@ -53,13 +53,23 @@
 #define kPrefsBufSize     512
 #define kPathBufSize      256
 
-/* Alert ids live in the cdev's OWN resource range (-4064..-4033). Outside it,
-   the Control Panel's merged resource chain can collide with another cdev's
-   numbering and put somebody else's dialog on screen. -4064 is already the
-   cdev's DITL. */
-#define kAddHelperAlert   (-4063)
-#define kOwnSuiteAlert    (-4062)
-#define kNotAnAppAlert    (-4061)
+/* Resource ids live in the cdev's OWN range, which runs UPWARD from -4064 to
+   -4033 — so the free ids are kCdevBase + n, not - n. Outside that range the
+   Control Panel's merged resource chain can collide with another panel's
+   numbering and put somebody else's dialog on screen; inside it, every id is
+   ours to spend. Allocated from a base with the occupancy written down, because
+   the next person to add a dialog needs to know what is already taken without
+   reading abcp.r. (Resource TYPES have separate id spaces, which is why four
+   different types can all sit on the base id.)
+
+   Scoping the LOOKUP still matters more than the id — see UseResFile in
+   AddHelper. The range keeps a collision unlikely; UseResFile makes it
+   impossible. */
+#define kCdevBase         (-4064)   /* taken: panel DITL, nrct, mach, ICN# */
+#define kAddHelperAlert   (kCdevBase + 1)   /* ALRT -4063 -> DITL -4063 */
+#define kOwnSuiteAlert    (kCdevBase + 2)   /* ALRT -4062 -> DITL -4062 */
+#define kNotAnAppAlert    (kCdevBase + 3)   /* ALRT -4061 -> DITL -4061 */
+/*      next free                    kCdevBase + 4  (-4060) ... -4033 */
 
 #define kMaxHelpers       10        /* cached helper leaves */
 #define kLeafMax          31        /* max chars per leaf name */
