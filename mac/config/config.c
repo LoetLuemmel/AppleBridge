@@ -34,6 +34,7 @@
 QDGlobals qd;
 
 #define kDaemonCreator  'ABrg'
+#define kAddHelperAlert 300     /* config_res.r — what the Add picker wants */
 #define DAEMON_PATH     "MeinMac:MPW:AppleBridge:bin:AppleBridge"
 #define WATCHDOG_PATH   "MeinMac:MPW:AppleBridge:bin:AppleBridgeWatchdog"
 
@@ -213,6 +214,14 @@ static void AddHelperApp(void)
 {
     StandardFileReply reply;
     char path[PREFS_PATH_LEN];
+
+    /* Say what the picker wants BEFORE opening it. A bare Standard File dialog
+       told the operator nothing at all, and the answer is not guessable: it
+       wants an application to chain-launch beside the daemon, ToolServer first.
+       The alert is not laziness about a prompt string — StandardGetFile has no
+       prompt parameter, and SFGetFile's is ignored by the Standard File
+       package, so there is no string to fill in. */
+    NoteAlert(kAddHelperAlert, (ModalFilterProcPtr) 0);
 
     StandardGetFile(NULL, -1, NULL, &reply);
     if (!reply.sfGood) return;

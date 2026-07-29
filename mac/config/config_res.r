@@ -27,3 +27,35 @@ resource 'SIZE' (-1) {
     2 * 1024 * 1024,    /* preferred: 2 MB */
     1024 * 1024         /* minimum: 1 MB */
 };
+
+/*
+ * The Add-helper explanation (2026-07-29).
+ *
+ * The Add button used to open Standard File with no guidance at all, so the
+ * operator met a file dialog and was expected to know it wanted an application
+ * to chain-launch beside the daemon — ToolServer first. Reported by the one
+ * person who could not have guessed it.
+ *
+ * It is an ALERT rather than a prompt string on purpose, and the reason is a
+ * trap worth leaving written down: `StandardGetFile` takes NO prompt, and
+ * `SFGetFile`'s prompt parameter is IGNORED (Inside Macintosh — only
+ * SFPutFile displays one). Filling that string in changes nothing on screen
+ * while looking exactly like a fix.
+ */
+resource 'DITL' (300, purgeable) {
+    {
+        {88, 250, 108, 320}, Button  { enabled, "OK" };
+        {8,  70,  80,  320}, StaticText { disabled,
+            "Choose an application to launch together with the daemon — "
+            "ToolServer first, if this guest has it. It must be a real "
+            "application: an entry that opens a full-screen window freezes "
+            "the guest at startup." };
+    }
+};
+
+resource 'ALRT' (300, purgeable) {
+    {60, 60, 178, 400}, 300,
+    { OK, visible, silent, OK, visible, silent,
+      OK, visible, silent, OK, visible, silent },
+    alertPositionMainScreen
+};

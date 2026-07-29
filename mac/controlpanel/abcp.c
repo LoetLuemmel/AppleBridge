@@ -263,7 +263,14 @@ static void AddHelper(void)
     char        path[kPathBufSize];
 
     where.v = 90;  where.h = 100;
-    prompt[0] = 0;                               /* empty prompt, built on stack */
+    /* Empty on purpose, and filling it in would NOT be the fix: the Standard
+       File package IGNORES SFGetFile's prompt (Inside Macintosh — only
+       SFPutFile displays one), so a string here changes nothing on screen while
+       looking like guidance. The picker still tells the operator nothing about
+       wanting a chain-launch helper (ToolServer first); AppleBridgeConfig now
+       says so with an alert before the picker, and this cdev still owes the
+       same. Ledger: "The guest's helper picker tells the operator nothing". */
+    prompt[0] = 0;
     SFGetFile(where, prompt, (FileFilterProcPtr) 0,
               -1, types, (DlgHookProcPtr) 0, &reply);
     if (!reply.good) return;
