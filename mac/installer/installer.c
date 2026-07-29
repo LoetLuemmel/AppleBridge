@@ -700,6 +700,19 @@ static void DoInstall(void)
     FSMakeFSSpec(dstV, dstD, pName, &wdSpec);
     InstallAutostart(&wdSpec);
 
+    /* Leave a one-shot marker for the daemon: it means "this next boot is the
+     * first one after an install", and the daemon shows its welcome window
+     * once and deletes the file. It lives beside the binaries rather than in
+     * the prefs because it is a fact about ONE boot, not configuration, and
+     * because deleting a file is a cleaner one-shot than rewriting prefs the
+     * daemon may re-read at any time. */
+    {
+        FSSpec markSpec;
+        CtoP("AppleBridge Welcome", pName);
+        if (FSMakeFSSpec(dstV, dstD, pName, &markSpec) == fnfErr)
+            (void)FSpCreate(&markSpec, kDaemonCreator, 'TEXT', 0);   /* 0 = system script */
+    }
+
     gInstalled = true;
     gStatus[0] = '\0';
     mystrcat(gStatus, "Installed to ");

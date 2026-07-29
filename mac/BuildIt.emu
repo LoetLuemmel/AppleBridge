@@ -1,11 +1,19 @@
 # AppleBridge daemon link script (run from MeinMac:MPW:AppleBridge: after compiling).
+#
+# ILink, NOT Link (D-011). Plain `Link` fails this daemon with "Error 48:
+# PC-relative edit, offset out of range" -- ~98 KB in one segment against a
+# 32 KB PC-relative reach. This script said `Link` until 2026-07-29 and cost a
+# hung guest: the failed link STILL LEAVES a plausible 98 KB APPL behind, so
+# `Files -l` shows an artifact of the right size and the only tell is the
+# creator staying '????' because the chain died before SetFile. Check the
+# stderr file, not just that the output exists.
 # Object list MUST match Makefile.68k (14 units incl. transport*.c + auth.c; the old
 # network.c.o is gone -> it became transport_ot.c). Compile EACH .c with -model far
 # (not just link): the combined CODE exceeds the 68K near-model 32 KB PC-relative
 # limit, else Link "Error 48: PC-relative edit, offset out of range".
 #   SC -i :include: -model far :src:main.c -o :obj:main.c.o
 Set LIBS 'MeinMac:Interfaces&Libraries:Libraries:'
-Link -model far -o :bin:AppleBridge.new :obj:main.c.o :obj:transport.c.o :obj:transport_ot.c.o :obj:transport_mactcp.c.o :obj:transport_serial.c.o :obj:protocol.c.o :obj:command.c.o :obj:screenshot.c.o :obj:fileio.c.o :obj:events.c.o :obj:utils.c.o :obj:mystring.c.o :obj:prefs.c.o :obj:auth.c.o :obj:nbp.c.o :obj:afp.c.o "{LIBS}CLibraries:StdCLib.o" "{LIBS}Libraries:OpenTransport.o" "{LIBS}Libraries:OpenTransportApp.o" "{LIBS}Libraries:OpenTptInet.o" "{LIBS}Libraries:Interface.o" "{LIBS}Libraries:MacRuntime.o"
+ILink -model far -o :bin:AppleBridge.new :obj:main.c.o :obj:transport.c.o :obj:transport_ot.c.o :obj:transport_mactcp.c.o :obj:transport_serial.c.o :obj:protocol.c.o :obj:command.c.o :obj:screenshot.c.o :obj:fileio.c.o :obj:events.c.o :obj:utils.c.o :obj:mystring.c.o :obj:prefs.c.o :obj:auth.c.o :obj:nbp.c.o :obj:afp.c.o "{LIBS}CLibraries:StdCLib.o" "{LIBS}Libraries:OpenTransport.o" "{LIBS}Libraries:OpenTransportApp.o" "{LIBS}Libraries:OpenTptInet.o" "{LIBS}Libraries:Interface.o" "{LIBS}Libraries:MacRuntime.o"
 Rez AppleBridge_res.r -a -o :bin:AppleBridge.new
 Rez vers.r -a -o :bin:AppleBridge.new
 SetFile -t APPL -c 'ABrg' :bin:AppleBridge.new

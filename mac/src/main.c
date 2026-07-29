@@ -88,6 +88,26 @@ static Boolean gRunning = true;
  * invisible until asked. It is resizable; close != quit (DisposeWindow, the loop
  * keeps running). */
 static WindowPtr gStatusWindow = NULL;
+
+/* One-shot post-install greeting. Shown on the first boot after an install and
+ * never again; the installer leaves an "AppleBridge Welcome" marker beside the
+ * binaries and this window's appearance consumes it.
+ *
+ * A plain window, deliberately NOT an alert. A modal blocks the daemon's event
+ * loop, so the BRIDGE would be down for as long as the dialog sat on screen --
+ * unbounded, since it waits for a human. This just draws and can be ignored.
+ *
+ * What it says is the other half of the design: it does not offer to remove the
+ * kit volume, it TELLS the reader to drag it to the Trash. Unmounting
+ * programmatically returns -47 (the Finder holds the volume's desktop database
+ * open, the same reason AFPUNMOUNT fails on a share), and closing the window
+ * achieves nothing because the Finder reopens it on every mount -- measured by
+ * closing it by hand, restarting, and watching it come back. Put Away is the
+ * gesture that always works, so the window names it. */
+static WindowPtr gWelcomeWindow = NULL;
+static Boolean   gWelcomeChecked = false;   /* the marker is looked for once */
+static void DrawWelcome(void);
+static void ShowWelcomeIfFresh(void);
 static Boolean gMenuInstalled = false;   /* minimal Apple menu, installed lazily */
 #define MON_MIN_W 240
 #define MON_MIN_H 140
@@ -842,6 +862,79 @@ static void SaveMonitorBounds(void)
     SavePrefs(&gPrefs);
 }
 
+static void DrawWelcome(void)
+{
+    GrafPtr save;
+    Rect    r;
+
+    if (gWelcomeWindow == NULL) return;
+    GetPort(&save);
+    SetPort(gWelcomeWindow);
+    r = gWelcomeWindow->portRect;
+    EraseRect(&r);
+
+    TextFont(0); TextSize(12); TextFace(bold);
+    MoveTo(16, 26);
+    DrawString("\pAppleBridge is installed and running.");
+
+    TextFace(0);
+    MoveTo(16, 50);
+    DrawString("\pThe bridge starts by itself every time this Mac");
+    MoveTo(16, 66);
+    DrawString("\pboots. Nothing else needs launching.");
+
+    MoveTo(16, 92);
+    DrawString("\pYou can put the AppleBridge Kit disk away now:");
+    MoveTo(16, 108);
+    DrawString("\pdrag it to the Trash. It is no longer needed.");
+
+    TextSize(9);
+    MoveTo(16, 132);
+    DrawString("\pClose this window when you are done - it appears only once.");
+    TextSize(12);
+
+    SetPort(save);
+}
+
+/* Show the greeting if the installer left its marker, then consume the marker
+ * so this is genuinely once. Consumed BEFORE the window opens: if anything
+ * below fails, the user misses a greeting, which is better than meeting it on
+ * every boot with no way to stop it. */
+static void ShowWelcomeIfFresh(void)
+{
+    FSSpec      spec;
+    Str255      pPath;
+    Rect        r;
+    short       i, n = 0;
+    const char *fn = "AppleBridge Welcome";
+
+    if (gWelcomeWindow != NULL) return;
+    if (gPrefs.home[0] == '\0') return;      /* legacy setup: no known folder */
+
+    /* Same full-path idiom the journal driver and SWAPSELF use: HOME= already
+     * ends in a colon, so the leaf appends directly. */
+    for (i = 0; gPrefs.home[i] && n < 254; i++) pPath[1 + n++] = gPrefs.home[i];
+    for (i = 0; fn[i] && n < 254; i++)          pPath[1 + n++] = fn[i];
+    pPath[0] = (unsigned char)n;
+
+    if (FSMakeFSSpec(0, 0L, pPath, &spec) != noErr) return;   /* no marker */
+    (void)FSpDelete(&spec);
+
+    /* Centred on BOTH axes, not near the top. The daemon is a background app,
+     * so this window cannot come to the front (SelectWindow does not activate
+     * one) -- and the window it would sit behind is the kit's own Finder
+     * window in the top-left corner, i.e. exactly the thing this text is
+     * asking the reader to put away. Measured 2026-07-29: half the sentence
+     * was hidden behind it. */
+    SetRect(&r, 0, 0, 420, 150);
+    OffsetRect(&r,
+               (short)((qd.screenBits.bounds.right - 420) / 2),
+               (short)((qd.screenBits.bounds.bottom - 150) / 2));
+    gWelcomeWindow = NewCWindow(NULL, &r, "\pAppleBridge", true,
+                                noGrowDocProc, (WindowPtr)-1L, true, 0);
+    if (gWelcomeWindow != NULL) SelectWindow(gWelcomeWindow);
+}
+
 void OpenMonitor(void)
 {
     Rect r;
@@ -951,6 +1044,14 @@ Boolean CheckUserAbort(void)
     WindowPtr window;
     short part;
 
+    /* One-shot post-install greeting, from the event pump rather than from
+     * startup. By the time this runs the daemon is past its own init and
+     * pumping events, so a fault here costs a window, not the boot. */
+    if (!gWelcomeChecked) {
+        gWelcomeChecked = true;
+        ShowWelcomeIfFresh();
+    }
+
     /* WaitNextEvent (not GetNextEvent) yields the CPU for up to 'sleep' ticks
      * per call, so the connect poll and reconnect wait IDLE instead of spinning
      * at 100% — Basilisk's idlewait then throttles host CPU and the Finder stays
@@ -970,6 +1071,14 @@ Boolean CheckUserAbort(void)
                         HandleMenuCommand(MenuSelect(event.where));
                         break;
                     case inDrag:
+                        if (window == gWelcomeWindow) {
+                            Rect dr;
+                            SetRect(&dr, 4, 24,
+                                    qd.screenBits.bounds.right - 4,
+                                    qd.screenBits.bounds.bottom - 4);
+                            DragWindow(window, event.where, &dr);
+                            break;
+                        }
                         if (window == gStatusWindow) {
                             Rect dragRect;
                             SetRect(&dragRect, 4, 24,
@@ -980,6 +1089,13 @@ Boolean CheckUserAbort(void)
                         }
                         break;
                     case inGoAway:
+                        if (window == gWelcomeWindow) {
+                            if (TrackGoAway(window, event.where)) {
+                                DisposeWindow(window);
+                                gWelcomeWindow = NULL;
+                            }
+                            break;
+                        }
                         /* Close != quit: tear down the TE field + window, the
                          * daemon keeps running (gRunning stays true). */
                         if (window == gStatusWindow) {
@@ -1132,11 +1248,17 @@ Boolean CheckUserAbort(void)
 
             case updateEvt:
                 BeginUpdate((WindowPtr)event.message);
-                DrawLEDs();   /* top bar (activity) */
-                RedrawLog();   /* console body (TEUpdate) — else updates wipe it */
+                /* Guarded by window. DrawLEDs/RedrawLog paint the MONITOR's
+                 * contents; they used to run for any update event, which was
+                 * harmless only while the daemon had exactly one window. The
+                 * welcome window made that assumption false. */
                 if ((WindowPtr)event.message == gStatusWindow) {
+                    DrawLEDs();    /* top bar (activity) */
+                    RedrawLog();   /* console body (TEUpdate) — else updates wipe it */
                     DrawControls(gStatusWindow);   /* the scrollbar */
                     DrawGrowIcon(gStatusWindow);   /* size box / bottom frame */
+                } else if ((WindowPtr)event.message == gWelcomeWindow) {
+                    DrawWelcome();
                 }
                 EndUpdate((WindowPtr)event.message);
                 break;
@@ -3233,6 +3355,15 @@ int main(void)
     if (!LoadPrefs(&gPrefs)) {
         SavePrefs(&gPrefs);
     }
+
+    /* NOT here. Opening the welcome window during startup hung the guest on the
+     * boot splash: Startup Items run before the desktop is up, and a daemon that
+     * stops there stops the boot with it -- measured 2026-07-29, and the resource
+     * maps of the hung build and the working one were identical, so it was this
+     * code path and not the build. It now runs from the event pump instead, once
+     * the bridge is actually serving. That is also the honest place for it: a
+     * window claiming "AppleBridge is installed and running" should appear only
+     * when that sentence is demonstrably true. */
 
     /* Chain-launch helper apps from prefs (ToolServer first, by list order) so
      * the faceless service brings up its own dependencies — the daemon needs
