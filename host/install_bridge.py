@@ -108,6 +108,12 @@ BUNDLE_CANDIDATES = (
     "/Applications/SheepShaver.app",
 )
 
+# hfsutils is not part of macOS, and every path that touches a guest volume
+# needs it: the kit export, the prefs seeder, and make_test_guest.py. It went
+# undeclared until a machine that had never installed it tried to build a kit
+# (2026-07-29) and got `hmount failed on <image>:` with an empty reason.
+HFS_TOOLS = ("hmount", "humount", "hcopy", "hformat", "hls")
+
 REFUSE, STEP, NOTE = "refuse", "step", "note"
 
 
@@ -138,7 +144,58 @@ def _write(path, text):
 # --------------------------------------------------------------------------
 # probes
 # --------------------------------------------------------------------------
-def probe_emulator_bundle(run=None, exists=None, candidates=BUNDLE_CANDIDATES):
+def probe_hfsutils(which=None):
+    """-> {"missing": [names], "found": {name: path}} for the hfsutils suite.
+
+    Asked as a probe rather than discovered as a crash, because the failure it
+    replaces was silent in the worst way: the runner degrades to empty output,
+    so a missing binary produced an error message naming the *disk image* with
+    no reason attached, sending the reader to inspect a file that was fine.
+    """
+    which = which or shutil.which
+    found, missing = {}, []
+    for tool in HFS_TOOLS:
+        path = which(tool)
+        if path:
+            found[tool] = path
+        else:
+            missing.append(tool)
+    return {"found": found, "missing": missing}
+
+
+def hfsutils_advice(missing, action):
+    """The one message for 'this machine cannot touch an HFS volume'."""
+    return ("hfsutils is not installed, so nothing here can %s: missing %s. "
+            "It is not part of macOS — `brew install hfsutils` (or MacPorts "
+            "`port install hfsutils`), then run this again."
+            % (action, ", ".join(missing)))
+
+
+def bundle_dirs_from_prefs(emulator_prefs):
+    """-> the folders an emulator's own prefs point into, most-used first.
+
+    The bundle usually sits beside the disk images and ROM the prefs name, and
+    those paths are *this machine's* rather than the author's. `BUNDLE_CANDIDATES`
+    listing `~/Documents/Basilisk/` while a real machine used
+    `~/Documents/BasiliskII/` is the same class of defect as R1's addresses: a
+    literal that happens to be right where it was written.
+    """
+    seen, out = set(), []
+    entries = list(emulator_prefs.get("disks") or [])
+    for key in ("rom", "keycodefile"):
+        value = emulator_prefs.get(key)
+        if value:
+            entries.append(value)
+    for path in entries:
+        folder = os.path.dirname(path)
+        if folder and folder not in seen:
+            seen.add(folder)
+            out.append(folder)
+    return out
+
+
+def probe_emulator_bundle(run=None, exists=None, candidates=BUNDLE_CANDIDATES,
+                          prefs_dirs=(), listdir=None):
     """-> {app, helper, source} — the emulator bundle and whether it can do etherhelper.
 
     R8 makes this the FIRST question, ahead of counting interfaces: a stock
@@ -175,11 +232,50 @@ def probe_emulator_bundle(run=None, exists=None, candidates=BUNDLE_CANDIDATES):
             if exists(path):
                 found, source = path, "well-known location"
                 break
+    # Derived, not listed: the emulator's own prefs name this machine's disk
+    # images and ROM, and the bundle is normally in one of those folders. This
+    # is what finds a renamed bundle (`BasiliskII_letzter.app`) in a folder
+    # nobody guessed (`~/Documents/BasiliskII/`) while the emulator is DOWN —
+    # which is the state every install runs in, and the state in which the
+    # running-process branch above can say nothing.
+    #
+    # Caveat, measured on that same machine: the folder held BOTH
+    # `BasiliskII.app` and `BasiliskII_letzter.app`, and only the latter is
+    # actually launched. Sorted order prefers the plain name, which is a
+    # defensible guess and not knowledge — nothing offline distinguishes the
+    # bundle somebody uses from one they keep. The running-process stage is
+    # authoritative and runs first; this is a fallback that gets `start_stack.sh`
+    # a working launch path, not a claim about which build is preferred.
     if not found:
-        hit = run(["mdfind", "-name", "BasiliskII.app"]).strip().splitlines()
-        for line in hit:
-            if line.endswith(".app") and exists(line):
-                found, source = line, "mdfind"
+        lister = listdir or os.listdir
+        for folder in prefs_dirs:
+            try:
+                names = sorted(lister(folder))
+            except OSError:
+                continue
+            for name in names:
+                if not name.endswith(".app"):
+                    continue
+                low = name.lower()
+                if not (low.startswith("basiliskii")
+                        or low.startswith("sheepshaver")):
+                    continue
+                path = os.path.join(folder, name)
+                if exists(os.path.join(path, "Contents", "MacOS")):
+                    found, source = path, "beside the emulator's disk images"
+                    break
+            if found:
+                break
+    if not found:
+        # `-name` matches the exact string, so a renamed bundle never hits.
+        # Ask for the family instead and filter here.
+        for query in ('kMDItemFSName == "BasiliskII*.app"',
+                      'kMDItemFSName == "SheepShaver*.app"'):
+            for line in run(["mdfind", query]).strip().splitlines():
+                if line.endswith(".app") and exists(line):
+                    found, source = line, "mdfind"
+                    break
+            if found:
                 break
 
     probe_target = found or note      # the helper question is about the bundle,
@@ -198,11 +294,17 @@ def probe(run=None, read=None, exists=None, addresses=None,
     run = run or _run
     read = read or _read
 
+    # Emulator prefs FIRST: the bundle search uses the folders they name, so a
+    # machine whose layout nobody guessed is still discoverable.
+    emulator_prefs = bridge_doctor.probe_emulator_prefs(
+        read, prefs_path, netmode_path)
+
     return {
-        "bundle": probe_emulator_bundle(run, exists),
+        "bundle": probe_emulator_bundle(
+            run, exists, prefs_dirs=bundle_dirs_from_prefs(emulator_prefs)),
+        "hfsutils": probe_hfsutils(),
         "processes": bridge_doctor.probe_processes(run),
-        "emulator_prefs": bridge_doctor.probe_emulator_prefs(
-            read, prefs_path, netmode_path),
+        "emulator_prefs": emulator_prefs,
         "addresses": (host_config.ipv4_addresses(
             lambda cmd: run(cmd)) if addresses is None else addresses),
         "host_ip": host_config.resolve_host_ip(local_env_path=local_env_path),
@@ -793,6 +895,12 @@ def export_guest_kit(dest, host_ip, probes, run=None, exists=None,
     read_bytes = read_bytes or _read_bytes
     write_bytes = write_bytes or _write_bytes
 
+    # Declared, not discovered by crashing. Every step below shells out to
+    # hfsutils, which macOS does not ship.
+    missing_hfs = probes.get("hfsutils", {}).get("missing")
+    if missing_hfs:
+        return (False, hfsutils_advice(missing_hfs, "build a kit"), [])
+
     # Skip a previously-built kit when choosing the SOURCE. Once the operator
     # adds the `disk` line this tool prints, the kit is itself in the emulator's
     # disk list — and a second run would otherwise read the kit as its own
@@ -826,7 +934,13 @@ def export_guest_kit(dest, host_ip, probes, run=None, exists=None,
         src = images[0]
         out = run(["hmount", src])
         if "Volume" not in out:
-            return (False, f"hmount failed on {src}: {out.strip()[:160]}", [])
+            # The runner degrades to empty on any OSError, so an unexplained
+            # failure is almost always the tool being absent or unrunnable --
+            # say that instead of printing a colon and nothing, which points
+            # the reader at the image, and the image is usually fine.
+            why = out.strip()[:160] or ("no output at all — hmount could not be "
+                                        "run (not installed, or not executable)")
+            return (False, f"hmount failed on {src}: {why}", [])
         try:
             for label, names in KIT_APPS:
                 blob = os.path.join(staging, label + ".macbin")
@@ -850,8 +964,20 @@ def export_guest_kit(dest, host_ip, probes, run=None, exists=None,
         if short:
             # Fail BEFORE creating the image. Half a kit is worse than none: it
             # mounts, it looks installable, and it is not.
+            #
+            # Name the bootstrap problem rather than only the symptom: a kit is
+            # assembled FROM a guest that already runs AppleBridge, so a machine
+            # that never has cannot build one, and no release currently carries
+            # the 68K binaries. Somebody hitting this on a fresh machine has
+            # done nothing wrong and needs the way out, not a file list.
             return (False, "cannot ship a kit without " + ", ".join(short)
-                           + " — searched " + " and ".join(KIT_DIRS),
+                           + " — searched " + " and ".join(KIT_DIRS)
+                           + ". A kit is built FROM a guest that already has "
+                             "AppleBridge installed, so this machine cannot "
+                             "make its own: build it on a machine that has one, "
+                             "with APPLEBRIDGE_GUEST_DIALS=<this host's address> "
+                             "so the kit's prefs name the host the guest should "
+                             "dial, and copy the resulting .dmg here",
                     [lbl for lbl, _ in staged])
 
         # --- 1b. no baked-in host address may leave in an APPLICATION -------
@@ -958,6 +1084,9 @@ def seed_guest_prefs(image, host_ip, probes, run=None, hfs=None):
     every other key (`APP=`, `HOME=`, `NET=`, `WIN=`) is preserved verbatim.
     """
     run = run or _run
+    missing_hfs = probes.get("hfsutils", {}).get("missing")
+    if missing_hfs:
+        return (False, hfsutils_advice(missing_hfs, "read a disk image"))
     hfs = hfs or {}
 
     if emulator_running(probes):
@@ -1036,6 +1165,12 @@ def format_text(probes, plan, results=None, dry_run=True):
                  + (f"   (intended: {emu['intended']})" if emu.get("intended") else ""))
     lines.append(f"interfaces:       {', '.join(ifaces) or '—'}")
     lines.append(f"emulator running: {'yes' if emulator_running(probes) else 'no'}")
+    hfs = probes.get("hfsutils") or {}
+    lines.append("hfsutils:         "
+                 + ("present" if not hfs.get("missing")
+                    else "MISSING (" + ", ".join(hfs["missing"])
+                         + ") — needed only for --export-guest-kit and "
+                           "--seed-guest-prefs"))
     lines.append("")
 
     for note in plan["notes"]:
@@ -1116,7 +1251,11 @@ def build_parser():
                         "itself from: the suite plus a prefs file already "
                         "carrying this host's address. Defaults to the folder "
                         "holding the emulator's own disk images. Writes one "
-                        "new file and nothing into any existing image.")
+                        "new file and nothing into any existing image. Needs "
+                        "hfsutils. Set APPLEBRIDGE_GUEST_DIALS=<address> to "
+                        "build a kit for a DIFFERENT host — the machine that "
+                        "has the binaries is not always the machine that will "
+                        "run the bridge.")
     p.add_argument("--seed-guest-prefs", metavar="IMAGE.DMG",
                    help="write IP= into a POWERED-OFF disk image's "
                         "AppleBridge Prefs (refused while an emulator runs)")
