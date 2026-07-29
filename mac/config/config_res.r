@@ -56,3 +56,36 @@ resource 'ALRT' (300, purgeable) {
       OK, visible, silent, OK, visible, silent },
     alertPositionMainScreen
 };
+
+/* Refusals from the Add picker. Short on purpose: the operator is mid-task and
+   the picker comes straight back, so these say what is wrong and get out of
+   the way. */
+resource 'DITL' (301, purgeable) {
+    {
+        {58, 240, 78, 310}, Button  { enabled, "OK" };
+        {10, 70,  46, 320}, StaticText { disabled,
+            "That is part of AppleBridge. Choose another application." };
+    }
+};
+
+resource 'ALRT' (301, purgeable) {
+    {60, 60, 156, 400}, 301,
+    { OK, visible, silent, OK, visible, silent,
+      OK, visible, silent, OK, visible, silent },
+    alertPositionMainScreen
+};
+
+resource 'DITL' (302, purgeable) {
+    {
+        {58, 240, 78, 310}, Button  { enabled, "OK" };
+        {10, 70,  46, 320}, StaticText { disabled,
+            "That is not an application. Choose one that is." };
+    }
+};
+
+resource 'ALRT' (302, purgeable) {
+    {60, 60, 156, 400}, 302,
+    { OK, visible, silent, OK, visible, silent,
+      OK, visible, silent, OK, visible, silent },
+    alertPositionMainScreen
+};
