@@ -175,12 +175,17 @@ bridge runs, so that button is the only way onward.
 daemon shows a window confirming the bridge is running and telling you to drag
 the **AppleBridge Kit** disk to the Trash; that removes it for the session. To
 stop it coming back, delete its `disk` line from the emulator's prefs — the
-guest cannot do that for you, and without it the volume remounts on every boot
-and **the Finder reopens its window every time**. That is the Finder opening a
-newly mounted volume, not a leftover from your last session: measured
-2026-07-29 by closing the window by hand, waiting for the Finder to settle, and
-restarting — it came back open. So there is nothing the installer can close on
-your behalf; the disk line is the only durable fix.
+guest cannot do that for you, and otherwise the volume remounts on every boot.
+
+Whether its *window* also reopens depends on the volume's own Finder state, and
+the installer cannot fix it for you (measured 2026-07-29, both ways): a **fresh**
+kit image stays closed, because its desktop database has never recorded that
+window as open — that is the normal case, since a downloaded kit is opened once
+to run the installer from. But on a kit whose window has been opened and left
+open, it reopens on every boot, and closing it by hand first does *not* reliably
+clear that — closed, waited for the Finder to settle, restarted, and it came
+back. So do not expect the installer to close it; put the disk away, and drop
+the `disk` line when you are done with it.
 
 Where does the kit come from? A published release if one exists, or from a
 machine that already runs AppleBridge:
