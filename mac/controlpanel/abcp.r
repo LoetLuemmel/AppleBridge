@@ -59,3 +59,60 @@ data 'nrct' (-4064, purgeable) {
 data 'mach' (-4064) {
     $"FFFF 0000"
 };
+
+/*
+ * Add-picker guidance and refusals (2026-07-29), mirroring AppleBridgeConfig.
+ *
+ * IDs stay inside the cdev's OWN range (-4064..-4033). The Control Panel merges
+ * every cdev's resources into one chain, so an id outside that range can collide
+ * with another panel's and put somebody else's dialog on screen. -4064 is
+ * already this cdev's DITL.
+ *
+ * The alert exists because SFGetFile's prompt parameter is IGNORED by the
+ * Standard File package (only SFPutFile shows one) — filling that string in
+ * would look like a fix and change nothing.
+ */
+resource 'DITL' (-4063, purgeable) {
+    {
+        {58, 240, 78, 310}, Button  { enabled, "OK" };
+        {10, 70,  46, 320}, StaticText { disabled,
+            "Choose a helper application like ToolServer." };
+    }
+};
+
+resource 'ALRT' (-4063, purgeable) {
+    {60, 60, 156, 400}, -4063,
+    { OK, visible, silent, OK, visible, silent,
+      OK, visible, silent, OK, visible, silent },
+    alertPositionMainScreen
+};
+
+resource 'DITL' (-4062, purgeable) {
+    {
+        {58, 240, 78, 310}, Button  { enabled, "OK" };
+        {10, 70,  46, 320}, StaticText { disabled,
+            "That is part of AppleBridge. Choose another application." };
+    }
+};
+
+resource 'ALRT' (-4062, purgeable) {
+    {60, 60, 156, 400}, -4062,
+    { OK, visible, silent, OK, visible, silent,
+      OK, visible, silent, OK, visible, silent },
+    alertPositionMainScreen
+};
+
+resource 'DITL' (-4061, purgeable) {
+    {
+        {58, 240, 78, 310}, Button  { enabled, "OK" };
+        {10, 70,  46, 320}, StaticText { disabled,
+            "That is not an application. Choose one that is." };
+    }
+};
+
+resource 'ALRT' (-4061, purgeable) {
+    {60, 60, 156, 400}, -4061,
+    { OK, visible, silent, OK, visible, silent,
+      OK, visible, silent, OK, visible, silent },
+    alertPositionMainScreen
+};

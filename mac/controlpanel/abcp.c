@@ -46,8 +46,19 @@
 #define activDev  5
 
 #define kDaemonCreator    'ABrg'
+#define kConfigCreator    'ABcf'
+#define kWatchdogCreator  'ABwd'
+#define kInstallerCreator 'ABis'
 #define kPrefsBufSize     512
 #define kPathBufSize      256
+
+/* Alert ids live in the cdev's OWN resource range (-4064..-4033). Outside it,
+   the Control Panel's merged resource chain can collide with another cdev's
+   numbering and put somebody else's dialog on screen. -4064 is already the
+   cdev's DITL. */
+#define kAddHelperAlert   (-4063)
+#define kOwnSuiteAlert    (-4062)
+#define kNotAnAppAlert    (-4061)
 
 #define kMaxHelpers       10        /* cached helper leaves */
 #define kLeafMax          31        /* max chars per leaf name */
@@ -257,26 +268,59 @@ static void AddHelper(void)
     SFReply     reply;
     SFTypeList  types;
     FSSpec      spec;
+    CInfoPBRec  cpb;
     OSErr       err;
     short       refNum, li = 0, k;
     long        count;
     char        path[kPathBufSize];
 
     where.v = 90;  where.h = 100;
-    /* Empty on purpose, and filling it in would NOT be the fix: the Standard
-       File package IGNORES SFGetFile's prompt (Inside Macintosh — only
-       SFPutFile displays one), so a string here changes nothing on screen while
-       looking like guidance. The picker still tells the operator nothing about
-       wanting a chain-launch helper (ToolServer first); AppleBridgeConfig now
-       says so with an alert before the picker, and this cdev still owes the
-       same. Ledger: "The guest's helper picker tells the operator nothing". */
+    /* Say what the picker wants BEFORE opening it. The prompt stays empty and
+       that is NOT the omission it looks like: the Standard File package IGNORES
+       SFGetFile's prompt (Inside Macintosh — only SFPutFile displays one), so a
+       string here would change nothing on screen while looking like guidance. */
     prompt[0] = 0;
-    SFGetFile(where, prompt, (FileFilterProcPtr) 0,
-              -1, types, (DlgHookProcPtr) 0, &reply);
-    if (!reply.good) return;
+    NoteAlert(kAddHelperAlert, (ModalFilterProcPtr) 0);
 
-    /* SFReply gives a WDRefNum + name; FSMakeFSSpec resolves it to an FSSpec. */
-    if (FSMakeFSSpec(reply.vRefNum, 0, reply.fName, &spec) != noErr) return;
+    /* Refuse a choice that cannot work and hand the picker straight back, so
+       the operator stays in the task instead of being dropped out of it with a
+       bad entry saved. Both refusals fail LATER and expensively if accepted:
+       one of AppleBridge's own applications is circular (the watchdog already
+       owns the daemon's lifecycle, and an APP= naming the daemon has it launch
+       itself every boot), and a non-'APPL' is rejected by the daemon's LAUNCH
+       verb at chain-launch, long after anyone remembers picking it. */
+    for (;;) {
+        SFGetFile(where, prompt, (FileFilterProcPtr) 0,
+                  -1, types, (DlgHookProcPtr) 0, &reply);
+        if (!reply.good) return;            /* Cancel: add nothing, quietly */
+
+        /* SFReply gives a WDRefNum + name; FSMakeFSSpec resolves it. */
+        if (FSMakeFSSpec(reply.vRefNum, 0, reply.fName, &spec) != noErr) return;
+
+        /* Finder info via PBGetCatInfo, not FSpGetFInfo: the FSSpec convenience
+           call is GLUE and glue fails this link (see the header note) — the
+           same reason the list is self-drawn instead of using the List Manager.
+           This file already walks directories with PBGetCatInfo. */
+        cpb.hFileInfo.ioNamePtr   = spec.name;
+        cpb.hFileInfo.ioVRefNum   = spec.vRefNum;
+        cpb.hFileInfo.ioDirID     = spec.parID;
+        cpb.hFileInfo.ioFDirIndex = 0;
+        if (PBGetCatInfo(&cpb, false) != noErr) return;
+
+        if (cpb.hFileInfo.ioFlFndrInfo.fdCreator == kDaemonCreator
+            || cpb.hFileInfo.ioFlFndrInfo.fdCreator == kConfigCreator
+            || cpb.hFileInfo.ioFlFndrInfo.fdCreator == kWatchdogCreator
+            || cpb.hFileInfo.ioFlFndrInfo.fdCreator == kInstallerCreator) {
+            NoteAlert(kOwnSuiteAlert, (ModalFilterProcPtr) 0);
+            continue;
+        }
+        if (cpb.hFileInfo.ioFlFndrInfo.fdType != 'APPL') {
+            NoteAlert(kNotAnAppAlert, (ModalFilterProcPtr) 0);
+            continue;
+        }
+        break;
+    }
+
     FSSpecToPath(&spec, path);
     if (path[0] == '\0') return;
 
