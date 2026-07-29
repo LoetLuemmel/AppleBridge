@@ -34,6 +34,21 @@
 QDGlobals qd;
 
 #define kDaemonCreator  'ABrg'
+#define kConfigCreator  'ABcf'
+#define kWatchdogCreator 'ABwd'
+#define kInstallerCreator 'ABis'
+#define kAddHelperAlert 300     /* config_res.r — what the Add picker wants */
+#define kOwnSuiteAlert  301     /* ...and what it will not accept */
+#define kNotAnAppAlert  302
+
+/* Is this file one of AppleBridge's own? Chain-launching the suite from the
+   suite is circular: the watchdog already owns the daemon's lifecycle, and an
+   APP= line naming the daemon has it launch itself at every boot. */
+static Boolean IsOwnSuite(OSType creator)
+{
+    return creator == kDaemonCreator || creator == kConfigCreator
+        || creator == kWatchdogCreator || creator == kInstallerCreator;
+}
 #define DAEMON_PATH     "MeinMac:MPW:AppleBridge:bin:AppleBridge"
 #define WATCHDOG_PATH   "MeinMac:MPW:AppleBridge:bin:AppleBridgeWatchdog"
 
@@ -212,10 +227,38 @@ static void FSSpecToPath(const FSSpec *spec, char *path)
 static void AddHelperApp(void)
 {
     StandardFileReply reply;
+    FInfo             finfo;
     char path[PREFS_PATH_LEN];
 
-    StandardGetFile(NULL, -1, NULL, &reply);
-    if (!reply.sfGood) return;
+    /* Say what the picker wants BEFORE opening it. A bare Standard File dialog
+       told the operator nothing at all, and the answer is not guessable: it
+       wants an application to chain-launch beside the daemon, ToolServer first.
+       The alert is not laziness about a prompt string — StandardGetFile has no
+       prompt parameter, and SFGetFile's is ignored by the Standard File
+       package, so there is no string to fill in. */
+    NoteAlert(kAddHelperAlert, (ModalFilterProcPtr) 0);
+
+    /* Refuse a choice that cannot work, and hand the picker straight back
+       rather than adding it or dropping the operator out of the task. Two
+       things are refused, and both fail LATER and EXPENSIVELY if accepted:
+       one of AppleBridge's own applications (circular — see IsOwnSuite), and
+       anything that is not an 'APPL' at all, which the daemon's LAUNCH verb
+       refuses at chain-launch time (R16), by which point the connection
+       between the freeze and the file somebody picked days ago is gone. */
+    for (;;) {
+        StandardGetFile(NULL, -1, NULL, &reply);
+        if (!reply.sfGood) return;              /* Cancel: add nothing, quietly */
+        if (FSpGetFInfo(&reply.sfFile, &finfo) != noErr) return;
+        if (IsOwnSuite(finfo.fdCreator)) {
+            NoteAlert(kOwnSuiteAlert, (ModalFilterProcPtr) 0);
+            continue;
+        }
+        if (finfo.fdType != 'APPL') {
+            NoteAlert(kNotAnAppAlert, (ModalFilterProcPtr) 0);
+            continue;
+        }
+        break;
+    }
 
     FSSpecToPath(&reply.sfFile, path);
     if (path[0] && gPrefs.appCount < PREFS_MAX_APPS) {

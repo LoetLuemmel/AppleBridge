@@ -54,6 +54,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))          # host/
 import bridge_doctor  # noqa: E402
+import install_bridge  # noqa: E402  (shares the hfsutils probe and its advice)
 
 PREFS = os.path.expanduser("~/.basilisk_ii_prefs")
 TEST_PREFS = os.path.expanduser("~/.basilisk_ii_prefs_test")
@@ -109,7 +110,9 @@ def strip_applebridge(image, run=run):
     notes = []
     out = run(["hmount", image])
     if "Volume" not in out:
-        return False, [f"hmount failed: {out.strip()[:160]}"]
+        why = out.strip()[:160] or ("no output at all — hmount could not be run "
+                                    "(not installed, or not executable)")
+        return False, [f"hmount failed: {why}"]
     try:
         listing = run(["hls", "-l", INSTALL_FOLDER])
         removed = 0
@@ -197,6 +200,17 @@ def main(argv=None):
                          "machine can actually install (build one with "
                          "install_bridge.py --export-guest-kit)")
     args = ap.parse_args(argv)
+
+    # Declared, not discovered by crashing. Every step below shells out to
+    # hfsutils, which macOS does not ship — and the failure it replaces was
+    # `hmount failed:` with nothing after the colon, because run() degrades to
+    # empty output when the binary is absent (2026-07-29, install_bridge.py had
+    # the identical hole).
+    missing = install_bridge.probe_hfsutils()["missing"]
+    if missing:
+        print("REFUSED: " + install_bridge.hfsutils_advice(
+            missing, "read or strip a disk image"), file=sys.stderr)
+        return 3
 
     if emulator_running():
         print("REFUSED: an emulator is running. Copying a live image gives a "

@@ -36,6 +36,7 @@
 #include <Files.h>          /* FSSpec, FSMakeFSSpec, FSpOpenDF/Create, FSRead/Write, SetEOF, PBGetCatInfo */
 #include <Folders.h>        /* FindFolder, kStartupFolderType, kPreferencesFolderType */
 #include <StandardFile.h>   /* SFGetFile, SFReply (inline-trap form) */
+#include <Resources.h>      /* CurResFile / UseResFile - inline traps */
 
 #define macDev    8
 #define initDev   0
@@ -46,8 +47,29 @@
 #define activDev  5
 
 #define kDaemonCreator    'ABrg'
+#define kConfigCreator    'ABcf'
+#define kWatchdogCreator  'ABwd'
+#define kInstallerCreator 'ABis'
 #define kPrefsBufSize     512
 #define kPathBufSize      256
+
+/* Resource ids live in the cdev's OWN range, which runs UPWARD from -4064 to
+   -4033 — so the free ids are kCdevBase + n, not - n. Outside that range the
+   Control Panel's merged resource chain can collide with another panel's
+   numbering and put somebody else's dialog on screen; inside it, every id is
+   ours to spend. Allocated from a base with the occupancy written down, because
+   the next person to add a dialog needs to know what is already taken without
+   reading abcp.r. (Resource TYPES have separate id spaces, which is why four
+   different types can all sit on the base id.)
+
+   Scoping the LOOKUP still matters more than the id — see UseResFile in
+   AddHelper. The range keeps a collision unlikely; UseResFile makes it
+   impossible. */
+#define kCdevBase         (-4064)   /* taken: panel DITL, nrct, mach, ICN# */
+#define kAddHelperAlert   (kCdevBase + 1)   /* ALRT -4063 -> DITL -4063 */
+#define kOwnSuiteAlert    (kCdevBase + 2)   /* ALRT -4062 -> DITL -4062 */
+#define kNotAnAppAlert    (kCdevBase + 3)   /* ALRT -4061 -> DITL -4061 */
+/*      next free                    kCdevBase + 4  (-4060) ... -4033 */
 
 #define kMaxHelpers       10        /* cached helper leaves */
 #define kLeafMax          31        /* max chars per leaf name */
@@ -58,6 +80,7 @@ enum { kLabel = 1, kStatus, kAutostart, kIP, kHelperList, kAddBtn, kRemoveBtn };
 
 /* per-instance state, kept in the cdevValue handle (no globals). */
 typedef struct {
+    short cdevRes;                          /* OUR resource file (see initDev) */
     short lastDaemon;                       /* -1 unknown; 0/1 last shown */
     short lastAuto;
     short helpersShown;                     /* 0 = re-read helper leaves from prefs */
@@ -73,7 +96,7 @@ static Boolean DaemonRunning(void);
 static Boolean AutostartInstalled(void);
 static OSErr   PrefsSpec(FSSpec *spec);
 static void    FSSpecToPath(const FSSpec *spec, char *path);
-static void    AddHelper(void);
+static void    AddHelper(short cdevRes);
 static void    RemoveSelectedHelper(Handle h);
 static void    DaemonString(Str255 d, Boolean running);
 static void    AutoString(Str255 d, Boolean installed);
@@ -98,6 +121,13 @@ pascal long CDevMain(short message, short item, short numItems, short rsrcID,
             Handle h = NewHandle(sizeof(CPState));
             if (h) {
                 CPState *st = (CPState *)(*h);
+                /* The host has made OUR resource file current for initDev,
+                   and only for initDev. Hold on to it: by the time a click
+                   arrives the chain's current file is whatever the Control
+                   Panel last used, so an unqualified Alert() would search
+                   from there -- missing our ALRT, or finding another
+                   panel's resource of the same id. */
+                st->cdevRes      = CurResFile();
                 st->lastDaemon   = -1;             /* force first poll to draw */
                 st->lastAuto     = -1;
                 st->helpersShown = 0;              /* re-read helpers */
@@ -112,7 +142,7 @@ pascal long CDevMain(short message, short item, short numItems, short rsrcID,
             if (cdevValue) {
                 short which = item - numItems;
                 if (which == kAddBtn) {
-                    AddHelper();                   /* SFGetFile -> append APP= to prefs */
+                    AddHelper(((CPState *)(*(Handle)cdevValue))->cdevRes);
                     ((CPState *)(*(Handle)cdevValue))->helpersShown = 0;   /* re-read */
                 } else if (which == kRemoveBtn) {
                     RemoveSelectedHelper((Handle) cdevValue);   /* drop selected APP= line */
@@ -250,26 +280,75 @@ static void FSSpecToPath(const FSSpec *spec, char *path)
 }
 
 /* Standard File picker -> append an "APP=<path>" line to the prefs file. */
-static void AddHelper(void)
+static void AddHelper(short cdevRes)
 {
     Point       where;
     Str255      prompt, line;
     SFReply     reply;
     SFTypeList  types;
     FSSpec      spec;
+    CInfoPBRec  cpb;
     OSErr       err;
-    short       refNum, li = 0, k;
+    short       refNum, li = 0, k, saved;
     long        count;
     char        path[kPathBufSize];
 
     where.v = 90;  where.h = 100;
-    prompt[0] = 0;                               /* empty prompt, built on stack */
-    SFGetFile(where, prompt, (FileFilterProcPtr) 0,
-              -1, types, (DlgHookProcPtr) 0, &reply);
-    if (!reply.good) return;
+    /* Say what the picker wants BEFORE opening it. The prompt stays empty and
+       that is NOT the omission it looks like: the Standard File package IGNORES
+       SFGetFile's prompt (Inside Macintosh — only SFPutFile displays one), so a
+       string here would change nothing on screen while looking like guidance. */
+    prompt[0] = 0;
+    saved = CurResFile();
+    UseResFile(cdevRes);
+    NoteAlert(kAddHelperAlert, (ModalFilterProcPtr) 0);
+    UseResFile(saved);                      /* leave the chain as we found it */
 
-    /* SFReply gives a WDRefNum + name; FSMakeFSSpec resolves it to an FSSpec. */
-    if (FSMakeFSSpec(reply.vRefNum, 0, reply.fName, &spec) != noErr) return;
+    /* Refuse a choice that cannot work and hand the picker straight back, so
+       the operator stays in the task instead of being dropped out of it with a
+       bad entry saved. Both refusals fail LATER and expensively if accepted:
+       one of AppleBridge's own applications is circular (the watchdog already
+       owns the daemon's lifecycle, and an APP= naming the daemon has it launch
+       itself every boot), and a non-'APPL' is rejected by the daemon's LAUNCH
+       verb at chain-launch, long after anyone remembers picking it. */
+    for (;;) {
+        SFGetFile(where, prompt, (FileFilterProcPtr) 0,
+                  -1, types, (DlgHookProcPtr) 0, &reply);
+        if (!reply.good) return;            /* Cancel: add nothing, quietly */
+
+        /* SFReply gives a WDRefNum + name; FSMakeFSSpec resolves it. */
+        if (FSMakeFSSpec(reply.vRefNum, 0, reply.fName, &spec) != noErr) return;
+
+        /* Finder info via PBGetCatInfo, not FSpGetFInfo: the FSSpec convenience
+           call is GLUE and glue fails this link (see the header note) — the
+           same reason the list is self-drawn instead of using the List Manager.
+           This file already walks directories with PBGetCatInfo. */
+        cpb.hFileInfo.ioNamePtr   = spec.name;
+        cpb.hFileInfo.ioVRefNum   = spec.vRefNum;
+        cpb.hFileInfo.ioDirID     = spec.parID;
+        cpb.hFileInfo.ioFDirIndex = 0;
+        if (PBGetCatInfo(&cpb, false) != noErr) return;
+
+        if (cpb.hFileInfo.ioFlFndrInfo.fdCreator == kDaemonCreator
+            || cpb.hFileInfo.ioFlFndrInfo.fdCreator == kConfigCreator
+            || cpb.hFileInfo.ioFlFndrInfo.fdCreator == kWatchdogCreator
+            || cpb.hFileInfo.ioFlFndrInfo.fdCreator == kInstallerCreator) {
+            saved = CurResFile();
+            UseResFile(cdevRes);
+            NoteAlert(kOwnSuiteAlert, (ModalFilterProcPtr) 0);
+            UseResFile(saved);
+            continue;
+        }
+        if (cpb.hFileInfo.ioFlFndrInfo.fdType != 'APPL') {
+            saved = CurResFile();
+            UseResFile(cdevRes);
+            NoteAlert(kNotAnAppAlert, (ModalFilterProcPtr) 0);
+            UseResFile(saved);
+            continue;
+        }
+        break;
+    }
+
     FSSpecToPath(&spec, path);
     if (path[0] == '\0') return;
 

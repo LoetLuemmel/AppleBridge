@@ -27,10 +27,14 @@ TWO_NICS = [("en0", "192.168.3.213"), ("en8", "192.168.3.154")]
 
 
 def probes(ether="slirp", intended="slirp", helper=False, running=False,
-           addresses=None, app="/Applications/BasiliskII.app"):
+           addresses=None, app="/Applications/BasiliskII.app",
+           hfs_missing=()):
     """A probe dict, as `probe()` would return it, without touching the host."""
     return {
         "bundle": {"app": app, "helper": helper, "source": "well-known location"},
+        "hfsutils": {"found": {} if hfs_missing
+                     else {t: "/usr/local/bin/" + t for t in ib.HFS_TOOLS},
+                     "missing": list(hfs_missing)},
         "processes": {"basilisk": {"pid": 1, "cmd": "BasiliskII"} if running else None,
                       "sheepshaver": None, "etherhelpertool": None},
         "emulator_prefs": {"ether": ether, "intended": intended,
@@ -1147,6 +1151,132 @@ def test_the_normal_report_carries_the_plan_the_checklist_and_the_tiers():
     text = ib.format_text(p, ib.decide(p), dry_run=True)
     for expected in ("PLAN (dry run", "GUEST-SIDE STEPS", "TIERS", "EXPOSURE"):
         assert expected in text, text
+
+
+# --- the three findings from the first install on a machine nobody prepared --
+# (2026-07-29, a second host: PitsMacBook2013). Each was invisible here because
+# the developer machine happens to satisfy it.
+
+def test_the_bundle_is_found_beside_the_disk_images_when_the_emulator_is_down():
+    # The real layout that defeated all three original stages: folder named
+    # `BasiliskII` (not `Basilisk`), bundle renamed `BasiliskII_letzter.app`,
+    # emulator not running -- which is the state every install runs in.
+    prefs = {"disks": ["/Users/x/Documents/BasiliskII/Macintosh.dmg"],
+             "rom": "/Users/x/Documents/BasiliskII/PERFORMA.ROM"}
+    dirs = ib.bundle_dirs_from_prefs(prefs)
+    assert dirs == ["/Users/x/Documents/BasiliskII"], dirs
+
+    out = ib.probe_emulator_bundle(
+        run=lambda argv: "",                       # nothing running, mdfind dry
+        exists=lambda p: p.endswith("BasiliskII_letzter.app/Contents/MacOS/"
+                                    "BasiliskII"),
+        candidates=(),                             # no well-known hit
+        prefs_dirs=dirs,
+        listdir=lambda d: ["Macintosh.dmg", "BasiliskII_letzter.app", "notes.txt"])
+    assert out["app"] == "/Users/x/Documents/BasiliskII/BasiliskII_letzter.app", out
+    assert out["source"] == "beside the emulator's disk images"
+
+
+def test_bundle_dirs_are_deduplicated_and_ordered():
+    prefs = {"disks": ["/a/one.dmg", "/a/two.dmg", "/b/three.dmg"],
+             "rom": "/a/Mac.ROM"}
+    assert ib.bundle_dirs_from_prefs(prefs) == ["/a", "/b"]
+
+
+def test_a_bundle_is_judged_by_its_executable_not_its_name():
+    # Measured on one real folder: every name rule is wrong in BOTH directions.
+    # `Kanji-2020-01-22.app` IS an emulator and matches no prefix;
+    # `BasiliskIIGUI.app` matches `BasiliskII*` and is a front-end, not one.
+    real = {"/f/Kanji-2020-01-22.app/Contents/MacOS/BasiliskII",
+            "/f/org_BasiliskII.app/Contents/MacOS/BasiliskII",
+            "/f/BasiliskIIGUI.app/Contents/MacOS/BasiliskIIGUI"}
+    ex = lambda p: p in real
+    assert ib.is_emulator_bundle("/f/Kanji-2020-01-22.app", ex) is True
+    assert ib.is_emulator_bundle("/f/org_BasiliskII.app", ex) is True
+    assert ib.is_emulator_bundle("/f/BasiliskIIGUI.app", ex) is False, \
+        "a GUI front-end must not be recorded as the emulator"
+
+    out = ib.probe_emulator_bundle(
+        run=lambda a: "", exists=ex, candidates=(), prefs_dirs=["/f"],
+        listdir=lambda d: ["BasiliskIIGUI.app", "Kanji-2020-01-22.app"])
+    assert out["app"] == "/f/Kanji-2020-01-22.app", out
+
+
+def test_mdfind_looks_for_the_EXECUTABLE_so_renames_cannot_hide_it():
+    seen = []
+
+    def run(argv):
+        seen.append(argv)
+        return ("/weird/Some Old Build.app/Contents/MacOS/BasiliskII\n"
+                if argv[0] == "mdfind" else "")
+
+    out = ib.probe_emulator_bundle(run=run, exists=lambda p: True,
+                                   candidates=(), prefs_dirs=())
+    queries = " ".join(a for c in seen if c[0] == "mdfind" for a in c)
+    assert '"BasiliskII"' in queries and ".app" not in queries, queries
+    assert out["app"] == "/weird/Some Old Build.app", out
+
+
+def test_an_operator_who_knows_can_name_the_bundle_and_is_never_prompted():
+    out = ib.probe_emulator_bundle(run=lambda a: 1 / 0,     # must not probe
+                                   exists=lambda p: True,
+                                   override="/opt/Mine.app")
+    assert out["app"] == "/opt/Mine.app" and out["source"] == "--emulator-app"
+
+    missing = ib.probe_emulator_bundle(run=lambda a: "", exists=lambda p: False,
+                                       override="/nope.app")
+    assert missing["app"] is None and missing["override_missing"] == "/nope.app"
+
+
+def test_a_kit_export_without_hfsutils_names_the_tool_and_how_to_get_it():
+    io = KitIO()
+    ok, msg, _ = io.build(probes_=probes(hfs_missing=["hmount", "hcopy"]))
+    assert ok is False
+    assert "hfsutils" in msg and "brew install hfsutils" in msg, msg
+    assert "hmount" in msg, "say WHICH tools are missing"
+    assert not io.calls, "it must refuse before shelling out to a missing tool"
+
+
+def test_seeding_prefs_without_hfsutils_refuses_the_same_way():
+    ok, msg = ib.seed_guest_prefs("/tmp/x.dmg", "192.168.3.1",
+                                  probes(hfs_missing=list(ib.HFS_TOOLS)),
+                                  run=lambda argv: "")
+    assert ok is False and "brew install hfsutils" in msg, msg
+
+
+def test_an_hmount_that_produces_no_output_says_so_instead_of_a_bare_colon():
+    # The runner degrades to "" on OSError, so the old message ended at the
+    # colon and pointed at the disk image -- which was never the problem.
+    class Silent(KitIO):
+        def run(self, argv):
+            self.calls.append(list(argv))
+            return ""                              # hmount says nothing at all
+
+    ok, msg, _ = Silent().build()
+    assert ok is False
+    assert msg.rstrip().endswith(")") and "could not be run" in msg, msg
+
+
+def test_a_machine_that_never_ran_applebridge_is_told_how_to_get_a_kit():
+    # The bootstrap gap: a kit is built FROM a guest that already has the
+    # suite, so this refusal is the normal experience on a fresh machine and
+    # must carry the way out, not just a list of absent files.
+    ok, msg, _ = ib.export_guest_kit(
+        "/tmp/kit", "1.2.3.4", probes(),
+        run=lambda a: "Volume ..." if a[0] == "hmount" else "",
+        exists=lambda p: p.endswith(".dmg"),        # source volume has none
+        write_bytes=lambda p, d: None)
+    assert ok is False
+    assert "APPLEBRIDGE_GUEST_DIALS" in msg, msg
+    assert "already has AppleBridge" in msg, msg
+
+
+def test_the_report_states_whether_hfsutils_is_present():
+    text = ib.format_text(probes(hfs_missing=["hformat"]),
+                          ib.decide(probes(hfs_missing=["hformat"])))
+    assert "hfsutils:" in text and "MISSING" in text and "hformat" in text, text
+    assert "hfsutils:         present" in ib.format_text(
+        probes(), ib.decide(probes()))
 
 
 if __name__ == "__main__":
