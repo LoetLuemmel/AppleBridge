@@ -235,6 +235,39 @@ def test_the_source_image_is_never_written_to():
     assert ["hmount", copy] in fake.calls
 
 
+def test_it_refuses_without_hfsutils_before_touching_any_image(monkeypatched=None):
+    # Same undeclared dependency install_bridge had: this tool shells out to
+    # hmount/hls/hcopy, macOS ships none of them, and the old failure was
+    # `hmount failed:` with nothing after the colon.
+    import install_bridge
+
+    real = install_bridge.probe_hfsutils
+    calls = []
+    install_bridge.probe_hfsutils = lambda **kw: {"found": {},
+                                                  "missing": ["hmount", "hls"]}
+    real_running = mtg.emulator_running
+    mtg.emulator_running = lambda: calls.append("running-check") or False
+    try:
+        rc = mtg.main([])
+    finally:
+        install_bridge.probe_hfsutils = real
+        mtg.emulator_running = real_running
+    assert rc == 3, f"expected the refusal exit code, got {rc}"
+    assert not calls, "it must refuse before probing anything else"
+
+
+def test_a_silent_hmount_is_explained_rather_than_ending_at_a_colon():
+    fake = types.SimpleNamespace(calls=[])
+
+    def run(argv):
+        fake.calls.append(list(argv))
+        return ""                      # the binary could not be run at all
+
+    ok, notes = mtg.strip_applebridge("/tmp/copy.dmg", run=run)
+    assert ok is False
+    assert "could not be run" in notes[0], notes
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
