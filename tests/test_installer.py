@@ -1168,7 +1168,8 @@ def test_the_bundle_is_found_beside_the_disk_images_when_the_emulator_is_down():
 
     out = ib.probe_emulator_bundle(
         run=lambda argv: "",                       # nothing running, mdfind dry
-        exists=lambda p: p.endswith("Contents/MacOS") or p.endswith(".app"),
+        exists=lambda p: p.endswith("BasiliskII_letzter.app/Contents/MacOS/"
+                                    "BasiliskII"),
         candidates=(),                             # no well-known hit
         prefs_dirs=dirs,
         listdir=lambda d: ["Macintosh.dmg", "BasiliskII_letzter.app", "notes.txt"])
@@ -1182,20 +1183,49 @@ def test_bundle_dirs_are_deduplicated_and_ordered():
     assert ib.bundle_dirs_from_prefs(prefs) == ["/a", "/b"]
 
 
-def test_mdfind_asks_for_the_FAMILY_because_names_get_suffixes():
-    # `-name BasiliskII.app` matches the exact string only, so every renamed
-    # bundle -- the common case for people keeping several builds -- was missed.
+def test_a_bundle_is_judged_by_its_executable_not_its_name():
+    # Measured on one real folder: every name rule is wrong in BOTH directions.
+    # `Kanji-2020-01-22.app` IS an emulator and matches no prefix;
+    # `BasiliskIIGUI.app` matches `BasiliskII*` and is a front-end, not one.
+    real = {"/f/Kanji-2020-01-22.app/Contents/MacOS/BasiliskII",
+            "/f/org_BasiliskII.app/Contents/MacOS/BasiliskII",
+            "/f/BasiliskIIGUI.app/Contents/MacOS/BasiliskIIGUI"}
+    ex = lambda p: p in real
+    assert ib.is_emulator_bundle("/f/Kanji-2020-01-22.app", ex) is True
+    assert ib.is_emulator_bundle("/f/org_BasiliskII.app", ex) is True
+    assert ib.is_emulator_bundle("/f/BasiliskIIGUI.app", ex) is False, \
+        "a GUI front-end must not be recorded as the emulator"
+
+    out = ib.probe_emulator_bundle(
+        run=lambda a: "", exists=ex, candidates=(), prefs_dirs=["/f"],
+        listdir=lambda d: ["BasiliskIIGUI.app", "Kanji-2020-01-22.app"])
+    assert out["app"] == "/f/Kanji-2020-01-22.app", out
+
+
+def test_mdfind_looks_for_the_EXECUTABLE_so_renames_cannot_hide_it():
     seen = []
 
     def run(argv):
         seen.append(argv)
-        return "/opt/BasiliskII_kanji.app\n" if argv[0] == "mdfind" else ""
+        return ("/weird/Some Old Build.app/Contents/MacOS/BasiliskII\n"
+                if argv[0] == "mdfind" else "")
 
     out = ib.probe_emulator_bundle(run=run, exists=lambda p: True,
                                    candidates=(), prefs_dirs=())
     queries = " ".join(a for c in seen if c[0] == "mdfind" for a in c)
-    assert "kMDItemFSName" in queries and "BasiliskII*" in queries, queries
-    assert out["app"] == "/opt/BasiliskII_kanji.app"
+    assert '"BasiliskII"' in queries and ".app" not in queries, queries
+    assert out["app"] == "/weird/Some Old Build.app", out
+
+
+def test_an_operator_who_knows_can_name_the_bundle_and_is_never_prompted():
+    out = ib.probe_emulator_bundle(run=lambda a: 1 / 0,     # must not probe
+                                   exists=lambda p: True,
+                                   override="/opt/Mine.app")
+    assert out["app"] == "/opt/Mine.app" and out["source"] == "--emulator-app"
+
+    missing = ib.probe_emulator_bundle(run=lambda a: "", exists=lambda p: False,
+                                       override="/nope.app")
+    assert missing["app"] is None and missing["override_missing"] == "/nope.app"
 
 
 def test_a_kit_export_without_hfsutils_names_the_tool_and_how_to_get_it():

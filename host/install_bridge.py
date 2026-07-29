@@ -114,6 +114,14 @@ BUNDLE_CANDIDATES = (
 # (2026-07-29) and got `hmount failed on <image>:` with an empty reason.
 HFS_TOOLS = ("hmount", "humount", "hcopy", "hformat", "hls")
 
+# What actually identifies an emulator bundle: the executable inside
+# Contents/MacOS, not the bundle's name. Measured on one real machine's folder
+# (2026-07-29), where every name-based rule is wrong in BOTH directions —
+# `Kanji-2020-01-22.app` and `org_BasiliskII.app` are emulators matching no
+# sensible prefix, while `BasiliskIIGUI.app` matches `BasiliskII*` and is a
+# front-end, not the emulator. The executable is the same in all of them.
+EMULATOR_EXECUTABLES = ("BasiliskII", "SheepShaver")
+
 REFUSE, STEP, NOTE = "refuse", "step", "note"
 
 
@@ -163,6 +171,19 @@ def probe_hfsutils(which=None):
     return {"found": found, "missing": missing}
 
 
+def is_emulator_bundle(path, exists=None):
+    """Does this .app actually contain an emulator? Judged by the executable.
+
+    Name-based tests were wrong in both directions on the first machine that had
+    more than one build (see EMULATOR_EXECUTABLES), so this asks the only
+    question that survives a rename: is there a `Contents/MacOS/BasiliskII` (or
+    SheepShaver) inside?
+    """
+    exists = exists or os.path.exists
+    return any(exists(os.path.join(path, "Contents", "MacOS", exe))
+               for exe in EMULATOR_EXECUTABLES)
+
+
 def hfsutils_advice(missing, action):
     """The one message for 'this machine cannot touch an HFS volume'."""
     return ("hfsutils is not installed, so nothing here can %s: missing %s. "
@@ -195,7 +216,7 @@ def bundle_dirs_from_prefs(emulator_prefs):
 
 
 def probe_emulator_bundle(run=None, exists=None, candidates=BUNDLE_CANDIDATES,
-                          prefs_dirs=(), listdir=None):
+                          prefs_dirs=(), listdir=None, override=None):
     """-> {app, helper, source} — the emulator bundle and whether it can do etherhelper.
 
     R8 makes this the FIRST question, ahead of counting interfaces: a stock
@@ -210,6 +231,18 @@ def probe_emulator_bundle(run=None, exists=None, candidates=BUNDLE_CANDIDATES,
     exists = exists or os.path.exists
 
     found, source, note = None, None, None
+    # An operator who knows beats every heuristic. Deliberately a FLAG and not a
+    # prompt: this branch exists because its result must be able to run with
+    # nobody at the keyboard (D-018), and a program that stops to ask a question
+    # cannot be run from a script, a cron job or another machine.
+    if override:
+        path = os.path.expanduser(override)
+        if exists(path):
+            return {"app": path, "source": "--emulator-app",
+                    "helper": exists(os.path.join(path, "Contents", "Resources",
+                                                  "etherhelpertool"))}
+        return {"app": None, "source": None, "helper": False,
+                "override_missing": path}
     for line in run(["pgrep", "-fl", "BasiliskII|SheepShaver"]).splitlines():
         m = re.search(r"(/.*?\.app)/Contents/MacOS/", line)
         if not (m and exists(m.group(1))):
@@ -256,24 +289,26 @@ def probe_emulator_bundle(run=None, exists=None, candidates=BUNDLE_CANDIDATES,
             for name in names:
                 if not name.endswith(".app"):
                     continue
-                low = name.lower()
-                if not (low.startswith("basiliskii")
-                        or low.startswith("sheepshaver")):
-                    continue
                 path = os.path.join(folder, name)
-                if exists(os.path.join(path, "Contents", "MacOS")):
+                if is_emulator_bundle(path, exists):
                     found, source = path, "beside the emulator's disk images"
                     break
             if found:
                 break
     if not found:
-        # `-name` matches the exact string, so a renamed bundle never hits.
-        # Ask for the family instead and filter here.
-        for query in ('kMDItemFSName == "BasiliskII*.app"',
-                      'kMDItemFSName == "SheepShaver*.app"'):
-            for line in run(["mdfind", query]).strip().splitlines():
-                if line.endswith(".app") and exists(line):
-                    found, source = line, "mdfind"
+        # Ask Spotlight for the EXECUTABLE, not the bundle. `-name
+        # BasiliskII.app` matched one spelling; even `Basilisk*.app` is wrong in
+        # both directions (see EMULATOR_EXECUTABLES). The executable's name is
+        # stable across every rename, and the bundle is three levels above it.
+        for exe in EMULATOR_EXECUTABLES:
+            hits = run(["mdfind", 'kMDItemFSName == "%s"' % exe])
+            for line in hits.strip().splitlines():
+                marker = "/Contents/MacOS/" + exe
+                if not line.endswith(marker):
+                    continue
+                app = line[:-len(marker)]
+                if app.endswith(".app") and exists(app):
+                    found, source = app, "mdfind"
                     break
             if found:
                 break
@@ -289,7 +324,7 @@ def probe_emulator_bundle(run=None, exists=None, candidates=BUNDLE_CANDIDATES,
 
 def probe(run=None, read=None, exists=None, addresses=None,
           prefs_path=PREFS_PATH, netmode_path=NETMODE_PATH,
-          local_env_path=LOCAL_ENV):
+          local_env_path=LOCAL_ENV, emulator_app=None):
     """Everything the decision needs, gathered read-only."""
     run = run or _run
     read = read or _read
@@ -301,7 +336,8 @@ def probe(run=None, read=None, exists=None, addresses=None,
 
     return {
         "bundle": probe_emulator_bundle(
-            run, exists, prefs_dirs=bundle_dirs_from_prefs(emulator_prefs)),
+            run, exists, prefs_dirs=bundle_dirs_from_prefs(emulator_prefs),
+            override=emulator_app),
         "hfsutils": probe_hfsutils(),
         "processes": bridge_doctor.probe_processes(run),
         "emulator_prefs": emulator_prefs,
@@ -1243,6 +1279,12 @@ def build_parser():
                    help="convert a host already configured for etherhelper "
                         "(refused by default — that branch is somebody's "
                         "working AppleTalk setup)")
+    p.add_argument("--emulator-app", metavar="PATH", default=None,
+                   help="the emulator bundle to record, when discovery "
+                        "cannot find it (several builds in one folder, or "
+                        "a name nothing could guess). A flag rather than a "
+                        "prompt on purpose: this branch exists so the "
+                        "result can start with nobody at the keyboard.")
     p.add_argument("--no-agent", action="store_true",
                    help="configure only; do not install the launchd agent")
     p.add_argument("--export-guest-kit", metavar="DIR", nargs="?",
@@ -1272,7 +1314,7 @@ def main(argv=None):
     seed_image = args.seed_guest_prefs
     kit_dir = args.export_guest_kit
 
-    probes = probe()
+    probes = probe(emulator_app=args.emulator_app)
     plan = decide(probes, force_slirp=force, want_agent=want_agent)
 
     results = None
