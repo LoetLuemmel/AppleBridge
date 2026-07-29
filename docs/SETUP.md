@@ -168,7 +168,8 @@ supplies the one value only you know.
 Then add the image as a second `disk` line in the emulator's prefs, relaunch,
 open the **AppleBridge Kit** volume in the guest and run **AppleBridgeInstaller**
 from it. It preflights the machine, copies the suite, sets up autostart, and
-offers **Reboot** when it is done.
+offers **Restart** when it is done — the machine has to come back up before the
+bridge runs, so that button is the only way onward.
 
 Where does the kit come from? A published release if one exists, or from a
 machine that already runs AppleBridge:

@@ -83,7 +83,7 @@ typedef struct {
 static Boolean      gRunning = true;
 static WindowPtr    gWin = NULL;
 static AppPrefs     gPrefs;
-static ControlHandle gInstallBtn, gQuitBtn, gRebootBtn;
+static ControlHandle gInstallBtn, gQuitBtn, gRestartBtn;
 static short   gLogoFrame = 0;
 static long    gLogoNext  = 0;    /* TickCount of the next frame */
 static Rect    gLogoRect;
@@ -731,7 +731,7 @@ static void DoInstall(void)
     if (gPrefs.ip[0] == '\0')
         mystrcat(gStatus3, "Now set the host IP in the AppleBridge config panel.");
     else
-        mystrcat(gStatus3, "Reboot to start the bridge.");
+        mystrcat(gStatus3, "Restart to start the bridge.");
 
     /* Name the optional extra rather than performing it uninvited. */
     gStatus4[0] = '\0';
@@ -787,6 +787,22 @@ static void DrawContent(void)
         if (gStatus[0])
             DrawWrapped(gStatus, 16, &y, gWin->portRect.right - 16);
     }
+
+    /* Credit line, just above the button strip. Small and grey so it reads as
+       a footer rather than as one more thing to act on. The characters are
+       real MacRoman -- (C) and (R) are typewriter substitutes for glyphs this
+       machine has had since 1984: © is $A9, ® is $A8, the em-dash $D1. */
+    TextSize(9);
+    TextFace(0);
+    MoveTo(16, gWin->portRect.bottom - 44);
+    if ((**((CGrafPtr)gWin)->portPixMap).pixelSize > 1) {
+        RGBColor grey;
+        grey.red = grey.green = grey.blue = 0x7777;
+        RGBForeColor(&grey);
+    }
+    DrawString("\p© 2026 Pit Förster — the Loetluemmel ® — and Claude, his friend");
+    ForeColor(blackColor);
+    TextSize(12);
 
     DrawControls(gWin);
     if (gGifReady) GifDrawFrame(gWin, gLogoFrame, &gLogoRect);
@@ -848,7 +864,7 @@ static void MakeButtons(void)
     gInstallBtn = NewControl(gWin, &r, "\pInstall", true, 0, 0, 1, 0, 0);
     /* Hidden until there is something to reboot INTO; shown by DoInstall. */
     SetRect(&r, 268, top, 364, top + 20);
-    gRebootBtn = NewControl(gWin, &r, "\pReboot", false, 0, 0, 1, 0, 0);
+    gRestartBtn = NewControl(gWin, &r, "\pRestart", false, 0, 0, 1, 0, 0);
     SetRect(&r, 380, top, 444, top + 20);
     gQuitBtn = NewControl(gWin, &r, "\pQuit", true, 0, 0, 1, 0, 0);
 
@@ -872,20 +888,20 @@ static void HandleClick(EventRecord *ev)
                     DoInstall();
                     /* disable only on success; a failed attempt stays retryable */
                     HiliteControl(gInstallBtn, gInstalled ? 255 : 0);
-                    /* Once the install has happened, Reboot is the only
+                    /* Once the install has happened, Restart is the only
                        action that leads anywhere: the daemon comes up through
                        Startup Items and nothing else starts it, so an installed
                        machine that is merely quit out of is an install that
                        does not work yet. Operator's call (2026-07-29): show
-                       Reboot, take Quit away. The cost is stated rather than
+                       Restart, take Quit away. The cost is stated rather than
                        hidden — somebody who wants out without restarting has to
                        quit the emulator instead. */
                     if (gInstalled) {
-                        ShowControl(gRebootBtn);
+                        ShowControl(gRestartBtn);
                         HideControl(gQuitBtn);
                     }
-                } else if (ctl == gRebootBtn) {
-                    ShutDwnStart();          /* restart; the bridge comes up */
+                } else if (ctl == gRestartBtn) {
+                    ShutDwnStart();   /* restart; the bridge comes up */
                 } else if (ctl == gQuitBtn) {
                     gRunning = false;
                 }
