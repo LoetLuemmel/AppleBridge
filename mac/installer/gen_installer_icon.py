@@ -23,9 +23,9 @@ convention, where the control panel uses its cdev range).
 Run on the host:  python3 gen_installer_icon.py  ->  installer_icon.r
 """
 
-PAL = {'.': 0, 'W': 0, 'B': 6, 'K': 15, 'L': 12, 'M': 13, 'D': 14, 'T': 0}
-INK = set('KBMD')        # black/blue/greys read as "ink" in the 1-bit icon
-OPAQUE = set('WBKLMD')   # everything but 'T' is part of the shape
+PAL = {'.': 0, 'W': 0, 'B': 6, 'R': 3, 'K': 15, 'L': 12, 'M': 13, 'D': 14, 'T': 0}
+INK = set('KBMDR')       # black/blue/red/greys read as "ink" in the 1-bit icon
+OPAQUE = set('WBKLMDR')  # everything but 'T' is part of the shape
 
 RES_ID = 128             # applications conventionally use 128
 
@@ -34,8 +34,61 @@ def blank(n):
     return [['T'] * n for _ in range(n)]
 
 
+def draw16():
+    """The small icon, drawn at 16x16 rather than scaled down from 32.
+
+    The Human Interface Guidelines say to redraw at each size, and the reason
+    is visible the moment you don't: halving the 32x32 closes the wrench's
+    fork, fills the screen bezel and turns the arch into a blob. Everything
+    here is thinned to the smallest stroke that still reads -- one-pixel
+    prongs, a four-pixel arch, a two-pixel arrow shaft.
+    """
+    g = blank(16)
+
+    def px(x, y, c):
+        if 0 <= x < 16 and 0 <= y < 16:
+            g[y][x] = c
+
+    def box(x0, y0, x1, y1, edge, fill=None):
+        for y in range(y0, y1 + 1):
+            for x in range(x0, x1 + 1):
+                if x in (x0, x1) or y in (y0, y1):
+                    px(x, y, edge)
+                elif fill:
+                    px(x, y, fill)
+
+    box(3, 8, 14, 15, 'K', 'L')           # the Mac
+    box(5, 9, 12, 12, 'D', 'K')           # screen, with case visible either side
+    for x in range(7, 11):                # arch, four pixels wide
+        px(x, 10, 'B')
+    px(6, 11, 'B'); px(11, 11, 'B')       # footings
+    for x in range(6, 12):                # disk slot
+        px(x, 14, 'D')
+
+    for y in range(1, 5):                 # arrow shaft
+        px(7, y, 'R'); px(8, y, 'R')
+    for i, (a, b) in enumerate([(5, 10), (6, 9), (7, 8)]):
+        for x in range(a, b + 1):         # arrow head
+            px(x, 5 + i, 'R')
+
+    px(1, 3, 'D'); px(3, 3, 'D')          # wrench: one-pixel prongs
+    px(1, 4, 'D'); px(3, 4, 'D')
+    for x in range(1, 4):
+        px(x, 5, 'D')                     # back of the jaw
+    for y in range(6, 13):
+        px(2, y, 'D')                     # handle
+
+    return g
+
+
 def draw(n):
-    """n x n: a package (lower two thirds) with an arrow descending into it."""
+    """n x n: a wrench and a red arrow descending into a compact Macintosh.
+
+    The grammar is the era's, not an invention — see the note at the top of
+    this file: source at the top, arrow down, DESTINATION at the bottom. The
+    destination is a compact Mac wearing the AppleBridge arch on its screen,
+    which carries the brand without needing a fourth object.
+    """
     g = blank(n)
     s = n / 32.0
 
@@ -53,24 +106,36 @@ def draw(n):
                 elif fill:
                     px(x, y, fill)
 
-    # --- the package -----------------------------------------------------
-    box(4, 16, 27, 28, 'K', 'L')          # body
-    box(4, 16, 27, 19, 'K', 'M')          # lid band
-    for x in range(5, 27):                # lid shadow line
-        px(x, 20, 'D')
+    # --- the destination: a compact Macintosh ----------------------------
+    box(9, 15, 23, 29, 'K', 'L')          # case
+    box(11, 17, 21, 24, 'D', 'K')         # screen bezel, dark screen
+    for x in range(12, 21):               # the AppleBridge arch, lit
+        dy = ((x - 16.0) / 4.5) ** 2
+        px(x, int(23 - 3.5 * (1 - dy)), 'B')
+    px(12, 23, 'B'); px(20, 23, 'B')      # arch footings
+    for x in range(13, 20):               # disk slot
+        px(x, 26, 'D')
+    for x in range(10, 23):               # base shadow
+        px(x, 28, 'M')
 
-    # --- the arrow, descending into the lid ------------------------------
-    for y in range(3, 12):                # shaft
-        px(15, y, 'B'); px(16, y, 'B')
-    for i in range(6):                    # head
-        for x in range(15 - i, 17 + i):
-            px(x, 11 + i, 'B')
+    # --- the red arrow, descending into it -------------------------------
+    for y in range(2, 9):                 # shaft
+        px(15, y, 'R'); px(16, y, 'R')
+    for i, (a, b) in enumerate([(11, 20), (12, 19), (13, 18), (14, 17), (15, 16)]):
+        for x in range(a, b + 1):         # head: wide at the top, apex below
+            px(x, 9 + i, 'R')
 
-    # --- the AppleBridge arch, small, on the package face -----------------
-    for x in range(8, 24):
-        dy = ((x - 15.5) / 7.5) ** 2
-        px(x, int(25 - 2.5 * (1 - dy)), 'B')
-    px(8, 26, 'B'); px(23, 26, 'B')
+    # --- the wrench, standing to the left --------------------------------
+    # Upright rather than the diagonal a wrench usually gets: at 32x32 a
+    # rotated fork loses its opening to the grid and reads as a stick.
+    for y in range(4, 8):                 # the two jaw prongs, gap between
+        px(3, y, 'D'); px(4, y, 'M')
+        px(6, y, 'M'); px(7, y, 'D')
+    for x in range(3, 8):                 # the back of the jaw
+        px(x, 8, 'D')
+    for y in range(9, 23):                # handle, run down beside the Mac
+        px(4, y, 'D'); px(5, y, 'M'); px(6, y, 'D')
+    px(4, 23, 'D'); px(5, 23, 'D'); px(6, 23, 'D')   # rounded end
 
     return g
 
@@ -112,7 +177,7 @@ def data_res(typ, rid, b):
 
 
 if __name__ == "__main__":
-    g32, g16 = draw(32), draw(16)
+    g32, g16 = draw(32), draw16()
     icn = bits1(g32, lambda c: c in INK) + bits1(g32, lambda c: c in OPAQUE)
     ics = bits1(g16, lambda c: c in INK) + bits1(g16, lambda c: c in OPAQUE)
 
@@ -137,5 +202,6 @@ if __name__ == "__main__":
     open('installer_icon.r', 'w').write('\n'.join(parts))
     print("wrote installer_icon.r")
 
-    legend = {'T': ' ', 'W': '.', 'L': ':', 'B': '#', 'K': '@', 'M': 'o', 'D': '-'}
+    legend = {'T': ' ', 'W': '.', 'L': ':', 'B': '#', 'K': '@', 'M': 'o',
+              'D': '-', 'R': '*'}
     print('\n'.join(''.join(legend[c] for c in row) for row in g32))
