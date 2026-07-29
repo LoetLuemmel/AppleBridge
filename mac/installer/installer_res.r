@@ -27,3 +27,4 @@ resource 'SIZE' (-1) {
     2 * 1024 * 1024,    /* preferred: 2 MB */
     1024 * 1024         /* minimum: 1 MB */
 };
+
