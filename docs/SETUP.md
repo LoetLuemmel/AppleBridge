@@ -171,6 +171,17 @@ from it. It preflights the machine, copies the suite, sets up autostart, and
 offers **Restart** when it is done — the machine has to come back up before the
 bridge runs, so that button is the only way onward.
 
+**Afterwards, take the kit back out.** On the first boot after installing, the
+daemon shows a window confirming the bridge is running and telling you to drag
+the **AppleBridge Kit** disk to the Trash; that removes it for the session. To
+stop it coming back, delete its `disk` line from the emulator's prefs — the
+guest cannot do that for you, and without it the volume remounts on every boot
+and **the Finder reopens its window every time**. That is the Finder opening a
+newly mounted volume, not a leftover from your last session: measured
+2026-07-29 by closing the window by hand, waiting for the Finder to settle, and
+restarting — it came back open. So there is nothing the installer can close on
+your behalf; the disk line is the only durable fix.
+
 Where does the kit come from? A published release if one exists, or from a
 machine that already runs AppleBridge:
 
