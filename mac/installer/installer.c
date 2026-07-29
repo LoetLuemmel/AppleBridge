@@ -37,6 +37,7 @@
 #include <Files.h>
 #include <Folders.h>
 #include <Aliases.h>
+#include <Shutdown.h>       /* ShutDwnStart - the post-install restart */
 #include <Resources.h>
 #include <Memory.h>
 #include <Gestalt.h>
@@ -82,7 +83,7 @@ typedef struct {
 static Boolean      gRunning = true;
 static WindowPtr    gWin = NULL;
 static AppPrefs     gPrefs;
-static ControlHandle gInstallBtn, gQuitBtn;
+static ControlHandle gInstallBtn, gQuitBtn, gRebootBtn;
 
 static Check   gChecks[MAX_CHECKS];
 static short   gNumChecks = 0;
@@ -735,6 +736,9 @@ static void MakeButtons(void)
 
     SetRect(&r, 16, top, 140, top + 20);
     gInstallBtn = NewControl(gWin, &r, "\pInstall", true, 0, 0, 1, 0, 0);
+    /* Hidden until there is something to reboot INTO; shown by DoInstall. */
+    SetRect(&r, 268, top, 364, top + 20);
+    gRebootBtn = NewControl(gWin, &r, "\pReboot", false, 0, 0, 1, 0, 0);
     SetRect(&r, 380, top, 444, top + 20);
     gQuitBtn = NewControl(gWin, &r, "\pQuit", true, 0, 0, 1, 0, 0);
 
@@ -758,6 +762,17 @@ static void HandleClick(EventRecord *ev)
                     DoInstall();
                     /* disable only on success; a failed attempt stays retryable */
                     HiliteControl(gInstallBtn, gInstalled ? 255 : 0);
+                    /* Offer the next step WITHOUT taking away the exit. The
+                       status says "Reboot to start the bridge" — the daemon
+                       only comes up via Startup Items — so a Reboot button
+                       appears once there is something to reboot into. Quit
+                       stays: re-labelling the only button would have forced a
+                       restart on somebody who just wanted to close the app
+                       (operator's catch, 2026-07-29). */
+                    if (gInstalled)
+                        ShowControl(gRebootBtn);
+                } else if (ctl == gRebootBtn) {
+                    ShutDwnStart();          /* restart; the bridge comes up */
                 } else if (ctl == gQuitBtn) {
                     gRunning = false;
                 }
