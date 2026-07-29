@@ -188,12 +188,21 @@ def is_emulator_bundle(path, exists=None):
                for exe in EMULATOR_EXECUTABLES)
 
 
-def hfsutils_advice(missing, action):
-    """The one message for 'this machine cannot touch an HFS volume'."""
+def hfsutils_advice(missing, action, alternative=None):
+    """The one message for 'this machine cannot touch an HFS volume'.
+
+    `alternative` names a route that needs no hfsutils at all, for the callers
+    that have one. Measured 2026-07-29 on a host with neither Homebrew nor
+    MacPorts: the advice to install a package was the message's ONLY exit, and
+    on that machine it is not an exit. Seeding has a way round — the guest can
+    be told the address in AppleBridgeConfig — and a refusal that withholds it
+    turns a detour into a dead end.
+    """
     return ("hfsutils is not installed, so nothing here can %s: missing %s. "
             "It is not part of macOS — `brew install hfsutils` (or MacPorts "
-            "`port install hfsutils`), then run this again."
-            % (action, ", ".join(missing)))
+            "`port install hfsutils`), then run this again.%s"
+            % (action, ", ".join(missing),
+               (" " + alternative) if alternative else ""))
 
 
 def bundle_dirs_from_prefs(emulator_prefs):
@@ -1187,7 +1196,11 @@ def seed_guest_prefs(image, host_ip, probes, run=None, hfs=None):
     run = run or _run
     missing_hfs = probes.get("hfsutils", {}).get("missing")
     if missing_hfs:
-        return (False, hfsutils_advice(missing_hfs, "read a disk image"))
+        return (False, hfsutils_advice(
+            missing_hfs, "read a disk image",
+            "You do not have to seed at all: mount the kit as it is, run "
+            "AppleBridgeInstaller, then set IP= to this host's address in "
+            "AppleBridgeConfig on the guest. Seeding only saves that step."))
     hfs = hfs or {}
 
     if emulator_running(probes):

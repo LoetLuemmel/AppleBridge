@@ -1250,6 +1250,32 @@ def test_seeding_prefs_without_hfsutils_refuses_the_same_way():
     assert ok is False and "brew install hfsutils" in msg, msg
 
 
+def test_the_seed_refusal_names_the_route_that_needs_no_hfsutils():
+    """Measured 2026-07-29 on a host with neither Homebrew nor MacPorts.
+
+    "brew install hfsutils, then run this again" was the message's only exit,
+    and on that machine it is not an exit — there is nothing to run brew with.
+    Seeding is a CONVENIENCE (it saves typing the address on the guest), so a
+    refusal that withholds the alternative turns a detour into a dead end for
+    exactly the person a released kit is aimed at.
+    """
+    ok, msg = ib.seed_guest_prefs("/tmp/x.dmg", "192.168.3.1",
+                                  probes(hfs_missing=list(ib.HFS_TOOLS)),
+                                  run=lambda argv: "")
+    assert ok is False
+    assert "AppleBridgeConfig" in msg, "name the guest-side route"
+    assert "do not have to seed" in msg, "say that seeding is optional"
+
+
+def test_a_kit_export_refusal_offers_no_false_alternative():
+    # The export has no way round: a kit cannot be built without reading an
+    # HFS image. Only the seed message gets the alternative, so this one must
+    # not grow a copy of it and promise something that does not work.
+    io = KitIO()
+    _, msg, _ = io.build(probes_=probes(hfs_missing=["hmount"]))
+    assert "AppleBridgeConfig" not in msg, msg
+
+
 def test_an_hmount_that_produces_no_output_says_so_instead_of_a_bare_colon():
     # The runner degrades to "" on OSError, so the old message ended at the
     # colon and pointed at the disk image -- which was never the problem.
