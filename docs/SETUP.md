@@ -27,7 +27,7 @@ The retired Swift `MacintoshBridgeHost` was replaced long ago by the stdlib-only
 
 - **System** Mac OS 7.6.1 (recommended).
 - **Open Transport** 1.1.1 or later (MacTCP also works via the transport seam).
-- **MPW** with the SC compiler, and **ToolServer** — ToolServer (`'MPSX'`) is required for command-output capture; MPW Shell (`'MPS '`) runs commands but returns empty AE replies.
+- **MPW** with the SC compiler, and **ToolServer** — **optional**, and only for the *command tier*. ToolServer (`'MPSX'`) is what returns command output over Apple Events; MPW Shell (`'MPS '`) runs commands but replies empty. Without either, everything else still works: screenshots, fork-aware file transfer, input injection, `LISTDIR`, `DISKINFO`, clipboard, launch and shutdown — measured 11/11 on a ToolServer-less guest (`host/tools/q1_native_surface.py`). An absent ToolServer is a tier you do not have, not a failed install, and the installer no longer asks for it: helper applications are added afterwards in the **AppleBridge config panel**.
 - **Memory** 64 MB RAM minimum.
 
 ## Part 1: Basilisk II and the host network
@@ -144,9 +144,51 @@ claude mcp list      # -> applebridge (30 tools)
 
 The 30 tools cover driving builds and reading output (`mpw_execute`, `mac_compile`, `mac_build`, `mac_read_file`, `mac_list_files`, `mac_send_apple_event`), moving bytes and interacting (`mac_put_file` / `mac_get_file`, `mac_write_file`, `launch_app`, `mac_screenshot`, `mac_type` / `mac_key` / `mac_menu` / `mac_menu_front` / `mac_click`, `mac_clipboard_get` / `mac_clipboard_set`), driving the guest's real mouse for menus and modal dialogs (`mac_host_click`, `mac_host_menu`, `mac_host_screenshot`), network discovery (`mac_appletalk_browse`), and lifecycle/liveness (`mac_status`, `bridge_doctor`, `mac_verbose_log`, `mac_reboot`, `mac_shutdown`, `mac_restart_toolserver`, `mac_update_daemon`, `run_applescript`). New tools register on the next MCP-server restart.
 
-## Part 3: Build and deploy the Mac daemon
+## Part 3: Get the guest software onto the Mac
 
-### 3.1 Transfer the source
+There are two routes, and **most people want the first**.
+
+### 3.0 Install from a kit (no toolchain needed)
+
+The kit is a small disk image holding the four 68K applications and a prefs
+file. You mount it in the guest and run the installer — no MPW, no compiler,
+nothing typed by hand.
+
+```bash
+# On the machine that will run the bridge:
+host/install_bridge.py --seed-guest-prefs /path/to/AppleBridgeKit.dmg
+```
+
+That writes **your** host's address into the kit. A kit built for publication
+ships `IP=` **empty** on purpose: an address baked into a released artifact
+would point every downloader's guest at the machine that built it, and on a LAN
+where that number answers it connects and reports full health. Seeding is what
+supplies the one value only you know.
+
+Then add the image as a second `disk` line in the emulator's prefs, relaunch,
+open the **AppleBridge Kit** volume in the guest and run **AppleBridgeInstaller**
+from it. It preflights the machine, copies the suite, sets up autostart, and
+offers **Reboot** when it is done.
+
+Where does the kit come from? A published release if one exists, or from a
+machine that already runs AppleBridge:
+
+```bash
+host/install_bridge.py --release-kit --export-guest-kit ~/Desktop
+```
+
+**Helper applications (ToolServer and friends) are optional** and are *not* part
+of the install. Add them afterwards with **Add Helper App…** in the AppleBridge
+config panel; the daemon chain-launches whatever is listed there at boot. Only
+real applications — an entry that opens a full-screen window freezes the guest
+at startup.
+
+### 3.1 Build from source (needs MPW on the guest)
+
+Use this when you are changing the daemon itself. Everything below is the
+developer path.
+
+### 3.1.1 Transfer the source
 
 Convert the daemon source from host UTF-8/LF to Mac MacRoman/CR and copy it over:
 

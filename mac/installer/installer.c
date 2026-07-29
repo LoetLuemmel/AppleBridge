@@ -762,15 +762,18 @@ static void HandleClick(EventRecord *ev)
                     DoInstall();
                     /* disable only on success; a failed attempt stays retryable */
                     HiliteControl(gInstallBtn, gInstalled ? 255 : 0);
-                    /* Offer the next step WITHOUT taking away the exit. The
-                       status says "Reboot to start the bridge" — the daemon
-                       only comes up via Startup Items — so a Reboot button
-                       appears once there is something to reboot into. Quit
-                       stays: re-labelling the only button would have forced a
-                       restart on somebody who just wanted to close the app
-                       (operator's catch, 2026-07-29). */
-                    if (gInstalled)
+                    /* Once the install has happened, Reboot is the only
+                       action that leads anywhere: the daemon comes up through
+                       Startup Items and nothing else starts it, so an installed
+                       machine that is merely quit out of is an install that
+                       does not work yet. Operator's call (2026-07-29): show
+                       Reboot, take Quit away. The cost is stated rather than
+                       hidden — somebody who wants out without restarting has to
+                       quit the emulator instead. */
+                    if (gInstalled) {
                         ShowControl(gRebootBtn);
+                        HideControl(gQuitBtn);
+                    }
                 } else if (ctl == gRebootBtn) {
                     ShutDwnStart();          /* restart; the bridge comes up */
                 } else if (ctl == gQuitBtn) {
