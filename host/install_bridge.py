@@ -232,10 +232,18 @@ def probe_emulator_bundle(run=None, exists=None, candidates=BUNDLE_CANDIDATES,
                           prefs_dirs=(), listdir=None, override=None):
     """-> {app, helper, source} — the emulator bundle and whether it can do etherhelper.
 
-    R8 makes this the FIRST question, ahead of counting interfaces: a stock
-    Basilisk II has no `etherhelpertool` at all, so for most people the
-    `etherhelper` branch does not exist whatever their NICs look like. It is also
-    the cheaper check.
+    R8 makes this the FIRST question, ahead of counting interfaces: whether the
+    `etherhelper` branch exists at all is decided by the bundle, not by the NIC
+    count, and it is the cheaper check.
+
+    **Corrected 2026-07-30.** This used to say "a stock Basilisk II has no
+    `etherhelpertool` at all". That is wrong: every published build carries one,
+    signed, in `Contents/Resources` — checked in the 20210801, 20240228 and
+    20260717 universal builds from emaculation. What is true is narrower and
+    sharper: the shipped helper is **thin arm64** while the app is universal, so
+    on an Intel host the kernel refuses to exec it (`bad CPU type in executable`,
+    measured on a Core i7-8569U / macOS 15.7.7). See `helper` below — presence is
+    not usability.
 
     `app` is discovered rather than hardcoded because `start_stack.sh` carries one
     machine's Basilisk path today, which is the same defect as the addresses of R1.
@@ -327,6 +335,15 @@ def probe_emulator_bundle(run=None, exists=None, candidates=BUNDLE_CANDIDATES,
                 break
 
     probe_target = found or note      # the helper question is about the bundle,
+    # KNOWN LIMITATION, measured 2026-07-30: this is a PRESENCE test, and presence
+    # is not usability. The helper published inside every emaculation build is
+    # thin arm64 while the app is universal, so on an Intel host it is present
+    # and cannot execute (`bad CPU type in executable`). `helper: True` there
+    # overstates what the machine can do. Deciding it properly means reading the
+    # helper's Mach-O slices against the host arch; not done here because nothing
+    # on the slirp branch acts on this field, and a wrong ANSWER is worse than a
+    # coarse one only where something branches on it. Fix before any code lets
+    # `helper` select a backend.
     helper = bool(probe_target) and exists(   # and a translocated copy carries
         os.path.join(probe_target, "Contents", "Resources", "etherhelpertool"))
     out = {"app": found, "helper": helper, "source": source}
