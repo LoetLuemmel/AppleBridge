@@ -753,6 +753,11 @@ static void DoInstall(void)
 
 /* ---- UI ---------------------------------------------------------------- */
 
+/* Defined below, beside the action it advertises; declared here because
+ * DrawContent draws the ring and MPW C is C89 — an undeclared call would be
+ * assumed to return int and the link would not care. */
+static void FrameDefaultButton(ControlHandle c);
+
 static void DrawContent(void)
 {
     Rect r;
@@ -813,11 +818,27 @@ static void DrawContent(void)
         grey.red = grey.green = grey.blue = 0x7777;
         RGBForeColor(&grey);
     }
-    DrawString("\p© 2026 Pit Förster — the Loetluemmel ® — and Claude, his friend");
+    DrawString("\p© 2026 the Loetluemmel ® — and Claude, his friend");
     ForeColor(blackColor);
     TextSize(12);
 
+    /* Wipe both ring positions before redrawing. The erase above stops at
+     * bottom-44 and deliberately leaves the button strip alone — which is
+     * where the ring lives, so a ring that has moved would otherwise stay
+     * behind and the window would advertise two default buttons at once
+     * (seen 2026-07-31, the first thing a screenshot showed). */
+    {
+        Rect rr;
+        if (gInstallBtn) { rr = (**gInstallBtn).contrlRect; InsetRect(&rr, -4, -4); EraseRect(&rr); }
+        if (gRestartBtn) { rr = (**gRestartBtn).contrlRect; InsetRect(&rr, -4, -4); EraseRect(&rr); }
+    }
     DrawControls(gWin);
+    /* Ring whichever button Return will press. Before installing that is
+     * Install — unless the preflight refused, in which case there is no
+     * default action and promising one would be a lie. Afterwards it is
+     * Restart, the only door that leads anywhere. */
+    if (gInstalled)          FrameDefaultButton(gRestartBtn);
+    else if (gCanInstall)    FrameDefaultButton(gInstallBtn);
     if (gGifReady) GifDrawFrame(gWin, gLogoFrame, &gLogoRect);
 }
 
@@ -884,6 +905,54 @@ static void MakeButtons(void)
     HiliteControl(gInstallBtn, gCanInstall ? 0 : 255);   /* 255 = disabled */
 }
 
+/* The one action the window is asking for, whichever stage it is at.
+ *
+ * Before installing that is Install; afterwards it is Restart, because the
+ * daemon comes up through Startup Items and nothing else starts it, so an
+ * installed machine that is not restarted is an install that does not work
+ * yet — which is why the Quit button is taken away at that point.
+ *
+ * It exists as a function so the button and the Return key cannot drift apart,
+ * and it matters beyond convenience: a guest being set up from another machine
+ * receives key events but not synthetic clicks (measured 2026-07-31 — TCC
+ * blocks event posting from outside the GUI session, so neither cliclick nor
+ * System Events reaches the guest, while keystrokes arrive). Everything up to
+ * this window can be driven by key alone — Cmd-O opens the kit volume and this
+ * application, arrow keys select in the Finder — and without this the chain
+ * stopped at a button, one step from done. The daemon's own click injection
+ * would hit the button easily and is precisely what does not exist yet: it is
+ * what this installer installs.
+ */
+static void DoPrimaryAction(void)
+{
+    if (!gInstalled) {
+        if (!gCanInstall) return;              /* preflight said no; stay put */
+        DoInstall();
+        HiliteControl(gInstallBtn, gInstalled ? 255 : 0);
+        if (gInstalled) {
+            ShowControl(gRestartBtn);
+            HideControl(gQuitBtn);
+        }
+    } else {
+        ShutDwnStart();
+    }
+    DrawContent();
+}
+
+/* The heavy ring classic Mac OS draws around the default button. Purely a
+ * promise to the eye — the behaviour lives in DoPrimaryAction — but a Return
+ * key that works and is not advertised helps nobody. */
+static void FrameDefaultButton(ControlHandle c)
+{
+    Rect r;
+    if (!c || !(*c)->contrlVis) return;
+    r = (*c)->contrlRect;
+    InsetRect(&r, -4, -4);
+    PenSize(3, 3);
+    FrameRoundRect(&r, 16, 16);
+    PenSize(1, 1);
+}
+
 static void HandleClick(EventRecord *ev)
 {
     WindowPtr w;
@@ -897,24 +966,18 @@ static void HandleClick(EventRecord *ev)
         GlobalToLocal(&pt);
         if (FindControl(pt, gWin, &ctl)) {
             if (TrackControl(ctl, pt, NULL)) {
+                /* Install and Restart both go through DoPrimaryAction, which is
+                   also what Return triggers, so the button and the key cannot
+                   come to mean different things. Install only disables on
+                   success — a failed attempt stays retryable — and once the
+                   install has happened Restart is the only action that leads
+                   anywhere, so Quit is taken away (operator's call 2026-07-29).
+                   The cost is stated rather than hidden: somebody who wants out
+                   without restarting has to quit the emulator instead. */
                 if (ctl == gInstallBtn && gCanInstall && !gInstalled) {
-                    DoInstall();
-                    /* disable only on success; a failed attempt stays retryable */
-                    HiliteControl(gInstallBtn, gInstalled ? 255 : 0);
-                    /* Once the install has happened, Restart is the only
-                       action that leads anywhere: the daemon comes up through
-                       Startup Items and nothing else starts it, so an installed
-                       machine that is merely quit out of is an install that
-                       does not work yet. Operator's call (2026-07-29): show
-                       Restart, take Quit away. The cost is stated rather than
-                       hidden — somebody who wants out without restarting has to
-                       quit the emulator instead. */
-                    if (gInstalled) {
-                        ShowControl(gRestartBtn);
-                        HideControl(gQuitBtn);
-                    }
+                    DoPrimaryAction();
                 } else if (ctl == gRestartBtn) {
-                    ShutDwnStart();   /* restart; the bridge comes up */
+                    DoPrimaryAction();
                 } else if (ctl == gQuitBtn) {
                     gRunning = false;
                 }
@@ -993,6 +1056,13 @@ int main(void)
                         if ((k == 'q' || k == 'Q' || k == 'w' || k == 'W') &&
                             !gInstalled)
                             gRunning = false;
+                    } else {
+                        /* 13 = Return, 3 = Enter. Numbers rather than character
+                         * literals because MPW C maps '\n' to CR and '\r' to
+                         * LF, the reverse of every other C compiler — a literal
+                         * would read correctly here and behave wrongly. */
+                        char k = (char)(ev.message & charCodeMask);
+                        if (k == 13 || k == 3) DoPrimaryAction();
                     }
                     break;
                 case updateEvt:

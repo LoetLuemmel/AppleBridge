@@ -239,9 +239,18 @@ def test_the_checklist_carries_the_resolver_that_gets_forgotten():
     assert ib.GUEST_RESOLVER in lines and "23045" in lines
 
 
-def test_the_checklist_warns_off_the_slirp_router_as_a_host_address():
+def test_the_checklist_warns_off_the_guests_own_address_and_not_the_router():
+    # This test used to assert the opposite, and the rule it encoded was wrong.
+    # `NEVER 10.0.2.2` was measured true while the host server bound one
+    # specific address; it stopped being true when the server began binding
+    # 0.0.0.0, and nothing re-measured it. On 2026-07-31, on two hosts and two
+    # guests, a daemon dialling 10.0.2.2 connected and the server logged the
+    # peer as 127.0.0.1 — slirp forwards that address to the host's loopback.
+    # The address that can never be the host is the GUEST's own.
     lines = "\n".join(ib.guest_checklist(HOST_ADDRS))
-    assert f"NEVER `{ib.GUEST_ROUTER}`" in lines
+    assert f"NEVER `{ib.GUEST_ADDR}`" in lines
+    assert f"NEVER `{ib.GUEST_ROUTER}`" not in lines, \
+        "the router is a working host address on this branch, not a trap"
 
 
 def test_the_checklist_names_where_the_prefs_file_lives():
@@ -1313,14 +1322,24 @@ def test_the_report_states_whether_hfsutils_is_present():
 
 # --- the release kit: an artifact that may be handed to a stranger ----------
 
-def test_a_release_kit_ships_no_address_at_all():
-    # The whole point. An address baked into a PUBLISHED kit points every
-    # downloader's guest at the machine that built it -- and on any LAN where
-    # that number answers, it connects and reports full health (R2), once per
-    # user instead of once.
+def test_a_release_kit_ships_only_the_slirp_constant():
+    # This test used to demand IP= be EMPTY, and that was right while the guest
+    # had no way to reach a host it had not been told about. 10.0.2.2 is not a
+    # guess: under slirp it is a constant of the branch, identical on every
+    # machine, and it reaches whichever host runs the emulator — slirp forwards
+    # it to that host's loopback, where the server hears it because it binds
+    # 0.0.0.0 (measured 2026-07-31 on two hosts and two guests; the server logs
+    # the peer as 127.0.0.1). An empty field then stopped being caution and
+    # became a question asked for no reason.
+    #
+    # What must still never ship is a SPECIFIC address: baked into a published
+    # artifact it points every downloader's guest at the machine that built it,
+    # and on any LAN where that number answers it connects and reports full
+    # health (R2), once per user instead of once.
     text = ib.guest_prefs_text("")
-    assert "\nIP=\n" in text, text
-    assert not ib.payload_host_literals(text.encode("mac_roman")), text
+    assert f"\nIP={ib.GUEST_ROUTER}\n" in text, text
+    assert [a for a in ib.payload_host_literals(text.encode("mac_roman"))
+            if a != ib.GUEST_ROUTER] == [], text
 
 
 def test_a_normal_kit_still_carries_the_address_because_that_is_its_job():
@@ -1351,11 +1370,15 @@ def test_the_release_export_refuses_prefs_that_carry_an_address():
         "it must refuse BEFORE writing an image somebody could publish"
 
 
-def test_a_release_kit_builds_and_says_the_address_is_missing_on_purpose():
+def test_a_release_kit_builds_and_explains_the_address_it_ships():
     io = KitIO()
     ok, msg, _ = io.build(release=True)
     assert ok is True, msg
-    assert "carry NO address" in msg and "--seed-guest-prefs" in msg, msg
+    assert f"IP={ib.GUEST_ROUTER}" in msg, msg
+    assert "not this machine's address" in msg, \
+        "the reason the constant is safe must travel with it"
+    assert "--seed-guest-prefs" in msg, \
+        "the way out for a server on another machine must stay visible"
 
 
 def test_the_seeder_finds_the_prefs_in_a_KIT_as_well_as_an_installed_guest():
