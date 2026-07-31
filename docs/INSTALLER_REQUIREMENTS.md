@@ -3,10 +3,14 @@
 > **Scope (D-018): the host-side installer configures the `slirp` branch only.**
 > Where it finds an `etherhelpertool` in the emulator bundle it names that path
 > as manual and stops. `etherhelper` stays supported and documented; it is set
-> up by hand. The reason is not effort but capability: that branch needs two
-> interactive password prompts per launch and a self-built fork emulator, so its
-> output cannot start without somebody at the keyboard. The cost is stated
-> rather than buried — **the slirp branch has no AppleTalk**.
+> up by hand. The reason is not effort but capability: that branch needs an
+> interactive password prompt at every launch, so its output cannot start
+> without somebody at the keyboard. The cost is stated rather than buried —
+> **the slirp branch has no AppleTalk**.
+>
+> This used to add "and a self-built fork emulator". Corrected 2026-07-30: the
+> published builds do ship `etherhelpertool` — but thin arm64, so on an Intel
+> host it cannot execute. See R8.
 >
 > Requirements below that concern the `etherhelper` path (R6's second half, R15)
 > therefore describe *diagnosis and documentation*, not configuration the
@@ -194,27 +198,62 @@ launcher, one for BasiliskII's helper elevation. Neither can be answered by a
 script, so `start_stack.sh` was never truly one-shot on this path and an
 unattended or headless start is impossible on it.
 
-**A specific build.** `etherhelpertool` is not part of a stock BasiliskII. It
-comes from the **kanjitalk755 macemu fork** (<https://github.com/kanjitalk755/macemu>),
-where the backend originated and was extended; the running bundle here reports
-*"Basilisk II 1.0, SDL2 port"* and carries `etherhelpertool` plus an
-`etherhelpertool.arm64.bak` in `Contents/Resources`, while a second, different
-BasiliskII binary in the same folder has no helper at all. The build in use here was **compiled by the operator**,
-incorporating that backend — which raises the bar for anyone else from "install
-an emulator" to "find a fork build, or compile one". A normal user's copy does
-not have the helper, so for them the `etherhelper` branch does not exist at all,
-whatever their interfaces look like.
+**A specific build — corrected 2026-07-30.** This section used to say that
+`etherhelpertool` is not part of a stock BasiliskII and that a normal user's copy
+does not have it. **That was wrong**, and the correction is worth more than the
+original claim was.
 
-The preflight must therefore probe the **app bundle** — is `etherhelpertool`
-present in `Contents/Resources`? — and not just the host's NICs. An absent helper
-decides the branch before the interface count is consulted, and it is the cheaper
-check of the two.
+Every published build ships the helper. Checked in all three universal builds
+linked from the [emaculation
+thread](https://www.emaculation.com/forum/viewtopic.php?f=6&t=7361) —
+`20210801`, `20240228`, `20260717` — each carries
+`Contents/Resources/etherhelpertool`, signed *Developer ID Application: Ronald P
+Regensburg*. Installing an emulator is enough to have it.
 
-**slirp needs none of it:** no bridge, no alias, no privileged step, no special
-build. For the single-interface machine of R6/D-015 that is a stronger argument
-than any throughput figure — that branch is not merely the only one that works
-there, it is the only one that starts without a human at the keyboard, and the
-only one a stock emulator can offer.
+What is true is narrower and decides more:
+
+```
+$ file BasiliskII.app/Contents/MacOS/BasiliskII
+Mach-O universal binary with 2 architectures: [x86_64] [arm64]
+
+$ file BasiliskII.app/Contents/Resources/etherhelpertool
+Mach-O 64-bit executable arm64
+
+$ BasiliskII.app/Contents/Resources/etherhelpertool en0
+bad CPU type in executable          [exit 127]
+```
+
+The app is universal; the helper is **thin arm64**. On an Intel host the kernel
+refuses to exec it, so the `etherhelper` branch is unavailable there from a stock
+download — measured 2026-07-30 on a Core i7-8569U / macOS 15.7.7. The cause is a
+packaging one: `BasiliskII.xcodeproj` builds the helper in a Run Script phase
+(`cc etherhelpertool.c -framework Security -o …`) with no `-arch` flags, so it
+follows the build machine rather than the target. On **Apple Silicon** the same
+download does offer the branch.
+
+Because the cause is upstream rather than ours, it was sent there: PR #314 on
+[kanjitalk755/macemu](https://github.com/kanjitalk755/macemu/pull/314) derives
+the flags from `$ARCHS` so the helper follows the app, in BasiliskII and
+SheepShaver alike. Should it be merged and a build published from it, the
+architecture precondition in this section stops applying to that build onward —
+and the requirement does not change, because a preflight cannot assume which
+build it is looking at. Verify by `file`, not by version.
+
+This also explains the `etherhelpertool.arm64.bak` sitting beside the helper in
+the operator's own bundle: consistent with replacing the shipped arm64 binary
+with a locally built x86_64 one and keeping the original aside.
+
+**What the preflight can and cannot conclude.** Probing the app bundle before the
+NICs is still right, and still the cheaper check. But *presence* is not
+usability: on Intel the file is there and unusable, so an `exists()` test
+overstates the machine's capability. Deciding it properly means reading the
+helper's Mach-O slices against the host architecture. `probe_emulator_bundle()`
+currently answers presence only, and says so at the call site.
+
+**slirp needs none of it:** no bridge, no alias, no privileged step. For the
+single-interface machine of R6/D-015 that is a stronger argument than any
+throughput figure — that branch is not merely the only one that works there, it
+is the only one that starts without a human at the keyboard.
 
 ## R9 — do not require a kernel extension
 
