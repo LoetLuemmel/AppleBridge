@@ -221,10 +221,15 @@ echo
 # printed unconditionally, so a slirp operator whose daemon would not connect
 # was sent to fix an alias their branch does not have and never places.
 if [ "$ETHER_BACKEND" = "slirp" ]; then
-    echo "  If the daemon does not connect: the guest's IP= must name THIS machine's"
-    echo "  LAN address, never 10.0.2.2 — that is slirp's router, and a connection"
-    echo "  to it is refused. The guest's own address is 10.0.2.15; those are two"
-    echo "  different addresses three lines apart in the installer's checklist (R5)."
+    echo "  If the daemon does not connect: the guest's IP= must name this machine —"
+    echo "  either its LAN address or 10.0.2.2, which slirp forwards to the loopback"
+    echo "  the server binds (measured 2026-07-31 on two hosts and two guests; the"
+    echo "  peer then shows up as 127.0.0.1). An older rule here called 10.0.2.2"
+    echo "  refused: that held while the server bound one specific address, and has"
+    echo "  not since it binds 0.0.0.0. The LAN address is what you need when the"
+    echo "  bridge server runs on a DIFFERENT machine than the emulator."
+    echo "  Never 10.0.2.15 — that is the guest itself, and it sits three lines from"
+    echo "  the host's address in the installer's checklist (R5)."
     echo "  Run ./install_bridge.py --dry-run to see the value this machine needs."
 else
     echo "  If the daemon hangs on CONNECTING at 100% CPU, the host address is on the"

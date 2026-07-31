@@ -722,8 +722,16 @@ def guest_checklist(addresses):
     else:
         lines.append("       IP=<this machine's LAN address — none could be read>")
     lines += [
-        f"   NEVER `{GUEST_ROUTER}`: that is slirp's router only, and the daemon's",
-        "   connection to it is refused. The host's real LAN address works.",
+        f"   `{GUEST_ROUTER}` ALSO WORKS, and is simpler: slirp forwards it to",
+        "   this machine's loopback, which the server hears because it binds",
+        "   0.0.0.0. Measured 2026-07-31 on two hosts and two guests — the",
+        "   daemon connected and the server logged the peer as 127.0.0.1. This",
+        "   corrects an earlier rule that called that address refused; it was",
+        "   true when the server bound one specific address, and stopped being",
+        "   true when it stopped. Use the LAN address when the bridge server",
+        "   runs on a DIFFERENT machine than the emulator — then the loopback",
+        "   is the wrong machine, and only the LAN address can say so.",
+        f"   NEVER `{GUEST_ADDR}`: that is the guest itself.",
         "",
         "3. Then launch the daemon. `host/install_bridge.py --seed-guest-prefs",
         "   <image.dmg>` can write step 2 into a POWERED-OFF disk image for you.",

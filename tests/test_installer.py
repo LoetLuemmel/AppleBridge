@@ -239,9 +239,18 @@ def test_the_checklist_carries_the_resolver_that_gets_forgotten():
     assert ib.GUEST_RESOLVER in lines and "23045" in lines
 
 
-def test_the_checklist_warns_off_the_slirp_router_as_a_host_address():
+def test_the_checklist_warns_off_the_guests_own_address_and_not_the_router():
+    # This test used to assert the opposite, and the rule it encoded was wrong.
+    # `NEVER 10.0.2.2` was measured true while the host server bound one
+    # specific address; it stopped being true when the server began binding
+    # 0.0.0.0, and nothing re-measured it. On 2026-07-31, on two hosts and two
+    # guests, a daemon dialling 10.0.2.2 connected and the server logged the
+    # peer as 127.0.0.1 — slirp forwards that address to the host's loopback.
+    # The address that can never be the host is the GUEST's own.
     lines = "\n".join(ib.guest_checklist(HOST_ADDRS))
-    assert f"NEVER `{ib.GUEST_ROUTER}`" in lines
+    assert f"NEVER `{ib.GUEST_ADDR}`" in lines
+    assert f"NEVER `{ib.GUEST_ROUTER}`" not in lines, \
+        "the router is a working host address on this branch, not a trap"
 
 
 def test_the_checklist_names_where_the_prefs_file_lives():

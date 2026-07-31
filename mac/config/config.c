@@ -324,12 +324,26 @@ static void SaveHostIP(void)
     for (i = 0; first + i <= last; i++) buf[i] = buf[first + i];
     buf[(last >= first) ? (last - first + 1) : 0] = 0;
 
-    if (buf[0] == '1' && buf[1] == '0' && buf[2] == '.' &&
-        buf[3] == '0' && buf[4] == '.' && buf[5] == '2' && buf[6] == '.') {
-        /* Kept short on purpose: the strip beside the field is about 26
-         * characters wide, and a message that runs off the window edge is
-         * exactly as useful as no message. */
-        SetIPMsg("\pslirp's net, not this host");
+    /* Refuse the GUEST's own address and nothing else in that range.
+     *
+     * An earlier version of this check rejected all of 10.0.2.x on the strength
+     * of a documented rule that 10.0.2.2 "is slirp's router only, and the
+     * daemon's connection to it is refused". That rule is wrong, and the check
+     * would have blocked the one address in the range that works: measured
+     * 2026-07-31 on two hosts and two guests, a daemon dialling 10.0.2.2
+     * connects and the host logs the peer as 127.0.0.1 — slirp forwards it to
+     * the host's loopback, which the server hears because it binds 0.0.0.0.
+     *
+     * 10.0.2.15 is the guest itself, so it can never be the host, and it sits
+     * three lines from the host's address in every set-up text. That one stays
+     * refused. Message kept short: the strip beside the field is about 26
+     * characters wide, and a message that runs off the window edge is exactly
+     * as useful as no message.
+     */
+    if (buf[0] == '1' && buf[1] == '0' && buf[2] == '.' && buf[3] == '0' &&
+        buf[4] == '.' && buf[5] == '2' && buf[6] == '.' && buf[7] == '1' &&
+        buf[8] == '5' && buf[9] == 0) {
+        SetIPMsg("\pthat is the guest itself");
         return;
     }
 
