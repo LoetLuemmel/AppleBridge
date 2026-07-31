@@ -55,7 +55,17 @@ static Boolean IsOwnSuite(OSType creator)
 static Boolean      gRunning = true;
 static WindowPtr    gWin = NULL;
 static AppPrefs     gPrefs;
-static ControlHandle gInstallBtn, gRemoveBtn, gAddBtn, gQuitBtn;
+static ControlHandle gInstallBtn, gRemoveBtn, gAddBtn, gQuitBtn, gSetIPBtn;
+/* The host address is the one setting a guest cannot be shipped with: a kit
+ * built for publication carries IP= empty on purpose, because an address baked
+ * into a public artifact points every downloader at the machine that built it.
+ * Until now three separate places told the operator to set it "in
+ * AppleBridgeConfig" and this program could only DISPLAY it, so the only route
+ * that existed was editing the prefs file by hand in the guest — or seeding the
+ * disk image from the host, which real hardware does not have. */
+static TEHandle     gIPField = NULL;
+static Rect         gIPBox;             /* the framed rect, one pixel outside the view */
+static Str255       gIPMsg = "\p";      /* result of the last Set, shown beside the field */
 static ControlHandle gOTRadio, gMacTCPRadio, gSerialRadio;  /* networking-service selector */
 static ControlHandle gPortARadio, gPortBRadio;              /* serial port: modem (A) / printer (B) */
 static ControlHandle gBaudRadio[4];                         /* 9600 / 19200 / 38400 / 57600 */
@@ -272,6 +282,64 @@ static void AddHelperApp(void)
 
 /* ---- UI ---------------------------------------------------------------- */
 
+/* Pascal-string assignment for the one-line result shown beside the field.
+ * Str255 is a length byte plus data, so a C strcpy would truncate at the first
+ * zero byte and lose the count. */
+static void SetIPMsg(const unsigned char *p)
+{
+    short i;
+    for (i = 0; i <= p[0]; i++) gIPMsg[i] = p[i];
+}
+
+/* Take what is in the field, check it, and persist it.
+ *
+ * The check that earns its place is not "does this look like a number" but
+ * WHOSE address it is. Under slirp the guest lives at 10.0.2.15 and its router
+ * is 10.0.2.2, so nothing in 10.0.2.x can ever be the host — yet those numbers
+ * are printed three lines away from the host's own address in every set-up
+ * text, and picking the wrong one fails silently: the daemon dials, nothing
+ * answers, and the log says only that there was no reply. Refusing them here
+ * costs one comparison and removes a whole class of lost evening.
+ *
+ * An empty field is allowed and means "not configured". That is a real state,
+ * not a mistake: a kit built for publication ships exactly that way, and the
+ * daemon says so plainly instead of guessing an address that might answer.
+ */
+static void SaveHostIP(void)
+{
+    CharsHandle h;
+    short len, i, first, last;
+    char buf[PREFS_IP_LEN];
+
+    h = TEGetText(gIPField);
+    len = (*gIPField)->teLength;
+    if (len > (short)sizeof(buf) - 1) len = (short)sizeof(buf) - 1;
+    for (i = 0; i < len; i++) buf[i] = (*h)[i];
+    buf[len] = 0;
+
+    first = 0;
+    while (buf[first] == ' ' || buf[first] == '\t') first++;
+    last = len - 1;
+    while (last >= first && (buf[last] == ' ' || buf[last] == '\t')) last--;
+    for (i = 0; first + i <= last; i++) buf[i] = buf[first + i];
+    buf[(last >= first) ? (last - first + 1) : 0] = 0;
+
+    if (buf[0] == '1' && buf[1] == '0' && buf[2] == '.' &&
+        buf[3] == '0' && buf[4] == '.' && buf[5] == '2' && buf[6] == '.') {
+        /* Kept short on purpose: the strip beside the field is about 26
+         * characters wide, and a message that runs off the window edge is
+         * exactly as useful as no message. */
+        SetIPMsg("\pslirp's net, not this host");
+        return;
+    }
+
+    strcpy(gPrefs.ip, buf);
+    if (SavePrefs(&gPrefs) == noErr)
+        SetIPMsg(buf[0] ? "\psaved" : "\pcleared");
+    else
+        SetIPMsg("\pprefs file not written");
+}
+
 static void DrawContent(void)
 {
     Rect r;
@@ -299,9 +367,19 @@ static void DrawContent(void)
     else
         DrawString("\pAutostart: not installed");
 
+    /* The host address, editable. The label says WHOSE address it is, because
+     * that is the confusion this field exists to end — the guest's own address
+     * appears three lines away from it in every set-up text. */
     MoveTo(16, 62);
-    DrawString("\pHost IP: ");
-    { Str255 p; CtoP(gPrefs.ip, p); DrawString(p); }
+    DrawString("\pHost IP:");
+    if (gIPField) {
+        FrameRect(&gIPBox);
+        TEUpdate(&(*gIPField)->viewRect, gIPField);
+    }
+    if (gIPMsg[0]) {
+        MoveTo(gIPBox.right + 62, 62);
+        DrawString(gIPMsg);
+    }
 
     /* Networking service selector (the two radio controls sit just below). */
     MoveTo(16, 84);
@@ -363,6 +441,30 @@ static void MakeButtons(void)
     SetRect(&r, 384, top, 444, top + 20);
     gQuitBtn = NewControl(gWin, &r, "\pQuit", true, 0, 0, 1, 0 /*pushButProc*/, 0);
 
+    /* The host-address field and its Set button. TENew wants the destination
+     * rect (where text is laid out) and the view rect (what is visible); one
+     * line, so they are the same. gIPBox is one pixel outside so the frame does
+     * not eat the first character. */
+    SetRect(&gIPBox, 72, 48, 240, 66);
+    {
+        Rect te = gIPBox;
+        Str255 p;
+        InsetRect(&te, 3, 3);
+        TextFont(0); TextSize(10);
+        gIPField = TENew(&te, &te);
+        CtoP(gPrefs.ip, p);
+        if (p[0]) TESetText((Ptr)&p[1], (long)p[0], gIPField);
+        /* Everything selected, so the first keystroke REPLACES the old address
+         * instead of prepending to it. That is what a human expects of a
+         * single-value field, and it is what makes the field usable from
+         * outside: a machine being set up remotely receives key events but no
+         * clicks, so "click at the end first" is not available to it. */
+        TESetSelect(0L, 32767L, gIPField);
+        TEActivate(gIPField);
+    }
+    SetRect(&r, 248, 47, 292, 67);
+    gSetIPBtn = NewControl(gWin, &r, "\pSet", true, 0, 0, 1, 0 /*pushButProc*/, 0);
+
     /* Networking-service radio group (just under the "Networking service:" label).
      * radioButProc == 2. The pair is mutually exclusive — clicks in HandleClick
      * set one to 1 and the other to 0 and persist the choice to prefs. */
@@ -402,9 +504,16 @@ static void HandleClick(EventRecord *ev)
     if (part == inContent && w == gWin) {
         pt = ev->where;
         GlobalToLocal(&pt);
+        /* The field first: it is not a control, so FindControl would miss it
+         * and the click would fall through to the window background. */
+        if (gIPField && PtInRect(pt, &(*gIPField)->viewRect)) {
+            TEClick(pt, (ev->modifiers & shiftKey) != 0, gIPField);
+            return;
+        }
         if (FindControl(pt, gWin, &ctl)) {
             if (TrackControl(ctl, pt, NULL)) {
                 if (ctl == gInstallBtn)     { InstallAutostart(); }
+                else if (ctl == gSetIPBtn)  { SaveHostIP(); }
                 else if (ctl == gRemoveBtn) { RemoveAutostart(); }
                 else if (ctl == gAddBtn)    { AddHelperApp(); }
                 else if (ctl == gQuitBtn)   { gRunning = false; }
@@ -476,19 +585,42 @@ int main(void)
                     HandleClick(&ev);
                     break;
                 case keyDown:
-                case autoKey:
-                    if ((ev.modifiers & cmdKey) &&
-                        (ev.message & charCodeMask) == 'q') gRunning = false;
+                case autoKey: {
+                    /* 13 = Return, 3 = Enter, 8 = Backspace. Written as numbers
+                     * on purpose: MPW C maps '\n' to CR and '\r' to LF, the
+                     * reverse of every other C compiler, so a character literal
+                     * here would read correctly and behave wrongly. */
+                    char ch = (char)(ev.message & charCodeMask);
+                    if (ev.modifiers & cmdKey) {
+                        if (ch == 'q' || ch == 'Q') gRunning = false;
+                        else if (ch == 's' || ch == 'S') { SaveHostIP(); DrawContent(); }
+                        break;
+                    }
+                    /* Return commits the field. A keyboard commit is not a
+                     * convenience here: a guest driven from outside receives key
+                     * events where synthetic clicks never arrive, so a button
+                     * with no key equivalent is where remote setup stops. */
+                    if (ch == 13 || ch == 3) { SaveHostIP(); DrawContent(); break; }
+                    if (gIPField) {
+                        TEKey(ch, gIPField);
+                        /* A stale "saved" beside a field being retyped is a lie;
+                         * drop it on the first keystroke, and only then. */
+                        if (gIPMsg[0]) { SetIPMsg("\p"); DrawContent(); }
+                    }
                     break;
+                }
                 case updateEvt:
                     BeginUpdate((WindowPtr)ev.message);
                     DrawContent();
                     EndUpdate((WindowPtr)ev.message);
                     break;
             }
+        } else if (gIPField) {
+            TEIdle(gIPField);       /* blink the caret; TE does nothing on its own */
         }
     }
 
+    if (gIPField) TEDispose(gIPField);
     if (gWin) DisposeWindow(gWin);
     return 0;
 }
