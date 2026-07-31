@@ -38,6 +38,7 @@ Design notes
 
 import json
 import os
+import shutil
 import tempfile
 import re
 import subprocess
@@ -242,7 +243,8 @@ def probe_installation(read=None, exists=None, local_env=LOCAL_ENV_PATH,
 GUEST_PREFS_HFS = ":System Folder:Preferences:AppleBridge Prefs"
 
 
-def probe_guest_ip(run, disks, emulator_running, exists=None, read=None):
+def probe_guest_ip(run, disks, emulator_running, exists=None, read=None,
+                   which=None):
     """The address the GUEST is configured to dial, read out of its disk image.
 
     Closes a loop nothing else could. The daemon dials the host, so a stale
@@ -260,12 +262,25 @@ def probe_guest_ip(run, disks, emulator_running, exists=None, read=None):
     -> {"ip": <str|None>, "image": <path|None>, "checked": bool, "why": <str>}
     """
     exists = exists or os.path.exists
+    which = which or shutil.which
     if emulator_running:
         return {"ip": None, "image": None, "checked": False,
                 "why": "an emulator is running; a live image is not read"}
-    for image in disks:
-        if not exists(image):
-            continue
+
+    # Declared, not inferred from a failure. Without hfsutils every `hmount`
+    # below returns nothing, the loop skips every image, and the fall-through
+    # reason blames the IMAGES — which sends the reader looking for a corrupt
+    # or missing disk when the actual answer is a tool macOS does not ship
+    # (measured 2026-07-31 on a host with all three images present and readable
+    # and no hfsutils at all). Ordered after the emptiness check so that "no
+    # image is configured" keeps its own, different answer.
+    present = [image for image in disks if exists(image)]
+    if present and not which("hmount"):
+        return {"ip": None, "image": None, "checked": False,
+                "why": "hfsutils is not installed (brew install hfsutils), so "
+                       "a powered-off image cannot be read"}
+
+    for image in present:
         out = run(["hmount", image])
         if "Volume" not in out:
             continue

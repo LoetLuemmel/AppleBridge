@@ -532,6 +532,28 @@ def test_no_disk_image_is_reported_as_not_checked_not_as_healthy():
     assert got["checked"] is False and got["ip"] is None
 
 
+def test_absent_hfsutils_is_named_instead_of_blamed_on_the_images():
+    # Measured 2026-07-31: a host with all three images present and readable and
+    # no hfsutils reported "no readable disk image in the emulator prefs" — a
+    # plausible, wrong cause that sends the reader after a corrupt disk. Every
+    # hmount returns nothing when the tool is absent, so the fall-through reason
+    # can never distinguish the two on its own; the tool has to be declared.
+    got = bd.probe_guest_ip(lambda argv: "", ["/tmp/x.dmg"],
+                            emulator_running=False,
+                            exists=lambda p: True, which=lambda name: None)
+    assert got["checked"] is False and got["ip"] is None
+    assert "hfsutils" in got["why"]
+    assert "image" not in got["why"].split("hfsutils")[0]
+
+
+def test_absent_hfsutils_does_not_swallow_the_no_image_case():
+    # Ordering guard: if the hfsutils check ran first, a machine with no disk
+    # image configured would be told to install a tool it has no use for.
+    got = bd.probe_guest_ip(lambda argv: "", [], emulator_running=False,
+                            exists=lambda p: True, which=lambda name: None)
+    assert "hfsutils" not in got["why"]
+
+
 def test_the_header_prints_what_the_guest_dials():
     text = bd.format_text(_with_guest_ip("192.168.3.240"))
     assert "guest dials:" in text
