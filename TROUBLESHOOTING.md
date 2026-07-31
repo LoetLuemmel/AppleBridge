@@ -226,6 +226,49 @@ crash reports in window code (an unrelated macOS Sequoia + SDL2 GUI bug).
 
 Full write-up: <https://pit.390er.de/applebridge/anatomy-of-a-freeze-macnat-return-path/>
 
+### Guest freezes at 100% CPU, daemon stuck on "connect: open endpoint"
+
+Same symptom as the section above, **different cause**, and the daemon's own status
+line tells them apart: `CONNECTING` means the endpoint opened and the dial is
+unanswered; **`connect: open endpoint`** means it never got that far.
+
+**Symptoms** (measured 2026-07-31, macOS 10.15 + German System 7.5.3):
+- Daemon status line reads `Idle   connect: open endpoint`
+- Basilisk II at ~110 % CPU, process state `R`, and it stays there — not a timeout
+  window that expires
+- **The guest stops responding to the mouse entirely**, and its menu-bar clock falls
+  behind the host's
+
+**Cause:** the emulator is configured for `etherhelper` while **no `etherhelpertool`
+is running**, so the guest has no working Ethernet link at all. The daemon still
+tries to open an Open Transport endpoint on it, and that starves System 7's
+cooperative scheduler. Nothing in the guest can be operated while this lasts —
+including the TCP/IP control panel, which then looks *locked* when it is merely
+unreachable.
+
+**Check, before blaming anything in the guest:**
+```bash
+grep '^ether' ~/.basilisk_ii_prefs   # which backend is configured
+pgrep -fl etherhelpertool            # is the helper actually running
+```
+Configured-but-not-running is the failure state. **You cannot spot a typo here by
+eye:** Basilisk compares only the first ten characters (`strncmp(name,
+"etherhelper", 10)` in `BasiliskII/src/Unix/ether_unix.cpp`), so `etherhelpert/…`
+selects the etherhelper backend just as `etherhelper/…` does — while a name that
+misses that prefix falls through to `sheep_net`, which does not exist on macOS.
+
+**Fix:** put `slirp` in the prefs. A Basilisk II build that *carries*
+`etherhelpertool` runs slirp perfectly well — the backend is a prefs entry, not a
+property of the build, so no second emulator is needed (verified 2026-07-31: the
+same bundle served slirp all afternoon and wedged only when pointed back at
+etherhelper with no helper running).
+
+**Scope, stated because it was not measured:** this says nothing about a *correctly
+running* etherhelper branch — helper started, bridge in place, two interfaces. That
+configuration was not exercised here and is not implicated. **Revisit if** a guest
+freezes the same way with `etherhelpertool` demonstrably alive; that would move the
+cause from "no link" to the branch itself.
+
 ### Connection Drops / Daemon Stops Responding
 
 **Symptoms:**

@@ -32,7 +32,7 @@ The retired Swift `MacintoshBridgeHost` was replaced long ago by the stdlib-only
 
 ## Part 1: Basilisk II and the host network
 
-### 1.1 Emulator networking (MACNAT, not slirp)
+### 1.1 Emulator networking (slirp, not MACNAT)
 
 There are **two backends**, and which one you can have is decided by your machine, not by preference (D-018 in `DECISIONS.md`).
 
@@ -51,7 +51,9 @@ cd host && ./install_bridge.py
 
 Those two are the trap: the same word means opposite things three lines apart, and swapping them is silent.
 
-**Prefer DHCP** (measured 2026-07-28: slirp handed out address, mask, router *and* name server `10.0.2.3`, and the daemon completed its v0.2 handshake on it). The reason is not the saved typing. Entered by hand, the name server is the field that gets left empty — and without it DNS fails as iCab `-23045`, which reads like a routing fault rather than a name one. DHCP cannot forget it.
+**Prefer DHCP** (measured 2026-07-28: slirp handed out address, mask, router *and* name server `10.0.2.3`, and the daemon completed its v0.2 handshake on it; reproduced 2026-07-31 on a different host and a different guest — macOS 10.15, German System 7.5.3 — with the same four values). The reason is not the saved typing. Entered by hand, the name server is the field that gets left empty — and without it DNS fails as iCab `-23045`, which reads like a routing fault rather than a name one. DHCP cannot forget it.
+
+![The guest's TCP/IP control panel on DHCP: Ethernet, 10.0.2.15, mask 255.255.255.0, router 10.0.2.2, name server 10.0.2.3](images/installer-guest-tcpip-dhcp.png)
 
 **The cost of this branch, stated plainly: no AppleTalk.** No Chooser, no AFP mounts, no `mac_appletalk_browse`. TCP is unaffected, which is exactly how the gap disguises itself as something else.
 
@@ -165,17 +167,29 @@ would point every downloader's guest at the machine that built it, and on a LAN
 where that number answers it connects and reports full health. Seeding is what
 supplies the one value only you know.
 
+**Do §1.1's TCP/IP step first.** The guest installer does not touch networking
+and cannot tell whether any exists, so on a guest still holding an address from
+another backend it reports success over a bridge that never comes up — which
+reads as a failed install when only one field is wrong. The daemon does recover
+on its own once the address is right (it redials every 30 s; observed
+2026-07-31, no reinstall and no reboot needed), so this is an order that saves
+you a misdiagnosis rather than a prerequisite.
+
 Then add the image as a second `disk` line in the emulator's prefs, relaunch,
 open the **AppleBridge Kit** volume in the guest and run **AppleBridgeInstaller**
 from it. It preflights the machine, copies the suite, sets up autostart, and
 offers **Restart** when it is done — the machine has to come back up before the
 bridge runs, so that button is the only way onward.
 
+![The mounted AppleBridge Kit volume in the guest: AppleBridge, AppleBridge Prefs, AppleBridgeConfig, AppleBridgeInstaller and AppleBridgeWatchdog](images/installer-guest-kit-window.png)
+
 **Afterwards, take the kit back out.** On the first boot after installing, the
 daemon shows a window confirming the bridge is running and telling you to drag
 the **AppleBridge Kit** disk to the Trash; that removes it for the session. To
 stop it coming back, delete its `disk` line from the emulator's prefs — the
 guest cannot do that for you, and otherwise the volume remounts on every boot.
+
+![The daemon's one-shot confirmation window: AppleBridge is installed and running, the bridge starts by itself every time this Mac boots](images/installer-guest-installed-and-running.png)
 
 Whether its *window* also reopens depends on the volume's own Finder state, and
 the installer cannot fix it for you (measured 2026-07-29, both ways): a **fresh**
@@ -194,11 +208,24 @@ machine that already runs AppleBridge:
 host/install_bridge.py --release-kit --export-guest-kit ~/Desktop
 ```
 
+**When the host's address changes**, `AppleBridgeConfig` on the guest is where
+you correct it — the kit's `IP=` is only the value that was true when the kit
+was built. The panel also answers the two questions a stuck bridge raises first,
+without a shell: whether the daemon is running at all, and which address it is
+dialling.
+
+![AppleBridgeConfig in the guest, reporting Daemon: RUNNING, Autostart: installed and the host address it dials](images/installer-guest-config.png)
+
 **Helper applications (ToolServer and friends) are optional** and are *not* part
 of the install. Add them afterwards with **Add Helper App…** in the AppleBridge
 config panel; the daemon chain-launches whatever is listed there at boot. Only
 real applications — an entry that opens a full-screen window freezes the guest
 at startup.
+
+Once the link is up, the daemon's own console is the confirmation — `SYNC-OK`,
+the host it reached, and `HELLO:2` for the negotiated protocol:
+
+![The daemon's verbose console showing SYNC-OK, connected to the host on port 9000, and HELLO:2](images/installer-guest-bridge-up.png)
 
 ### 3.1 Build from source (needs MPW on the guest)
 
