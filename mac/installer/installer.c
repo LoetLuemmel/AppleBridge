@@ -813,7 +813,7 @@ static void DrawContent(void)
         grey.red = grey.green = grey.blue = 0x7777;
         RGBForeColor(&grey);
     }
-    DrawString("\p© 2026 Pit Förster — the Loetluemmel ® — and Claude, his friend");
+    DrawString("\p© 2026 the Loetluemmel ® — and Claude, his friend");
     ForeColor(blackColor);
     TextSize(12);
 
