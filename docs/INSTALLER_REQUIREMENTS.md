@@ -231,6 +231,14 @@ packaging one: `BasiliskII.xcodeproj` builds the helper in a Run Script phase
 follows the build machine rather than the target. On **Apple Silicon** the same
 download does offer the branch.
 
+Because the cause is upstream rather than ours, it was sent there: PR #314 on
+[kanjitalk755/macemu](https://github.com/kanjitalk755/macemu/pull/314) derives
+the flags from `$ARCHS` so the helper follows the app, in BasiliskII and
+SheepShaver alike. Should it be merged and a build published from it, the
+architecture precondition in this section stops applying to that build onward —
+and the requirement does not change, because a preflight cannot assume which
+build it is looking at. Verify by `file`, not by version.
+
 This also explains the `etherhelpertool.arm64.bak` sitting beside the helper in
 the operator's own bundle: consistent with replacing the shipped arm64 binary
 with a locally built x86_64 one and keeping the original aside.

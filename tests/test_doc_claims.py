@@ -120,9 +120,17 @@ STATUS_DEBT = set()
 # checkmark, or a PR number cited as *provenance* of a corrected belief (which
 # is encouraged, not banned). Same rule as HISTORICAL_COUNTS: an exemption may
 # not outlive the line it exempts.
+#
+# The INSTALLER_REQUIREMENTS entry is an *upstream* PR (kanjitalk755/macemu),
+# not ours. It is cited for the same reason as the others — it says where the
+# arm64 finding went — and it is deliberately written so the requirement does
+# not depend on its outcome: a preflight must still read the bundle's Mach-O
+# slices whether or not that PR merges. If it ever turns into "fixed upstream,
+# nothing to check", that is drift and the line should go, not the exemption.
 STATUS_OK_LINES = {
     "docs/ARCHITECTURE_LAYERS.md": ["✅ **Both together:**"],
     "docs/SETUP.md": ["Fixed in PR #75"],
+    "docs/INSTALLER_REQUIREMENTS.md": ["PR #314 on"],
 }
 
 # --- decisions of record -----------------------------------------------------

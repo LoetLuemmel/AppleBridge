@@ -243,7 +243,9 @@ def probe_emulator_bundle(run=None, exists=None, candidates=BUNDLE_CANDIDATES,
     sharper: the shipped helper is **thin arm64** while the app is universal, so
     on an Intel host the kernel refuses to exec it (`bad CPU type in executable`,
     measured on a Core i7-8569U / macOS 15.7.7). See `helper` below — presence is
-    not usability.
+    not usability. Fix sent upstream:
+    <https://github.com/kanjitalk755/macemu/pull/314>. Even if it merges, this
+    probe cannot assume the bundle in front of it was built from it.
 
     `app` is discovered rather than hardcoded because `start_stack.sh` carries one
     machine's Basilisk path today, which is the same defect as the addresses of R1.
