@@ -111,27 +111,86 @@ sequenceDiagram
 ### Prerequisites
 
 **Host (macOS):**
-- Basilisk II emulator configured and running
-- Host server (`host/host_server.py`, Python stdlib — no build; auto-starts via launchd)
-- Claude Code with MCP configured
+- Basilisk II, with a guest that boots. Nothing else — the host side is Python
+  stdlib, so the system `/usr/bin/python3` is enough and there is nothing to build.
+- Claude Code, if you want the MCP tools. The bridge itself works without it.
 
-**Mac (Basilisk II):**
-- System 7.6.1 with OpenTransport installed
-- Network configured (DHCP — slirp answers it and supplies all four values)
-- **MPW + ToolServer — optional.** They add the *command tier* (`mpw_execute`,
-  `mac_compile`, `mac_build`). Without them everything else still works:
-  screenshots, fork-aware file transfer, input injection, directory listings,
-  clipboard, launch and shutdown. An absent ToolServer is a tier you do not
-  have, not a broken install.
+**Guest (System 7):**
+- System 7.5.3 or later with **Open Transport** (verified on 7.5.3, 7.6.1 and
+  Mac OS 9), or MacTCP.
+- **No compiler, and no MPW.** MPW + ToolServer are optional and add the
+  *command tier* (`mpw_execute`, `mac_compile`, `mac_build`). Without them
+  everything else still works: screenshots, fork-aware file transfer, input
+  injection, directory listings, clipboard, launch and shutdown. An absent
+  ToolServer is a tier you do not have, not a broken install.
 
-The guest software installs from a **kit** — a small disk image you mount in the
-emulator and run `AppleBridgeInstaller` from. No compiler on the Mac, nothing
-typed by hand: `install_bridge.py --seed-guest-prefs <kit.dmg>` writes your
-host's address into it first. Helper applications like ToolServer are added
-later, optionally, with **Add Helper App…** in the AppleBridge config panel.
-See [docs/SETUP.md](docs/SETUP.md) Part 3.
+Four steps. Two run on the host, two inside the emulator — the guest ones cannot
+be scripted, because System 7 offers no scripting surface for the TCP/IP control
+panel. Fully worked example with screenshots: [docs/SETUP.md](docs/SETUP.md).
 
-### 1. Configure MCP
+### 1. Configure the host
+
+```bash
+cd host && ./install_bridge.py --dry-run   # read the plan; it changes nothing
+cd host && ./install_bridge.py
+```
+
+It discovers your emulator, sets its Ethernet backend to `slirp`, writes
+`host/local.env`, installs the launchd agent that keeps the host server running,
+and prints the guest-side values you need in step 3 — labelled by *whose*
+address each one is, which is the mistake this step exists to prevent. It asks
+for nothing and needs no password.
+
+If it **refuses**, read what it says: it will not convert a host already
+configured for the `etherhelper` backend, because that is somebody's working
+AppleTalk setup. `--force-slirp` overrides it.
+
+### 2. Get the guest kit and stamp your address on it
+
+Download `AppleBridgeKit.dmg` from the [latest release](../../releases) — a 2 MB
+disk image holding the four 68K applications and a prefs file. Then:
+
+```bash
+cd host && ./install_bridge.py --seed-guest-prefs ~/Downloads/AppleBridgeKit.dmg
+```
+
+A released kit ships with `IP=` **empty** on purpose. An address baked into a
+public artifact would point every downloader's guest at the machine that built
+it — and on a LAN where that number answers, it connects and reports full
+health. Seeding supplies the one value only you know. (You can also leave it
+empty and set it in AppleBridgeConfig on the guest afterwards.)
+
+Then add the image to the emulator as a second disk and relaunch — the disk list
+is read at launch only:
+
+```
+disk /path/to/AppleBridgeKit.dmg
+```
+
+### 3. In the guest: network first, then the installer
+
+**TCP/IP control panel** — these are the *guest's own* values, and slirp answers
+DHCP itself:
+
+```
+Connect via   Ethernet
+Configure     Using DHCP Server
+```
+
+Do this **before** running the installer. Nothing breaks if you don't — the
+daemon redials every 30 seconds and picks itself up — but an installer reporting
+success over a bridge that never comes up reads like a failed install when only
+one field is wrong.
+
+Then open the **AppleBridge Kit** volume and run **AppleBridgeInstaller** from
+it. It preflights the machine, refuses environments that cannot work, copies the
+suite, and installs the autostart so the bridge comes up on every boot. When it
+is done, drag the kit volume to the Trash and remove its `disk` line.
+
+Helper applications like ToolServer are added later, optionally, with **Add
+Helper App…** in AppleBridgeConfig.
+
+### 4. Configure MCP
 
 Edit `.mcp.json` in your project or `~/.claude/`:
 
@@ -152,35 +211,26 @@ This is the configuration committed in `.mcp.json`. The MCP server talks to
 `host_server.py` on the local control port (9001); start the host stack with
 `cd host && ./start_stack.sh` (it also auto-starts via launchd).
 
-### 2. Build Mac Daemon
+### 5. Check that it came up
 
-Convert source files for Mac (handles encoding):
 ```bash
-cd host/
-uv run python encoding_convert.py to-share ../mac/
+cd host && printf 'MACSTATUS\n\n' | nc -w 5 localhost 9001
 ```
 
-In Basilisk II, copy from `Unix:` volume to Mac storage and build:
-```
-Duplicate -y Unix:mac: MeinMac:MPW:AppleBridge:
-Directory MeinMac:MPW:AppleBridge:
-Make -f Makefile.68k
-```
+`host_connected=1` and `daemon_responding=1` mean the bridge is live. The daemon
+also says so itself, in its own console in the guest: `SYNC-OK`, the host it
+reached, and `HELLO:2` for the negotiated protocol.
 
-Edit `src/main.c` first to set your host IP address.
+If it does not come up, run `bridge_doctor` — it diagnoses across layers (launchd
+job, listeners, emulator backend, the address the guest is configured to dial)
+and answers even when the host server is down. Failure modes and their causes:
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
-### 3. Launch
+> **Building the guest software from source** is a different route and needs MPW
+> on the guest — see [docs/SETUP.md](docs/SETUP.md) Part 3.1. The kit above
+> exists so that nobody has to.
 
-**On Mac:**
-1. Start ToolServer (for automation feedback)
-2. Double-click AppleBridge application
-3. Watch for "Connected to host!" status
-
-**On Host:**
-`host_server.py` auto-starts via launchd (or run `host/start_stack.sh`); Claude
-Code launches the MCP server (`mcp/server.py`) on demand per `.mcp.json`.
-
-### 4. Use with Claude Code
+### 6. Use with Claude Code
 
 ```
 You: "Execute 'Directory' command on the Mac"
