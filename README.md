@@ -4,9 +4,13 @@
 
 AppleBridge connects Claude Code to an authentic Mac System 7.6.1 environment running in Basilisk II, enabling you to build, compile, and run classic Mac applications using natural language.
 
-![AppleBridge daemon running live on System 7.6.1](docs/images/daemon-live.png)
+![The AppleBridge daemon's Verbose console on System 7.6.1, showing live command traffic](docs/images/daemon-verbose-0.8d33.png)
 
-*The AppleBridge v0.5.6 daemon running live on System 7.6.1 — RX/TX activity LEDs, a "Request received" log line, and an uptime counter, with the MPW/ToolServer environment behind it. This image was captured by the daemon itself (the emulated framebuffer), streamed over the bridge, and decoded to PNG on the host.*
+*Daemon 0.8d33 on System 7.6.1, with its optional **Verbose** console open: real commands
+arriving over the bridge, and a footer carrying the transport, the RX/TX counters and the
+error count. The daemon itself is **faceless** — it normally runs with no window at all, and
+this console is toggled with `MONITOR:1`. The image was captured by the daemon, out of the
+emulated framebuffer, streamed over the bridge and decoded to PNG on the host.*
 
 ## What You Can Do
 
@@ -124,9 +128,10 @@ sequenceDiagram
   injection, directory listings, clipboard, launch and shutdown. An absent
   ToolServer is a tier you do not have, not a broken install.
 
-Four steps. Two run on the host, two inside the emulator — the guest ones cannot
-be scripted, because System 7 offers no scripting surface for the TCP/IP control
-panel. Fully worked example with screenshots: [docs/SETUP.md](docs/SETUP.md).
+Six steps: **1–2** on the host, **3** inside the emulator, **4–6** back on the host
+to wire up Claude Code and confirm the result. The guest step cannot be scripted,
+because System 7 offers no scripting surface for the TCP/IP control panel. Fully
+worked example with more screenshots: [docs/SETUP.md](docs/SETUP.md).
 
 ### 1. Configure the host
 
@@ -155,6 +160,8 @@ relaunch, because the disk list is read at launch only:
 ```
 disk /path/to/AppleBridgeKit.dmg
 ```
+
+![The mounted AppleBridge Kit volume in the guest: ABJournalDRVR, AppleBridge, AppleBridge Prefs, AppleBridgeConfig, AppleBridgeInstaller and AppleBridgeWatchdog](docs/images/installer-guest-kit-window.png)
 
 **There is nothing to stamp on it.** The prefs ship `IP=10.0.2.2` — not the
 address of the machine that built the kit, which a public artifact must never
@@ -192,8 +199,23 @@ one field is wrong.
 
 Then open the **AppleBridge Kit** volume and run **AppleBridgeInstaller** from
 it. It preflights the machine, refuses environments that cannot work, copies the
-suite, and installs the autostart so the bridge comes up on every boot. When it
-is done, drag the kit volume to the Trash and remove its `disk` line.
+suite, and installs the autostart so the bridge comes up on every boot.
+
+![The installer's preflight screen: System 7.0 or later, Apple Events, network transport, 32-bit addressing and RAM all OK, ToolServer marked optional](docs/images/installer-preflight-0.8d33.png)
+
+It says what it found before it does anything, and it names its own version so a
+screenshot is answerable. A `?` is not a failure — `ToolServer` is optional, and
+says so. If a **required** check fails, the Install button stays disabled rather
+than letting you start something that cannot finish.
+
+Press **Install**, and it reports where everything went and offers **Restart**:
+
+![The installer after a successful run: installed to MeinMac:AppleBridge, prefs in the Preferences folder, Restart to start the bridge](docs/images/installer-run.gif)
+
+When it is done, drag the kit volume to the Trash and remove its `disk` line.
+On the first boot afterwards the daemon confirms it is running:
+
+![The daemon's one-shot confirmation window: AppleBridge is installed and running, and the bridge starts by itself every time this Mac boots](docs/images/installer-guest-installed-and-running.png)
 
 **If it does not go to plan, the installer wrote down why.** It leaves a text
 file called `AppleBridge Install Log` at the root of the guest's boot volume —
@@ -261,14 +283,22 @@ Result: Mac dialog showing "Hello, World!"
 
 ## Available MCP Tools
 
-| Tool | Description |
-|------|-------------|
-| `mpw_execute` | Execute MPW/ToolServer commands |
-| `mac_write_file` | Write text files (auto MacRoman conversion) |
-| `mac_read_file` | Read text files (auto UTF-8 conversion) |
-| `mac_list_files` | Directory listings |
-| `mac_compile` | SC compiler wrapper |
-| `mac_screenshot` | Capture emulator window |
+**30 tools**, in two groups. The split matters more than the list: the *command*
+tier needs MPW/ToolServer on the guest, everything else does not — so a guest
+with no compiler is still fully driveable.
+
+| Group | Tools |
+|---|---|
+| **Command tier** (needs ToolServer) | `mpw_execute`, `mac_compile`, `mac_build`, `mac_read_file`, `mac_list_files`, `mac_send_apple_event` |
+| **Move bytes, run, observe** | `mac_put_file`, `mac_get_file`, `mac_write_file`, `launch_app`, `mac_screenshot`, `mac_clipboard_get`, `mac_clipboard_set` |
+| **Drive the guest** | `mac_type`, `mac_key`, `mac_click`, `mac_menu`, `mac_menu_front`, `mac_host_click`, `mac_host_menu`, `mac_host_screenshot` |
+| **Network discovery** | `mac_appletalk_browse` |
+| **Lifecycle & liveness** | `mac_status`, `bridge_doctor`, `mac_verbose_log`, `mac_reboot`, `mac_shutdown`, `mac_restart_toolserver`, `mac_update_daemon`, `run_applescript` |
+
+`mac_screenshot` reads the **emulated framebuffer** through the daemon, not the
+host's window — so it is unaffected by where the emulator window sits or what
+overlaps it. `mac_host_screenshot` is the host-side counterpart, for the moments
+when a modal tracking loop has the guest and the daemon cannot answer.
 
 ## Project Structure
 
@@ -286,7 +316,8 @@ AppleBridge/
 │   ├── start_stack.sh            # bring up the stack (+ launchd auto-start)
 │   ├── encoding_convert.py       # UTF-8 ↔ MacRoman
 │   └── screenshot_decode.py      # Raw Mac pixmap → PNG (stdlib only)
-└── examples/                     # Reference guest apps (e.g. MinAsm)
+├── examples/                     # Reference guest apps (MinAsm, MinQDC)
+└── mac/examples/                 # Annotated single-file examples (C and 68K asm)
 ```
 
 ## Documentation

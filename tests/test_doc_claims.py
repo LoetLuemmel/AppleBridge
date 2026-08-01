@@ -200,6 +200,30 @@ def test_every_tool_appears_in_the_inventory():
     assert not missing, (f"{INVENTORY_DOC} does not mention: " + ", ".join(missing))
 
 
+def test_a_doc_section_that_advertises_the_tools_lists_them_all():
+    """The count was checked and the CLAUDE.md inventory was checked, and the
+    README still shipped a section headed "Available MCP Tools" holding SIX of
+    thirty — twenty lines above a tree comment that said thirty. Nothing looked
+    at it, because the inventory test only ever read CLAUDE.md.
+
+    A section that presents itself as the tool list has to be one. Reported by
+    the operator 2026-08-01, reading the rendered README on GitHub.
+    """
+    heading = "## Available MCP Tools"
+    missing = []
+    for rel in CURRENT_DOCS:
+        text = _read(rel)
+        if heading not in text:
+            continue
+        section = text.split(heading, 1)[1].split("\n## ", 1)[0]
+        absent = [n for n in TOOL_NAMES if n not in section]
+        if absent:
+            missing.append(f"{rel} advertises the tool list but omits "
+                           f"{len(absent)} of {len(TOOL_NAMES)}: "
+                           + ", ".join(absent))
+    assert not missing, "incomplete tool section:\n  " + "\n  ".join(missing)
+
+
 def test_docs_do_not_name_tools_that_no_longer_exist():
     known = set(TOOL_NAMES)
     stale = []
