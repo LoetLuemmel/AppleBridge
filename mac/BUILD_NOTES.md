@@ -144,7 +144,7 @@ Should show startup message and listen on port 9000.
 
 If full build fails, try this minimal version first:
 
-1. **Simplify command.c** - just echo back commands (see QUICKSTART.md)
+1. **Simplify command.c** - just echo back commands
 2. **Disable screenshots** - comment out screenshot code in main.c
 3. **Simplify logging** - just use printf, skip time formatting
 

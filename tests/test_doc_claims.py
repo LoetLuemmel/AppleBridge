@@ -19,6 +19,7 @@ Run: python3 tests/test_doc_claims.py   (or via pytest)
 
 import os
 import re
+import subprocess
 import sys
 import types
 
@@ -292,6 +293,53 @@ def test_every_control_panel_button_is_documented():
         + f" (looked in {', '.join(CONFIG_DOCS)})")
 
 
+# Documents nobody has to reach from the README: component notes that live
+# beside the code they describe, and archives. Everything else must be
+# reachable, or it is an orphan — and an orphan does not get maintained.
+STANDALONE_DOCS = {"CLAUDE.md", "DECISIONS.md", "docs/archive/LEDGER_ARCHIVE.md"}
+
+
+def test_every_document_is_reachable_from_the_readme():
+    """Four onboarding documents existed at once (2026-08-01). Two of them —
+    START_HERE.md and docs/USAGE.md — were from the INITIAL COMMIT and had never
+    been updated; both were reachable only through START_HERE.md, which nothing
+    linked at all. It described an architecture that no longer existed and
+    pointed at a NEXT_STEPS.md that did not exist either, and it survived four
+    months because no reader and no test ever arrived there.
+
+    So: follow the links from README.md and require every document to be on the
+    graph. A file that nothing reaches is either wanted — say so in
+    STANDALONE_DOCS, beside the code it documents — or it is dead.
+    """
+    tracked = subprocess.run(["git", "ls-files", "*.md"], cwd=_ROOT,
+                             capture_output=True, text=True).stdout.split()
+    tracked = [p for p in tracked
+               if not p.startswith(("host/.venv/", ".pytest_cache/"))]
+
+    # Roots, not just the README: CLAUDE.md and DECISIONS.md are legitimate
+    # entry points that carry the design notes, so what THEY link is reached.
+    # A POINTER counts, not only a markdown link: CLAUDE.md names its design
+    # notes in backticks rather than linking them, and a reader follows either.
+    # Fixpoint over "this path is mentioned in a document already reached".
+    reachable = {r for r in ["README.md"] + sorted(STANDALONE_DOCS)
+                 if os.path.exists(os.path.join(_ROOT, r))}
+    changed = True
+    while changed:
+        changed = False
+        corpus = " ".join(_read(r) for r in reachable)
+        for cand in tracked:
+            if cand in reachable:
+                continue
+            if cand in corpus or os.path.basename(cand) in corpus:
+                reachable.add(cand)
+                changed = True
+
+    orphans = sorted(set(tracked) - reachable - STANDALONE_DOCS)
+    assert not orphans, (
+        "unreachable from README.md — link them or delete them:\n  "
+        + "\n  ".join(orphans))
+
+
 def test_docs_do_not_name_tools_that_no_longer_exist():
     known = set(TOOL_NAMES)
     stale = []
@@ -489,12 +537,22 @@ def test_the_readme_states_the_address_a_released_kit_actually_ships():
     wrong = []
     for rel in KIT_DOCS:
         text = re.sub(r"\s+", " ", _read(rel))
-        if "AppleBridgeKit.dmg" not in text:      # not a doc about the kit
-            continue
-        if re.search(r"released kit ships with `IP=` \*\*empty\*\*", text) or \
-           re.search(r"kit ships `IP=` empty", text):
-            wrong.append(f"{rel} still says a released kit ships IP= empty; "
-                         f"it ships IP={address}")
+        # No document filter. It used to skip anything not naming
+        # `AppleBridgeKit.dmg`, and when the kit route moved out of
+        # docs/SETUP.md that file stopped qualifying — so the guard would have
+        # gone quiet on the very doc it had just failed to check. The sentence
+        # condition below (IP= and "kit" and "empty", in one sentence) is
+        # specific enough that a doc which does not discuss kits cannot trip it.
+        # Match the CLAIM, not two phrasings of it. The first version of this
+        # test listed the exact wordings it had just fixed in the README, and
+        # docs/SETUP.md said the same thing a third way — "A kit built for
+        # publication ships `IP=` **empty** on purpose" — and sailed straight
+        # through (found 2026-08-01, hours later, by reading rather than testing).
+        for m in re.finditer(r"[^.]*`IP=`[^.]*", text):
+            sentence = m.group(0)
+            if re.search(r"\bempty\b", sentence) and "kit" in sentence.lower():
+                wrong.append(f"{rel} says a kit ships IP= empty; it ships "
+                             f"IP={address}: {sentence.strip()[:120]}")
         for m in re.finditer(r"`IP=([0-9][0-9.]*)`", text):
             if m.group(1) != address:
                 wrong.append(f"{rel} states IP={m.group(1)} but a release kit "
@@ -546,13 +604,21 @@ def test_the_kit_screenshot_caption_lists_the_whole_volume():
     """The figure caption enumerates the volume, so it is a claim like any
     other — and it is the one a reader compares against their own screen."""
     labels, _, _ = _kit_payload()
-    setup = _read("docs/SETUP.md")
-    m = re.search(r"!\[([^\]]*AppleBridge Kit volume[^\]]*)\]", setup)
-    assert m, "docs/SETUP.md has no AppleBridge Kit volume figure to check"
-    caption = m.group(1)
-    missing = [l for l in labels if l not in caption]
-    assert not missing, ("the kit figure caption omits " + ", ".join(missing)
-                         + f" — caption: {caption[:120]}")
+    found = 0
+    for rel in KIT_DOCS:
+        for m in re.finditer(r"!\[([^\]]*AppleBridge Kit volume[^\]]*)\]", _read(rel)):
+            found += 1
+            caption = m.group(1)
+            missing = [l for l in labels if l not in caption]
+            assert not missing, (f"{rel}: the kit figure caption omits "
+                                 + ", ".join(missing) + f" — caption: {caption[:120]}")
+    # Guards the guard. Checked wherever the figure appears rather than in one
+    # named file, because the kit route moved out of docs/SETUP.md into the
+    # README (2026-08-01) and pinning the doc made a deliberate move look like a
+    # regression. Requiring at least one keeps it from passing vacuously if every
+    # figure disappeared.
+    assert found, ("no AppleBridge Kit volume figure in any of " + ", ".join(KIT_DOCS)
+                   + " — the caption claim has nothing left to check")
 
 
 if __name__ == "__main__":

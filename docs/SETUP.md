@@ -1,6 +1,7 @@
-# AppleBridge Setup Guide
+# AppleBridge — the detail behind the install
 
-Complete setup instructions for getting AppleBridge running with Claude Code.
+The install itself is in [the README](../README.md). This is the reasoning under
+it, the source-build route, and the reference.
 
 ## Overview
 
@@ -13,22 +14,17 @@ AppleBridge connects Claude Code to a classic Mac System 7.6.1 environment via f
 
 The retired Swift `MacintoshBridgeHost` was replaced long ago by the stdlib-only Python `host_server.py`; if you find references to a Swift app or an Xcode build, they are stale.
 
-## Prerequisites
+## What this document is
 
-### Host system (macOS)
+**The installation path lives in [the README](../README.md)** — download the kit,
+add a `disk` line, run the installer, check that it came up. Three steps and a
+command, and it is the only path most people need.
 
-- **macOS 12.0+** (developed on Sequoia).
-- **Basilisk II** or **SHeepShaver** emulator, configured and running.
-- **System `python3`** (`/usr/bin/python3`) — the host server is stdlib-only and is deliberately run under system Python, because the macOS firewall blocks the un-allowlisted `uv`/venv binary from accepting connections.
-- **uv** — `brew install uv` — used to launch the MCP server (`uv run python -m mcp.server`).
-- **Claude Code**, installed and configured.
-
-### Mac emulator (Basilisk II & SheepShaver or genuine Macintosh System 7 ready hardware with > 12 MB RAM)
-
-- **System** Mac OS 7.6.1 (recommended).
-- **Open Transport** 1.1.1 or later (MacTCP also works via the transport seam).
-- **MPW** with the SC compiler, and **ToolServer** — **optional**, and only for the *command tier*. ToolServer (`'MPSX'`) is what returns command output over Apple Events; MPW Shell (`'MPS '`) runs commands but replies empty. Without either, everything else still works: screenshots, fork-aware file transfer, input injection, `LISTDIR`, `DISKINFO`, clipboard, launch and shutdown — measured 11/11 on a ToolServer-less guest (`host/tools/q1_native_surface.py`). An absent ToolServer is a tier you do not have, not a failed install, and the installer no longer asks for it: helper applications are added afterwards in the **AppleBridge config panel**.
-- **Memory** 64 MB RAM minimum.
+This document is what sits *behind* that: why the emulator's networking is
+configured the way it is and what the other backend costs, how to build the guest
+software from source when you are changing the daemon itself, and the reference
+material — MPW libraries, the wire protocol, character encoding. Prerequisites,
+including which parts are optional, are in the README.
 
 ## Part 1: Basilisk II and the host network
 
@@ -74,12 +70,18 @@ The guest then sits behind MACNAT: it can only connect **out**, its outbound tra
 Enable the Basilisk II Unix volume so files can move between host and guest:
 
 ```
-Unix Root: /Users/pitforster/Desktop/Share
+Unix Root: <a folder of yours>       # e.g. ~/Desktop/Share
 ```
 
 It appears as the `Unix:` volume on the Mac and is **read-only** from the Mac side, so source is copied to local storage before compiling.
 
-### 1.3 Install MPW and ToolServer
+### 1.3 Install MPW and ToolServer — the command tier, and OPTIONAL
+
+Only needed if you want `mpw_execute`, `mac_compile` and `mac_build`, or if you
+intend to build the guest software from source (Part 3). Everything else — file
+transfer, screenshots, input injection, `LISTDIR`, `DISKINFO`, clipboard, launch
+and shutdown — works on a guest that has neither, and the installer does not ask
+for them. An absent ToolServer is a tier you do not have, not a failed install.
 
 1. Copy the MPW folder to the Mac's hard drive (e.g. `MeinMac:MPW:`).
 2. Verify MPW Shell launches (a worksheet window appears).
@@ -88,7 +90,7 @@ It appears as the `Unix:` volume on the Mac and is **read-only** from the Mac si
 
 With autostart installed (Part 3), the daemon **chain-launches ToolServer** itself on boot, so this becomes a one-time verification.
 
-## Part 2: The host server and MCP
+## Part 2: The host server
 
 There is no host app to build — the host is Python.
 
@@ -132,134 +134,25 @@ Server log: `/tmp/applebridge_server.log`. Smoke test once the daemon is connect
 cd host && /usr/bin/python3 send_command.py 'Echo HELLO'   # -> STATUS:0 ... HELLO
 ```
 
-### 2.2 Register the MCP server
-
-The repo ships a project `.mcp.json` that registers the server over stdio:
-
-```json
-{
-  "mcpServers": {
-    "applebridge": {
-      "type": "stdio",
-      "command": "uv",
-      "args": ["run", "python", "-m", "mcp.server"],
-      "env": {}
-    }
-  }
-}
-```
-
-Verify Claude Code sees it:
-
-```bash
-claude mcp list      # -> applebridge (30 tools)
-```
-
-The 30 tools cover driving builds and reading output (`mpw_execute`, `mac_compile`, `mac_build`, `mac_read_file`, `mac_list_files`, `mac_send_apple_event`), moving bytes and interacting (`mac_put_file` / `mac_get_file`, `mac_write_file`, `launch_app`, `mac_screenshot`, `mac_type` / `mac_key` / `mac_menu` / `mac_menu_front` / `mac_click`, `mac_clipboard_get` / `mac_clipboard_set`), driving the guest's real mouse for menus and modal dialogs (`mac_host_click`, `mac_host_menu`, `mac_host_screenshot`), network discovery (`mac_appletalk_browse`), and lifecycle/liveness (`mac_status`, `bridge_doctor`, `mac_verbose_log`, `mac_reboot`, `mac_shutdown`, `mac_restart_toolserver`, `mac_update_daemon`, `run_applescript`). New tools register on the next MCP-server restart.
-
-## Part 3: Get the guest software onto the Mac
-
-There are two routes, and **most people want the first**.
-
-### 3.0 Install from a kit (no toolchain needed)
-
-The kit is a small disk image holding the four 68K applications, the journaling
-driver the daemon opens by name, and a prefs file. You mount it in the guest and run the installer — no MPW, no compiler,
-nothing typed by hand.
-
-```bash
-# On the machine that will run the bridge:
-host/install_bridge.py --seed-guest-prefs /path/to/AppleBridgeKit.dmg
-```
-
-That writes **your** host's address into the kit. A kit built for publication
-ships `IP=` **empty** on purpose: an address baked into a released artifact
-would point every downloader's guest at the machine that built it, and on a LAN
-where that number answers it connects and reports full health. Seeding is what
-supplies the one value only you know.
-
-**Do §1.1's TCP/IP step first.** The guest installer does not touch networking
-and cannot tell whether any exists, so on a guest still holding an address from
-another backend it reports success over a bridge that never comes up — which
-reads as a failed install when only one field is wrong. The daemon does recover
-on its own once the address is right (it redials every 30 s; observed
-2026-07-31, no reinstall and no reboot needed), so this is an order that saves
-you a misdiagnosis rather than a prerequisite.
-
-Then add the image as a second `disk` line in the emulator's prefs, relaunch,
-open the **AppleBridge Kit** volume in the guest and run **AppleBridgeInstaller**
-from it. It preflights the machine, copies the suite, sets up autostart, and
-offers **Restart** when it is done — the machine has to come back up before the
-bridge runs, so that button is the only way onward.
-
-![The mounted AppleBridge Kit volume in the guest, six items: ABJournalDRVR, AppleBridge, AppleBridge Prefs, AppleBridgeConfig, AppleBridgeInstaller and AppleBridgeWatchdog](images/installer-guest-kit-window.png)
-
-The installer itself is two states, and both are worth recognising before you
-run it: it preflights the machine and says what it found, and after **Install**
-it reports where things went and offers **Restart**. A `?` line is not a
-failure — `ToolServer` is optional and says so.
-
-![The installer running in the guest: first the preflight list with every check OK and a Ready to install line, then the result — installed to MeinMac:AppleBridge, prefs in the Preferences folder, Restart to start the bridge](images/installer-run.gif)
-
-**If something goes wrong, it writes it down.** Every launch leaves a plain text
-file called `AppleBridge Install Log` at the **root of the boot volume** — the
-preflight table, the transports it detected, the destination, one line per
-copied binary with its error code, and whatever the window said. It is written
-before you press anything, so a preflight that disables the Install button
-leaves a record too, and the installer names the path in its own window on the
-screens where something failed. The host installer has the same habit:
-`~/Library/Logs/AppleBridge/install-<timestamp>.log`, carrying the readable
-report and the machine detail behind it in one file. Both exist so that asking
-for help is one sentence rather than a photograph of a screen.
-
-**Afterwards, take the kit back out.** On the first boot after installing, the
-daemon shows a window confirming the bridge is running and telling you to drag
-the **AppleBridge Kit** disk to the Trash; that removes it for the session. To
-stop it coming back, delete its `disk` line from the emulator's prefs — the
-guest cannot do that for you, and otherwise the volume remounts on every boot.
-
-![The daemon's one-shot confirmation window: AppleBridge is installed and running, the bridge starts by itself every time this Mac boots](images/installer-guest-installed-and-running.png)
-
-Whether its *window* also reopens depends on the volume's own Finder state, and
-the installer cannot fix it for you (measured 2026-07-29, both ways): a **fresh**
-kit image stays closed, because its desktop database has never recorded that
-window as open — that is the normal case, since a downloaded kit is opened once
-to run the installer from. But on a kit whose window has been opened and left
-open, it reopens on every boot, and closing it by hand first does *not* reliably
-clear that — closed, waited for the Finder to settle, restarted, and it came
-back. So do not expect the installer to close it; put the disk away, and drop
-the `disk` line when you are done with it.
-
-Where does the kit come from? A published release if one exists, or from a
-machine that already runs AppleBridge:
-
-```bash
-host/install_bridge.py --release-kit --export-guest-kit ~/Desktop
-```
-
-**When the host's address changes**, `AppleBridgeConfig` on the guest is where
-you correct it — the kit's `IP=` is only the value that was true when the kit
-was built. The panel also answers the two questions a stuck bridge raises first,
-without a shell: whether the daemon is running at all, and which address it is
-dialling.
-
-![AppleBridgeConfig in the guest: Daemon RUNNING, Autostart installed, the host address in an editable field with a Set button, the three networking radios with the serial options dimmed, and the helper-app list](images/config-panel-0.8d33.png)
-
-**Helper applications (ToolServer and friends) are optional** and are *not* part
-of the install. Add them afterwards with **Add Helper App…** in the AppleBridge
-config panel; the daemon chain-launches whatever is listed there at boot. Only
-real applications — an entry that opens a full-screen window freezes the guest
-at startup.
+> **Registering the MCP server** is [README step 5](../README.md#5-optional-drive-it-from-claude-code),
+> and it is optional: the bridge answers on the control port, so anything that can
+> open a socket drives it.
 
 Once the link is up, the daemon's own console is the confirmation — `SYNC-OK`,
 the host it reached, and `HELLO:2` for the negotiated protocol:
 
 ![The daemon's verbose console showing SYNC-OK, connected to the host on port 9000, and HELLO:2](images/installer-guest-bridge-up.png)
 
+## Part 3: Get the guest software onto the Mac
+
+Installing the ready-made kit is [README steps 2-3](../README.md#2-get-the-guest-kit).
+What follows is the other route: building the guest software yourself.
+
 ### 3.1 Build from source (needs MPW on the guest)
 
 Use this when you are changing the daemon itself. Everything below is the
-developer path.
+developer path; the 68K specifics — which Makefile, why not PowerPC, what a
+minimal build looks like — are in [mac/BUILD_NOTES.md](../mac/BUILD_NOTES.md).
 
 ### 3.1.1 Transfer the source
 
@@ -302,28 +195,6 @@ Make -f Makefile.68k > BuildIt; BuildIt
 
 Run the **AppleBridge Installer** to fork-aware-copy the binary to its deployed home (`HOME=` in prefs, e.g. `MeinMac:AppleBridge:`) and install autostart. On a cold boot the **watchdog** (in Startup Items) then launches the daemon, which chain-launches ToolServer — the whole bridge comes up invisibly. See `mac/config/README.md`.
 
-## Part 4: Test with Claude Code
-
-Ask Claude to run a command:
-
-```
-You: Run 'Directory' on the Mac.
-```
-
-Claude calls `mcp__applebridge__mpw_execute`, which reaches the daemon and returns `MeinMac:MPW:AppleBridge:`. On the daemon's monitor window (or menu-bar LED) you'll see RX/TX activity. Then try a build:
-
-```
-You: Build a Hello World app and run it on System 7.6.1.
-```
-
-Claude writes the C, compiles (`SC`), links, sets the file type, and launches it — a classic Mac window appears in the emulator.
-
-Check liveness at any time with the `mac_status` tool, or:
-
-```bash
-cd host && /usr/bin/python3 send_command.py 'Echo HELLO'
-```
-
 ## Reference
 
 ### MPW libraries
@@ -354,6 +225,9 @@ COMMAND:<length>\n<command_text>
 ```
 STATUS:<code>\rSTDOUT:<len>\r<stdout>\rSTDERR:<len>\r<stderr>\r\r
 ```
+
+The frame formats above are specified in full in
+[protocol/PROTOCOL.md](../protocol/PROTOCOL.md) (version 0.1.0).
 
 Since v0.2 the session opens with a `HELLO:` version-negotiation handshake (and optional token authentication); a v0.1 peer that doesn't understand it falls back to legacy cleanly. Full detail in [PROTOCOL_v0.2.md](PROTOCOL_v0.2.md).
 
@@ -425,9 +299,10 @@ caveats for real hardware are in [SERIAL_TRANSPORT.md](SERIAL_TRANSPORT.md).
 - [PROTOCOL_v0.2.md](PROTOCOL_v0.2.md) — the wire protocol and its v0.2 revision
 - [TROUBLESHOOTING.md](../TROUBLESHOOTING.md) — failure modes and fixes
 - [ASSEMBLY_TEMPLATE.md](../ASSEMBLY_TEMPLATE.md) — 68k assembly guide
+- [PREFS_PATH_DISCOVERY.md](PREFS_PATH_DISCOVERY.md) — open proposal: find the prefs file the emulator actually reads
 - Build recipes, trap defs, encoding tables — the user's global `~/.claude/CLAUDE.md`
 
 ---
 
-**Last Updated:** July 26, 2026
+**Last Updated:** August 1, 2026
 **Target:** AppleBridge 0.8d33 (protocol v0.2), Python host via launchd, 30 MCP tools

@@ -117,13 +117,19 @@ sequenceDiagram
 ### Prerequisites
 
 **Host (macOS):**
-- Basilisk II, with a guest that boots. Nothing else — the host side is Python
-  stdlib, so the system `/usr/bin/python3` is enough and there is nothing to build.
+- **Basilisk II** or **SheepShaver**, with a guest that boots. Nothing else — the
+  host side is Python stdlib, so the system `/usr/bin/python3` is enough and there
+  is nothing to build.
 - Claude Code, if you want the MCP tools. The bridge itself works without it.
 
 **Guest (System 7):**
 - System 7.5.3 or later with **Open Transport** (verified on 7.5.3, 7.6.1 and
   Mac OS 9), or MacTCP.
+- **12 MB of RAM**, which is what the installer's preflight checks for.
+- **A real Macintosh works too.** Validated on a 68030 **SE/30**, where the link
+  runs over **RS-422 serial** rather than Ethernet — the transport is a seam, not
+  an assumption (`NET=Serial`; see [docs/SERIAL_TRANSPORT.md](docs/SERIAL_TRANSPORT.md)).
+  An emulator is the easy path, not the only one.
 - **No compiler, and no MPW.** MPW + ToolServer are optional and add the
   *command tier* (`mpw_execute`, `mac_compile`, `mac_build`). Without them
   everything else still works: screenshots, fork-aware file transfer, input
