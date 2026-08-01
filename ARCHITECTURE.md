@@ -3,6 +3,9 @@
 **Date:** 2026-04-11
 **Status:** Production - Fully Operational
 
+> Why OpenTransport *and* MCP is not a doubling of the same layer:
+> [docs/ARCHITECTURE_LAYERS.md](docs/ARCHITECTURE_LAYERS.md).
+
 ## Overview
 
 AppleBridge combines two distinct technologies to create a unique capability: **AI-powered development for classic 68k Macintosh systems**. This document explains why both OpenTransport and MCP are essential, and how they work together.

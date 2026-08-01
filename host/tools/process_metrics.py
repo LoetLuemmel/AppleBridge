@@ -52,7 +52,7 @@ def duplication_index():
     a pointer is restatement — the shape that drifts. Counted for the two facts
     that have historically drifted: the tool count and the daemon version."""
     docs = [p for p in ("README.md", "ARCHITECTURE.md", "CLAUDE.md", "docs/SETUP.md",
-                        "TROUBLESHOOTING.md", "QUICKSTART.md") if _read(p)]
+                        "TROUBLESHOOTING.md") if _read(p)]
     version = (re.findall(r'"(\d+\.\d+[a-z]\d+)"', _read("mac/vers.r")) or ["?"])[0]
     count_files = [p for p in docs if re.search(r"\b\d+\s+(?:MCP\s+)?tools\b", _read(p))]
     vers_files = [p for p in docs if version in _read(p)]
