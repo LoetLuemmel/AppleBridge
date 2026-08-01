@@ -4,13 +4,15 @@
 
 AppleBridge connects Claude Code to an authentic Mac System 7.6.1 environment running in Basilisk II, enabling you to build, compile, and run classic Mac applications using natural language.
 
-![The AppleBridge daemon's Verbose console on System 7.6.1, showing live command traffic](docs/images/daemon-verbose-0.8d33.png)
+![A System 7.5.3 desktop with only AppleBridge running: its Verbose console listing DISKINFO, directory listings, a file read and the Startup Items folder, with a NET OT / RX 175 / TX 175 / ERR 0 footer](docs/images/daemon-verbose-0.8d33.png)
 
-*Daemon 0.8d33 on System 7.6.1, with its optional **Verbose** console open: real commands
-arriving over the bridge, and a footer carrying the transport, the RX/TX counters and the
-error count. The daemon itself is **faceless** — it normally runs with no window at all, and
-this console is toggled with `MONITOR:1`. The image was captured by the daemon, out of the
-emulated framebuffer, streamed over the bridge and decoded to PNG on the host.*
+*A whole System 7.5.3 screen with nothing running but AppleBridge — a session of ordinary
+system work arriving over the bridge: volumes, directory listings, the installer's own log,
+the Startup Items folder, and the footer carrying the transport, the RX/TX counters and the
+error count. The daemon itself is **faceless**; it normally has no window at all, and this
+**Verbose** console is optional, toggled with `MONITOR:1`. The image was captured by the
+daemon out of the emulated framebuffer, streamed over the bridge, and decoded to PNG on the
+host — so it is the guest's own screen, not a picture of a window on someone's Mac.*
 
 ## What You Can Do
 
