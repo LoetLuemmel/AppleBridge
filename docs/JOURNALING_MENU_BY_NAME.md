@@ -165,8 +165,15 @@ Link -o jtest -t MPST -c 'MPS ' jtest.c.o "{LIBS}CLibraries:StdCLib.o" \
 `OpenDriver` → self-register `JournalRef` → arm → `Button()`), verified live:
 `jgate resRef=3574 openErr=0 drvRef=-96 jref=-96 idle=0 armed=255 calls=1 PASS`.
 So a driver a *background daemon* installs is consulted by the ROM, not just one an
-interactive/ToolServer process installs. (Deploy note: `ABJournalDRVR` must be
-staged in the daemon home, `MeinMac:AppleBridge:`.)
+interactive/ToolServer process installs. (Deploy note: `ABJournalDRVR` must sit in
+the daemon home, e.g. `MeinMac:AppleBridge:` — the daemon opens it by name from
+there. Since 2026-07-31 the **kit and the installer carry it**, so a normal install
+puts it in place: `KIT_APPS` in `host/install_bridge.py` picks it up beside the
+other binaries, and `installer.c` copies it alongside them. It is **optional** on
+both paths — the driver is a separate build step (`mac/journal`), and a payload
+without one still yields a working bridge, only without journaling. Before that
+date neither shipped it, so an install looked complete while every journal verb
+answered `fnfErr`.)
 
 **Part 2b — menu-driving.**
 The daemon drives `PopUpMenuSelect` to **any** chosen item via journaling, freeze-safe:

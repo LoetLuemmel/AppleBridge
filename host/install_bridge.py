@@ -799,6 +799,16 @@ KIT_APPS = [
     ("AppleBridgeWatchdog", ["AppleBridgeWatchdog"]),
     ("AppleBridgeConfig", ["AppleBridgeConfig"]),
     ("AppleBridgeInstaller", ["AppleBridgeInstaller", "AppleBridge Installer"]),
+    # The journaling DRVR, which the daemon opens BY FILE from its home folder
+    # (`OpenResFile "ABJournalDRVR"` in mac/src/main.c — JGATE, JMENU, JABOUT,
+    # JSF and friends). It is not linked into the daemon, so a kit that omits it
+    # produces an install where those verbs fail with fnfErr on a machine that
+    # otherwise reports full health. Found 2026-07-31: neither the kit nor the
+    # installer carried it, while eight call sites expected it.
+    # OPTIONAL on purpose: the driver is a separate build step (mac/journal),
+    # so a kit assembled from a guest that has not built it should still ship —
+    # journaling is an extra, not the bridge.
+    ("ABJournalDRVR", ["ABJournalDRVR"]),
 ]
 # Folders to look in, deployed first. A kit without the INSTALLER is just a pile
 # of binaries — it is required, not optional, because installing by hand is the

@@ -694,7 +694,7 @@ class KitIO:
     """Injected IO for the kit builder: records calls, invents no filesystem."""
 
     FULL = ("AppleBridge\nAppleBridgeWatchdog\nAppleBridgeConfig\n"
-            "AppleBridgeInstaller\nAppleBridge Prefs\n")
+            "AppleBridgeInstaller\nABJournalDRVR\nAppleBridge Prefs\n")
 
     def __init__(self, listing=None):
         self.calls = []
@@ -748,8 +748,49 @@ def test_the_payload_is_copied_onto_the_new_volume_as_macbinary():
     io = KitIO()
     io.build()
     inbound = [c for c in io.argv_for("hcopy") if c[-1] == ":"]
-    assert len(inbound) == 5, f"expected 4 apps + prefs, got {len(inbound)}"
+    assert len(inbound) == 6, f"expected 5 payload files + prefs, got {len(inbound)}"
     assert all("-m" in c for c in inbound)
+
+
+def test_the_journal_driver_ships_in_the_kit():
+    # The daemon opens ABJournalDRVR BY FILE from its home folder, so a kit that
+    # leaves it out installs a bridge whose journal verbs all fail with fnfErr on
+    # a machine that otherwise reports full health. Found 2026-07-31: eight call
+    # sites in mac/src/main.c expected the file; neither kit nor installer
+    # carried it.
+    io = KitIO()
+    ok, msg, shipped = io.build()
+    assert ok, msg
+    assert "ABJournalDRVR" in shipped, shipped
+    inbound = [c for c in io.argv_for("hcopy") if c[-1] == ":"]
+    assert any("ABJournalDRVR" in " ".join(c) for c in inbound), inbound
+
+
+def test_a_kit_without_the_journal_driver_still_ships():
+    # The driver is a SEPARATE build step (mac/journal), so a guest that never
+    # built one must still be able to produce a kit: journaling is an extra, and
+    # an extra may not cost somebody their bridge. This is the half that a bare
+    # "add it to the payload" change gets wrong — it makes the optional file
+    # required by accident, and the failure lands on whoever builds the next kit.
+    class NoDriver(KitIO):
+        FULL = ("AppleBridge\nAppleBridgeWatchdog\nAppleBridgeConfig\n"
+                "AppleBridgeInstaller\nAppleBridge Prefs\n")
+
+        def build(self, **kw):
+            # hcopy off the guest finds everything EXCEPT the driver.
+            return ib.export_guest_kit(
+                "/tmp/kitdir", "192.168.3.154", probes(),
+                run=self.run,
+                exists=lambda p: "ABJournalDRVR" not in p,
+                read_bytes=lambda p: b"z" * 1000,
+                write_bytes=lambda p, d: self.written.__setitem__(p, d),
+                staging="/tmp/kitstage", **kw)
+
+    io = NoDriver()
+    ok, msg, shipped = io.build()
+    assert ok, f"an absent optional driver must not fail the kit: {msg}"
+    assert "AppleBridge" in shipped and "AppleBridgeInstaller" in shipped, shipped
+    assert "ABJournalDRVR" not in shipped, shipped
 
 
 def test_the_message_tells_the_operator_the_disk_line_and_to_relaunch():
