@@ -28,45 +28,31 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 # `host` is needed because mcp/tools.py adds it to sys.path and imports
 # macbinary / bridge_doctor / guest_input from it; without it the guards die on
 # an ImportError in every copy, and every mutant would look killed. The control
-# test below exists precisely to catch that class of mistake — it did, on the
-# first run of this harness.
-_NEEDED = ["mcp", "host", "docs", "README.md", "ARCHITECTURE.md", "CLAUDE.md",
-           "TROUBLESHOOTING.md", "RX_TX_LEDS.md", "DECISIONS.md"]
+# test below exists precisely to catch that class of mistake — it caught it on
+# this harness's first run, and three more times on 2026-08-01 alone.
+#
+# That is why there is no hand-kept list any more. It named "only what
+# test_doc_claims.py reads", and every new guard that DERIVED a fact from a new
+# file — mac/config/config.c, mac/src/prefs.c, .mcp.json — walked straight into
+# a FileNotFoundError here. Three failures in one day is a broken design, not
+# three oversights: the list could only ever be correct about the past.
+#
+# Everything git tracks is 3.2 MB across 190 files, so copying all of it costs
+# nothing measurable and cannot go stale.
 
 
 def _scratch():
     """A throwaway copy of the files under test. Caller removes it."""
     tmp = tempfile.mkdtemp(prefix="ab-mutation-")
-    for rel in _NEEDED:
+    tracked = subprocess.run(["git", "ls-files"], cwd=_ROOT,
+                             capture_output=True, text=True).stdout.split("\n")
+    for rel in filter(None, tracked):
         src = os.path.join(_ROOT, rel)
-        if not os.path.exists(src):
+        if not os.path.exists(src):      # deleted but still indexed
             continue
         dst = os.path.join(tmp, rel)
-        if os.path.isdir(src):
-            shutil.copytree(src, dst)
-        else:
-            shutil.copy2(src, dst)
-    os.makedirs(os.path.join(tmp, "mac"), exist_ok=True)
-    shutil.copy2(os.path.join(_ROOT, "mac", "vers.r"), os.path.join(tmp, "mac", "vers.r"))
-    # The guest sources the hardware-finding guards read (they never compile it).
-    os.makedirs(os.path.join(tmp, "mac", "src"), exist_ok=True)
-    # prefs.c too: the transport guard DERIVES the NET= values from the strings
-    # this file writes, so without it that guard dies in every mutant and every
-    # mutant looks killed. Second time this scratch list has gone stale behind a
-    # new derivation (2026-08-01) — the control test caught both.
-    for name in ("main.c", "transport_serial.c", "prefs.c"):
-        shutil.copy2(os.path.join(_ROOT, "mac", "src", name),
-                     os.path.join(tmp, "mac", "src", name))
-    # The control panel: its source is where the button titles are DERIVED from,
-    # and its README is one of the two docs allowed to document them.
-    os.makedirs(os.path.join(tmp, "mac", "config"), exist_ok=True)
-    for name in ("config.c", "README.md"):
-        shutil.copy2(os.path.join(_ROOT, "mac", "config", name),
-                     os.path.join(tmp, "mac", "config", name))
-    os.makedirs(os.path.join(tmp, "tests"), exist_ok=True)
-    for name in ("test_doc_claims.py", "test_hardware_findings.py"):
-        shutil.copy2(os.path.join(_ROOT, "tests", name),
-                     os.path.join(tmp, "tests", name))
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(src, dst)
     return tmp
 
 
