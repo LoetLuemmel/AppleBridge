@@ -18,12 +18,12 @@ The retired Swift `MacintoshBridgeHost` was replaced long ago by the stdlib-only
 ### Host system (macOS)
 
 - **macOS 12.0+** (developed on Sequoia).
-- **Basilisk II** emulator, configured and running.
+- **Basilisk II** or **SHeepShaver** emulator, configured and running.
 - **System `python3`** (`/usr/bin/python3`) — the host server is stdlib-only and is deliberately run under system Python, because the macOS firewall blocks the un-allowlisted `uv`/venv binary from accepting connections.
 - **uv** — `brew install uv` — used to launch the MCP server (`uv run python -m mcp.server`).
 - **Claude Code**, installed and configured.
 
-### Mac emulator (Basilisk II)
+### Mac emulator (Basilisk II & SheepShaver or genuine Macintosh System 7 ready hardware with > 12 MB RAM)
 
 - **System** Mac OS 7.6.1 (recommended).
 - **Open Transport** 1.1.1 or later (MacTCP also works via the transport seam).
