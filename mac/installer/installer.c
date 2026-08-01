@@ -684,6 +684,8 @@ static void WriteInstallLog(void)
     DateTimeRec dt;
     Str255 pLeaf;
     OSErr  err;
+    short  bootV;
+    long   bootDir;
     static const char *kLeaf[3] = { LEAF_DAEMON, LEAF_WATCHDOG, LEAF_CONFIG };
 
     buf = NewPtr(LOG_SIZE);
@@ -778,7 +780,20 @@ static void WriteInstallLog(void)
      * where that folder was never created. */
     gLogPath[0] = '\0';
     CtoP(LOG_LEAF, pLeaf);
-    err = FSMakeFSSpec(0, fsRtDirID, pLeaf, &spec);
+    /* The BOOT volume, resolved through FindFolder — NOT vRefNum 0.
+     *
+     * vRefNum 0 is the DEFAULT volume, which is the one the running
+     * application was launched from. That is the same thing as the boot volume
+     * only when the installer is run from the hard disk, which is how it was
+     * tested and is NOT how it is used: the documented route runs it straight
+     * off the mounted kit. Measured 2026-08-01 on a second machine — the log
+     * landed on `AppleBridge Kit:`, the volume the user is told to drag to the
+     * Trash immediately afterwards, so the record vanished with the medium it
+     * documented. The first test passed for the wrong reason. */
+    if (FindFolder(kOnSystemDisk, kSystemFolderType, kDontCreateFolder,
+                   &bootV, &bootDir) != noErr)
+        bootV = 0;                      /* last resort: the default volume */
+    err = FSMakeFSSpec(bootV, fsRtDirID, pLeaf, &spec);
     if (err != noErr && err != fnfErr) { DisposePtr(buf); return; }
     /* 'ttxt' so a double-click opens it in SimpleText rather than nothing. */
     (void)FSpCreate(&spec, 'ttxt', 'TEXT', 0);
@@ -1027,6 +1042,23 @@ static void DrawContent(void)
     TextFont(0); TextFace(bold); TextSize(12);
     MoveTo(16, 22);
     DrawString("\pAppleBridge Installer");
+    /* The build, beside the title. It was already stamped into the log, but a
+     * log is read after the fact — somebody looking at the screen, or at a
+     * screenshot in a bug report, could not tell which installer they were
+     * looking at (asked for 2026-08-01). Plain and small: it identifies the
+     * program, it is not a heading. */
+    {
+        char vbuf[64];
+        Str255 pv;
+        vbuf[0] = '\0';
+        LogVersion(vbuf);
+        if (vbuf[0]) {
+            TextFace(normal); TextSize(10);
+            DrawString("\p  ");
+            CtoP(vbuf, pv);
+            DrawString(pv);
+        }
+    }
 
     TextFace(0); TextSize(10);
     MoveTo(16, 40);
