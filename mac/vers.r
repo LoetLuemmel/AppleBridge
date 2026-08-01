@@ -6,7 +6,17 @@
  * the classic way to tell builds apart (replacing ad-hoc names like
  * "AppleBridge5"). One 'vers' file stamps the whole suite uniformly.
  *
- * This build: 0.8 development — d32 makes a failure legible. Three verbs shared the tag
+ * This build: 0.8 development — d33 makes the journaling self-test tell the truth. JGATE
+ * reported `armed=0 calls=0 FAIL` for a working driver: it was written against the
+ * pre-PR-#69 contract, where dCtlStorage held the driver's call counter. That field is now
+ * a POINTER to a daemon-owned state block, and the driver treats a nil pointer as "not
+ * prepared, do nothing" — the guard that stops an unprepared driver freezing a tracking
+ * loop. So the verb armed a driver it had itself switched off, then read an address as a
+ * count. A self-test that fails on a working system sends the next person after the driver
+ * instead of after the test. It now does what the other six journal verbs do — allocate the
+ * block, point dCtlStorage at it, read oPoll/oCntBtn back — and PASS additionally requires
+ * btn > 0, so the driver must have been CALLED rather than merely have left a plausible
+ * Button() reading. d32 makes a failure legible. Three verbs shared the tag
  * "cmd fail", so the monitor footer's ERR count named nothing: reading "ERR 2" off the
  * screen told you two commands had failed and gave you no way to learn which, or why,
  * short of reproducing them. NoteErrCode now records the verb and the OSErr — "AESEND
@@ -99,14 +109,14 @@ resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
     development, 0x28,   /* development stage, non-release revision 27 (BCD) */
     verUS,
-    "0.8d32",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d32 - a failure now says which verb and which code"  /* long -> Get Info */
+    "0.8d33",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d33 - the journaling self-test tells the truth"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
     development, 0x28,
     verUS,
-    "0.8d32",
+    "0.8d33",
     "AppleBridge"        /* the shared/suite version line */
 };
