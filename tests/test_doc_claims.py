@@ -343,6 +343,88 @@ def test_hard_rules_carry_provenance():
                        "file/doc pointer) — see DECISIONS.md header:\n  " + "\n  ".join(naked))
 
 
+# --- the guest kit's contents ----------------------------------------------
+# `KIT_APPS` in host/install_bridge.py is what actually goes onto the kit image,
+# so it is the only honest source for prose describing what the kit holds.
+#
+# The drift this catches happened on 2026-08-01: PR #138 added ABJournalDRVR to
+# the payload, and README, docs/SETUP.md and the public write-up all went on
+# saying "four 68K applications and a prefs file" while the screenshot showed
+# the five-item volume. One payload change dated four places and broke no test.
+KIT_SOURCE = os.path.join("host", "install_bridge.py")
+KIT_DOCS = ["README.md", "docs/SETUP.md"]
+# A count says nothing about a payload entry that is not an application, so the
+# driver has to be NAMED. Either its filename or the phrase satisfies that.
+KIT_DRIVER_ALIASES = ("journaling driver",)
+_KIT_COUNT_RE = re.compile(r"\b(\w+)\s+68K applications\b")
+_NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                 "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+
+
+def _kit_payload():
+    """-> (labels, applications, drivers) as declared by KIT_APPS."""
+    block = re.search(r"KIT_APPS\s*=\s*\[(.*?)^\]", _read(KIT_SOURCE),
+                      re.S | re.M)
+    assert block, f"KIT_APPS not found in {KIT_SOURCE}"
+    labels = re.findall(r'\(\s*"([^"]+)"', block.group(1))
+    assert labels, f"KIT_APPS in {KIT_SOURCE} parsed as empty"
+    drivers = [l for l in labels if l.endswith("DRVR")]
+    return labels, [l for l in labels if l not in drivers], drivers
+
+
+def test_the_stated_kit_application_count_matches_the_payload():
+    _, apps, _ = _kit_payload()
+    wrong = []
+    for rel in KIT_DOCS:
+        for n, line in enumerate(_read(rel).split("\n"), 1):
+            m = _KIT_COUNT_RE.search(line)
+            if not m:
+                continue
+            word = m.group(1).lower()
+            stated = _NUMBER_WORDS.get(word,
+                                       int(word) if word.isdigit() else None)
+            if stated is None:      # "the 68K applications" — not a count claim
+                continue
+            if stated != len(apps):
+                wrong.append(f"{rel}:{n} says {word} but KIT_APPS ships "
+                             f"{len(apps)} applications: {line.strip()[:100]}")
+    assert not wrong, "stale kit count:\n  " + "\n  ".join(wrong)
+
+
+def test_a_kit_payload_entry_that_is_not_an_application_is_named():
+    """A driver is invisible to "N applications", so prose that describes the
+    kit must name it — otherwise the next non-application addition goes
+    unmentioned exactly as ABJournalDRVR did."""
+    _, _, drivers = _kit_payload()
+    missing = []
+    for rel in KIT_DOCS:
+        # Prose wraps, so "the journaling\ndriver" must still count as a
+        # mention: collapse whitespace before looking. Without this the check
+        # silently leans on whichever line happens not to wrap.
+        text = re.sub(r"\s+", " ", _read(rel))
+        if "68K applications" not in text:   # this doc does not describe the kit
+            continue
+        for d in drivers:
+            if d in text or any(a in text for a in KIT_DRIVER_ALIASES):
+                continue
+            missing.append(f"{rel} describes the kit but never mentions {d}")
+    assert not missing, ("a non-application payload entry is unmentioned:\n  "
+                         + "\n  ".join(missing))
+
+
+def test_the_kit_screenshot_caption_lists_the_whole_volume():
+    """The figure caption enumerates the volume, so it is a claim like any
+    other — and it is the one a reader compares against their own screen."""
+    labels, _, _ = _kit_payload()
+    setup = _read("docs/SETUP.md")
+    m = re.search(r"!\[([^\]]*AppleBridge Kit volume[^\]]*)\]", setup)
+    assert m, "docs/SETUP.md has no AppleBridge Kit volume figure to check"
+    caption = m.group(1)
+    missing = [l for l in labels if l not in caption]
+    assert not missing, ("the kit figure caption omits " + ", ".join(missing)
+                         + f" — caption: {caption[:120]}")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
