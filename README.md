@@ -2,7 +2,11 @@
 
 **AI-powered development for classic 68k Macintosh systems.**
 
-AppleBridge connects Claude Code to an authentic Mac System 7.6.1 environment running in Basilisk II, enabling you to build, compile, and run classic Mac applications using natural language.
+AppleBridge puts a **classic Macintosh on the end of a socket** — an emulated one under
+Basilisk II or SheepShaver, or a real 68k machine over a serial cable — so that software can
+be built, run and observed on it from outside. Point Claude Code at it and you can do all of
+that in natural language; the bridge itself is a host server and a guest daemon, and needs
+neither Claude nor an emulator in particular.
 
 ![A System 7.5.3 desktop with only AppleBridge running: its Verbose console listing DISKINFO, directory listings, a file read and the Startup Items folder, with a NET OT / RX 175 / TX 175 / ERR 0 footer](docs/images/daemon-verbose-0.8d33.png)
 
@@ -33,16 +37,16 @@ Result: Classic Mac app running in authentic 1990s environment
 
 ```mermaid
 flowchart TB
-    subgraph Host["Host (macOS Sequoia)"]
+    subgraph Host["Host (macOS)"]
         Claude["Claude Code\n(AI/LLM)"]
         MCPServer["mcp/server.py\n(MCP, stdio)"]
         HostSrv["host_server.py\n:9001 control, :9000 daemon"]
     end
 
-    subgraph BAII["Basilisk II Emulator"]
-        subgraph Mac["Classic Mac (System 7.6.1)"]
+    subgraph BAII["Emulator (Basilisk II / SheepShaver) — or real 68k hardware"]
+        subgraph Mac["Classic Mac (System 7.5.3+ / Mac OS 9)"]
             AppleBridge["AppleBridge Daemon\n(C, 68k)"]
-            OT["OpenTransport\nTCP/IP Stack"]
+            OT["OpenTransport / MacTCP\n(or Serial)"]
             ToolServer["ToolServer\n'MPSX'"]
             MPWShell["MPW Shell\n'MPS '"]
         end
@@ -97,20 +101,20 @@ sequenceDiagram
     MH-->>CC: MCP tool result<br/>{success: true, output: "Hello"}
 ```
 
-### Three-Layer Design
+### The four layers
 
-1. **MCP Layer** - Claude Code ↔ `mcp/server.py` ↔ `host_server.py` (control port 9001)
-   - Standardized AI tool interface
-   - Tools: `mpw_execute`, `mac_write_file`, `mac_screenshot`, etc.
+1. **MCP** — Claude Code ↔ `mcp/server.py` over stdio. **Optional**: it adds the 30 tools
+   and natural language, and nothing below it depends on it.
+2. **Control** — `mcp/server.py` (or any socket client) ↔ `host_server.py` on `localhost:9001`.
+3. **Bridge** — the guest daemon ↔ `host_server.py` on `:9000`. **The daemon dials OUT**, so
+   a guest behind NAT needs no inbound route. Carried by Open Transport, MacTCP or a serial
+   line, chosen with `NET=`.
+4. **Apple Events** — the daemon ↔ ToolServer / MPW Shell. **Optional**: this is the command
+   tier. ToolServer returns output; MPW Shell runs the command and replies empty.
 
-2. **TCP/OpenTransport Layer** - Mac daemon ↔ `host_server.py` (port 9000)
-   - Reversed architecture: Mac connects OUT to host
-   - Solves Basilisk II NAT limitation
-   - OpenTransport provides TCP/IP on System 7.6.1
-
-3. **Apple Events Layer** - AppleBridge ↔ ToolServer/MPW Shell
-   - Classic Mac IPC for command execution
-   - ToolServer returns output, MPW Shell doesn't (use ToolServer!)
+Layers 1 and 4 are the ones you can leave out, and each is a *tier you do not have* rather
+than a broken install. Why OT *and* MCP is not one layer twice:
+[docs/ARCHITECTURE_LAYERS.md](docs/ARCHITECTURE_LAYERS.md).
 
 ## Quick Start
 
@@ -124,7 +128,7 @@ sequenceDiagram
 
 **Guest (System 7):**
 - System 7.5.3 or later with **Open Transport** (verified on 7.5.3, 7.6.1 and
-  Mac OS 9), or MacTCP.
+  Mac OS 9) or **MacTCP** — or no network stack at all, over a **Serial** line.
 - **12 MB of RAM**, which is what the installer's preflight checks for.
 - **A real Macintosh works too.** Validated on a 68030 **SE/30**, where the link
   runs over **RS-422 serial** rather than Ethernet — the transport is a seam, not
@@ -158,9 +162,11 @@ and prints the guest-side values you need in step 3 — labelled by *whose*
 address each one is, which is the mistake this step exists to prevent. It asks
 for nothing and needs no password.
 
-If it **refuses**, read what it says: it will not convert a host already
-configured for the `etherhelper` backend, because that is somebody's working
-AppleTalk setup. `--force-slirp` overrides it.
+If it **refuses**, read what it says. It will not convert a host already configured
+for the `etherhelper` backend, because that is somebody's working AppleTalk setup —
+except on a machine with **one network interface**, where it says the opposite and
+means it: a bridged backend cannot reach the machine it runs inside, so no amount of
+hand-configuring that branch produces a bridge there. `--force-slirp` overrides either.
 
 ### 2. Get the guest kit
 
@@ -290,9 +296,13 @@ README are shown, and it is how a machine with no Claude Code installed is
 driven:
 
 ```bash
-printf 'DISKINFO\n\n' | nc localhost 9001          # every mounted volume
-printf 'LISTDIR:MeinMac:AppleBridge:\n\n' | nc localhost 9001
+printf 'DISKINFO\n\n' | nc localhost 9001               # every mounted volume, by name
+printf 'MACSTATUS\n\n' | nc localhost 9001              # is the daemon answering
+printf 'LISTDIR:<volume>:AppleBridge:\n\n' | nc localhost 9001
 ```
+
+`<volume>` is your guest's own boot volume — `DISKINFO` above prints it, which is why
+it comes first. It is not the same on two machines.
 
 What MCP adds is the **30 tools** below, and natural language on top of them.
 Edit `.mcp.json` in your project or `~/.claude/`:
@@ -347,8 +357,11 @@ when a modal tracking loop has the guest and the daemon cannot answer.
 
 ```
 AppleBridge/
-├── mac/                          # 68k Mac daemon (C)
-│   ├── src/                      # Source files
+├── mac/                          # 68k guest software (C + 68K asm)
+│   ├── src/                      # daemon sources
+│   ├── config/                   # AppleBridgeConfig, the control panel
+│   ├── installer/                # AppleBridgeInstaller
+│   ├── examples/                 # annotated single-file examples (C and 68K asm)
 │   └── Makefile.68k              # MPW makefile
 ├── mcp/                          # Python MCP server (the MCP entry point)
 │   ├── server.py                 # `python -m mcp.server` (see .mcp.json)
@@ -359,25 +372,15 @@ AppleBridge/
 │   ├── start_stack.sh            # bring up the stack (+ launchd auto-start)
 │   ├── encoding_convert.py       # UTF-8 ↔ MacRoman
 │   └── screenshot_decode.py      # Raw Mac pixmap → PNG (stdlib only)
-├── examples/                     # Reference guest apps (MinAsm, MinQDC)
-└── mac/examples/                 # Annotated single-file examples (C and 68K asm)
+└── examples/                     # reference guest apps (MinAsm, MinQDC)
 ```
 
 ## Documentation
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - Detailed explanation of the MCP + OpenTransport dual paradigm
-- **[SETUP.md](docs/SETUP.md)** - Complete setup guide with networking, libraries, and encoding
+- **[docs/SETUP.md](docs/SETUP.md)** - the detail behind the install: why the emulator's networking is configured this way, building the guest software from source, and the reference tables
 - **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** - Common issues, fixes, and known limitations
 - **[ASSEMBLY_TEMPLATE.md](ASSEMBLY_TEMPLATE.md)** - 68k assembly programming guide
-
-## Key Features
-
-✅ **Full automation** - AI writes, compiles, and runs code on authentic Mac
-✅ **Bidirectional communication** - Complete command/response feedback loop
-✅ **Encoding handled** - Automatic UTF-8 ↔ MacRoman + line ending conversion
-✅ **Network transparency** - Works through Basilisk II NAT
-✅ **Visual feedback** - RX/TX LED activity indicators
-✅ **Production ready** - Stable on System 7.6.1 with OpenTransport
 
 ## Example Workflow
 
@@ -400,26 +403,30 @@ AppleBridge/
 
 ## Status
 
-**Current daemon:** 0.8d33 ("the journaling self-test tells the truth") — the version the daemon itself reports, from `mac/vers.r`
-**Status:** Production Ready ✅
+**Current daemon:** 0.8d33 ("the journaling self-test tells the truth") — the version the
+daemon itself reports, from `mac/vers.r`.
 
-All core features working:
-- ✅ TCP bridge, NAT-reversed (Mac connects OUT), with async OpenTransport connect
-- ✅ Selectable networking backend — **Open Transport or MacTCP** — behind a transport seam, chosen from the Control Panel (`NET=OT|MacTCP`), auto-falling back to OT
-- ✅ Application-level heartbeat + watchdog (no host-down freeze)
-- ✅ Apple Events command execution (ToolServer returns output)
-- ✅ Remote compilation and linking
-- ✅ MCP integration with Claude Code (30 tools)
-- ✅ Encoding conversion (UTF-8 ↔ MacRoman)
-- ✅ Screenshot capture (emulated framebuffer → PNG, host-side decode)
-- ✅ Host server auto-start via launchd
+- TCP bridge, NAT-reversed (the guest dials OUT), with an asynchronous connect
+- Three transports behind one seam, chosen with `NET=` in the control panel:
+  **Open Transport**, **MacTCP** and **Serial** — the last reaches a machine with no
+  Ethernet at all, which is how the SE/30 is driven
+- Application-level heartbeat + watchdog, so a host that goes away cannot freeze the guest
+- Apple Events command execution (ToolServer returns output; MPW Shell does not)
+- Remote compilation and linking
+- 30 MCP tools for Claude Code — optional, on top of the control port
+- Encoding conversion (UTF-8/LF ↔ MacRoman/CR)
+- Screenshot capture: the emulated framebuffer, decoded to PNG on the host
+- Host server auto-start via launchd
+
+Validated on Basilisk II (System 7.5.3 and 7.6.1), SheepShaver (Mac OS 9), and real
+hardware — a Macintosh SE/30 over RS-422.
 
 ## Credits
 
 **Built by:** Pit with love for 68K and Claude
 **AI Assistant:** Claude Sonnet 4.5 (Anthropic)
-**Technologies:** OpenTransport, MCP, Apple Events, MPW, System 7.6.1
-**Platform:** Basilisk II emulator on macOS Sequoia
+**Technologies:** Open Transport / MacTCP / serial, MCP, Apple Events, MPW, System 7
+**Platform:** Basilisk II or SheepShaver on macOS — and real 68k hardware
 
 **"Connecting classic Mac to the future"** ✨
 

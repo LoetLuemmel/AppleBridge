@@ -50,7 +50,11 @@ def _scratch():
     shutil.copy2(os.path.join(_ROOT, "mac", "vers.r"), os.path.join(tmp, "mac", "vers.r"))
     # The guest sources the hardware-finding guards read (they never compile it).
     os.makedirs(os.path.join(tmp, "mac", "src"), exist_ok=True)
-    for name in ("main.c", "transport_serial.c"):
+    # prefs.c too: the transport guard DERIVES the NET= values from the strings
+    # this file writes, so without it that guard dies in every mutant and every
+    # mutant looks killed. Second time this scratch list has gone stale behind a
+    # new derivation (2026-08-01) — the control test caught both.
+    for name in ("main.c", "transport_serial.c", "prefs.c"):
         shutil.copy2(os.path.join(_ROOT, "mac", "src", name),
                      os.path.join(tmp, "mac", "src", name))
     # The control panel: its source is where the button titles are DERIVED from,
