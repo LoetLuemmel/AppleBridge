@@ -32,6 +32,15 @@ Link -o Counter10i counter10i.a.o "{Libraries}Interface.o" "{Libraries}MacRuntim
 No `Rez` step — the window is built in code rather than from a resource. `Asm` warns "a
 short branch could be used here" a few times; that is style, not an error.
 
+**Number formatting is hand-written**, because the Toolbox routine of that name lives in a
+library this example deliberately does not link. `DIVU #10` returns quotient *and* remainder
+packed into one register, so the routine runs twice over the value: once to count digits,
+once to fill them in backwards from the end of the buffer. The digit-counting pass must
+continue with the **quotient** — an earlier revision carried the remainder forward instead,
+which undercounts above 99 and then writes past the front of the buffer, clobbering the
+length byte and the string in front of it. Corrected and re-verified on the guest at 998 →
+1002; the buffer holds five digits.
+
 ## `count_ten.c` — a Toolbox application that counts 1..10
 
 Opens a window and counts `1 → 10`, one second per step, with a `SysBeep` at each step,

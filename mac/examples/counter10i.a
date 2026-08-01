@@ -84,7 +84,7 @@ HdrText         DC.B    'Counting to 20'
                 DS.W    0
 ExitText        DC.B    'Click to quit'
                 DS.W    0
-NumStr          DC.B    '   '
+NumStr          DC.B    '     '             ; 5 digits + Pascal length byte
                 DS.W    0
 BoundsRect      DC.W    90,120,410,520
 
@@ -249,13 +249,11 @@ NTS_NotZero:
         MOVE.L  D1,D2
         MOVEQ   #0,D3
 NTS_Count:
-        DIVU    #10,D2
+        DIVU    #10,D2              ; D2 = [remainder : quotient]
         ADDQ.W  #1,D3
-        MOVE.W  D2,D4
-        CLR.W   D2
-        SWAP    D2
-        TST.W   D4
-        BNE.S   NTS_Count
+        ANDI.L  #$0000FFFF,D2       ; keep the QUOTIENT as the next dividend
+        TST.W   D2                  ; (dropping the remainder is the whole point:
+        BNE.S   NTS_Count           ;  dividing it again undercounts above 99)
         MOVE.W  D3,D0
         MOVE.B  D0,(A0)
         ADDA.W  D0,A1
