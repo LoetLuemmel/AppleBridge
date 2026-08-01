@@ -145,28 +145,35 @@ If it **refuses**, read what it says: it will not convert a host already
 configured for the `etherhelper` backend, because that is somebody's working
 AppleTalk setup. `--force-slirp` overrides it.
 
-### 2. Get the guest kit and stamp your address on it
+### 2. Get the guest kit
 
 Download `AppleBridgeKit.dmg` from the [latest release](../../releases) — a 2 MB
 disk image holding the four 68K applications, the journaling driver the daemon
-opens by name, and a prefs file. Then:
+opens by name, and a prefs file. Add it to the emulator as a second disk and
+relaunch, because the disk list is read at launch only:
+
+```
+disk /path/to/AppleBridgeKit.dmg
+```
+
+**There is nothing to stamp on it.** The prefs ship `IP=10.0.2.2` — not the
+address of the machine that built the kit, which a public artifact must never
+carry, but the slirp constant that means *whichever host runs the emulator*:
+slirp forwards it to that host's loopback, and the server hears it there because
+it binds every address. So the kit needs no seeding step and no address of
+yours.
+
+The exception is a bridge server running on a **different** machine than the
+emulator. Then the loopback is the wrong host, and only that machine's own
+address can say so — set it in AppleBridgeConfig on the guest afterwards, or
+write it into the image before you mount it:
 
 ```bash
 cd host && ./install_bridge.py --seed-guest-prefs ~/Downloads/AppleBridgeKit.dmg
 ```
 
-A released kit ships with `IP=` **empty** on purpose. An address baked into a
-public artifact would point every downloader's guest at the machine that built
-it — and on a LAN where that number answers, it connects and reports full
-health. Seeding supplies the one value only you know. (You can also leave it
-empty and set it in AppleBridgeConfig on the guest afterwards.)
-
-Then add the image to the emulator as a second disk and relaunch — the disk list
-is read at launch only:
-
-```
-disk /path/to/AppleBridgeKit.dmg
-```
+That second route needs `hfsutils` (`brew install hfsutils`), which macOS does
+not ship; the config panel on the guest needs nothing.
 
 ### 3. In the guest: network first, then the installer
 
@@ -187,6 +194,15 @@ Then open the **AppleBridge Kit** volume and run **AppleBridgeInstaller** from
 it. It preflights the machine, refuses environments that cannot work, copies the
 suite, and installs the autostart so the bridge comes up on every boot. When it
 is done, drag the kit volume to the Trash and remove its `disk` line.
+
+**If it does not go to plan, the installer wrote down why.** It leaves a text
+file called `AppleBridge Install Log` at the root of the guest's boot volume —
+the preflight table, the transports it found, one line per copied binary with
+its error code, and whatever the window said. It is written when the installer
+opens, before you press anything, so a run whose Install button is disabled by a
+failed check leaves a record too. Attach that file to an issue and the answer is
+usually in it. (The host installer does the same into
+`~/Library/Logs/AppleBridge/`.)
 
 Helper applications like ToolServer are added later, optionally, with **Add
 Helper App…** in AppleBridgeConfig.
