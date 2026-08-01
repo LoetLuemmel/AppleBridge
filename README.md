@@ -128,10 +128,14 @@ sequenceDiagram
   injection, directory listings, clipboard, launch and shutdown. An absent
   ToolServer is a tier you do not have, not a broken install.
 
-Six steps: **1–2** on the host, **3** inside the emulator, **4–6** back on the host
-to wire up Claude Code and confirm the result. The guest step cannot be scripted,
-because System 7 offers no scripting surface for the TCP/IP control panel. Fully
-worked example with more screenshots: [docs/SETUP.md](docs/SETUP.md).
+**Three steps to a working bridge**, then one command to confirm it: **1–2** on the
+host, **3** inside the emulator, **4** back on the host. The guest step cannot be
+scripted, because System 7 offers no scripting surface for the TCP/IP control panel.
+
+Claude Code is **not** part of that. The bridge is a host server and a guest daemon;
+you drive it over the control port with anything that can open a socket. Step 5 wires
+it to Claude Code for those who want the MCP tools, and it is the only optional step
+here. Fully worked example with more screenshots: [docs/SETUP.md](docs/SETUP.md).
 
 ### 1. Configure the host
 
@@ -229,28 +233,7 @@ usually in it. (The host installer does the same into
 Helper applications like ToolServer are added later, optionally, with **Add
 Helper App…** in AppleBridgeConfig.
 
-### 4. Configure MCP
-
-Edit `.mcp.json` in your project or `~/.claude/`:
-
-```json
-{
-  "mcpServers": {
-    "applebridge": {
-      "type": "stdio",
-      "command": "uv",
-      "args": ["run", "python", "-m", "mcp.server"],
-      "env": {}
-    }
-  }
-}
-```
-
-This is the configuration committed in `.mcp.json`. The MCP server talks to
-`host_server.py` on the local control port (9001); start the host stack with
-`cd host && ./start_stack.sh` (it also auto-starts via launchd).
-
-### 5. Check that it came up
+### 4. Check that it came up
 
 ```bash
 cd host && printf 'MACSTATUS\n\n' | nc -w 5 localhost 9001
@@ -269,7 +252,37 @@ and answers even when the host server is down. Failure modes and their causes:
 > on the guest — see [docs/SETUP.md](docs/SETUP.md) Part 3.1. The kit above
 > exists so that nobody has to.
 
-### 6. Use with Claude Code
+### 5. Optional: drive it from Claude Code
+
+Everything above works without this. The bridge answers on the control port, so
+any client that can open a socket can use it — that is how the verbs in this
+README are shown, and it is how a machine with no Claude Code installed is
+driven:
+
+```bash
+printf 'DISKINFO\n\n' | nc localhost 9001          # every mounted volume
+printf 'LISTDIR:MeinMac:AppleBridge:\n\n' | nc localhost 9001
+```
+
+What MCP adds is the **30 tools** below, and natural language on top of them.
+Edit `.mcp.json` in your project or `~/.claude/`:
+
+```json
+{
+  "mcpServers": {
+    "applebridge": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "python", "-m", "mcp.server"],
+      "env": {}
+    }
+  }
+}
+```
+
+That is the configuration committed in `.mcp.json`. The MCP server talks to
+`host_server.py` on the same control port (9001); start the host stack with
+`cd host && ./start_stack.sh` (it also auto-starts via launchd). Then:
 
 ```
 You: "Execute 'Directory' command on the Mac"

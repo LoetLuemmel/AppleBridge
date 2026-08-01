@@ -224,6 +224,35 @@ def test_a_doc_section_that_advertises_the_tools_lists_them_all():
     assert not missing, "incomplete tool section:\n  " + "\n  ".join(missing)
 
 
+def test_no_required_quick_start_step_is_about_claude_code():
+    """The prerequisites say in as many words that the bridge works without
+    Claude Code. The quick start then made "Configure MCP" step 4 of 6 —
+    numbered, unmarked, and AHEAD of the step that checks whether the bridge
+    came up at all (which is a `nc localhost 9001` and needs no MCP). A reader
+    following the numbers would configure an AI client before confirming the
+    thing it is meant to talk to.
+
+    Spotted by the operator 2026-08-01. The two statements have to move
+    together, so this checks both halves.
+    """
+    text = _read("README.md")
+    assert "The bridge itself works without it" in text, (
+        "the prerequisites no longer say the bridge works without Claude Code — "
+        "if that stopped being true, this test and the quick start move together")
+
+    bad = []
+    for line in text.split("\n"):
+        m = re.match(r"### (\d+)\. (.+)", line)
+        if not m:
+            continue
+        title = m.group(2)
+        mentions = any(w in title.lower() for w in ("mcp", "claude code"))
+        if mentions and "optional" not in title.lower():
+            bad.append(f"step {m.group(1)} is about Claude Code but is not "
+                       f"marked optional: {title!r}")
+    assert not bad, "\n  ".join(bad)
+
+
 def test_docs_do_not_name_tools_that_no_longer_exist():
     known = set(TOOL_NAMES)
     stale = []
