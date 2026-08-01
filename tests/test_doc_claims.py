@@ -372,6 +372,44 @@ def _kit_payload():
     return labels, [l for l in labels if l not in drivers], drivers
 
 
+def test_the_readme_states_the_address_a_released_kit_actually_ships():
+    """The README told readers for a month that a released kit ships `IP=`
+    EMPTY and that they had to seed one in. Both published kits carried
+    `IP=10.0.2.2` — the rule changed on 2026-07-31 when 10.0.2.2 was measured
+    to work, and nothing re-read the prose. A claim about a PUBLISHED artifact
+    is the worst kind to leave stale: the reader cannot check it without
+    downloading the thing, and a wrong extra step reads as a broken tool.
+
+    So derive it. Whatever `guest_prefs_text("")` writes into a release kit is
+    the address the docs must state, and a doc that mentions `IP=` in that
+    context must not contradict it.
+    """
+    sys.path.insert(0, os.path.join(_ROOT, "host"))
+    import install_bridge as ib
+    shipped = [l.split("=", 1)[1].strip()
+               for l in ib.guest_prefs_text("").split("\n")
+               if l.startswith("IP=")]
+    assert len(shipped) == 1, f"a release kit must ship exactly one IP=, got {shipped}"
+    address = shipped[0]
+    assert address, ("a release kit now ships an ADDRESS, not an empty field — "
+                     "if that changed back, this test and the README move together")
+
+    wrong = []
+    for rel in KIT_DOCS:
+        text = re.sub(r"\s+", " ", _read(rel))
+        if "AppleBridgeKit.dmg" not in text:      # not a doc about the kit
+            continue
+        if re.search(r"released kit ships with `IP=` \*\*empty\*\*", text) or \
+           re.search(r"kit ships `IP=` empty", text):
+            wrong.append(f"{rel} still says a released kit ships IP= empty; "
+                         f"it ships IP={address}")
+        for m in re.finditer(r"`IP=([0-9][0-9.]*)`", text):
+            if m.group(1) != address:
+                wrong.append(f"{rel} states IP={m.group(1)} but a release kit "
+                             f"ships IP={address}")
+    assert not wrong, "stale claim about the published kit:\n  " + "\n  ".join(wrong)
+
+
 def test_the_stated_kit_application_count_matches_the_payload():
     _, apps, _ = _kit_payload()
     wrong = []
