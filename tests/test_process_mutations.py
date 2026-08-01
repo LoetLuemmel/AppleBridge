@@ -53,6 +53,12 @@ def _scratch():
     for name in ("main.c", "transport_serial.c"):
         shutil.copy2(os.path.join(_ROOT, "mac", "src", name),
                      os.path.join(tmp, "mac", "src", name))
+    # The control panel: its source is where the button titles are DERIVED from,
+    # and its README is one of the two docs allowed to document them.
+    os.makedirs(os.path.join(tmp, "mac", "config"), exist_ok=True)
+    for name in ("config.c", "README.md"):
+        shutil.copy2(os.path.join(_ROOT, "mac", "config", name),
+                     os.path.join(tmp, "mac", "config", name))
     os.makedirs(os.path.join(tmp, "tests"), exist_ok=True)
     for name in ("test_doc_claims.py", "test_hardware_findings.py"):
         shutil.copy2(os.path.join(_ROOT, "tests", name),

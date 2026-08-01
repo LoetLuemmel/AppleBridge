@@ -128,10 +128,14 @@ sequenceDiagram
   injection, directory listings, clipboard, launch and shutdown. An absent
   ToolServer is a tier you do not have, not a broken install.
 
-Six steps: **1–2** on the host, **3** inside the emulator, **4–6** back on the host
-to wire up Claude Code and confirm the result. The guest step cannot be scripted,
-because System 7 offers no scripting surface for the TCP/IP control panel. Fully
-worked example with more screenshots: [docs/SETUP.md](docs/SETUP.md).
+**Three steps to a working bridge**, then one command to confirm it: **1–2** on the
+host, **3** inside the emulator, **4** back on the host. The guest step cannot be
+scripted, because System 7 offers no scripting surface for the TCP/IP control panel.
+
+Claude Code is **not** part of that. The bridge is a host server and a guest daemon;
+you drive it over the control port with anything that can open a socket. Step 5 wires
+it to Claude Code for those who want the MCP tools, and it is the only optional step
+here. Fully worked example with more screenshots: [docs/SETUP.md](docs/SETUP.md).
 
 ### 1. Configure the host
 
@@ -226,31 +230,32 @@ failed check leaves a record too. Attach that file to an issue and the answer is
 usually in it. (The host installer does the same into
 `~/Library/Logs/AppleBridge/`.)
 
-Helper applications like ToolServer are added later, optionally, with **Add
-Helper App…** in AppleBridgeConfig.
+#### The control panel
 
-### 4. Configure MCP
+The daemon is **faceless** — it runs as a service with no window — so everything a
+human needs to change about it lives in **AppleBridgeConfig**, installed alongside
+it. Open it from the installation folder whenever you need to look:
 
-Edit `.mcp.json` in your project or `~/.claude/`:
+![AppleBridgeConfig: daemon status and autostart, an editable host address with a Set button, the three networking radios with the serial options dimmed, the helper-app list, and the four buttons](docs/images/config-panel-0.8d33.png)
 
-```json
-{
-  "mcpServers": {
-    "applebridge": {
-      "type": "stdio",
-      "command": "uv",
-      "args": ["run", "python", "-m", "mcp.server"],
-      "env": {}
-    }
-  }
-}
-```
+| | |
+|---|---|
+| **Daemon / Autostart** | whether the service is running, and whether it starts at boot |
+| **Host IP** | the one value a kit cannot know — **the host's** address, not the guest's, which is the confusion the label exists to end. `Set` writes it and the daemon picks it up |
+| **Networking service** | Open Transport, MacTCP or Serial. `NET=` hot-swaps between commands, without relaunching the daemon |
+| **Serial port / Baud** | dimmed unless Serial is selected. Read at startup, not hot-swapped, so they take effect on the next launch — and the host must be set to the same baud, as there is no autobaud |
+| **Add Helper App…** | appends an `APP=` line; the daemon chain-launches these at startup, ToolServer first |
+| **Install Autostart** / **Remove Autostart** | writes (or deletes) the Startup Items alias. It points at the *watchdog*, not the daemon, because the watchdog owns the daemon's lifecycle |
+| **Quit** | quits the panel — not the daemon |
 
-This is the configuration committed in `.mcp.json`. The MCP server talks to
-`host_server.py` on the local control port (9001); start the host stack with
-`cd host && ./start_stack.sh` (it also auto-starts via launchd).
+There are deliberately **no Launch/Stop buttons**. The daemon is meant to run
+continuously, and quitting it tears down Open Transport in a way that has cost a
+host crash. Start it through autostart, or from the Finder.
 
-### 5. Check that it came up
+Full details, including how the autostart alias is built:
+[mac/config/README.md](mac/config/README.md).
+
+### 4. Check that it came up
 
 ```bash
 cd host && printf 'MACSTATUS\n\n' | nc -w 5 localhost 9001
@@ -269,7 +274,37 @@ and answers even when the host server is down. Failure modes and their causes:
 > on the guest — see [docs/SETUP.md](docs/SETUP.md) Part 3.1. The kit above
 > exists so that nobody has to.
 
-### 6. Use with Claude Code
+### 5. Optional: drive it from Claude Code
+
+Everything above works without this. The bridge answers on the control port, so
+any client that can open a socket can use it — that is how the verbs in this
+README are shown, and it is how a machine with no Claude Code installed is
+driven:
+
+```bash
+printf 'DISKINFO\n\n' | nc localhost 9001          # every mounted volume
+printf 'LISTDIR:MeinMac:AppleBridge:\n\n' | nc localhost 9001
+```
+
+What MCP adds is the **30 tools** below, and natural language on top of them.
+Edit `.mcp.json` in your project or `~/.claude/`:
+
+```json
+{
+  "mcpServers": {
+    "applebridge": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "python", "-m", "mcp.server"],
+      "env": {}
+    }
+  }
+}
+```
+
+That is the configuration committed in `.mcp.json`. The MCP server talks to
+`host_server.py` on the same control port (9001); start the host stack with
+`cd host && ./start_stack.sh` (it also auto-starts via launchd). Then:
 
 ```
 You: "Execute 'Directory' command on the Mac"
