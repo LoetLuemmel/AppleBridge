@@ -19,8 +19,35 @@ launchd job, a `.154` alias duplicated onto a second NIC, a `slirp` emulator
 backend (TCP works, AppleTalk does not — see *Chooser finds no AppleShare
 server* below), and a dead `etherhelpertool`.
 
+## An install that went wrong: read its log
+
+Both halves of the installation now leave a record, which is what makes helping
+somebody at a distance possible at all — during an install the bridge does not
+exist yet, so no remote tool can see the guest's screen.
+
+| Half | File | Written |
+|---|---|---|
+| host | `~/Library/Logs/AppleBridge/install-<timestamp>.log` | every run of `install_bridge.py`, dry runs included |
+| guest | `AppleBridge Install Log`, at the **root of the boot volume** | at launch (preflight) and again after every Install attempt |
+
+The host log carries the readable report **and** the `--json` probe bundle
+underneath it, in one file — which emulator was found, which interfaces exist,
+what the run intended, and what it refused to do. Its path is the last line the
+installer prints.
+
+The guest log carries the preflight table, the detected transports, the
+destination, a line per copied binary with its `OSErr`, and the four status
+lines the window showed. Its path is named in the installer's own window on the
+screens where something went wrong. Asking somebody for it is one sentence:
+*"send me the file `AppleBridge Install Log` on your hard disk."*
+
+A run that only opens the installer and looks — the one whose Install button is
+disabled by a failed preflight check — leaves a log too. That case used to leave
+nothing behind at all.
+
 ## Table of Contents
 
+- [An install that went wrong](#an-install-that-went-wrong-read-its-log)
 - [Apple Events Issues](#apple-events-issues)
 - [Network and Connection](#network-and-connection)
 - [Emulator (Basilisk II) Crashes](#emulator-basilisk-ii-crashes)

@@ -82,6 +82,13 @@ PREFS_PATH = os.path.expanduser("~/.basilisk_ii_prefs")
 NETMODE_PATH = PREFS_PATH + ".netmode"
 LOCAL_ENV = os.path.join(HERE, "local.env")
 
+# Where an install run leaves its record. The report has always gone to stdout
+# and nowhere else, which is fine while it succeeds and useless the moment
+# somebody needs help: a terminal gets closed, and the richest form (--json)
+# was mutually exclusive with the readable one, so a user could send either the
+# prose or the data but never both. This directory gets both, every run.
+INSTALL_LOG_DIR = os.path.expanduser("~/Library/Logs/AppleBridge")
+
 # What slirp gives the guest. Fixed by the backend, not by this machine — which
 # is why they may be literals here while an address of the HOST may not be.
 # `10.0.2.3` is the one that gets forgotten: an empty resolver field surfaces as
@@ -1344,6 +1351,45 @@ def rewrite_ip_line(data, host_ip):
 # --------------------------------------------------------------------------
 # reporting
 # --------------------------------------------------------------------------
+def write_install_log(report, payload, argv, log_dir=None):
+    """Persist one install run. -> (path, None) or (None, reason).
+
+    Both forms in ONE file, because the instruction to a struggling user has to
+    be "send me this file" and not "send me these two files". The prose is what
+    a human reads; the JSON below it carries the probe bundle a helper actually
+    needs — which emulator was found, which interfaces exist, what the run
+    intended, and what it refused to do.
+
+    This must never change the outcome of an install. A log that cannot be
+    written is reported and otherwise ignored: the run already did its work,
+    and failing it now would be the tail wagging the dog.
+    """
+    log_dir = log_dir or os.environ.get("APPLEBRIDGE_INSTALL_LOG_DIR") \
+        or INSTALL_LOG_DIR
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    path = os.path.join(log_dir, f"install-{stamp}.log")
+    head = [
+        "AppleBridge host installer — run log",
+        f"when:     {time.strftime('%Y-%m-%d %H:%M:%S %z')}",
+        f"argv:     {' '.join(argv)}",
+        f"cwd:      {os.getcwd()}",
+        f"python:   {sys.version.split()[0]}  ({sys.executable})",
+        f"dry run:  {'yes — nothing was changed' if payload.get('dry_run') else 'no'}",
+        "", "=" * 70, "",
+    ]
+    tail = ["", "", "=" * 70,
+            "machine-readable — paste this part when asking for help",
+            "=" * 70, "",
+            json.dumps(payload, indent=2, default=str), ""]
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write("\n".join(head) + report + "\n".join(tail))
+        return path, None
+    except OSError as exc:
+        return None, str(exc)
+
+
 def format_text(probes, plan, results=None, dry_run=True):
     bundle, emu = probes["bundle"], probes["emulator_prefs"]
     ifaces = sorted({i for i, _ in probes["addresses"]})
@@ -1538,10 +1584,21 @@ def main(argv=None):
             kit = export_guest_kit(dest, host_ip, probes,
                                    release=args.release_kit)
 
+    payload = {"probes": probes, "plan": plan, "kit": kit,
+               "results": results, "seed": seed, "dry_run": dry_run}
+
+    # Built once, printed to stdout OR --json, and written to the log EITHER
+    # way — the log is not an alternative output mode, it is the record.
+    report = format_text(probes, plan, results, dry_run)
+    if seed:
+        report += f"\n\nSEED: {'ok' if seed[0] else 'FAILED'} — {seed[1]}"
+    if kit:
+        report += f"\n\nGUEST KIT: {'ok' if kit[0] else 'FAILED'} — {kit[1]}"
+        for f in kit[2]:
+            report += f"\n    {f}"
+
     if as_json:
-        print(json.dumps({"probes": probes, "plan": plan, "kit": kit,
-                          "results": results, "seed": seed,
-                          "dry_run": dry_run}, indent=2, default=str))
+        print(json.dumps(payload, indent=2, default=str))
     else:
         print(format_text(probes, plan, results, dry_run))
         if seed:
@@ -1550,6 +1607,16 @@ def main(argv=None):
             print(f"\nGUEST KIT: {'ok' if kit[0] else 'FAILED'} — {kit[1]}")
             for f in kit[2]:
                 print(f"    {f}")
+
+    log_path, log_err = write_install_log(report, payload, argv or sys.argv[1:])
+    if not as_json:
+        if log_path:
+            print(f"\nlog: {log_path}")
+            print("     Send that file with any question about this run — it "
+                  "carries the report above\n     plus the machine details "
+                  "behind it.")
+        else:
+            print(f"\nlog: NOT WRITTEN — {log_err}")
 
     if plan["refusals"]:
         return 3

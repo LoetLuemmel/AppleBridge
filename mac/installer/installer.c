@@ -42,6 +42,7 @@
 #include <Memory.h>
 #include <Gestalt.h>
 #include <Devices.h>     /* OpenDriver -> reliable classic-MacTCP '.IPP' probe */
+#include <OSUtils.h>     /* GetDateTime/SecondsToDate - the log's timestamp */
 #include <prefs.h>
 #include <mystring.h>
 
@@ -108,6 +109,26 @@ static char    gStatus4[160];   /* line 4: the optional extra */
  * none, which is normal and silent; anything else is worth telling, because an
  * install that quietly lacks it answers every journal verb with fnfErr. */
 static OSErr   gJournalErr = fnfErr;
+
+/* ---- install log -------------------------------------------------------
+ * Everything this program knows is drawn and then forgotten: the preflight
+ * table, the four status lines, the error code of whichever copy failed. That
+ * is bearable while an install works, and useless the moment somebody needs
+ * help with one that did not — a window cannot be attached to a message, and
+ * during an install the bridge does not exist yet, so no remote tool can read
+ * the screen either. This writes the same facts to a plain text file at a
+ * FIXED, predictable place, so helping somebody starts with one sentence:
+ * "send me the file `AppleBridge Install Log` on your hard disk".
+ *
+ * Best effort throughout. A log that cannot be written is silent and changes
+ * nothing about the install — the run has already done its work, and failing
+ * it over its own record would be the tail wagging the dog. */
+#define LOG_LEAF   "AppleBridge Install Log"
+#define LOG_SIZE   4096L
+
+static char    gLogPath[PREFS_PATH_LEN];  /* where it landed, or empty */
+static OSErr   gCopyErr[3];               /* per mandatory binary */
+static Boolean gInstallTried = false;
 
 /* ---- animated logo, top right ------------------------------------------
    Ported verbatim from mac/claudeapp (the About-box party GIF), because that
@@ -599,12 +620,197 @@ static OSErr CopyBinary(short srcV, long srcD, short dstV, long dstD, const char
     return CopyForks(&src, &dst);
 }
 
+/* Append one CR-terminated line, never overrunning the buffer. Classic Mac
+ * text is CR-separated; a log full of LFs opens as one long line in every
+ * editor on this machine, which is exactly the kind of small wrongness that
+ * makes somebody distrust the rest of the file. */
+static void LogLine(char *buf, const char *text)
+{
+    if ((long)mystrlen(buf) + (long)mystrlen(text) + 2L >= LOG_SIZE) return;
+    mystrcat(buf, text);
+    mystrcat(buf, "\r");
+}
+
+/* "<label><pad>" so the columns line up without a tab, which classic editors
+ * render at widths nobody agrees on. */
+static void LogPad(char *buf, const char *text, short width)
+{
+    short i, n = (short)mystrlen(text);
+    if ((long)mystrlen(buf) + width + 2L >= LOG_SIZE) return;
+    mystrcat(buf, text);
+    for (i = n; i < width; i++) mystrcat(buf, " ");
+}
+
+/* Two digits, zero-filled. An unpadded "2026-8-1" reads as sloppy and sorts
+ * wrong, and a log's first line is where trust in the rest of it is decided. */
+static void CatNum2(char *buf, long n)
+{
+    if (n < 10) mystrcat(buf, "0");
+    CatNum(buf, n);
+}
+
+/* The installer's own build, straight out of its 'vers' resource. It is the
+ * first thing anyone answering a support question has to ask, so it should
+ * never have to be asked. */
+static void LogVersion(char *buf)
+{
+    Handle h = Get1Resource('vers', 1);
+    if (h == NULL || *h == NULL) { mystrcat(buf, "(no vers resource)"); return; }
+    {
+        unsigned char *p = (unsigned char *)*h + 6;   /* short version string */
+        short n = (short)p[0], i;
+        for (i = 1; i <= n; i++) {
+            char one[2]; one[0] = (char)p[i]; one[1] = '\0';
+            mystrcat(buf, one);
+        }
+    }
+}
+
+/* An OSErr as text, sign included — the number IS the diagnosis here. */
+static void LogErrNum(char *buf, OSErr e)
+{
+    if (e < 0) { mystrcat(buf, "-"); CatNum(buf, -(long)e); }
+    else       { CatNum(buf, (long)e); }
+}
+
+static void WriteInstallLog(void)
+{
+    FSSpec spec;
+    short  refNum;
+    long   count;
+    char  *buf;
+    short  i;
+    unsigned long secs;
+    DateTimeRec dt;
+    Str255 pLeaf;
+    OSErr  err;
+    static const char *kLeaf[3] = { LEAF_DAEMON, LEAF_WATCHDOG, LEAF_CONFIG };
+
+    buf = NewPtr(LOG_SIZE);
+    if (buf == NULL) return;
+    buf[0] = '\0';
+
+    LogLine(buf, "AppleBridge Installer - run log");
+    mystrcat(buf, "when:  ");
+    GetDateTime(&secs);
+    SecondsToDate(secs, &dt);
+    CatNum(buf, (long)dt.year);    mystrcat(buf, "-");
+    CatNum2(buf, (long)dt.month);  mystrcat(buf, "-");
+    CatNum2(buf, (long)dt.day);    mystrcat(buf, "  ");
+    CatNum2(buf, (long)dt.hour);   mystrcat(buf, ":");
+    CatNum2(buf, (long)dt.minute); mystrcat(buf, ":");
+    CatNum2(buf, (long)dt.second);
+    LogLine(buf, "");
+    mystrcat(buf, "installer: ");
+    LogVersion(buf);
+    LogLine(buf, "");
+    LogLine(buf, "");
+
+    LogLine(buf, "--- preflight ---");
+    for (i = 0; i < gNumChecks; i++) {
+        if (gChecks[i].status == ST_PASS)      mystrcat(buf, "OK   ");
+        else if (gChecks[i].status == ST_WARN) mystrcat(buf, "?    ");
+        else                                   mystrcat(buf, "FAIL ");
+        LogPad(buf, gChecks[i].label, 34);
+        mystrcat(buf, gChecks[i].detail);
+        if (gChecks[i].critical && gChecks[i].status == ST_FAIL)
+            mystrcat(buf, "   <-- required");
+        LogLine(buf, "");
+    }
+    LogLine(buf, gCanInstall ? "install enabled: yes"
+                             : "install enabled: NO - a required check failed");
+    LogLine(buf, "");
+
+    LogLine(buf, "--- transports detected ---");
+    LogLine(buf, gHasOT     ? "Open Transport: yes" : "Open Transport: no");
+    LogLine(buf, gHasMacTCP ? "MacTCP:         yes" : "MacTCP:         no");
+    LogLine(buf, gHasSerial ? "Serial:         yes" : "Serial:         no");
+    LogLine(buf, "");
+
+    LogLine(buf, "--- install ---");
+    if (!gInstallTried) {
+        LogLine(buf, "not attempted - this run only ran the preflight checks.");
+    } else {
+        mystrcat(buf, "destination: ");
+        LogLine(buf, gDestPath[0] ? gDestPath : "(not resolved)");
+        for (i = 0; i < 3; i++) {
+            LogPad(buf, kLeaf[i], 24);
+            if (gCopyErr[i] == 1)           mystrcat(buf, "not reached");
+            else if (gCopyErr[i] == noErr)  mystrcat(buf, "copied");
+            else if (gCopyErr[i] == fnfErr) mystrcat(buf, "MISSING - not beside the installer");
+            else { mystrcat(buf, "FAILED - error "); LogErrNum(buf, gCopyErr[i]); }
+            LogLine(buf, "");
+        }
+        LogPad(buf, LEAF_JOURNAL, 24);
+        if (gJournalErr == noErr)       mystrcat(buf, "copied");
+        else if (gJournalErr == fnfErr) mystrcat(buf, "not in this payload (normal)");
+        else { mystrcat(buf, "FAILED - error "); LogErrNum(buf, gJournalErr); }
+        LogLine(buf, "");
+        LogLine(buf, gInstalled ? "result: installed" : "result: DID NOT COMPLETE");
+    }
+    LogLine(buf, "");
+
+    if (gInstalled) {
+        LogLine(buf, "--- prefs written ---");
+        mystrcat(buf, "IP=");
+        LogLine(buf, gPrefs.ip[0] ? gPrefs.ip : "(empty - the host address is not set yet)");
+        mystrcat(buf, "NET=");
+        LogLine(buf, gPrefs.transport == kTransportMacTCP ? "MacTCP" :
+                     gPrefs.transport == kTransportSerial ? "Serial" : "OT");
+        mystrcat(buf, "HOME="); LogLine(buf, gPrefs.home);
+        mystrcat(buf, "helper apps listed: "); CatNum(buf, (long)gPrefs.appCount);
+        LogLine(buf, "");
+        LogLine(buf, "");
+    }
+
+    LogLine(buf, "--- what the window said ---");
+    if (!gStatus[0] && !gStatus2[0] && !gStatus3[0] && !gStatus4[0])
+        LogLine(buf, "(nothing yet - no install has been attempted)");
+    if (gStatus[0])  LogLine(buf, gStatus);
+    if (gStatus2[0]) LogLine(buf, gStatus2);
+    if (gStatus3[0]) LogLine(buf, gStatus3);
+    if (gStatus4[0]) LogLine(buf, gStatus4);
+    LogLine(buf, "");
+    LogLine(buf, "Send this file with any question about this install.");
+
+    /* Boot volume root (vRefNum 0 = default volume), ALWAYS the same place.
+     * Not the destination folder: the runs that most need a log are the ones
+     * where that folder was never created. */
+    gLogPath[0] = '\0';
+    CtoP(LOG_LEAF, pLeaf);
+    err = FSMakeFSSpec(0, fsRtDirID, pLeaf, &spec);
+    if (err != noErr && err != fnfErr) { DisposePtr(buf); return; }
+    /* 'ttxt' so a double-click opens it in SimpleText rather than nothing. */
+    (void)FSpCreate(&spec, 'ttxt', 'TEXT', 0);
+    if (FSpOpenDF(&spec, fsRdWrPerm, &refNum) != noErr) { DisposePtr(buf); return; }
+    SetEOF(refNum, 0L);
+    count = (long)mystrlen(buf);
+    (void)FSWrite(refNum, &count, buf);
+    FSClose(refNum);
+    FlushVol(NULL, spec.vRefNum);      /* the machine may be restarted next */
+    FSSpecToPath(&spec, gLogPath);
+    DisposePtr(buf);
+}
+
+/* Every install path ends here, including the ones that gave up early, so the
+ * log exists whatever happened. */
+static void DoInstallRun(void);
+
 static void DoInstall(void)
+{
+    DoInstallRun();
+    WriteInstallLog();
+}
+
+static void DoInstallRun(void)
 {
     short  srcV, dstV;
     long   srcD, dstD;
     FSSpec folderSpec, wdSpec;
     Str255 pName;
+
+    gInstallTried = true;
+    gCopyErr[0] = gCopyErr[1] = gCopyErr[2] = 1;   /* 1 = not reached */
 
     if (!gCanInstall) {
         mystrcpy(gStatus, "Cannot install: a required check failed.");
@@ -619,6 +825,14 @@ static void DoInstall(void)
         return;
     }
 
+    /* Resolve the destination path HERE, not after the copies. It is needed
+     * for HOME= either way, and a run that fails on the first file should
+     * still be able to say where it was aiming — "wrong volume" is a real
+     * diagnosis and the log cannot offer it without this. */
+    FSMakeFSSpec(dstV, fsRtDirID, DEST_FOLDER_NAME, &folderSpec);
+    FSSpecToPath(&folderSpec, gDestPath);
+    mystrcat(gDestPath, ":");
+
     /* Copy the three binaries (daemon, watchdog, config), naming whichever one
      * fails and why. One message for every cause is how "are the binaries
      * beside this installer?" came to be printed about a busy destination. */
@@ -627,6 +841,7 @@ static void DoInstall(void)
         short i;
         for (i = 0; i < 3; i++) {
             OSErr cerr = CopyBinary(srcV, srcD, dstV, dstD, kLeaves[i]);
+            gCopyErr[i] = cerr;
             if (cerr == noErr) continue;
             gStatus[0] = '\0';
             mystrcat(gStatus, "Copy failed for ");
@@ -656,11 +871,6 @@ static void DoInstall(void)
      * does nothing" shape this project keeps paying for. It does not abort the
      * install: an optional extra must not cost somebody their bridge. */
     gJournalErr = CopyBinary(srcV, srcD, dstV, dstD, LEAF_JOURNAL);
-
-    /* Build the destination folder path string for HOME=. */
-    FSMakeFSSpec(dstV, fsRtDirID, DEST_FOLDER_NAME, &folderSpec);
-    FSSpecToPath(&folderSpec, gDestPath);
-    mystrcat(gDestPath, ":");
 
     /* Seed prefs in three LAYERS, weakest first. The order is the whole point.
      *
@@ -786,6 +996,19 @@ static void DoInstall(void)
 
 /* ---- UI ---------------------------------------------------------------- */
 
+/* Name the log file on the two screens somebody stares at when the install did
+ * NOT work. Not on the success screen: there is no room below four status
+ * lines, and nobody needs a log for a run that worked. */
+static void DrawLogLine(short *y)
+{
+    char line[300];
+    if (!gLogPath[0]) return;
+    mystrcpy(line, "Log written to: ");
+    mystrcat(line, gLogPath);
+    DrawWrapped(line, 16, y, gWin->portRect.right - 16);
+}
+
+
 /* Defined below, beside the action it advertises; declared here because
  * DrawContent draws the ring and MPW C is C89 — an undeclared call would be
  * assumed to return int and the link would not care. */
@@ -826,6 +1049,8 @@ static void DrawContent(void)
     if (!gCanInstall) {
         MoveTo(16, y);
         DrawString("\pA required check failed - install is disabled.");
+        y += 15;
+        DrawLogLine(&y);
     } else if (gInstalled) {
         DrawWrapped(gStatus,  16, &y, gWin->portRect.right - 16);
         DrawWrapped(gStatus2, 16, &y, gWin->portRect.right - 16);
@@ -835,8 +1060,10 @@ static void DrawContent(void)
         MoveTo(16, y);
         DrawString("\pReady to install. Binaries must sit beside this app.");
         y += 15;
-        if (gStatus[0])
+        if (gStatus[0]) {
             DrawWrapped(gStatus, 16, &y, gWin->portRect.right - 16);
+            DrawLogLine(&y);          /* a failed attempt: point at the record */
+        }
     }
 
     /* Credit line, just above the button strip. Small and grey so it reads as
@@ -1041,6 +1268,10 @@ int main(void)
 
     gStatus[0] = '\0';
     RunChecks();
+    /* Before any button is pressed. A preflight that disables the Install
+     * button is precisely the run somebody writes in about, and until now it
+     * left nothing behind at all. Rewritten in full after an install. */
+    WriteInstallLog();
 
     SetRect(&bounds, 40, 60, 500, 372);   /* +32: the status is 3 lines now */
     gWin = NewCWindow(NULL, &bounds, "\pAppleBridge Installer", true,

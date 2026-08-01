@@ -1490,6 +1490,45 @@ def test_the_type_creator_probe_reads_what_hls_reports():
     assert ib.hfs_type_creator(lambda a: "", ":x") is None
 
 
+def test_an_install_run_leaves_one_file_carrying_both_the_prose_and_the_data():
+    """The report used to go to stdout and nowhere else, and --json REPLACED it
+    rather than accompanying it — so somebody asking for help could send the
+    prose or the machine detail, never both. One file, both halves."""
+    with tempfile.TemporaryDirectory() as d:
+        payload = {"probes": probes(), "plan": {"refusals": []},
+                   "dry_run": False, "kit": None, "seed": None, "results": []}
+        path, err = ib.write_install_log("REPORT-BODY", payload,
+                                         ["--export-guest-kit"], log_dir=d)
+        assert err is None, err
+        text = open(path).read()
+        assert "REPORT-BODY" in text, "the human-readable report is missing"
+        assert "--export-guest-kit" in text, "the invocation is not recorded"
+        blob = text.split("=" * 70)[-1]
+        import json as _json
+        try:
+            decoded = _json.loads(blob)
+        except ValueError as exc:          # must FAIL, not crash the suite
+            raise AssertionError(f"the JSON half does not parse: {exc}")
+        assert decoded.get("probes"), "the JSON half carries no probe bundle"
+
+
+def test_a_log_that_cannot_be_written_never_fails_the_install():
+    """The run has already done its work by then. Failing it over its own
+    record would be the tail wagging the dog — so report and carry on."""
+    path, err = ib.write_install_log(
+        "body", {"dry_run": False}, [],
+        log_dir="/dev/null/nowhere")      # cannot be a directory
+    assert path is None
+    assert err, "a failure has to say why, or nobody can fix it"
+
+
+def test_the_log_says_plainly_when_nothing_was_changed():
+    """A dry run's log must not read like a record of an install."""
+    with tempfile.TemporaryDirectory() as d:
+        path, _ = ib.write_install_log("body", {"dry_run": True}, [], log_dir=d)
+        assert "nothing was changed" in open(path).read()
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

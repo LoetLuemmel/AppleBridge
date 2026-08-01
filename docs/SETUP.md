@@ -201,6 +201,17 @@ failure — `ToolServer` is optional and says so.
 
 ![The installer running in the guest: first the preflight list with every check OK and a Ready to install line, then the result — installed to MeinMac:AppleBridge, prefs in the Preferences folder, Restart to start the bridge](images/installer-run.gif)
 
+**If something goes wrong, it writes it down.** Every launch leaves a plain text
+file called `AppleBridge Install Log` at the **root of the boot volume** — the
+preflight table, the transports it detected, the destination, one line per
+copied binary with its error code, and whatever the window said. It is written
+before you press anything, so a preflight that disables the Install button
+leaves a record too, and the installer names the path in its own window on the
+screens where something failed. The host installer has the same habit:
+`~/Library/Logs/AppleBridge/install-<timestamp>.log`, carrying the readable
+report and the machine detail behind it in one file. Both exist so that asking
+for help is one sentence rather than a photograph of a screen.
+
 **Afterwards, take the kit back out.** On the first boot after installing, the
 daemon shows a window confirming the bridge is running and telling you to drag
 the **AppleBridge Kit** disk to the Trash; that removes it for the session. To
