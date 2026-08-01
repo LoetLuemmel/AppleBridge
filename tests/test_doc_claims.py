@@ -340,6 +340,85 @@ def test_every_document_is_reachable_from_the_readme():
         + "\n  ".join(orphans))
 
 
+def test_a_doc_listing_the_transports_lists_all_of_them():
+    """Serial is a transport like the other two — it is what reaches a machine
+    with no Ethernet, and it is how the SE/30 is driven. The README's status
+    list said "Open Transport or MacTCP" while the same file, forty lines
+    earlier, explained that real hardware connects over RS-422, and the control
+    panel three sections above showed three radios (found 2026-08-01).
+
+    Derived from the NET= values prefs.c actually writes, so a fourth transport
+    cannot be added and quietly go unmentioned.
+    """
+    prefs = _read(os.path.join("mac", "src", "prefs.c"))
+    names = re.findall(r'strcat\(buf,\s*"(OT|MacTCP|Serial)"\)', prefs)
+    assert set(names) >= {"OT", "MacTCP", "Serial"}, (
+        f"parsed only {sorted(set(names))} from prefs.c — the derivation broke")
+    # `OT` is how the prefs key and CLAUDE.md spell it; "Open Transport" and
+    # "OpenTransport" are how the prose does. All three name the same thing.
+    spoken = {"OT": "Open Transport", "MacTCP": "MacTCP", "Serial": "Serial"}
+    patterns = {"OT": r"Open ?Transport|\bOT\b",
+                "MacTCP": r"MacTCP", "Serial": r"\bserial\b"}
+
+    # Sentence-wise and case-insensitive. Line-wise matching flagged three
+    # false positives on its first run — a sentence wrapped mid-list, a
+    # lowercase "serial", and a diagram label spelled "OpenTransport" — which
+    # would have taught me to loosen the assertion rather than fix the docs.
+    def prose(raw):
+        """Paragraph text only. Fenced code and table rows are dropped: a
+        library table listing `OpenTransportApp.o` is not a transport
+        enumeration, and rows have no sentence end, so collapsing whitespace
+        glued a whole table into one 'sentence' and it matched."""
+        out, fenced = [], False
+        for line in raw.split("\n"):
+            if line.lstrip().startswith("```"):
+                fenced = not fenced
+                continue
+            if fenced or line.lstrip().startswith("|"):
+                continue
+            out.append(line)
+        return re.sub(r"\s+", " ", "\n".join(out))
+
+    missing = []
+    for rel in CURRENT_DOCS:
+        text = prose(_read(rel))
+        # Terminators are . : ; only. `)` was in this class and split
+        # "…(verified on 7.5.3, 7.6.1 and Mac OS 9) or MacTCP — or … Serial"
+        # into two, so the half without "Open Transport" read as an incomplete
+        # list. A closing bracket ends a parenthesis, not a sentence.
+        for sentence in re.split(r"(?<=[.:;])\s", text):
+            present = [k for k, pat in patterns.items()
+                       if re.search(pat, sentence, re.I)]
+            if len(present) < 2:
+                continue
+            absent = [spoken[k] for k in spoken if k not in present]
+            if absent:
+                missing.append(f"{rel}: lists {', '.join(spoken[k] for k in present)} "
+                               f"but not {', '.join(absent)} — {sentence.strip()[:90]}")
+    assert not missing, "incomplete transport list:\n  " + "\n  ".join(missing)
+
+
+_LAYER_RE = re.compile(r"\b(three|four|five|3|4|5)[- ]layer", re.I)
+
+
+def test_the_docs_agree_on_how_many_layers_there_are():
+    """README.md said "Three-Layer Design"; docs/SETUP.md described the same
+    stack as four layers. Both were defensible readings — the control port is
+    either its own hop or folded into the MCP one — but a reader who opens both
+    cannot tell which, and neither file admits the other exists.
+    """
+    claims = {}
+    for rel in CURRENT_DOCS:
+        for n, line in enumerate(_read(rel).split("\n"), 1):
+            m = _LAYER_RE.search(line)
+            if m:
+                claims.setdefault(_NUMBER_WORDS.get(m.group(1).lower(),
+                                                    m.group(1)), []).append(f"{rel}:{n}")
+    assert len(claims) <= 1, (
+        "documents disagree on the layer count: "
+        + "; ".join(f"{k} -> {', '.join(v)}" for k, v in sorted(claims.items(), key=str)))
+
+
 def test_docs_do_not_name_tools_that_no_longer_exist():
     known = set(TOOL_NAMES)
     stale = []

@@ -18,7 +18,7 @@ AppleBridge combines two distinct technologies to create a unique capability: **
 Claude Code (AI/LLM)
     ↓ [MCP Protocol] - AI tool interface
 MCP server + host_server.py (Python, modern macOS)
-    ↓ [TCP/IP via Open Transport or MacTCP] - Network bridge
+    ↓ [Open Transport, MacTCP or Serial] - Network bridge
 AppleBridge Daemon (C, 68k Mac in Basilisk II emulator)
     ↓ [Apple Events] - Classic Mac IPC
 ToolServer/MPW Shell (classic Mac OS System 7.6.1)
@@ -185,7 +185,9 @@ Claude: "Counter app built and tested successfully!"
 ### Transport on Mac Side
 
 **Files:** `mac/src/transport.c` (backend dispatcher + fallback ladder),
-`mac/src/transport_ot.c` (Open Transport), `mac/src/transport_mactcp.c` (MacTCP).
+`mac/src/transport_ot.c` (Open Transport), `mac/src/transport_mactcp.c` (MacTCP),
+`mac/src/transport_serial.c` (Serial — an RS-422 line instead of a network, which
+is what reaches a Macintosh with no Ethernet at all).
 The backend is selected by the `NET=` prefs key. (`network.c` was split into these
 in the v0.7.0 transport-seam refactor.)
 
