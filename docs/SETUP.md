@@ -243,7 +243,7 @@ was built. The panel also answers the two questions a stuck bridge raises first,
 without a shell: whether the daemon is running at all, and which address it is
 dialling.
 
-![AppleBridgeConfig in the guest, reporting Daemon: RUNNING, Autostart: installed and the host address it dials](images/installer-guest-config.png)
+![AppleBridgeConfig in the guest: Daemon RUNNING, Autostart installed, the host address in an editable field with a Set button, the three networking radios with the serial options dimmed, and the helper-app list](images/config-panel-0.8d33.png)
 
 **Helper applications (ToolServer and friends) are optional** and are *not* part
 of the install. Add them afterwards with **Add Helper App…** in the AppleBridge
