@@ -17,6 +17,7 @@ deliberately declared historical.
 Run: python3 tests/test_doc_claims.py   (or via pytest)
 """
 
+import json
 import os
 import re
 import subprocess
@@ -417,6 +418,38 @@ def test_the_docs_agree_on_how_many_layers_there_are():
     assert len(claims) <= 1, (
         "documents disagree on the layer count: "
         + "; ".join(f"{k} -> {', '.join(v)}" for k, v in sorted(claims.items(), key=str)))
+
+
+def test_the_readme_shows_the_mcp_config_the_repo_actually_ships():
+    """The README promises there is nothing to configure, because `.mcp.json`
+    is committed and Claude Code reads it. That promise is only true while the
+    file exists and says what the README prints — and until 2026-08-01 the same
+    step told the reader to EDIT it, two lines before admitting it was already
+    committed. Measured that day: a fresh clone had all 30 tools in its first
+    session with no approval step.
+
+    So: the JSON block in the README must be the file, parsed — not compared as
+    text, since indentation is not a claim about anything.
+    """
+    shipped_path = os.path.join(_ROOT, ".mcp.json")
+    assert os.path.exists(shipped_path), (
+        ".mcp.json is not in the repository, so the README's "
+        "'nothing to configure' is false")
+    shipped = json.load(open(shipped_path))
+
+    readme = _read("README.md")
+    blocks = re.findall(r"```json\n(.*?)```", readme, re.S)
+    matching = [b for b in blocks if "mcpServers" in b]
+    assert matching, "the README no longer shows the MCP configuration"
+
+    for block in matching:
+        printed = json.loads(block)
+        assert printed == shipped, (
+            "the README's MCP block is not what .mcp.json contains:\n"
+            f"  README:    {printed}\n  .mcp.json: {shipped}")
+
+    assert "applebridge" in shipped.get("mcpServers", {}), (
+        ".mcp.json ships no `applebridge` server, so nothing registers itself")
 
 
 def test_docs_do_not_name_tools_that_no_longer_exist():

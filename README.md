@@ -305,7 +305,10 @@ printf 'LISTDIR:<volume>:AppleBridge:\n\n' | nc localhost 9001
 it comes first. It is not the same on two machines.
 
 What MCP adds is the **30 tools** below, and natural language on top of them.
-Edit `.mcp.json` in your project or `~/.claude/`:
+
+**There is nothing to configure.** `.mcp.json` is committed at the root of this
+repository, Claude Code reads it when it starts in the project directory, and it
+launches the server itself — no `claude mcp add`, no editing, no approval step:
 
 ```json
 {
@@ -320,9 +323,23 @@ Edit `.mcp.json` in your project or `~/.claude/`:
 }
 ```
 
-That is the configuration committed in `.mcp.json`. The MCP server talks to
-`host_server.py` on the same control port (9001); start the host stack with
-`cd host && ./start_stack.sh` (it also auto-starts via launchd). Then:
+Measured rather than assumed (2026-08-01): a **fresh clone**, in a directory
+Claude Code had never seen, had all 30 tools available in its very first session,
+and no approval record was written for it. Confirm it yourself with:
+
+```console
+$ claude mcp list
+applebridge: uv run python -m mcp.server - ✔ Connected
+```
+
+`✔ Connected` means the server started; it does **not** mean the guest is up —
+that is step 4 above, and the two fail independently. Inside a session, `/mcp`
+shows the same thing. Changing the tool list takes effect on the next session:
+the server is started once, at launch.
+
+The MCP server talks to `host_server.py` on the same control port (9001); start
+the host stack with `cd host && ./start_stack.sh` (it also auto-starts via
+launchd). Then:
 
 ```
 You: "Execute 'Directory' command on the Mac"
