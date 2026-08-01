@@ -1529,6 +1529,36 @@ def test_the_log_says_plainly_when_nothing_was_changed():
         assert "nothing was changed" in open(path).read()
 
 
+def test_the_etherhelper_refusal_names_the_single_nic_consequence():
+    """R-D015. On a one-interface host the etherhelper branch cannot form a
+    guest->host connection AT ALL, and the refusal is the only place the reader
+    looks. Measured 2026-08-01 on the 2013 MacBook: it read "fully supported"
+    and warned only about the Chooser, while the fact that settles the matter
+    was computed AFTER the early return and never shown."""
+    plan = ib.decide(probes(ether="etherhelper/en0", intended="etherhelper/en0",
+                            helper=True, addresses=[("en0", "192.168.3.158")]))
+    assert keys(plan["refusals"]) == ["etherhelper_in_use"]
+    text = plan["refusals"][0]["detail"]
+    assert "D-015" in text, "the decision of record is not cited"
+    assert "ONE usable interface" in text, "the interface count is not stated"
+    assert "--force-slirp" in text, "the way forward is not named"
+    assert "fully supported" not in text, (
+        "on a single-NIC host this branch cannot serve a bridge, so calling it "
+        "fully supported is what sent somebody down the dead end")
+
+
+def test_a_two_nic_etherhelper_host_still_reads_as_supported():
+    """The counterpart: with two interfaces the branch genuinely works, and the
+    refusal must NOT frighten somebody off a working AppleTalk setup."""
+    plan = ib.decide(probes(ether="etherhelper/en8", intended="etherhelper/en8",
+                            helper=True,
+                            addresses=[("en0", "192.168.3.240"),
+                                       ("en8", "192.168.3.154")]))
+    text = plan["refusals"][0]["detail"]
+    assert "fully supported" in text
+    assert "D-015" not in text, "the single-NIC argument does not apply here"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

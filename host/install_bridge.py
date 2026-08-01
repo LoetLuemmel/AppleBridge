@@ -425,17 +425,46 @@ def decide(probes, force_slirp=False, want_agent=True):
     ifaces = sorted({iface for iface, _ in probes["addresses"]})
 
     # --- the refusal D-018 is built on ------------------------------------
+    #
+    # It still refuses either way — converting somebody's machine is their
+    # call, and on a multi-NIC host the etherhelper branch genuinely works.
+    # What CHANGES with the interface count is what the reader has to be told,
+    # and getting that wrong sent somebody down a dead end: measured 2026-08-01
+    # on a single-NIC host, this refusal said "fully supported ... set up BY
+    # HAND" and warned only about losing the Chooser. The single-interface
+    # consequence was known — the note below spells it out — but it was
+    # computed AFTER this early return, so the one reader who needed it was the
+    # one who never saw it. They would configure etherhelper by hand and never
+    # get a bridge, with nothing anywhere saying why.
     if current.startswith("etherhelper") and bundle["helper"] and not force_slirp:
+        if len(ifaces) < 2:
+            detail = (
+                f"But this host has ONE usable interface "
+                f"({', '.join(ifaces) or 'none found'}), and on a single-NIC "
+                "host a bridged backend cannot reach the machine it runs in "
+                "(D-015): the guest gets the LAN and everything on it EXCEPT "
+                "its own host — which is the one address the daemon has to "
+                "dial. So no amount of hand-configuring this branch will "
+                "produce a bridge on this machine.\n"
+                "  AppleTalk to OTHER machines does work over etherhelper, and "
+                "slirp drops it. That is the real trade, and it is why this "
+                "still refuses instead of converting for you. If you want the "
+                "bridge on THIS host, --force-slirp is the only way there.")
+        else:
+            detail = (
+                "That branch is fully supported and set up BY HAND (D-018): it "
+                "keeps AppleTalk, and it needs two interactive password prompts "
+                "per launch, so no script can bring it up. Converting a working "
+                "etherhelper host to slirp would also cost it the Chooser and "
+                "AFP mounts.\n"
+                "  Nothing has been changed. Pass --force-slirp if you mean to "
+                "convert this machine, and see docs/SETUP.md for the manual "
+                "branch.")
         refusals.append(_item(
             REFUSE, "etherhelper_in_use",
             f"this host is configured for the etherhelper branch "
             f"(`ether {current}`) and its bundle carries an etherhelpertool.",
-            "That branch is fully supported and set up BY HAND (D-018): it keeps "
-            "AppleTalk, and it needs two interactive password prompts per launch, "
-            "so no script can bring it up. Converting a working etherhelper host "
-            "to slirp would also cost it the Chooser and AFP mounts.\n"
-            "  Nothing has been changed. Pass --force-slirp if you mean to "
-            "convert this machine, and see docs/SETUP.md for the manual branch."))
+            detail))
         return {"refusals": refusals, "steps": steps, "notes": notes}
 
     if bundle["helper"] and current != SLIRP:
