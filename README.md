@@ -148,7 +148,8 @@ AppleTalk setup. `--force-slirp` overrides it.
 ### 2. Get the guest kit and stamp your address on it
 
 Download `AppleBridgeKit.dmg` from the [latest release](../../releases) — a 2 MB
-disk image holding the four 68K applications and a prefs file. Then:
+disk image holding the four 68K applications, the journaling driver the daemon
+opens by name, and a prefs file. Then:
 
 ```bash
 cd host && ./install_bridge.py --seed-guest-prefs ~/Downloads/AppleBridgeKit.dmg

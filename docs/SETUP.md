@@ -163,8 +163,8 @@ There are two routes, and **most people want the first**.
 
 ### 3.0 Install from a kit (no toolchain needed)
 
-The kit is a small disk image holding the four 68K applications and a prefs
-file. You mount it in the guest and run the installer — no MPW, no compiler,
+The kit is a small disk image holding the four 68K applications, the journaling
+driver the daemon opens by name, and a prefs file. You mount it in the guest and run the installer — no MPW, no compiler,
 nothing typed by hand.
 
 ```bash
@@ -192,7 +192,7 @@ from it. It preflights the machine, copies the suite, sets up autostart, and
 offers **Restart** when it is done — the machine has to come back up before the
 bridge runs, so that button is the only way onward.
 
-![The mounted AppleBridge Kit volume in the guest: AppleBridge, AppleBridge Prefs, AppleBridgeConfig, AppleBridgeInstaller and AppleBridgeWatchdog](images/installer-guest-kit-window.png)
+![The mounted AppleBridge Kit volume in the guest, six items: ABJournalDRVR, AppleBridge, AppleBridge Prefs, AppleBridgeConfig, AppleBridgeInstaller and AppleBridgeWatchdog](images/installer-guest-kit-window.png)
 
 The installer itself is two states, and both are worth recognising before you
 run it: it preflights the machine and says what it found, and after **Install**
