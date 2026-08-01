@@ -66,6 +66,12 @@ QDGlobals qd;
 #define LEAF_DAEMON   "AppleBridge"
 #define LEAF_WATCHDOG "AppleBridgeWatchdog"
 #define LEAF_CONFIG   "AppleBridgeConfig"
+/* The journaling driver. The daemon opens it BY FILE from its home folder
+ * (OpenResFile "ABJournalDRVR"), so it has to be installed alongside the
+ * binaries or the journal verbs fail with fnfErr on a machine that otherwise
+ * looks healthy. OPTIONAL: it is a separate build step, and a payload without
+ * it still yields a working bridge — journaling is an extra. */
+#define LEAF_JOURNAL  "ABJournalDRVR"
 
 #define ST_FAIL  0
 #define ST_WARN  1
@@ -98,6 +104,10 @@ static char    gStatus[160];    /* line 1: what happened */
 static char    gStatus2[160];   /* line 2: where the prefs went */
 static char    gStatus3[160];   /* line 3: what is still needed */
 static char    gStatus4[160];   /* line 4: the optional extra */
+/* Result of copying the OPTIONAL journaling driver. fnfErr = the payload has
+ * none, which is normal and silent; anything else is worth telling, because an
+ * install that quietly lacks it answers every journal verb with fnfErr. */
+static OSErr   gJournalErr = fnfErr;
 
 /* ---- animated logo, top right ------------------------------------------
    Ported verbatim from mac/claudeapp (the About-box party GIF), because that
@@ -635,6 +645,18 @@ static void DoInstall(void)
         }
     }
 
+    /* The journaling driver, if the payload carries one. Absent is the normal
+     * case for a kit built before the driver existed, or from a guest that
+     * never built it, so fnfErr is NOT an error here and says nothing.
+     *
+     * Any OTHER failure is reported (below, on the optional-extra line) rather
+     * than swallowed: a copy that fails for a real reason — a locked file, a
+     * full disk — would otherwise leave an install that looks complete and
+     * whose journal verbs all return fnfErr, which is the "reports success,
+     * does nothing" shape this project keeps paying for. It does not abort the
+     * install: an optional extra must not cost somebody their bridge. */
+    gJournalErr = CopyBinary(srcV, srcD, dstV, dstD, LEAF_JOURNAL);
+
     /* Build the destination folder path string for HOME=. */
     FSMakeFSSpec(dstV, fsRtDirID, DEST_FOLDER_NAME, &folderSpec);
     FSSpecToPath(&folderSpec, gDestPath);
@@ -749,6 +771,17 @@ static void DoInstall(void)
     /* Name the optional extra rather than performing it uninvited. */
     gStatus4[0] = '\0';
     mystrcat(gStatus4, "Helper apps (ToolServer): add them in the AppleBridge config panel.");
+    /* Only a REAL failure speaks. "The payload had no driver" (fnfErr) is the
+     * ordinary case and would be noise on every install that does not use
+     * journaling; a locked file or a full disk is not. */
+    if (gJournalErr != noErr && gJournalErr != fnfErr) {
+        mystrcat(gStatus4, " Note: ");
+        mystrcat(gStatus4, LEAF_JOURNAL);
+        mystrcat(gStatus4, " was not copied (error ");
+        if (gJournalErr < 0) { mystrcat(gStatus4, "-"); CatNum(gStatus4, -(long)gJournalErr); }
+        else                 { CatNum(gStatus4, (long)gJournalErr); }
+        mystrcat(gStatus4, "); menu journaling stays unavailable.");
+    }
 }
 
 /* ---- UI ---------------------------------------------------------------- */
