@@ -121,7 +121,7 @@ than a broken install. Why OT *and* MCP is not one layer twice:
 ### Prerequisites
 
 **Host (macOS):**
-- **Basilisk II** or **SheepShaver**, with a guest that boots. Nothing else — the
+- **Basilisk II**, **SheepShaver** and even a genuine 68kMac(!) on System 7 with a guest that boots. Nothing else — the
   host side is Python stdlib, so the system `/usr/bin/python3` is enough and there
   is nothing to build.
 - Claude Code, if you want the MCP tools. The bridge itself works without it.
