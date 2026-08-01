@@ -1,0 +1,275 @@
+; Counter10i - 68k Assembly, System 7 Toolbox (v9)
+;
+; Counts 1..COUNTMAX in a window (20 as shipped; the name is older than the
+; constant). SysBeep on each step; the current number is drawn in BIG letters
+; (72pt bold), roughly one second per count. A mouse click quits.
+;
+; Timing note: this emulator's tick-based waits (_Delay, WaitNextEvent sleep,
+; TickCount deadlines) all elapse in ~0 wall-clock time, so they cannot pace.
+; A CPU busy-loop DOES take real host time, so we pace with that. v8 showed a
+; bare busy-loop hogs the CPU and the app never comes to the foreground, so:
+;   1) a SETTLE phase of pure WaitNextEvent first -> the app foregrounds and
+;      the window paints,
+;   2) then count, delaying each step with a busy-loop broken into chunks with
+;      WaitNextEvent yields between them (bridge stays alive + clickable),
+;   3) when done, a plain WaitNextEvent idle (no burn) so it stops hogging CPU.
+;
+; Built like a C app: MacRuntime.o sets up the A5 world and calls 'main'.
+;
+; Build + run over the bridge (MPW/ToolServer), verified 2026-08-01:
+;   Asm  counter10i.a -o counter10i.a.o
+;   Link -o Counter10i counter10i.a.o "{Libraries}Interface.o" \
+;        "{Libraries}MacRuntime.o" -t APPL -c 'Cn10'
+;   # then launch it (launch_app, or from the Finder)
+; Asm warns "a short branch could be used here" a few times; that is style,
+; not an error. No Rez step: the window is built in code, not from a resource.
+
+        MACHINE MC68020
+        CASE    OBJECT
+        STRING  PASCAL
+
+_InitGraf       OPWORD  $A86E
+_InitFonts      OPWORD  $A8FE
+_InitWindows    OPWORD  $A912
+_InitMenus      OPWORD  $A930
+_TEInit         OPWORD  $A9CC
+_InitDialogs    OPWORD  $A97B
+_InitCursor     OPWORD  $A850
+_NewWindow      OPWORD  $A913
+_DisposeWindow  OPWORD  $A914
+_ShowWindow     OPWORD  $A915
+_SelectWindow   OPWORD  $A91F
+_SetPort        OPWORD  $A873
+_EraseRect      OPWORD  $A8A3
+_TextFont       OPWORD  $A887
+_TextSize       OPWORD  $A88A
+_TextFace       OPWORD  $A888
+_MoveTo         OPWORD  $A893
+_DrawString     OPWORD  $A884
+_WaitNextEvent  OPWORD  $A860
+_BeginUpdate    OPWORD  $A922
+_EndUpdate      OPWORD  $A923
+_SysBeep        OPWORD  $A9C8
+
+
+TRUE            EQU     $0100
+FALSE           EQU     $0000
+bold            EQU     1
+normal          EQU     0
+sysFont         EQU     0
+documentProc    EQU     0
+everyEvent      EQU     -1
+mouseDown       EQU     1
+updateEvt       EQU     6
+
+BURN            EQU     750000              ; busy-loop iterations per chunk
+CHUNKS          EQU     40                  ; chunks per count (tune for ~1s)
+SETTLE          EQU     30                  ; WaitNextEvent passes before counting
+COUNTMAX        EQU     20
+QDSize          EQU     206
+
+EVT             EQU     -16
+QDBASE          EQU     -222
+QDPORT          EQU     QDBASE+QDSize-4
+CTR             EQU     -226
+CHK             EQU     -228
+FRAMESIZE       EQU     232
+
+main            PROC    EXPORT
+        BRA.S   StartCode
+
+WTitle          DC.B    'Counter'
+                DS.W    0
+HdrText         DC.B    'Counting to 20'
+                DS.W    0
+ExitText        DC.B    'Click to quit'
+                DS.W    0
+NumStr          DC.B    '   '
+                DS.W    0
+BoundsRect      DC.W    90,120,410,520
+
+StartCode:
+        LINK    A6,#-FRAMESIZE
+        PEA     QDPORT(A6)
+        _InitGraf
+        _InitFonts
+        _InitWindows
+        _InitMenus
+        _TEInit
+        SUBA.L  A0,A0
+        MOVE.L  A0,-(SP)
+        _InitDialogs
+        _InitCursor
+
+        CLR.L   -(SP)
+        SUBA.L  A0,A0
+        MOVE.L  A0,-(SP)
+        PEA     BoundsRect
+        PEA     WTitle
+        MOVE.W  #TRUE,-(SP)
+        MOVE.W  #documentProc,-(SP)
+        MOVE.L  #-1,-(SP)
+        MOVE.W  #FALSE,-(SP)
+        CLR.L   -(SP)
+        _NewWindow
+        MOVE.L  (SP)+,A4
+        TST.L   A4
+        BEQ     QuitApp
+        MOVE.L  A4,-(SP)
+        _ShowWindow
+        MOVE.L  A4,-(SP)
+        _SelectWindow
+        MOVE.L  A4,-(SP)
+        _SetPort
+
+        MOVE.L  #1,CTR(A6)
+        BSR     DrawContent
+
+        ; --- SETTLE: pure event pump so we foreground + paint ---
+        MOVE.W  #SETTLE,CHK(A6)
+Settle:
+        BSR     PumpEvent
+        SUBQ.W  #1,CHK(A6)
+        BNE.S   Settle
+
+        ; --- COUNT: one ~1s busy-loop delay per step ---
+CountStep:
+        MOVE.W  #CHUNKS,CHK(A6)
+Pace:
+        BSR     PumpEvent           ; yield + handle events
+        MOVE.L  #BURN,D1
+Burn:
+        SUBQ.L  #1,D1
+        BNE.S   Burn
+        SUBQ.W  #1,CHK(A6)
+        BNE.S   Pace
+
+        MOVE.L  CTR(A6),D0
+        CMPI.L  #COUNTMAX,D0
+        BGE.S   Idle
+        ADDQ.L  #1,CTR(A6)
+        MOVE.W  #12,-(SP)
+        _SysBeep
+        BSR     DrawContent
+        BRA.S   CountStep
+
+        ; --- IDLE: plain event loop (no burn) until click ---
+Idle:
+        BSR     PumpEvent
+        BRA.S   Idle
+
+QuitApp:
+        TST.L   A4
+        BEQ.S   Bail
+        MOVE.L  A4,-(SP)
+        _DisposeWindow
+Bail:
+        UNLK    A6
+        RTS
+
+; --------------------------------------------------------------------------
+; PumpEvent - one WaitNextEvent; quits app on mouseDown, redraws on update.
+; A mouseDown branches straight to QuitApp; UNLK there discards this BSR frame.
+; --------------------------------------------------------------------------
+PumpEvent:
+        CLR.W   -(SP)
+        MOVE.W  #everyEvent,-(SP)
+        PEA     EVT(A6)
+        MOVE.L  #1,-(SP)
+        CLR.L   -(SP)
+        _WaitNextEvent
+        MOVE.W  (SP)+,D0
+        TST.W   D0
+        BEQ.S   PE_Done
+        MOVE.W  EVT(A6),D1
+        CMPI.W  #mouseDown,D1
+        BEQ     QuitApp
+        CMPI.W  #updateEvt,D1
+        BNE.S   PE_Done
+        MOVE.L  EVT+2(A6),A3
+        MOVE.L  A3,-(SP)
+        _BeginUpdate
+        BSR     DrawContent
+        MOVE.L  A3,-(SP)
+        _EndUpdate
+PE_Done:
+        RTS
+
+; --------------------------------------------------------------------------
+DrawContent:
+        MOVEA.L A4,A0
+        LEA     16(A0),A0
+        MOVE.L  A0,-(SP)
+        _EraseRect
+        MOVE.W  #sysFont,-(SP)
+        _TextFont
+        MOVE.W  #24,-(SP)
+        _TextSize
+        MOVE.W  #bold,-(SP)
+        _TextFace
+        MOVE.W  #110,-(SP)
+        MOVE.W  #50,-(SP)
+        _MoveTo
+        PEA     HdrText
+        _DrawString
+        BSR     NumToString
+        MOVE.W  #72,-(SP)
+        _TextSize
+        MOVE.W  #bold,-(SP)
+        _TextFace
+        MOVE.W  #175,-(SP)
+        MOVE.W  #235,-(SP)
+        _MoveTo
+        PEA     NumStr
+        _DrawString
+        MOVE.W  #10,-(SP)
+        _TextSize
+        MOVE.W  #normal,-(SP)
+        _TextFace
+        MOVE.W  #150,-(SP)
+        MOVE.W  #315,-(SP)
+        _MoveTo
+        PEA     ExitText
+        _DrawString
+        RTS
+
+; --------------------------------------------------------------------------
+NumToString:
+        LEA     NumStr,A0
+        LEA     1(A0),A1
+        MOVE.L  CTR(A6),D1
+        MOVEQ   #0,D0
+        TST.L   D1
+        BNE.S   NTS_NotZero
+        MOVE.B  #'0',(A1)+
+        MOVEQ   #1,D0
+        MOVE.B  D0,(A0)
+        RTS
+NTS_NotZero:
+        MOVE.L  D1,D2
+        MOVEQ   #0,D3
+NTS_Count:
+        DIVU    #10,D2
+        ADDQ.W  #1,D3
+        MOVE.W  D2,D4
+        CLR.W   D2
+        SWAP    D2
+        TST.W   D4
+        BNE.S   NTS_Count
+        MOVE.W  D3,D0
+        MOVE.B  D0,(A0)
+        ADDA.W  D0,A1
+NTS_Conv:
+        DIVU    #10,D1
+        SWAP    D1
+        MOVE.W  D1,D2
+        ADD.B   #'0',D2
+        MOVE.B  D2,-(A1)
+        CLR.W   D1
+        SWAP    D1
+        TST.W   D1
+        BNE.S   NTS_Conv
+        RTS
+
+        ENDPROC
+        END
