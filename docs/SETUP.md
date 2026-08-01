@@ -101,6 +101,17 @@ cd host
 
 `start_stack.sh` (re)starts `host_server.py` and launches the emulator named by `APPLEBRIDGE_EMULATOR_APP` in `host/local.env`. On the **etherhelper** branch it first places the host address alias on the default-route interface — the freeze-avoidance rule above — through one admin prompt. On **slirp** there is no privileged step at all and it asks for nothing. The host server also **auto-starts via launchd** on login (`install_bridge.py` installs that agent), so on a configured machine the bridge comes up on its own.
 
+> **macOS will announce a background item, and that is the agent working.**
+> Right after `install_bridge.py` installs it, a notification says
+> *"Background items added — `run_server.sh` is an item that can run in the
+> background"* (German: *Hintergrundobjekte hinzugefügt*). That is the launchd
+> agent, and it is the whole point: the host server has to be listening before
+> the guest dials, so it starts at login rather than when somebody remembers to.
+> It appears in **System Settings → General → Login Items & Extensions**, where
+> it can also be switched off — and switching it off is what makes a
+> previously-working bridge come up dead after a reboot, with nothing in the
+> guest to explain it. Leave it enabled (seen 2026-08-01 on macOS 15).
+
 > **Startup order does not matter.** If the daemon comes up first it simply finds
 > nothing listening, logs the reason in its Verbose console, and connects on its
 > next retry — at most ~40 s later (a 10 s bounded connect plus 30 s of backoff).
@@ -182,6 +193,13 @@ offers **Restart** when it is done — the machine has to come back up before th
 bridge runs, so that button is the only way onward.
 
 ![The mounted AppleBridge Kit volume in the guest: AppleBridge, AppleBridge Prefs, AppleBridgeConfig, AppleBridgeInstaller and AppleBridgeWatchdog](images/installer-guest-kit-window.png)
+
+The installer itself is two states, and both are worth recognising before you
+run it: it preflights the machine and says what it found, and after **Install**
+it reports where things went and offers **Restart**. A `?` line is not a
+failure — `ToolServer` is optional and says so.
+
+![The installer running in the guest: first the preflight list with every check OK and a Ready to install line, then the result — installed to MeinMac:AppleBridge, prefs in the Preferences folder, Restart to start the bridge](images/installer-run.gif)
 
 **Afterwards, take the kit back out.** On the first boot after installing, the
 daemon shows a window confirming the bridge is running and telling you to drag
