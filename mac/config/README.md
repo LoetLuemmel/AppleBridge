@@ -8,7 +8,14 @@ to run continuously, so this app is where a human configures and supervises it.
 
 - **Status** — shows whether the daemon is running (walks `GetNextProcess` for
   creator `'ABrg'`) and whether autostart is installed.
-- **Install / Remove Autostart** — drops (or deletes) an alias to the daemon in
+- **Host IP** — an editable field with a **Set** button, writing `IP=` to the
+  shared prefs. This is the one value a kit cannot be shipped with, and the
+  label says *whose* address it is on purpose: it is **the host's**, not the
+  guest's, and the two appear within three lines of each other in every set-up
+  text. A released kit ships the slirp constant `10.0.2.2`, which means
+  whichever host runs the emulator; this field is how you change it when the
+  bridge server lives on a different machine.
+- **Install Autostart** / **Remove Autostart** — drops (or deletes) an alias to the daemon in
   the System Folder's **Startup Items**, so the daemon launches at boot. The
   daemon in turn chain-launches its helper apps (ToolServer first), so a single
   Startup Items entry is enough.

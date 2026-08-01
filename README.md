@@ -230,8 +230,30 @@ failed check leaves a record too. Attach that file to an issue and the answer is
 usually in it. (The host installer does the same into
 `~/Library/Logs/AppleBridge/`.)
 
-Helper applications like ToolServer are added later, optionally, with **Add
-Helper App…** in AppleBridgeConfig.
+#### The control panel
+
+The daemon is **faceless** — it runs as a service with no window — so everything a
+human needs to change about it lives in **AppleBridgeConfig**, installed alongside
+it. Open it from the installation folder whenever you need to look:
+
+![AppleBridgeConfig: daemon status and autostart, an editable host address with a Set button, the three networking radios with the serial options dimmed, the helper-app list, and the four buttons](docs/images/config-panel-0.8d33.png)
+
+| | |
+|---|---|
+| **Daemon / Autostart** | whether the service is running, and whether it starts at boot |
+| **Host IP** | the one value a kit cannot know — **the host's** address, not the guest's, which is the confusion the label exists to end. `Set` writes it and the daemon picks it up |
+| **Networking service** | Open Transport, MacTCP or Serial. `NET=` hot-swaps between commands, without relaunching the daemon |
+| **Serial port / Baud** | dimmed unless Serial is selected. Read at startup, not hot-swapped, so they take effect on the next launch — and the host must be set to the same baud, as there is no autobaud |
+| **Add Helper App…** | appends an `APP=` line; the daemon chain-launches these at startup, ToolServer first |
+| **Install Autostart** / **Remove Autostart** | writes (or deletes) the Startup Items alias. It points at the *watchdog*, not the daemon, because the watchdog owns the daemon's lifecycle |
+| **Quit** | quits the panel — not the daemon |
+
+There are deliberately **no Launch/Stop buttons**. The daemon is meant to run
+continuously, and quitting it tears down Open Transport in a way that has cost a
+host crash. Start it through autostart, or from the Finder.
+
+Full details, including how the autostart alias is built:
+[mac/config/README.md](mac/config/README.md).
 
 ### 4. Check that it came up
 
