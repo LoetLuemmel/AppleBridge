@@ -335,4 +335,16 @@ All core features working:
 
 ## License
 
-Educational and development purposes.
+[MIT](LICENSE) — © 2026 Pit Förster. The licence covers **this project's own
+source code**.
+
+**Read the warranty disclaimer, it is not boilerplate here.** This software
+writes into emulator disk images, patches a system trap globally, and installs
+an autostart item in the guest. It is provided as is, without warranty of any
+kind.
+
+**Apple components are not covered.** The 68K applications in
+`AppleBridgeKit.dmg` are linked against Apple's MPW libraries (`MacTraps`,
+`Interface.o` and relatives), which have never been released under terms that
+explicitly permit redistribution. Nothing here grants you rights to those, and
+an MIT header on this repository does not change their status.
