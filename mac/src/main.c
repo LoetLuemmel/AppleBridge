@@ -2104,17 +2104,29 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
      * Event Manager consults a driver a BACKGROUND daemon installed. Reads
      * "ABJournalDRVR" from the daemon's home folder. The armed window is a single
      * synchronous Button() with no yield; the driver also auto-disarms on the
-     * first jcEvent, so playback can never stick. Diagnostic/experimental. */
+     * first jcEvent, so playback can never stick. Diagnostic/experimental.
+     *
+     * It MUST hand the driver a state block, like every other journal verb. The
+     * driver does not allocate: `dCtlStorage` is a pointer to a DAEMON-owned
+     * block, and a nil pointer makes it a deliberate no-op (that is the guard
+     * which keeps an unprepared driver from freezing a tracking loop). This verb
+     * used to skip that and then read `dCtlStorage` back as if it were a call
+     * counter -- the pre-PR-#69 contract. So it armed a driver that was switched
+     * off, measured a field that is now an address, and reported
+     * `armed=0 calls=0 FAIL` for a perfectly good driver (2026-08-01). A
+     * self-test that fails on a working system is worse than none: it sends the
+     * next person after the driver instead of after the test. Counters now come
+     * from the block, where the driver actually keeps them. */
     if (strncmp(request, "JGATE", 5) == 0 &&
         (request[5] == '\0' || request[5] == '\r' || request[5] == '\n')) {
+        static long gblk[8];           /* daemon-owned journal state block */
         Str255      pPath;
         short       resRef, drvRef = 0, jref, i, n = 0;
         OSErr       oe;
         Boolean     bIdle, bArmed;
-        long        calls = -1;
         DCtlHandle  dh;
-        char        body[176];
-        char        frame[224];
+        char        body[208];
+        char        frame[264];
         char       *b = body;
         char       *f = frame;
         const char *fn = "ABJournalDRVR";
@@ -2125,21 +2137,34 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         resRef = OpenResFile(pPath);
         oe = OpenDriver("\p.ABJournal", &drvRef);
         jref = LMGetJournalRef();
+        dh = (DCtlHandle)GetDCtlEntry(drvRef);
+        /* The block the driver reads and counts into. thresh must be POSITIVE:
+         * jcButton reports DOWN ($FF) while poll <= thresh and UP afterwards, so
+         * a zero threshold would inject the "released" answer and look exactly
+         * like a driver that never ran. */
+        gblk[0] = 0;                        /* itemPt: unused, no mouse scripted */
+        gblk[1] = 200;                      /* thresh */
+        gblk[2] = 0; gblk[3] = 0; gblk[4] = 0; gblk[5] = 0; gblk[6] = 0;
+        gblk[7] = 0;                        /* mode 0 = menu */
+        if (dh) (**dh).dCtlStorage = (Handle)gblk;
         bIdle = Button();
         *(volatile short *)0x08DEL = -1;    /* arm playback (JournalFlag < 0) */
         bArmed = Button();
         *(volatile short *)0x08DEL = 0;     /* disarm immediately (no yield above) */
-        dh = (DCtlHandle)GetDCtlEntry(drvRef);
-        if (dh) calls = (long)(**dh).dCtlStorage;
         b = StatStr(b, "jgate resRef="); b = StatDec(b, (long)resRef);
         b = StatStr(b, " openErr=");     b = StatDec(b, (long)oe);
         b = StatStr(b, " drvRef=");      b = StatDec(b, (long)drvRef);
         b = StatStr(b, " jref=");        b = StatDec(b, (long)jref);
+        b = StatStr(b, " dh=");          b = StatDec(b, dh ? 1 : 0);
         b = StatStr(b, " idle=");        b = StatDec(b, (long)(unsigned char)bIdle);
         b = StatStr(b, " armed=");       b = StatDec(b, (long)(unsigned char)bArmed);
-        b = StatStr(b, " calls=");       b = StatDec(b, calls);
+        b = StatStr(b, " poll=");        b = StatDec(b, gblk[2]);
+        b = StatStr(b, " btn=");         b = StatDec(b, gblk[4]);
         b = StatStr(b, " result=");
-        b = StatStr(b, (bArmed && !bIdle) ? "PASS" : "FAIL");
+        /* The driver must have been CALLED (btn) and its answer must have come
+         * back (armed, with the unarmed control reading idle). Reporting only the
+         * value would pass on a machine where Button() happened to read down. */
+        b = StatStr(b, (bArmed && !bIdle && gblk[4] > 0) ? "PASS" : "FAIL");
         *b = '\0';
         f = StatStr(f, "STATUS:0\rSTDOUT:");
         f = StatDec(f, (long)(b - body));
