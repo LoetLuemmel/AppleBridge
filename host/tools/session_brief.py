@@ -15,6 +15,7 @@ so the exit code is always 0.
     host/tools/session_brief.py          # the brief
     host/tools/session_brief.py --full   # ...plus all open ledger items
 """
+import datetime
 import os
 import re
 import subprocess
@@ -30,6 +31,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # after somebody spent hours on a layer that was not at fault.
 OPERATING_NOTES = ("https://pit.390er.de/applebridge/workmode/"
                    "agent-operating-notes-verification-and-traps/")
+
+# One line per session start, so "did another instance run?" has an answer that
+# does not depend on catching its process alive. Whether a session READ anything
+# is not observable — the notes live behind Authelia and the CMS audit log
+# records only writes — but when it started, on which branch, and against which
+# commit is, and that is what the question usually reduces to.
+#
+# /tmp deliberately, next to /tmp/applebridge_server.log: a session log that
+# outlives a reboot would be a retention decision nobody asked for.
+SESSION_LOG = os.environ.get("APPLEBRIDGE_SESSION_LOG",
+                             "/tmp/applebridge_sessions.log")
 
 
 def _run(args, timeout=15):
@@ -82,6 +94,31 @@ def ledger_lines(show_all):
     return lines
 
 
+def session_line(stamp, pid, branch, commit, version):
+    """The record of one session start — one greppable line, fields as key=value.
+
+    Kept separate from writing it so the format can be tested without a file:
+    a log nobody can parse answers the question no better than no log at all.
+    """
+    return (f"{stamp} pid={pid} branch={branch or '?'} "
+            f"commit={(commit or '?').split()[0]} version={version}")
+
+
+def record_session(line, path=None):
+    """Append the line; never let it matter if that fails.
+
+    The brief runs as a SessionStart hook, and a hook that errors is a hook that
+    gets switched off — the same reasoning that makes every section here degrade
+    silently. An unwritable /tmp costs the log, not the brief.
+    """
+    try:
+        with open(path or SESSION_LOG, "a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+        return True
+    except Exception:
+        return False
+
+
 def main():
     full = "--full" in sys.argv
     branch = _run(["git", "branch", "--show-current"]) or "?"
@@ -100,6 +137,10 @@ def main():
            "and nothing happened")
     for line in ledger_lines(full):
         print(line)
+
+    record_session(session_line(
+        datetime.datetime.now().replace(microsecond=0).isoformat(),
+        os.getppid(), branch, last, daemon_version()))
     return 0
 
 
