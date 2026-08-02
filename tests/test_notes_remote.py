@@ -77,6 +77,48 @@ def test_local_path_never_calls_run():
             os.remove(tf)
 
 
+def test_ssh_run_pins_utf8_not_the_locale():
+    """The executor must decode utf-8, not the locale. text=True alone uses the
+    locale's encoding; on a headless C/POSIX box that is ASCII, and one non-ascii
+    byte in a note (em-dash, umlaut, a stray >=) then raises UnicodeDecodeError --
+    which is neither OSError nor SubprocessError, so a narrow except would let it
+    out of read() and tear down the watcher. Fake the subprocess so this needs no
+    network; assert the utf-8 pin and that non-ascii survives."""
+    seen = {}
+
+    class _CP:
+        returncode = 0
+        stdout = "café — ≥\n"
+
+    def fake_run(argv, **kw):
+        seen.update(kw)
+        return _CP()
+
+    orig = notes.subprocess.run
+    notes.subprocess.run = fake_run
+    try:
+        ok, out = notes._ssh_run("h", "cat /x")
+    finally:
+        notes.subprocess.run = orig
+    assert seen.get("encoding") == "utf-8", "must pin utf-8, not the locale"
+    assert seen.get("errors") == "replace"
+    assert ok and "café" in out
+
+
+def test_ssh_run_swallows_any_exception():
+    """Even a failure the utf-8 pin does not prevent must degrade to (False, '')
+    -- a channel that crashes the hook is worse than one briefly silent."""
+    def boom(argv, **kw):
+        raise UnicodeDecodeError("utf-8", b"", 0, 1, "boom")
+
+    orig = notes.subprocess.run
+    notes.subprocess.run = boom
+    try:
+        assert notes._ssh_run("h", "cat /x") == (False, "")
+    finally:
+        notes.subprocess.run = orig
+
+
 if __name__ == "__main__":
     for _name, _fn in sorted(globals().items()):
         if _name.startswith("test_") and callable(_fn):

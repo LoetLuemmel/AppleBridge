@@ -69,27 +69,41 @@ def _remote(spec):
 def _ssh_run(host, remote_cmd, stdin=None):
     """Default channel executor: run one ssh command, return (ok, stdout).
 
-    Never raises -- any failure (no network, bad key, timeout) is (False, '').
-    read()/append() take this as an injectable `run` so the remote path is
-    testable without a network, the same shape as run_step(send, ...) in
-    host/mpw.py: the executor is a parameter, and a test passes a fake."""
+    Never raises -- any failure (no network, bad key, timeout, an undecodable
+    byte) is (False, ''). read()/append() take this as an injectable `run` so
+    the remote path is testable without a network, the same shape as
+    run_step(send, ...) in host/mpw.py: the executor is a parameter, and a test
+    passes a fake.
+
+    `encoding='utf-8'` is NOT optional: text=True alone decodes with the
+    locale's preferred encoding, and the local read/append fix utf-8 explicitly
+    (see read()/append()), so a bare text=True would read the same channel file
+    as utf-8 locally and as `whatever LANG says` remotely. On a headless Jetson
+    LANG is often C/POSIX -> ASCII, and one em-dash / umlaut / a stray ≥ then
+    raises UnicodeDecodeError -- which is neither OSError nor SubprocessError, so
+    a narrow except would let it out of read() and tear down the watcher, the
+    brief and the Stop hook. errors='replace' + a broad except keep the promise
+    that a channel can only ever be briefly silent, never crash the hook."""
     argv = ["ssh"]
     if _SSH_KEY:
         argv += ["-i", _SSH_KEY]
     argv += ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, remote_cmd]
     try:
         p = subprocess.run(argv, input=stdin, capture_output=True, text=True,
-                           timeout=_SSH_TIMEOUT)
+                           encoding="utf-8", errors="replace", timeout=_SSH_TIMEOUT)
         return p.returncode == 0, p.stdout
-    except (OSError, subprocess.SubprocessError):
-        return False, ""
+    except Exception:          # a channel that kills the hook is worse than one
+        return False, ""       # briefly silent -- so nothing here ever propagates
 
 
-# The remote append must be as atomic as the local one. A local `open(a).write`
-# is a single O_APPEND write() -- atomic on a regular file regardless of size.
-# `cat >>` can split a large payload across write()s, so instead run python on
-# the far side doing the IDENTICAL single-write open("a").write(stdin) -- same
-# guarantee, and it needs no `flock` (which macOS lacks anyway).
+# The remote append should be as atomic as the local one. The local path opens
+# O_APPEND and writes once; `cat >>` over ssh could split a large payload across
+# write()s, so instead run python on the far side doing the SAME open("a").write
+# -- the identical mechanism to the local case, and no `flock` (which macOS
+# lacks). Honest bound: this is one write() only up to the io buffer; a payload
+# past it can still split on either side. A channel note is far below that, so
+# the guarantee holds for the actual traffic -- but the promise is "same as
+# local", not "atomic at any size".
 _REMOTE_APPEND = ("/usr/bin/python3 -c "
                   "'import sys; open(sys.argv[1],\"a\").write(sys.stdin.read())' ")
 
