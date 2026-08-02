@@ -239,6 +239,72 @@ class TheSessionName(unittest.TestCase):
         self.assertNotEqual(a, b)
 
 
+class TheWatcher(unittest.TestCase):
+    """The Stop-hook watcher: the only mechanism that reaches an IDLE session.
+
+    Biased towards silence on purpose — a watcher that wakes a session for
+    nothing is switched off within a day, and then it is worth less than none.
+    """
+
+    def _at(self, ts, who, to, answering, text):
+        return notes.format_note(ts, who, to, answering, text)
+
+    def test_it_never_wakes_a_session_for_its_own_note(self):
+        """A channel that wakes you for your own message is noise with extra
+        steps."""
+        import notes_watch
+        lines = [self._at("2026-08-02T10:00:00.000", "B", "all", None, "mine")]
+        self.assertEqual(notes_watch.relevant(lines, "B", ""), [])
+
+    def test_it_wakes_for_something_addressed_here(self):
+        import notes_watch
+        lines = [self._at("2026-08-02T10:00:00.000", "A", "B",
+                          notes.NOTE_MARKER, "for you")]
+        got = notes_watch.relevant(lines, "B", "")
+        self.assertEqual([n["text"] for n in got], ["for you"])
+
+    def test_it_wakes_for_an_open_question_from_the_other_side(self):
+        import notes_watch
+        lines = [self._at("2026-08-02T10:00:00.000", "A", "all", None, "which trap?")]
+        self.assertTrue(notes_watch.relevant(lines, "B", ""))
+
+    def test_anything_already_there_at_the_start_is_not_news(self):
+        """The baseline is what makes it a watcher rather than a reporter."""
+        import notes_watch
+        lines = [self._at("2026-08-02T10:00:00.000", "A", "B",
+                          notes.NOTE_MARKER, "old")]
+        self.assertEqual(
+            notes_watch.relevant(lines, "B", "2026-08-02T10:00:00.000"), [])
+
+    def test_a_stale_lock_does_not_block_a_new_watcher(self):
+        """A killed watcher leaves its pid behind; treating that as 'running'
+        would silence the channel until somebody deleted a file in /tmp."""
+        import tempfile, notes_watch
+        path = os.path.join(tempfile.mkdtemp(prefix="ab-lock-"), "watch.lock")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("999999")          # no such process
+        self.assertFalse(notes_watch.another_watcher_running(path))
+
+    def test_the_hook_is_wired_so_the_wake_can_reach_the_session(self):
+        """The wiring is the whole mechanism, and two mistakes in it are silent:
+        `|| true` would swallow exit 2 — the wake signal itself — and without
+        asyncRewake the exit code means nothing. Neither shows up as a failure
+        anywhere; the channel just stays quiet forever."""
+        import json
+        with open(os.path.join(_ROOT, ".claude", "settings.json"),
+                  encoding="utf-8") as handle:
+            settings = json.load(handle)
+        watchers = [h for entry in settings["hooks"]["Stop"] for h in entry["hooks"]
+                    if "notes_watch.py" in h.get("command", "")]
+        self.assertEqual(len(watchers), 1, "the watcher is not in the Stop hook")
+        watcher = watchers[0]
+        self.assertTrue(watcher.get("asyncRewake"), "exit 2 would not wake anything")
+        self.assertNotIn("|| true", watcher["command"],
+                         "the wake signal is being swallowed")
+        self.assertNotIn("2>/dev/null", watcher["command"],
+                         "the message would be discarded before it is shown")
+
+
 class TheHelp(unittest.TestCase):
 
     def _run(self, *args):

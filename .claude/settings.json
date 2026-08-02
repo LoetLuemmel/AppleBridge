@@ -11,6 +11,26 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$CLAUDE_PROJECT_DIR/host/tools/ledger_diff.py\" --quiet 2>/dev/null || true",
+            "timeout": 30,
+            "statusMessage": "Checking the roadmap ledger against merged PRs"
+          },
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$CLAUDE_PROJECT_DIR/host/tools/notes_watch.py\"",
+            "async": true,
+            "asyncRewake": true,
+            "timeout": 1800,
+            "statusMessage": "Watching the session channel"
+          }
+        ]
+      }
     ]
   }
 }
