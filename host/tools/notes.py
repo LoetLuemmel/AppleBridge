@@ -64,6 +64,11 @@ def parse_note(line):
             "re": None if fields["re"] == "-" else fields["re"], "text": text}
 
 
+def all_notes(lines):
+    """Every line this channel wrote, in order; foreign lines dropped."""
+    return [n for n in (parse_note(l) for l in lines) if n]
+
+
 def open_notes(lines):
     """Questions nobody has answered yet, oldest first.
 
@@ -71,9 +76,30 @@ def open_notes(lines):
     tracks who has READ what: answering is the only signal, and it is one the
     file can actually carry.
     """
-    notes = [n for n in (parse_note(l) for l in lines) if n]
+    notes = all_notes(lines)
     answered = {n["re"] for n in notes if n["re"]}
     return [n for n in notes if not n["re"] and n["ts"] not in answered]
+
+
+def answers_for(lines, who):
+    """Answers this session should be told about — the RETURN PATH.
+
+    `open_notes` was the whole delivery rule at first, and it carries questions
+    only: an answer sets `re=`, which closes the question and removes it from
+    the list. The asker therefore learned nothing on either surface — the
+    channel delivered outward and was silent coming back. Found by asking
+    "did the other side get a trigger for the answer?" and reading the code.
+
+    Two things count as addressed to this session: an answer to a question it
+    asked, and an answer explicitly sent `to=` it. Both need `APPLEBRIDGE_WHO`
+    to be set per session — with the default both sides are called "agent" and
+    the return path cannot be addressed at all. That is a precondition, not a
+    detail, so `session_brief` says so rather than quietly routing nothing.
+    """
+    notes = all_notes(lines)
+    asked_by_me = {n["ts"] for n in notes if n["from"] == who}
+    return [n for n in notes
+            if n["re"] and (n["to"] == who or n["re"] in asked_by_me)]
 
 
 def recent(notes_, now, seconds):
@@ -145,9 +171,12 @@ def main():
     args = parser.parse_args()
 
     if args.verb == "list":
-        pending = recent(open_notes(read()), datetime.datetime.now(), args.since)
-        for note in pending:
+        now = datetime.datetime.now()
+        lines = read()
+        for note in recent(open_notes(lines), now, args.since):
             print(f"note {note['ts']}  from={note['from']}  {note['text']}")
+        for note in recent(answers_for(lines, WHO), now, args.since):
+            print(f"answer {note['ts']}  from={note['from']}  {note['text']}")
         return 0
 
     stamp = _now()

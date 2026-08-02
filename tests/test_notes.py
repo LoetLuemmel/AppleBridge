@@ -114,6 +114,44 @@ class TheAnnouncementWindow(unittest.TestCase):
             self.assertNotIn("marker", handle.read().lower().split("deliberately")[0])
 
 
+class TheReturnPath(unittest.TestCase):
+    """`open_notes` was the whole delivery rule at first, and it carries
+    questions only: an answer sets `re=`, which closes the question and removes
+    it from the list. So the side that ASKED learned nothing on either surface —
+    the channel delivered outward and was silent coming back."""
+
+    def _conversation(self):
+        return [
+            notes.format_note("2026-08-02T10:00:00.000", "A", "B", None, "real field?"),
+            notes.format_note("2026-08-02T10:01:00.000", "B", "all",
+                              "2026-08-02T10:00:00.000", "zero, measured"),
+            notes.format_note("2026-08-02T10:02:00.000", "C", "all", None, "unrelated"),
+            notes.format_note("2026-08-02T10:03:00.000", "B", "all",
+                              "2026-08-02T10:02:00.000", "answer to C"),
+        ]
+
+    def test_the_asker_is_told_the_answer(self):
+        got = notes.answers_for(self._conversation(), "A")
+        self.assertEqual([n["text"] for n in got], ["zero, measured"])
+
+    def test_an_answer_addressed_to_me_counts_even_if_i_did_not_ask(self):
+        lines = self._conversation() + [
+            notes.format_note("2026-08-02T10:04:00.000", "B", "A",
+                              "2026-08-02T10:02:00.000", "you may want this too")]
+        self.assertIn("you may want this too",
+                      [n["text"] for n in notes.answers_for(lines, "A")])
+
+    def test_somebody_elses_answer_is_not_mine(self):
+        got = notes.answers_for(self._conversation(), "A")
+        self.assertNotIn("answer to C", [n["text"] for n in got])
+
+    def test_the_answerer_does_not_get_its_own_answer_back(self):
+        self.assertEqual(notes.answers_for(self._conversation(), "B"), [])
+
+    def test_an_unanswered_question_is_not_an_answer(self):
+        self.assertTrue(all(n["re"] for n in notes.answers_for(self._conversation(), "A")))
+
+
 class Delivery(unittest.TestCase):
 
     def test_the_brief_carries_open_questions(self):
@@ -131,6 +169,39 @@ class Delivery(unittest.TestCase):
             os.environ.pop("APPLEBRIDGE_NOTES", None)
         self.assertTrue(any("open questions" in l for l in lines), lines)
         self.assertTrue(any("which trap does it hook?" in l for l in lines), lines)
+
+    def test_the_brief_carries_the_answer_back_to_the_asker(self):
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(prefix="ab-notes-"), "notes.log")
+        now = datetime.datetime.now()
+        asked = (now - datetime.timedelta(minutes=5)).isoformat(timespec="milliseconds")
+        replied = (now - datetime.timedelta(minutes=4)).isoformat(timespec="milliseconds")
+        notes.append(notes.format_note(asked, "sessionA", "sessionB", None, "real field?"), path)
+        notes.append(notes.format_note(replied, "sessionB", "all", asked, "zero, measured"), path)
+        old, notes.NOTES = notes.NOTES, path
+        oldwho, notes.WHO = notes.WHO, "sessionA"
+        try:
+            lines = session_brief.note_lines()
+        finally:
+            notes.NOTES, notes.WHO = old, oldwho
+        self.assertTrue(any("answers to you" in l for l in lines), lines)
+        self.assertTrue(any("zero, measured" in l for l in lines), lines)
+
+    def test_the_brief_names_the_precondition_instead_of_routing_blind(self):
+        """With the default name both sides are called "agent", so neither
+        `to=` nor "a question I asked" can tell them apart. Saying so beats
+        addressing nothing quietly."""
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(prefix="ab-notes-"), "notes.log")
+        notes.append(notes.format_note("2026-08-02T09:00:00.000", "agent", "all",
+                                       None, "which trap?"), path)
+        old, notes.NOTES = notes.NOTES, path
+        oldwho, notes.WHO = notes.WHO, "agent"
+        try:
+            lines = session_brief.note_lines()
+        finally:
+            notes.NOTES, notes.WHO = old, oldwho
+        self.assertTrue(any("APPLEBRIDGE_WHO" in l for l in lines), lines)
 
     def test_a_missing_channel_file_is_silence_not_an_error(self):
         old, notes.NOTES = notes.NOTES, "/nonexistent-dir/notes.log"
