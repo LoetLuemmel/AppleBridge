@@ -60,12 +60,12 @@ But back to MPW. It's syntax is based on Unix like commands and here the three S
 In total over 6 months of time I established AppleBridge in a bootstrap way. AppleBridge did some heritage from [ClaudeBridge](https://td5.390er.de/claudebridge/) .
 You can already see the REZ part in it and here the programming did really start.
 
-Step-by-step I established 30 MCP tools that allow Claude Code to access the Macintosh System and almost all toggles of MPW, Think C or even Microsoft FoxPro and yes, you name it!\
-You can become creative yourself and build your own Macintosh software dream. Boundless, if there wouldn't be system limits like memsize and CPU speed.
+Step-by-step I established 30 MCP tools, that allow Claude Code to access the Macintosh System and almost all toggles of MPW, Think C or even Microsoft FoxPro and yes, you name it!\
+You can become creative yourself and build your own Macintosh software dream. Boundless, if there wouldn't be system limits like memsize or CPU speed.
 
-What doesn't work? - Initially I planned implementing a TLS browser simply looking at modern https:// web pages.\
-That is not possible or better feasible: Libraries (TLS) are missing and need to be written yourself, compute speed would let you wait almost endless.\
-And here we simply hit the system limits like in real life.  J
+What doesn't work? - Initially I planned implementing a browser with TLS support, simply looking at modern https:// web pages.\
+That is not possible or better feasible: Libraries (TLS) are missing and need to be written yourself, compute speed would let you wait almost endlessly.\
+And here we simply hit the system limits, like in real life.  J
 
 
 
@@ -184,6 +184,11 @@ Claude Code is **not** part of that. The bridge is a host server and a guest dae
 you drive it over the control port with anything that can open a socket. Step 5 wires
 it to Claude Code for those who want the MCP tools, and it is the only optional step
 here. Fully worked example with more screenshots: [docs/SETUP.md](docs/SETUP.md).
+
+**note:** I simply gave Claude Code the URL of this GitHub and he did the complete install.\
+But I don't know, if this applies to all of you, as my chap Claude was my co developer and might have READ.ME files, you are missing.\
+Simply give it a try and tell us about your experience.
+
 
 ### 1. Configure the host
 
