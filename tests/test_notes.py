@@ -194,6 +194,51 @@ class TheThirdKind(unittest.TestCase):
         self.assertIsNone(notes.parse_note(old)["re"])
 
 
+class TheSessionName(unittest.TestCase):
+    """`APPLEBRIDGE_WHO` was a REQUIRED setting for one commit, and requiring it
+    was the mistake: the return path cannot address anything while both sides
+    answer to the same name, so the channel routed nothing until a human
+    remembered. Claude Code already exports a distinct session id into the
+    environment of everything it runs — the identity was there all along."""
+
+    def _who(self, **env):
+        keep = {k: os.environ.get(k) for k in ("APPLEBRIDGE_WHO", "CLAUDE_CODE_SESSION_ID")}
+        try:
+            for key, value in env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            return notes._default_who()
+        finally:
+            for key, value in keep.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_the_session_id_names_the_session_with_no_configuration(self):
+        self.assertEqual(
+            self._who(APPLEBRIDGE_WHO=None,
+                      CLAUDE_CODE_SESSION_ID="9e5cc132-c4c8-428b-a145-92f1a24340ca"),
+            "sess-9e5cc132")
+
+    def test_an_explicit_name_still_wins(self):
+        self.assertEqual(
+            self._who(APPLEBRIDGE_WHO="apfelpilot-live",
+                      CLAUDE_CODE_SESSION_ID="9e5cc132-c4c8"),
+            "apfelpilot-live")
+
+    def test_without_either_it_says_agent_so_the_brief_can_report_it(self):
+        self.assertEqual(
+            self._who(APPLEBRIDGE_WHO=None, CLAUDE_CODE_SESSION_ID=None), "agent")
+
+    def test_two_sessions_get_different_names(self):
+        a = self._who(APPLEBRIDGE_WHO=None, CLAUDE_CODE_SESSION_ID="aaaaaaaa-1111")
+        b = self._who(APPLEBRIDGE_WHO=None, CLAUDE_CODE_SESSION_ID="bbbbbbbb-2222")
+        self.assertNotEqual(a, b)
+
+
 class Delivery(unittest.TestCase):
 
     def test_the_brief_carries_open_questions(self):
