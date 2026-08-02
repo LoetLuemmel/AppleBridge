@@ -217,6 +217,36 @@ class RunStep(unittest.TestCase):
         self.assertNotEqual(redirects[0], reads[0])
 
 
+class Descriptions(unittest.TestCase):
+    """The schema text is the only channel that reaches an agent at the moment
+    of USE, without any decision to go and read something. It drifted once
+    already: after the tools began verifying artefacts, `mac_compile` still
+    advertised "Output is source.c.o by default. Returns success status" —
+    both halves false, and silent about what success now means."""
+
+    def _description(self, name):
+        for tool in tools.TOOLS:
+            if tool["name"] == name:
+                return tool["description"]
+        self.fail(f"{name} is not in TOOLS")
+
+    def test_the_compile_description_names_what_it_now_returns(self):
+        text = self._description("mac_compile")
+        for key in ("verified", "remedies", "toolserver_alive"):
+            self.assertIn(key, text, f"the description never mentions `{key}`")
+        self.assertNotIn("source.c.o", text, "the stale default object name is back")
+
+    def test_the_compile_description_says_what_success_means(self):
+        text = self._description("mac_compile").lower()
+        self.assertIn("object file is on disk", text)
+
+    def test_the_execute_description_warns_about_the_silence(self):
+        text = self._description("mpw_execute")
+        self.assertIn("hint", text)
+        self.assertIn("≥", text)
+        self.assertIn("2>&1", text, "the rule that crashes the shell is unstated")
+
+
 class Hints(unittest.TestCase):
 
     def test_a_one_line_redirect_and_read_is_named(self):
