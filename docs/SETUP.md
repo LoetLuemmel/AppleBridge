@@ -33,8 +33,10 @@ including which parts are optional, are in the README.
 There are **two backends**, and which one you can have is decided by your machine, not by preference (D-018 in `DECISIONS.md`).
 
 ```bash
-cd host && ./install_bridge.py --dry-run   # read the plan first; it changes nothing
-cd host && ./install_bridge.py
+git clone https://github.com/LoetLuemmel/AppleBridge.git
+cd AppleBridge/host
+./install_bridge.py --dry-run   # read the plan first; it changes nothing
+./install_bridge.py
 ```
 
 **The installed branch is `slirp`.** It needs no interface alias, no bridge, no privileged step and no special emulator build, so it is the only one that comes up without somebody at the keyboard — and on a host with a single interface it is the only one that works at all, because a bridged backend cannot reach the machine it runs inside (D-015). The installer writes `ether slirp` into `~/.basilisk_ii_prefs`, generates `host/local.env` **without** a host address (the server binds `0.0.0.0`, since the guest's connection arrives from `127.0.0.1` or from your LAN address depending on which it dialled), and prints the guest-side values you then enter by hand:

@@ -152,11 +152,16 @@ here. Fully worked example with more screenshots: [docs/SETUP.md](docs/SETUP.md)
 ### 1. Configure the host
 
 ```bash
-cd host && ./install_bridge.py --dry-run   # read the plan; it changes nothing
-cd host && ./install_bridge.py
+git clone https://github.com/LoetLuemmel/AppleBridge.git
+cd AppleBridge/host
+./install_bridge.py --dry-run   # read the plan; it changes nothing
+./install_bridge.py
 ```
 
-It discovers your emulator, sets its Ethernet backend to `slirp`, writes
+The clone is the whole download: the host side is Python stdlib, so there is
+nothing to build and no dependencies to fetch.
+
+`install_bridge.py` then discovers your emulator, sets its Ethernet backend to `slirp`, writes
 `host/local.env`, installs the launchd agent that keeps the host server running,
 and prints the guest-side values you need in step 3 — labelled by *whose*
 address each one is, which is the mistake this step exists to prevent. It asks
