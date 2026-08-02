@@ -222,6 +222,11 @@ def main():
     a.add_argument("ts")
     a.add_argument("text")
     a.add_argument("--from", dest="who", default=WHO)
+    # Accepted only so it can be REFUSED with a sentence. Plain argparse answers
+    # `unrecognized arguments: --to x` plus a usage line, which is true and
+    # useless: it says the option does not exist, not what to reach for instead.
+    # Hidden from --help, because it is not an option — it is a better error.
+    a.add_argument("--to", help=argparse.SUPPRESS)
 
     n = sub.add_parser("note", help="state something; nothing to answer "
                                     "(--to someone, or all)")
@@ -244,6 +249,13 @@ def main():
         for note in recent(inbox_for(lines, WHO), now, args.since):
             print(f"{note['kind']} {note['ts']}  from={note['from']}  {note['text']}")
         return 0
+
+    if args.verb == "answer" and getattr(args, "to", None) is not None:
+        print("`answer` takes no --to: the answer goes back to whoever asked "
+              f"{args.ts}, which the timestamp already says.\n"
+              "  To tell somebody something that answers nothing, use:  "
+              f"notes.py note --to {args.to} \"…\"", file=sys.stderr)
+        return 2
 
     stamp = _now()
     answering = args.ts if args.verb == "answer" else (
