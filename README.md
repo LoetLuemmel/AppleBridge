@@ -50,14 +50,14 @@ and did his thing:
 
 <img width="512" height="352" alt="GraphicsDemo" src="https://github.com/user-attachments/assets/0865a4c8-78cc-493e-96db-6ccd1aa03276" />
 
-You can read the full story here: [Building a THINK C++ Graphics Demo]([https://td5.390er.de/applebridge/think-cpp-graphics-demo-walkthrough/)]
+You can read the full story here: [Building a THINK C++ Graphics Demo](https://td5.390er.de/applebridge/think-cpp-graphics-demo-walkthrough/)
 
 And I was really impressed about what we could establish within three days. -\
 Nope! Claude Code made it in about 3 minutes and the biggest challenge were time consuming screenshots.\
 But that was the proof, with AppleBridge big things become possible.
 
 But back to MPW. It's syntax is based on Unix like commands and here the three Studges: **Claude Code**, **ToolServer** and **MPW** come together for a perfect play.\
-In total over 6 months of time I established AppleBridge in a bootstrap way. AppleBridge did some heritage from [ClaudeBridge]([https://td5.390er.de/claudebridge/]) .
+In total over 6 months of time I established AppleBridge in a bootstrap way. AppleBridge did some heritage from [ClaudeBridge](https://td5.390er.de/claudebridge/) .
 You can already see the REZ part in it and here the programming did really start.
 
 Step-by-step I established 30 MCP tools that allow Claude Code to access the Macintosh System and almost all toggles of MPW, Think C or even Microsoft FoxPro and yes, you name it!\
