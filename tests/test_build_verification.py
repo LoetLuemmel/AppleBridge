@@ -161,8 +161,8 @@ class Oracles(unittest.TestCase):
 
     def test_the_dead_got_oracle_is_gone(self):
         """host/build.py tested for 'Got:', a token this protocol does not emit,
-        so its existence check answered False for every successful build. It may
-        not come back."""
+        so its existence check answered False for every successful build. The
+        functions that used it are gone; the token may not come back."""
         offenders = []
         for folder in (_HOST, _MCP):
             for name in sorted(os.listdir(folder)):
@@ -172,8 +172,8 @@ class Oracles(unittest.TestCase):
                     text = handle.read()
                 if "'Got:'" in text or '"Got:"' in text:
                     offenders.append(name)
-        self.assertEqual(offenders, ["build.py"],
-                         "the dead 'Got:' oracle spread or was silently kept")
+        self.assertEqual(offenders, [],
+                         "the dead 'Got:' oracle came back")
 
     def test_error_52_is_a_warning_and_a_real_error_is_not(self):
         got = mpw.classify_diagnostics(
