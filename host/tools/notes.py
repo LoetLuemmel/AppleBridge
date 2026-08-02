@@ -76,6 +76,25 @@ def open_notes(lines):
     return [n for n in notes if not n["re"] and n["ts"] not in answered]
 
 
+def recent(notes_, now, seconds):
+    """Of the open notes, those deposited within the last `seconds`.
+
+    The PostToolUse hook fires on EVERY tool call, so announcing all open notes
+    there would repeat the same question after every step until somebody
+    answered it — noise that gets a hook switched off. A time window is the
+    stateless way to say it once and then be quiet: the note announces itself
+    for a while, and the session brief still lists every open one at the next
+    start.
+
+    Deliberately not a "seen" marker. One marker cannot mean two sessions, and
+    a shared one would silence a note for the side that never saw it.
+    """
+    if seconds is None:
+        return list(notes_)
+    cutoff = (now - datetime.timedelta(seconds=seconds)).isoformat(timespec="milliseconds")
+    return [n for n in notes_ if n["ts"] >= cutoff]
+
+
 def read(path=None):
     try:
         with open(path or NOTES, encoding="utf-8") as handle:
@@ -118,12 +137,17 @@ def main():
     a.add_argument("text")
     a.add_argument("--from", dest="who", default=WHO)
 
-    sub.add_parser("list", help="open questions")
+    lst = sub.add_parser("list", help="open questions")
+    lst.add_argument("--since", type=int, default=None, metavar="SECONDS",
+                     help="only those deposited within the last N seconds "
+                          "(what the PostToolUse hook uses, so it announces a "
+                          "note once instead of after every tool call)")
     args = parser.parse_args()
 
     if args.verb == "list":
-        for note in open_notes(read()):
-            print(f"{note['ts']}  from={note['from']}  {note['text']}")
+        pending = recent(open_notes(read()), datetime.datetime.now(), args.since)
+        for note in pending:
+            print(f"note {note['ts']}  from={note['from']}  {note['text']}")
         return 0
 
     stamp = _now()

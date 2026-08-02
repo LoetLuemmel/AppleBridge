@@ -8,6 +8,7 @@ next turn, never on demand.
 
 The properties worth pinning are the ones that were wrong on the first run.
 """
+import datetime
 import os
 import sys
 import unittest
@@ -84,6 +85,33 @@ class TheIdentifier(unittest.TestCase):
                               "2026-08-02T17:28:27.100", "answer to one"),
         ]
         self.assertEqual([n["text"] for n in notes.open_notes(lines)], ["two"])
+
+
+class TheAnnouncementWindow(unittest.TestCase):
+    """The PostToolUse hook fires on every tool call. Announcing every open note
+    there would repeat the same question after each step until somebody answered
+    it — noise that gets a hook switched off."""
+
+    def _at(self, now, minutes_ago, text):
+        ts = (now - datetime.timedelta(minutes=minutes_ago)).isoformat(timespec="milliseconds")
+        return notes.parse_note(notes.format_note(ts, "A", "all", None, text))
+
+    def test_only_the_fresh_ones_are_announced(self):
+        now = datetime.datetime(2026, 8, 2, 17, 0, 0)
+        pending = [self._at(now, 1, "fresh"), self._at(now, 120, "two hours old")]
+        got = notes.recent(pending, now, 600)
+        self.assertEqual([n["text"] for n in got], ["fresh"])
+
+    def test_without_a_window_nothing_is_filtered(self):
+        now = datetime.datetime(2026, 8, 2, 17, 0, 0)
+        pending = [self._at(now, 1, "fresh"), self._at(now, 120, "old")]
+        self.assertEqual(len(notes.recent(pending, now, None)), 2)
+
+    def test_the_window_is_not_a_seen_marker(self):
+        """A marker would have to mean one session, and one file cannot mean
+        two — it would silence a note for the side that never saw it."""
+        with open(notes.__file__, encoding="utf-8") as handle:
+            self.assertNotIn("marker", handle.read().lower().split("deliberately")[0])
 
 
 class Delivery(unittest.TestCase):
