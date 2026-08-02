@@ -11,7 +11,8 @@
 # SOURCE OF TRUTH; the deployed copy is a build artifact — never hand-edit it.
 #
 # This script is the one place that knows the full runtime file set, so a deploy
-# can't miss a dependency (host_server.py imports screenshot_decode + macbinary).
+# can't miss a dependency (host_server.py imports screenshot_decode, macbinary
+# and tools/notes.py).
 # install_host_service.sh writes the LaunchAgent plist and then calls this.
 #
 # Usage:
@@ -26,8 +27,17 @@ LABEL="de.390er.applebridge-host"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 
 # The complete runtime set host_server.py needs at import/run time.
+#
+# tools/notes.py is the odd one: everything else in host/tools/ is a hand-run
+# developer utility, but host_server imports THIS one for the NOTES field on the
+# control reply. Its absence is not an error at runtime — the import degrades to
+# "no field" on purpose — which is exactly why it belongs in this list: a
+# dependency that fails silently is one a deploy will otherwise drop for months
+# without anybody noticing the feature is simply not there.
+#
+# Entries may name a subdirectory; the loop creates it.
 RUNTIME_FILES=(host_server.py screenshot_decode.py macbinary.py bridge_doctor.py host_config.py
-               run_server.sh)
+               guest_input.py run_server.sh tools/notes.py)
 
 RESTART=1
 [ "${1:-}" = "--no-restart" ] && RESTART=0
@@ -41,6 +51,7 @@ for f in "${RUNTIME_FILES[@]}"; do
         echo "[deploy] ERROR: missing runtime file $SRC/$f" >&2
         exit 1
     fi
+    mkdir -p "$(dirname "$DEST/$f")"
     cp "$SRC/$f" "$DEST/$f"
 done
 chmod +x "$DEST/run_server.sh"
