@@ -239,6 +239,20 @@ class TheSessionName(unittest.TestCase):
         self.assertNotEqual(a, b)
 
 
+class TheHelp(unittest.TestCase):
+
+    def test_the_answer_verb_says_it_needs_no_recipient(self):
+        """`ask` and `note` take --to, `answer` does not — the question names
+        the recipient. Argparse reported that only AFTER a long answer had been
+        typed and rejected, which is how this help text came to exist."""
+        import subprocess
+        run = subprocess.run([sys.executable, notes.__file__, "answer", "--help"],
+                             capture_output=True, text=True, timeout=30)
+        self.assertIn("--to", run.stdout,
+                      "the help never mentions the option it does not have")
+        self.assertIn("asked it", run.stdout)
+
+
 class Delivery(unittest.TestCase):
 
     def test_the_brief_carries_open_questions(self):
