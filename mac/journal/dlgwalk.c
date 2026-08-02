@@ -24,13 +24,15 @@
 #include <Controls.h>
 #include <Dialogs.h>
 
-#define oDialogUp    10
-#define oGeneration  12
-#define oItemCount   14
-#define oDlgRect     16
-#define oRecords     24
+#define oDialogUp    14
+#define oItemCount   18
+#define oTruncated   20
+#define oDlgRect     22
+#define oRecords     30
 #define RECSIZE      48
 #define MAXITEMS     24
+/* Generation is bumped in dlgpatch.a (the asm head) only, so it counts once per
+ * armed trap call (#182 finding 1). The walk no longer touches it. */
 
 void DlgWalk(unsigned char *blk)
 {
@@ -42,18 +44,22 @@ void DlgWalk(unsigned char *blk)
     Point          tl, br;
     Handle         ih;
     Str255         tx;
-    short          n, i, itype, btype, count, k, L;
+    short          n, i, itype, btype, count, k, L, defItem;
     unsigned char *rec;
 
-    *(short *)(blk + oGeneration) += 1;
-    *(short *)(blk + oItemCount) = 0;
-    *(short *)(blk + oDialogUp)  = 0;
+    *(short *)(blk + oItemCount)  = 0;
+    *(short *)(blk + oDialogUp)   = 0;
+    *(short *)(blk + oTruncated)  = 0;
 
     w = FrontWindow();
     if (w == NULL) return;
     wp = (WindowPeek)w;
     if (wp->windowKind != dialogKind) return;
     dlg = (DialogPtr)w;
+    defItem = ((DialogPeek)dlg)->aDefItem;       /* the dialog's REAL default item,
+                                                  * not a hardcoded 1 — clicking the
+                                                  * wrong default at a save dialog
+                                                  * means Don't Save instead of Save */
 
     GetPort(&save);
     SetPort((GrafPtr)dlg);
@@ -77,7 +83,10 @@ void DlgWalk(unsigned char *blk)
         n = (itemList != NULL && *itemList != NULL)
                 ? (short)(*(short *)(*itemList) + 1) : 0;
     }
-    if (n > MAXITEMS) n = MAXITEMS;
+    if (n > MAXITEMS) {                          /* record the cap, don't hide it */
+        *(short *)(blk + oTruncated) = 1;        /* #182 finding 3 */
+        n = MAXITEMS;
+    }
     count = 0;
     rec = blk + oRecords;
     for (i = 1; i <= n; i++) {
@@ -97,8 +106,8 @@ void DlgWalk(unsigned char *blk)
         *(short *)(rec + 6)  = tl.h;   /* global left   */
         *(short *)(rec + 8)  = br.v;   /* global bottom */
         *(short *)(rec + 10) = br.h;   /* global right  */
-        *(short *)(rec + 12) = (short)(((itype & 0x80) ? 0 : 1) | (i == 1 ? 2 : 0));
-                                        /* bit0=enabled, bit1=default(item 1) */
+        *(short *)(rec + 12) = (short)(((itype & 0x80) ? 0 : 1) | (i == defItem ? 2 : 0));
+                                        /* bit0=enabled, bit1=default (dialog aDefItem) */
         L = tx[0];
         if (L > 31) L = 31;
         *(short *)(rec + 14) = L;

@@ -1976,7 +1976,7 @@ def run_control_server(server):
                             log(f"LOG -> {len(body)}B")
                     elif (cmd == "MACUITREE" or cmd == "DLGTEST" or cmd == "DLGOFF"
                           or cmd == "DLGINSTALL" or cmd == "DLGTREE" or cmd == "DLGUNINSTALL"
-                          or cmd == "DLGSELFMODAL"
+                          or cmd == "DLGSELFMODAL" or cmd == "DLGARM" or cmd == "DLGDISARM"
                           or cmd == "PING" or cmd == "QUITDAEMON" or cmd == "REBOOT"
                           or cmd == "SWAPSELF" or cmd == "SHUTDOWN"
                           or cmd == "JGATE" or cmd == "JMENU" or cmd == "JABOUT"

@@ -1,28 +1,35 @@
 *-------------------------------------------------------------------------------------------
-*  dlgpatch.a — global head patch on _ModalDialog ($A991) for ApfelPilot.
+*  dlgpatch.a -- global head patch on _ModalDialog ($A991) for ApfelPilot.
 *
-*  Mirrors mac/journal/mspatch.a: a MAIN code resource, BlockMove'd into the
-*  system heap and locked, fully position-independent (all refs are Entry(PC)-
-*  relative), no A5 world. Unlike mspatch it does NOT intercept — it OBSERVES
-*  then passes through: on every _ModalDialog it calls the A5-free C walk
-*  (dlgwalk.c) to snapshot the FRONT app's dialog into the shared block, then
-*  chains to the real trap. Because it runs in the foreground app's context,
-*  FrontWindow / the DITL are valid there (WindowList is per-process).
+*  Mirrors mac/journal/mspatch.a: a code resource BlockMove'd into the system heap
+*  and locked, fully position-independent (all refs Entry(PC)-relative), no A5.
+*  On every _ModalDialog it OBSERVES then passes through: when ARMED it calls the
+*  A5-free C walk (dlgwalk.c) to snapshot the FRONT app's dialog into the shared
+*  block, then chains to the real trap. Because it runs in the foreground app's
+*  context, FrontWindow / the DITL are valid there (WindowList is per-process).
+*
+*  ARMED gate (mirrors mspatch, per #182 review finding 4): with Armed = 0 the
+*  patch is a transparent JMP to the real trap -- ZERO cost in every app's every
+*  modal, which matters on real hardware (an SE/30), not just under emulation.
+*  The daemon sets Armed before it wants a capture (DLGARM); OneShot clears it
+*  after a single walk. Boot-installed the block ships DISARMED (Armed word = 0).
 *
 *  Block layout (fixed offsets, shared with dlgwalk.c and main.c DLGTREE):
 *    +0   BRA.W Go
-*    +4   Magic    $4450 ('DP')
-*    +6   Real     (long)  saved real ModalDialog address (pass-through target)
-*    +10  DialogUp (word)  1 = last walk found a modal dialog
-*    +12  Generatn (word)  bumped each _ModalDialog call (freshness)
-*    +14  ItemCnt  (word)  items captured
-*    +16  DlgRect  (4 words) dialog global rect: top,left,bottom,right
-*    +24  Records  (1152 bytes) 24 * 48-byte item records
+*    +4   Magic     $4450 ('DP')
+*    +6   Real      (long)   saved real ModalDialog address (pass-through target)
+*    +10  Armed     (word)   0 = passthru, !=0 = walk        [daemon-owned]
+*    +12  OneShot   (word)   1 = disarm after a single walk
+*    +14  DialogUp  (word)   1 = last walk found a modal dialog
+*    +16  Generatn  (word)   bumped once per ARMED trap call (freshness)
+*    +18  ItemCnt   (word)   items captured
+*    +20  Truncatd  (word)   1 = dialog had more than MAXITEMS items (finding 3)
+*    +22  DlgRect   (4 words) dialog global rect: top,left,bottom,right
+*    +30  Records   (1152 bytes) 24 * 48-byte item records
 *    ...  Go (code)
 *
-*  The daemon finds this block by scanning the system heap for word0=$6000
-*  (BRA.W) AND word@+4=$4450 (FindDlgPatch, clone of FindMSPatch). Built with
-*  -model near so the BSR to DlgWalk is PC-relative (survives BlockMove).
+*  Built -model near so the BSR to DlgWalk is PC-relative (survives BlockMove).
+*  Generation is incremented HERE only -- dlgwalk.c no longer bumps it (finding 1).
 *-------------------------------------------------------------------------------------------
 
         CASE    OBJ
@@ -34,21 +41,32 @@ Entry
         BRA.W   Go
 Magic     DC.W    $4450
 Real      DC.L    0
+Armed     DC.W    0
+OneShot   DC.W    1
 DialogUp  DC.W    0
 Generatn  DC.W    0
 ItemCnt   DC.W    0
+Truncatd  DC.W    0
 DlgRect   DC.W    0,0,0,0
 Records   DCB.B   1152,0
 
 Go
+        LEA     Entry(PC),A0            ; A0 = block base (PC-relative; A0 is scratch)
+        TST.W   Armed-Entry(A0)         ; daemon-owned gate
+        BEQ.S   PassThru                ; disarmed -> transparent, real frame intact
+        ADDQ.W  #1,Generatn-Entry(A0)   ; count this armed call (single increment)
+        TST.W   OneShot-Entry(A0)
+        BEQ.S   NoDisarm
+        CLR.W   Armed-Entry(A0)         ; one-shot: disarm after this walk
+NoDisarm
         MOVEM.L D0-D7/A0-A6,-(SP)       ; save everything (the C walk clobbers scratch)
-        LEA     Entry(PC),A0            ; A0 = block base (PC-relative; survives BlockMove)
-        ADDQ.W  #1,Generatn-Entry(A0)   ; freshness counter
+        LEA     Entry(PC),A0
         MOVE.L  A0,-(SP)                ; arg: block ptr
         BSR     DlgWalk                 ; PC-relative call into the C walk
         ADDQ.L  #4,SP                   ; C caller cleans the arg
-        MOVEM.L (SP)+,D0-D7/A0-A6       ; restore -> stack is exactly as at trap entry
+        MOVEM.L (SP)+,D0-D7/A0-A6       ; restore -> non-scratch regs as at trap entry
         LEA     Entry(PC),A0
+PassThru
         MOVE.L  Real-Entry(A0),A0       ; chain to the real _ModalDialog
         JMP     (A0)
 

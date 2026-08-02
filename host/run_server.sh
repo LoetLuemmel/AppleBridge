@@ -16,5 +16,5 @@
 cd "$(dirname "$0")" || exit 1
 # Homebrew's bin is not on launchd's PATH; the HOSTCLICK/HOSTMENU verbs need
 # `cliclick` there to drive the guest's real mouse.
-export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+export PATH="$PATH:/usr/local/bin:/opt/homebrew/bin"
 exec /usr/bin/python3 -u host_server.py
