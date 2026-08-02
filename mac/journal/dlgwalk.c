@@ -24,13 +24,15 @@
 #include <Controls.h>
 #include <Dialogs.h>
 
-#define oDialogUp    10
-#define oGeneration  12
-#define oItemCount   14
-#define oDlgRect     16
-#define oRecords     24
+#define oDialogUp    14
+#define oItemCount   18
+#define oTruncated   20
+#define oDlgRect     22
+#define oRecords     30
 #define RECSIZE      48
 #define MAXITEMS     24
+/* Generation is bumped in dlgpatch.a (the asm head) only, so it counts once per
+ * armed trap call (#182 finding 1). The walk no longer touches it. */
 
 void DlgWalk(unsigned char *blk)
 {
@@ -45,9 +47,9 @@ void DlgWalk(unsigned char *blk)
     short          n, i, itype, btype, count, k, L, defItem;
     unsigned char *rec;
 
-    *(short *)(blk + oGeneration) += 1;
-    *(short *)(blk + oItemCount) = 0;
-    *(short *)(blk + oDialogUp)  = 0;
+    *(short *)(blk + oItemCount)  = 0;
+    *(short *)(blk + oDialogUp)   = 0;
+    *(short *)(blk + oTruncated)  = 0;
 
     w = FrontWindow();
     if (w == NULL) return;
@@ -81,7 +83,10 @@ void DlgWalk(unsigned char *blk)
         n = (itemList != NULL && *itemList != NULL)
                 ? (short)(*(short *)(*itemList) + 1) : 0;
     }
-    if (n > MAXITEMS) n = MAXITEMS;
+    if (n > MAXITEMS) {                          /* record the cap, don't hide it */
+        *(short *)(blk + oTruncated) = 1;        /* #182 finding 3 */
+        n = MAXITEMS;
+    }
     count = 0;
     rec = blk + oRecords;
     for (i = 1; i <= n; i++) {

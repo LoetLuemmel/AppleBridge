@@ -1692,13 +1692,16 @@ static void JPStr(Handle h, const unsigned char *ps)
 }
 
 /* dlgpatch shared-block offsets — must match dlgpatch.a and dlgwalk.c. */
-#define oDP_Real   6
-#define oDP_Up     10
-#define oDP_Gen    12
-#define oDP_Cnt    14
-#define oDP_Rect   16
-#define oDP_Recs   24
-#define DP_RECSIZE 48
+#define oDP_Real     6
+#define oDP_Armed    10
+#define oDP_OneShot  12
+#define oDP_Up       14
+#define oDP_Gen      16
+#define oDP_Cnt      18
+#define oDP_Trunc    20
+#define oDP_Rect     22
+#define oDP_Recs     30
+#define DP_RECSIZE   48
 
 /* Find the dlgpatch block by scanning the system heap for word0=$6000 (BRA.W)
  * and word@+4=$4450 ('DP') — the ModalDialog trap is contended, so like the
@@ -2102,7 +2105,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
      * context) and format it as JSON — the cross-app dialog tree with exact rects. */
     if (strncmp(request, "DLGTREE", 7) == 0) {
         Ptr blk; Handle jh; CommandResult res;
-        short up, gen, cnt, i;
+        short up, gen, cnt, trunc, i;
         SetActivity("DLGTREE");
         blk = FindDlgPatch();
         jh = NewHandle(0);
@@ -2116,12 +2119,16 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
             JStr(jh, "{\"installed\":false}");
         } else {
             short *dr = (short *)((char *)blk + oDP_Rect);
-            up  = *(short *)((char *)blk + oDP_Up);
-            gen = *(short *)((char *)blk + oDP_Gen);
-            cnt = *(short *)((char *)blk + oDP_Cnt);
-            JStr(jh, "{\"installed\":true,\"dialog_up\":");
+            up    = *(short *)((char *)blk + oDP_Up);
+            gen   = *(short *)((char *)blk + oDP_Gen);
+            cnt   = *(short *)((char *)blk + oDP_Cnt);
+            trunc = *(short *)((char *)blk + oDP_Trunc);
+            JStr(jh, "{\"installed\":true,\"armed\":");
+            JStr(jh, (*(short *)((char *)blk + oDP_Armed)) ? "true" : "false");
+            JStr(jh, ",\"dialog_up\":");
             JStr(jh, up ? "true" : "false");
             JStr(jh, ",\"generation\":"); JNum(jh, (long)gen);
+            JStr(jh, ",\"truncated\":"); JStr(jh, trunc ? "true" : "false");
             JStr(jh, ",\"rect\":["); JNum(jh, (long)dr[0]); JStr(jh, ",");
             JNum(jh, (long)dr[1]); JStr(jh, ","); JNum(jh, (long)dr[2]); JStr(jh, ",");
             JNum(jh, (long)dr[3]); JStr(jh, "],\"items\":[");
@@ -2193,7 +2200,10 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         blk  = FindDlgPatch();
         trap = (Ptr)NGetTrapAddress(_ModalDialog, ToolTrap);
         hooked = (blk != NULL && trap == blk) ? 1 : 0;
-        if (blk != NULL) g0 = *(short *)((char *)blk + oDP_Gen);
+        if (blk != NULL) {
+            g0 = *(short *)((char *)blk + oDP_Gen);
+            *(short *)((char *)blk + oDP_Armed) = 1;   /* arm — else the walk is a no-op */
+        }
         dp = GetNewDialog(5000, NULL, (WindowPtr)-1L);
         if (dp != NULL) {
             SetPort((GrafPtr)dp);
@@ -2214,6 +2224,42 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         *f++ = '\r';
         { short k; for (k = 0; k < L; k++) *f++ = body[k]; }
         f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, responseBuffer, (long)(f - responseBuffer));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+
+    /* DLGARM / DLGDISARM: set the dlgpatch Armed word (#182 finding 4). The patch
+     * is a transparent JMP to the real trap until armed — zero cost in every app's
+     * modals. The daemon arms just before it expects a dialog; OneShot makes the
+     * patch walk ONE modal and self-disarm. This is mspatch.a's mechanism. */
+    if (strncmp(request, "DLGARM", 6) == 0) {
+        Ptr blk; const char *msg; short L; char *f = responseBuffer;
+        SetActivity("DLGARM");
+        blk = FindDlgPatch();
+        if (blk != NULL) {
+            *(short *)((char *)blk + oDP_OneShot) = 1;   /* capture one, then disarm */
+            *(short *)((char *)blk + oDP_Armed)   = 1;
+            msg = "armed";
+        } else {
+            msg = "no-block";
+        }
+        L = (short)strlen(msg);
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)L);
+        *f++ = '\r'; f = StatStr(f, msg); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, responseBuffer, (long)(f - responseBuffer));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+    if (strncmp(request, "DLGDISARM", 9) == 0) {
+        Ptr blk; const char *msg; short L; char *f = responseBuffer;
+        SetActivity("DLGDISARM");
+        blk = FindDlgPatch();
+        if (blk != NULL) { *(short *)((char *)blk + oDP_Armed) = 0; msg = "disarmed"; }
+        else             { msg = "no-block"; }
+        L = (short)strlen(msg);
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)L);
+        *f++ = '\r'; f = StatStr(f, msg); f = StatStr(f, "\rSTDERR:0\r\r");
         ABSend(conn, responseBuffer, (long)(f - responseBuffer));
         gLastTX = TickCount(); gTXCount++;
         return true;
