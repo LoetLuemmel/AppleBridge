@@ -51,6 +51,7 @@ nothing behind at all.
 - [Apple Events Issues](#apple-events-issues)
 - [Network and Connection](#network-and-connection)
 - [Emulator (Basilisk II) Crashes](#emulator-basilisk-ii-crashes)
+- [A boot extension wedges the guest](#a-boot-extension-wedges-the-guest--hold-shift)
 - [Compilation and Linking](#compilation-and-linking)
 - [File System and Encoding](#file-system-and-encoding)
 - [ToolServer vs MPW Shell](#toolserver-vs-mpw-shell)
@@ -522,6 +523,42 @@ redraw thread, unrelated to a guest app — diagnose it separately.
 **Note:** all of the above is unrelated to the daemon-side "frozen at CONNECTING"
 freeze above — that one is a hung *connect* (no crash report, host process alive).
 These are real host *crashes* (process gone, crash report present).
+
+---
+
+## A boot extension wedges the guest — hold Shift
+
+**Write this down before you need it.** When an extension breaks the guest there
+is no bridge to look anything up with: the daemon never gets to start.
+
+An `INIT` in `System Folder:Extensions` runs in the context of **every**
+application, and a global trap patch runs on every call any of them makes. The
+`_ModalDialog` patch installed by `dlginit` (2026-08-02) is the first of these
+in this project: a fault in it is not one application crashing, it is every
+application that shows a dialog — including installers, and including the boot
+itself.
+
+Two recovery routes, in order of cost:
+
+**Hold Shift while the guest boots.** System 7 loads no extensions, so the patch
+never installs. Then drag the file out of `System Folder:Extensions` and reboot
+normally. Costs one reboot and nothing else.
+
+**With the emulator powered off, edit the image directly** — the fallback when
+the guest will not boot at all, even with extensions off:
+
+```bash
+hmount "/Users/pitforster/Documents/Basilisk/System761 weiter.dmg"
+hls ":System Folder:Extensions:"
+hdel ":System Folder:Extensions:<name>"
+humount
+```
+
+**Why the usual repair does not apply here.** `mac_update_daemon` / `SWAPSELF`
+renames the *daemon* aside in its own home directory; an extension is neither
+the daemon nor in that path, so the self-update route cannot reach it. And a
+disk-image backup restores everything, including whatever else changed since —
+Shift-boot costs nothing by comparison, which is why it is listed first.
 
 ---
 
