@@ -5,6 +5,7 @@ Tool implementations for classic Mac development.
 
 import base64
 import os
+import re
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +19,7 @@ if _HOST_DIR not in sys.path:
 import macbinary  # noqa: E402
 import bridge_doctor  # noqa: E402  (stdlib-only host-side stack probes)
 import guest_input  # noqa: E402  (real-mouse driving in guest coordinates)
+import mpw  # noqa: E402  (build-step verification: the artefact is the oracle)
 
 
 def _ostype(value, default="????") -> bytes:
@@ -762,6 +764,26 @@ Example to type the boot password:
 ]
 
 
+def _mpw_execute_hint(command: str, stdout) -> Optional[str]:
+    """What this particular command is about to be misread as, if anything.
+
+    Both cases below cost a session a day on 2026-08-02, and both are decidable
+    from the bytes the caller just sent — no extra round trip.
+    """
+    if mpw.redirect_and_read_on_one_line(command):
+        return ("The stderr redirect and the read-back are on one command line; "
+                "that returns empty (measured). Send them as two commands: "
+                "first `<tool> … ≥ file.err`, then `Catenate file.err`.")
+    tool = mpw.silent_tool(command)
+    if tool and not (stdout or "").strip():
+        return (f"`{tool}` prints nothing on success and nothing on failure, and "
+                "STATUS:0 only means the Apple Event was delivered — the tool's "
+                "own exit status never crosses the bridge. Verify with "
+                "`Exists <artifact>`, or capture with `≥ file.err` plus a "
+                "SEPARATE `Catenate`, or use mac_compile/mac_build, which do both.")
+    return None
+
+
 def mpw_execute(command: str, timeout: int = 30) -> Dict[str, Any]:
     """Execute MPW command and return result."""
     try:
@@ -776,12 +798,19 @@ def mpw_execute(command: str, timeout: int = 30) -> Dict[str, Any]:
 
         status, stdout, stderr = conn.send_command(command, timeout=float(timeout))
 
-        return {
+        result = {
             "success": status == 0,
             "status": status,
             "output": stdout if stdout else "(no output)",
             "error": stderr if stderr else None
         }
+        # This is the raw escape hatch, so the command is never rewritten — a
+        # tool that silently edits the line you typed is the same class of trap
+        # we are closing. A hint costs nothing and arrives when it is true.
+        hint = _mpw_execute_hint(command, stdout)
+        if hint:
+            result["hint"] = hint
+        return result
     except Exception as e:
         return {
             "success": False,
@@ -997,34 +1026,72 @@ def mac_list_files(path: str) -> Dict[str, Any]:
 
 def mac_compile(source_path: str, output_path: Optional[str] = None,
                 options: Optional[str] = None) -> Dict[str, Any]:
-    """Compile C source file with SC."""
+    """Compile a C source with SC, and report only what was verified.
+
+    `SC` is silent on success AND on failure, and the bridge cannot carry its
+    exit status (see host/mpw.py), so the old `status == 0` test reported a
+    clean compile for a file the compiler never opened. Success here means the
+    object file is on disk afterwards; the diagnostics come back with it.
+    """
     try:
         conn = get_connection()
         if not conn.is_connected():
-            return {"success": False, "source": source_path, "error": "Mac not connected"}
+            return {"success": False, "verified": False, "source": source_path,
+                    "error": "Mac not connected"}
 
-        # Build compile command
+        def send(command, timeout=30.0):
+            try:
+                _status, out, _err = conn.send_command(command, timeout=timeout)
+                return out or ""
+            except Exception as exc:                       # noqa: BLE001
+                return f"__SENDERR__:{exc}"
+
+        # The artefact must be known by construction, not guessed: the old code
+        # derived `source + ".o"` while never passing -o, so an Exists on it
+        # would have been a fresh invention rather than a check.
+        caller_named_output = bool(options and re.search(r"(^|\s)-o(\s|$)", options))
+        obj_path = output_path
+        if not obj_path and not caller_named_output:
+            obj_path = (source_path[:-2] + ".o") if source_path.endswith(".c") \
+                else (source_path + ".o")
+
         command = f"SC '{source_path}'"
         if output_path:
             command += f" -o '{output_path}'"
         if options:
             command += f" {options}"
 
-        status, stdout, stderr = conn.send_command(command, timeout=120.0)
+        if not obj_path:
+            # -o hidden inside `options`: run it, but do not claim a check we
+            # cannot make. Saying "unverified" is the honest answer; guessing
+            # the path and testing that guess is how this function lied before.
+            out = send(command, 120.0)
+            return {"success": None, "verified": False, "source": source_path,
+                    "object": None, "output": out or None,
+                    "error": None,
+                    "note": "-o is inside `options`, so the object path is unknown "
+                            "here and nothing was verified. Pass output_path to get "
+                            "a verified result."}
 
-        # Check if object file was created
-        obj_path = output_path or (source_path + ".o")
-
+        step = mpw.run_step(send, command, obj_path,
+                            f"{obj_path}.err", timeout=120.0)
         return {
-            "success": status == 0,
+            "success": step["success"],
+            "verified": True,
             "source": source_path,
             "object": obj_path,
-            "output": stdout if stdout else None,
-            "error": stderr if stderr else None
+            "errors": step["errors"],
+            "warnings": step["warnings"],
+            "remedies": step["remedies"],
+            "toolserver_alive": step.get("toolserver_alive"),
+            "commands": step["commands"],
+            "output": "\n".join(step["errors"] + step["warnings"]) or None,
+            "error": step["errors"][0] if step["errors"] else None,
         }
     except Exception as e:
         return {
             "success": False,
+            "verified": False,
             "source": source_path,
             "error": str(e)
         }
