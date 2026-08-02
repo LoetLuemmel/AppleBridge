@@ -203,17 +203,28 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="verb", required=True)
 
-    q = sub.add_parser("ask", help="deposit a question")
+    q = sub.add_parser("ask", help="deposit a question (--to someone, or all)")
     q.add_argument("text")
     q.add_argument("--to", default="all")
     q.add_argument("--from", dest="who", default=WHO)
 
-    a = sub.add_parser("answer", help="answer a question by its timestamp")
+    # No --to here, deliberately: an answer is addressed by the question it
+    # names, not by a name. Said in the help because the alternative is
+    # discovering it from argparse AFTER typing the answer, which is how this
+    # line came to exist.
+    a = sub.add_parser(
+        "answer", help="answer a question by its timestamp (no --to needed: "
+                       "the question's asker is the recipient)",
+        description="Close a question and route the answer back to whoever "
+                    "asked it. The recipient follows from the timestamp, so "
+                    "there is no --to; use `note --to <who>` to tell somebody "
+                    "something that answers nothing.")
     a.add_argument("ts")
     a.add_argument("text")
     a.add_argument("--from", dest="who", default=WHO)
 
-    n = sub.add_parser("note", help="state something; nothing to answer")
+    n = sub.add_parser("note", help="state something; nothing to answer "
+                                    "(--to someone, or all)")
     n.add_argument("text")
     n.add_argument("--to", default="all")
     n.add_argument("--from", dest="who", default=WHO)
