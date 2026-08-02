@@ -124,10 +124,15 @@ def note_lines():
         for note in replies[-3:]:
             out.append(f"  [{note['ts']}] {note['from']}: {note['text'][:88]}")
     if out and notes.WHO == "agent":
-        # Both sides answer to the same name, so `to=` and "a question I asked"
-        # cannot distinguish them. Say it instead of routing silently wrong.
-        out.append("                     set APPLEBRIDGE_WHO per session, or "
-                   "answers cannot be addressed back")
+        # Only reachable when neither APPLEBRIDGE_WHO nor CLAUDE_CODE_SESSION_ID
+        # is in the environment. It used to fire whenever nobody had configured
+        # a name, which was most of the time — until the session id turned out
+        # to be exported already. If this line ever appears at a real session
+        # start, the hook's environment lacks that variable and the automatic
+        # naming needs another source: that is what it is here to report.
+        out.append("                     no session identity (neither "
+                   "APPLEBRIDGE_WHO nor CLAUDE_CODE_SESSION_ID) — nothing can "
+                   "be addressed back")
     return out
 
 

@@ -34,10 +34,28 @@ import sys
 
 NOTES = os.environ.get("APPLEBRIDGE_NOTES", "/tmp/applebridge_notes.log")
 
-# Free-form, short, no spaces. Two sessions both calling themselves "agent"
-# still pair up correctly — questions and answers are matched by timestamp, not
-# by name — but setting it makes the file readable by a human.
-WHO = os.environ.get("APPLEBRIDGE_WHO", "agent")
+def _default_who():
+    """This session's name, without anybody having to configure one.
+
+    `APPLEBRIDGE_WHO` started out as a required setting, and requiring it was a
+    mistake: the return path cannot address anything while both sides answer to
+    the same name, so a channel silently routed nothing until a human
+    remembered. Claude Code already exports `CLAUDE_CODE_SESSION_ID` into the
+    environment of everything it runs, which is distinct per session and costs
+    nothing — the identity was there the whole time.
+
+    Shortened to eight characters: long enough to be unique in a file two
+    sessions write to, short enough that a line stays readable. The env var
+    remains an override, for when a name says more than an id.
+    """
+    named = os.environ.get("APPLEBRIDGE_WHO")
+    if named:
+        return named
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    return f"sess-{session[:8]}" if session else "agent"
+
+
+WHO = _default_who()
 
 
 def format_note(stamp, who, to, answering, text):
