@@ -29,6 +29,12 @@ reachable through calls from a function whose name does. The second half
 matters — `test_bridge_doctor.py` drives every probe through `collect()` and
 names none of them, and counting those as untested would be false.
 
+The corpus is searched as text, so the mention must not be part of a FILENAME:
+`main.c` in an unrelated test used to satisfy a host function called `main`,
+and with transitivity that covered eleven of `build.py`'s twelve functions —
+including one whose oracle could never return True (repaired 2026-08-02, held
+by `test_a_filename_is_not_a_test_mention`).
+
 This cannot prove a test is any *good*. It can prove nobody so much as
 referenced the function, which is the state all four defects were in.
 
@@ -128,7 +134,7 @@ def _covered_names(fns, corpus):
     for name, node in fns.items():
         calls[name] = {_dotted(c.func).split(".")[-1] for c in ast.walk(node)
                        if isinstance(c, ast.Call) and _dotted(c.func)}
-    reached = {n for n in fns if re.search(rf"\b{re.escape(n)}\b", corpus)}
+    reached = {n for n in fns if re.search(rf"\b{re.escape(n)}\b(?!\.[A-Za-z])", corpus)}
     stack = list(reached)
     while stack:
         for callee in calls.get(stack.pop(), ()):
@@ -243,6 +249,33 @@ def test_an_injected_callable_does_not_disqualify():
         "        return line\n"
         "    return None\n")
     assert is_decider(src.body[0])
+
+
+def test_a_filename_is_not_a_test_mention():
+    # The hole this ratchet had, found 2026-08-02 while auditing why a dead
+    # function in build.py survived for months: the corpus is searched as TEXT,
+    # so `main.c` — which appears in five unrelated tests — matched a host
+    # function called `main`. Coverage is transitive, so ELEVEN of build.py's
+    # twelve functions were covered by a filename, including `file_exists`,
+    # whose oracle could never return True.
+    #
+    # The lookahead only rejects a following ".<letter>", so `build.main()`,
+    # `probe.__name__` and every ordinary reference still count.
+    fns = _module_functions_from_source(
+        "def entry():\n"
+        "    helper()\n"
+        "def helper():\n"
+        "    return 1\n")
+    assert _covered_names(fns, "the guest compiled entry.c today") == set(), \
+        "a filename still reads as a test mention"
+    assert _covered_names(fns, "build.entry() is the entry point") == {"entry", "helper"}, \
+        "a real reference stopped counting, or transitivity broke"
+
+
+def _module_functions_from_source(src):
+    tree = ast.parse(src)
+    return {n.name: n for n in tree.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
 
 
 def test_the_corpus_excludes_this_file():
