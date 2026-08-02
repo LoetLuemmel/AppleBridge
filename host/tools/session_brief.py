@@ -94,13 +94,24 @@ def ledger_lines(show_all):
     return lines
 
 
-def session_line(stamp, pid, branch, commit, version):
+def session_line(stamp, hookpid, branch, commit, version):
     """The record of one session start — one greppable line, fields as key=value.
+
+    `hookpid` is the process that ran the hook, NOT the session. It was called
+    `pid` for about an hour, which was worse than omitting it: two entries 28
+    seconds apart carried different numbers while a single Claude Code process
+    was running, because `os.getppid()` here is the short-lived shell the hook
+    is spawned in. A field that looks like a session identifier and is not one
+    sends whoever cross-checks it against `ps` to the wrong conclusion. There is
+    no reliable session id available from a hook, so none is claimed.
+
+    The fields that DO carry weight are the timestamp, the branch and the
+    commit. A restart of the same session simply adds another line.
 
     Kept separate from writing it so the format can be tested without a file:
     a log nobody can parse answers the question no better than no log at all.
     """
-    return (f"{stamp} pid={pid} branch={branch or '?'} "
+    return (f"{stamp} hookpid={hookpid} branch={branch or '?'} "
             f"commit={(commit or '?').split()[0]} version={version}")
 
 

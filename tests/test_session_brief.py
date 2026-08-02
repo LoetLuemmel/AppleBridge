@@ -28,8 +28,19 @@ class TheLine(unittest.TestCase):
             "1337e7b 2026-08-02 Merge pull request #169", "0.8d33")
         self.assertEqual(
             line,
-            "2026-08-02T17:05:28 pid=13036 branch=main "
+            "2026-08-02T17:05:28 hookpid=13036 branch=main "
             "commit=1337e7b version=0.8d33")
+
+    def test_the_process_field_does_not_pose_as_a_session_id(self):
+        """It was `pid=` for an hour. Two entries 28 seconds apart carried
+        different numbers while ONE Claude Code process was running, because
+        `os.getppid()` in a hook is the short-lived shell — so anyone
+        cross-checking it against `ps` would have concluded a second instance
+        had started. No reliable session id is available here, so none is
+        claimed."""
+        line = session_brief.session_line("T", 1, "b", "c", "v")
+        self.assertIn("hookpid=", line)
+        self.assertNotIn(" pid=", line)
 
     def test_the_commit_field_is_the_hash_and_not_the_subject(self):
         """`git log -1 --format=%h %ad %s` is what the brief already has; a
