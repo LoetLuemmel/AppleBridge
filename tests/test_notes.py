@@ -276,6 +276,25 @@ class TheWatcher(unittest.TestCase):
         self.assertEqual(
             notes_watch.relevant(lines, "B", "2026-08-02T10:00:00.000"), [])
 
+    def test_two_sessions_do_not_share_one_lock(self):
+        """A single global lock made the watcher first-come-first-served:
+        whichever session went idle first held it, the other one's watcher
+        exited at once, and only one of the two could ever be woken. Measured
+        minutes after the first deploy — this session held the lock, the other
+        had none. The lock is there to stop ONE session stacking a watcher per
+        turn, which is a per-session concern; global, it silently became a
+        per-machine mutex on being reachable at all."""
+        import notes_watch
+        self.assertNotEqual(notes_watch.lock_path("sess-aaaa"),
+                            notes_watch.lock_path("apfelpilot-live"))
+
+    def test_a_session_name_cannot_steer_the_lock_out_of_tmp(self):
+        """`who` comes from the environment and lands in a path."""
+        import notes_watch
+        path = notes_watch.lock_path("../../etc/passwd")
+        self.assertTrue(path.startswith("/tmp/applebridge_watch."), path)
+        self.assertNotIn("/", path[len("/tmp/applebridge_watch."):])
+
     def test_a_stale_lock_does_not_block_a_new_watcher(self):
         """A killed watcher leaves its pid behind; treating that as 'running'
         would silence the channel until somebody deleted a file in /tmp."""
