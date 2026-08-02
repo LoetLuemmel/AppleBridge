@@ -35,16 +35,33 @@ TOOLS = [
         "name": "mpw_execute",
         "description": """Execute a command in MPW/ToolServer on the classic Mac.
 
+The raw escape hatch: the command is sent exactly as written and never
+rewritten. That also means `status: 0` here says only that the Apple Event was
+DELIVERED — an MPW tool's own exit status never crosses the bridge, and its
+stderr stays inside ToolServer. `SC`, `Asm`, `Link`, `Rez` and `SetFile` print
+nothing on success and nothing on failure, so an empty reply from one of them
+is not evidence of anything. A `hint` field is attached when that applies.
+
+To get a real answer, either verify the artefact (`Exists <path>`), or capture
+diagnostics with MPW's `≥` operator — as TWO commands, never one line:
+
+    SC file.c -o file.o ≥ err.txt        (one call)
+    Catenate err.txt                     (the next call)
+
+Both on one line comes back empty. Never `2>&1`; it crashes the shell. For a
+compile, prefer `mac_compile`, which does all of this and judges by the object
+file.
+
 Use MPW syntax:
 - Paths use : separator (e.g., "MeinMac:Folder:File.c")
 - Common commands: Directory, Files, Echo, SC (compile), ILink (link)
-- ToolServer returns stdout; use for commands that produce output
+- ToolServer returns stdout; MPW Shell replies empty (its output goes to the
+  Worksheet window instead)
 
 Examples:
 - Directory - show current directory
 - Files "MeinMac:Temp:" - list files
-- Echo "hello" > "MeinMac:Temp:test.txt" - write file
-- SC "MeinMac:Temp:test.c" - compile C file""",
+- Echo "hello" > "MeinMac:Temp:test.txt" - write file""",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -130,10 +147,24 @@ Path uses : separator and should end with : for directories.""",
     },
     {
         "name": "mac_compile",
-        "description": """Compile a C source file using MPW's SC compiler.
+        "description": """Compile a C source file with MPW's SC, verified by the object file.
 
-Compiles the specified source file. Output is source.c.o by default.
-Returns success status and any compiler messages.""",
+`success` means the object file is on disk afterwards — NOT that the command
+returned 0. SC is silent on success and on failure, and its exit status cannot
+cross the bridge, so the artefact is the only honest oracle.
+
+Returns `verified` (was a check possible at all), `errors` and `warnings` from
+the compiler's own diagnostics, and `remedies` — the project rule that applies
+to a diagnostic, e.g. a source file with no TEXT type (the usual result of
+Duplicate out of `Unix:`) names the `SetFile -t TEXT -c 'MPS '` fix.
+
+When no object appeared, and only then, ToolServer is probed once: the
+resulting `toolserver_alive` separates "ToolServer is gone" from "ToolServer is
+alive and rejected your input".
+
+Output defaults to source.o (foo.c -> foo.o). Passing -o inside `options` hides
+the path from this tool, which then reports `verified: false` rather than
+checking a guess.""",
         "inputSchema": {
             "type": "object",
             "properties": {
