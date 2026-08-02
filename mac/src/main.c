@@ -1640,6 +1640,99 @@ Boolean MonitorVerb(ABConn *conn, char *request, long requestLen)
 }
 
 
+/* ---- MACUITREE helpers: append to a growable Handle, always-valid ASCII JSON.
+ * PtrAndHand grows the handle and copies, so the tree size is bounded only by
+ * heap (dialogs are tiny). sprintf-free, like the rest of the daemon. */
+static char gJHex[] = "0123456789abcdef";
+static DialogPtr gTestDlg = NULL;   /* DLGTEST: an in-process DITL dialog to
+                                     * validate the mac_ui_tree/DLGTREE walk. */
+/* DLGSELFMODAL filter: dismiss on the FIRST pass — even a null event — so a modal
+ * driven from the background daemon returns without ever waiting for an event and
+ * therefore cannot spin (see the SFGetFile note below on background modals). The
+ * dlgpatch head runs at trap ENTRY, before this loop, so generation still bumps. */
+static pascal Boolean DlgSelfFilter(DialogPtr dp, EventRecord *ev, short *item)
+{
+#pragma unused(dp, ev)
+    *item = 1;      /* pretend item 1 (OK) hit */
+    return true;    /* true => ModalDialog returns immediately with *item */
+}
+static void JPut(Handle h, const char *s, long n)
+{
+    (void)PtrAndHand((Ptr)s, h, n);
+}
+static void JStr(Handle h, const char *s)
+{
+    JPut(h, s, (long)strlen(s));
+}
+static void JNum(Handle h, long v)
+{
+    char t[16];
+    char *e = StatDec(t, v);
+    JPut(h, t, (long)(e - t));
+}
+/* Append a Pascal string as a JSON string BODY (caller writes the quotes),
+ * escaping " \ and any byte <0x20 or >=0x7F as \u00XX so the JSON stays valid
+ * ASCII no matter what MacRoman the label holds. */
+static void JPStr(Handle h, const unsigned char *ps)
+{
+    short i, len;
+    unsigned char c;
+    char esc[8];
+    len = ps[0];
+    for (i = 1; i <= len; i++) {
+        c = ps[i];
+        if (c == '"' || c == '\\') { esc[0] = '\\'; esc[1] = (char)c; JPut(h, esc, 2); }
+        else if (c >= 0x20 && c < 0x7F) { esc[0] = (char)c; JPut(h, esc, 1); }
+        else {
+            esc[0] = '\\'; esc[1] = 'u'; esc[2] = '0'; esc[3] = '0';
+            esc[4] = gJHex[(c >> 4) & 0x0F]; esc[5] = gJHex[c & 0x0F];
+            JPut(h, esc, 6);
+        }
+    }
+}
+
+/* dlgpatch shared-block offsets — must match dlgpatch.a and dlgwalk.c. */
+#define oDP_Real   6
+#define oDP_Up     10
+#define oDP_Gen    12
+#define oDP_Cnt    14
+#define oDP_Rect   16
+#define oDP_Recs   24
+#define DP_RECSIZE 48
+
+/* Find the dlgpatch block by scanning the system heap for word0=$6000 (BRA.W)
+ * and word@+4=$4450 ('DP') — the ModalDialog trap is contended, so like the
+ * MenuSelect patch we locate our block by signature, not NGetTrapAddress.
+ * (Clone of FindMSPatch.) */
+/* Return the INSTALLED + ACTIVE dlgpatch block, or NULL. A trap patch has two
+ * separate facts — the code is RESIDENT, and the trap POINTS AT IT — and neither
+ * check sees both. Require the CONJUNCTION (see the "Presence is not
+ * installation" operating note):
+ *   (1) the heap scan finds a resident 'DP' block (the pristine 'DPAT' RESOURCE
+ *       is =resSysHeap,resLocked, so a bare signature scan matches it too);
+ *   (2) the _ModalDialog trap vector equals that block's entry (entry is at +0)
+ *       — a signature-only match reports the un-hooked resource as installed;
+ *   (3) its Real (+6) is non-zero AND not the block itself — an "adopted"/un-
+ *       hooked copy has 0 there. (Trap-head ALONE is also wrong: ToolServer
+ *       restores the trap table around every tool run, so the head reads absent
+ *       over an intact patch — which is why the scan stays part of the test.) */
+static Ptr FindDlgPatch(void)
+{
+    unsigned char *p    = (unsigned char *)(*(unsigned long *)0x02A6L); /* SysZone  */
+    unsigned char *end  = (unsigned char *)(*(unsigned long *)0x02AAL); /* ApplZone */
+    Ptr            trap = (Ptr)NGetTrapAddress(_ModalDialog, ToolTrap);
+    unsigned long  real;
+    for (; p + 10 < end; p += 2) {
+        if (*(unsigned short *)p == 0x6000                 /* (1) resident 'DP'    */
+            && *(unsigned short *)(p + 4) == 0x4450
+            && (Ptr)p == trap                              /* (2) trap points here */
+            && (real = *(unsigned long *)(p + 6)) != 0L
+            && real != (unsigned long)p)                   /* (3) chained, not adopted */
+            return (Ptr)p;
+    }
+    return 0L;
+}
+
 Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
 {
     char responseBuffer[RESP_SCRATCH];   /* small: fixed verb/error strings only (was 64 KB on the stack) */
@@ -1814,6 +1907,316 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         gTXCount++;
 
         return ok;
+    }
+
+    /* MACUITREE: dump the live window/dialog UI tree as JSON. READ-ONLY --
+     * walks the Window Manager list + the front dialog's DITL through the
+     * Toolbox, so every rect is ground truth (no VLM guessing at coordinates).
+     * No ToolServer, no journal / MenuSelect -- safe even under a modal. */
+    if (strncmp(request, PROTO_MACUITREE, strlen(PROTO_MACUITREE)) == 0) {
+        Handle        jh;
+        CommandResult res;
+        WindowPtr     w, fw;
+        WindowPeek    wp;
+        Str255        title;
+        Rect          gr;
+        short         widx, kind;
+        Boolean       isDlg;
+        SetActivity("MACUITREE");
+
+        jh = NewHandle(0);
+        if (jh == NULL) {
+            strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:9\rno memory\r\r");
+            ABSend(conn, responseBuffer, strlen(responseBuffer));
+            NoteErr("macuitree");
+            gLastTX = TickCount();
+            return true;
+        }
+
+        JStr(jh, "{\"windows\":[");
+        widx = 0;
+        for (w = FrontWindow(); w != NULL;
+             w = (WindowPtr)((WindowPeek)w)->nextWindow) {
+            wp = (WindowPeek)w;
+            if (!wp->visible) continue;
+            kind  = wp->windowKind;
+            isDlg = (kind == dialogKind);
+            GetWTitle(w, title);
+            if (wp->contRgn != NULL && *wp->contRgn != NULL)
+                gr = (**(wp->contRgn)).rgnBBox;          /* already GLOBAL */
+            else
+                gr = w->portRect;
+            if (widx > 0) JStr(jh, ",");
+            JStr(jh, "{\"index\":");    JNum(jh, (long)widx);
+            JStr(jh, ",\"title\":\"");  JPStr(jh, title); JStr(jh, "\"");
+            JStr(jh, ",\"kind\":");     JNum(jh, (long)kind);
+            JStr(jh, ",\"dialog\":");   JStr(jh, isDlg ? "true" : "false");
+            JStr(jh, ",\"rect\":[");    JNum(jh, (long)gr.top);    JStr(jh, ",");
+                                        JNum(jh, (long)gr.left);   JStr(jh, ",");
+                                        JNum(jh, (long)gr.bottom); JStr(jh, ",");
+                                        JNum(jh, (long)gr.right);  JStr(jh, "]}");
+            widx++;
+        }
+        JStr(jh, "]");
+
+        fw = FrontWindow();
+        if (fw != NULL && ((WindowPeek)fw)->windowKind == dialogKind) {
+            DialogPtr dlg = (DialogPtr)fw;
+            GrafPtr   savePort;
+            short     i, nItems, itype, btype;
+            Handle    ih;
+            Rect      ir;
+            Point     tl, br, ctr;
+            Str255    itx;
+            Boolean   disabled;
+
+            GetPort(&savePort);
+            SetPort((GrafPtr)dlg);
+            {   /* item count from the DITL handle's first word (= count-1);
+                 * same technique the dlgpatch walk uses so CountDITL — and its
+                 * Interface.o glue — is avoided. DLGTEST validates it here. */
+                Handle itemList = ((DialogPeek)dlg)->items;
+                nItems = (itemList != NULL && *itemList != NULL)
+                             ? (short)(*(short *)(*itemList) + 1) : 0;
+            }
+            if (nItems > 200) nItems = 200;
+            GetWTitle(fw, title);
+            JStr(jh, ",\"front\":{\"title\":\""); JPStr(jh, title);
+            JStr(jh, "\",\"items\":[");
+            for (i = 1; i <= nItems; i++) {
+                GetDialogItem(dlg, i, &itype, &ih, &ir);
+                btype    = itype & 0x7F;
+                disabled = (itype & 0x80) != 0;          /* itemDisable bit */
+                tl.h = ir.left;  tl.v = ir.top;    LocalToGlobal(&tl);
+                br.h = ir.right; br.v = ir.bottom; LocalToGlobal(&br);
+                ctr.h = (short)((ir.left + ir.right) / 2);
+                ctr.v = (short)((ir.top + ir.bottom) / 2);
+                LocalToGlobal(&ctr);
+                itx[0] = 0;
+                if (btype >= (ctrlItem + btnCtrl) && btype <= (ctrlItem + resCtrl)) {
+                    if (ih != NULL) GetControlTitle((ControlHandle)ih, itx);
+                } else if (btype == statText || btype == editText) {
+                    if (ih != NULL) GetDialogItemText(ih, itx);
+                }
+                if (i > 1) JStr(jh, ",");
+                JStr(jh, "{\"index\":");   JNum(jh, (long)i);
+                JStr(jh, ",\"type\":");    JNum(jh, (long)btype);
+                JStr(jh, ",\"enabled\":"); JStr(jh, disabled ? "false" : "true");
+                if (i == 1) JStr(jh, ",\"default\":true");
+                JStr(jh, ",\"rect\":[");   JNum(jh, (long)tl.v); JStr(jh, ",");
+                                           JNum(jh, (long)tl.h); JStr(jh, ",");
+                                           JNum(jh, (long)br.v); JStr(jh, ",");
+                                           JNum(jh, (long)br.h); JStr(jh, "]");
+                JStr(jh, ",\"center\":["); JNum(jh, (long)ctr.h); JStr(jh, ",");
+                                           JNum(jh, (long)ctr.v); JStr(jh, "]");
+                JStr(jh, ",\"text\":\"");  JPStr(jh, itx); JStr(jh, "\"}");
+            }
+            JStr(jh, "]}");
+            SetPort(savePort);
+        }
+        JStr(jh, "}");
+
+        res.exitCode   = 0;
+        res.outData    = jh;
+        res.outLen     = GetHandleSize(jh);
+        res.errData[0] = '\0';
+        SendCommandResult(conn, &res);
+        DisposeHandle(jh);
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
+    /* DLGTEST: put up an in-process DITL modal (DLOG 5000: OK/Cancel/text) so the
+     * mac_ui_tree/DLGTREE DITL walk can be validated in the daemon's OWN context
+     * before the cross-app trap patch. DLGOFF disposes it. Read-only otherwise. */
+    if (strncmp(request, "DLGTEST", 7) == 0) {
+        const char *stx;
+        short L;
+        char *f = responseBuffer;
+        SetActivity("DLGTEST");
+        if (gTestDlg == NULL) {
+            gTestDlg = GetNewDialog(5000, NULL, (WindowPtr)-1L);
+            if (gTestDlg != NULL) {
+                SetPort((GrafPtr)gTestDlg);
+                DrawDialog(gTestDlg);
+            }
+        }
+        stx = (gTestDlg != NULL) ? "dialog up" : "GetNewDialog(5000) failed";
+        L = (short)strlen(stx);
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)L);
+        *f++ = '\r'; f = StatStr(f, stx); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, responseBuffer, (long)(f - responseBuffer));
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+    if (strncmp(request, "DLGOFF", 6) == 0) {
+        SetActivity("DLGOFF");
+        if (gTestDlg != NULL) { DisposeDialog(gTestDlg); gTestDlg = NULL; }
+        strcpy(responseBuffer, "STATUS:0\rSTDOUT:3\rOff\rSTDERR:0\r\r");
+        ABSend(conn, responseBuffer, strlen(responseBuffer));
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
+    /* DLGINSTALL: adopt the boot INIT's global dlgpatch block if present, else
+     * install a copy process-locally — Get1Resource('DPAT',128) from our own
+     * fork, NewPtrSys+BlockMove into the system heap, chain the real
+     * _ModalDialog into +oReal, and set the trap to our block. (Mirror MSINSTALL.) */
+    if (strncmp(request, "DLGINSTALL", 10) == 0) {
+        Ptr blk; Handle h; Size sz; unsigned long real;
+        const char *msg; short L; char *f = responseBuffer;
+        SetActivity("DLGINSTALL");
+        blk = FindDlgPatch();
+        if (blk == NULL) {
+            h = Get1Resource('DPAT', 128);
+            if (h != NULL) {
+                HNoPurge(h);
+                LoadResource(h);
+                sz  = GetHandleSize(h);
+                blk = NewPtrSys(sz);
+                if (blk != NULL) {
+                    BlockMove(*h, blk, sz);
+                    if (*(unsigned short *)((char *)blk + 4) == 0x4450) {
+                        real = (unsigned long)NGetTrapAddress(_ModalDialog, ToolTrap);
+                        *(unsigned long *)((char *)blk + oDP_Real) = real;
+                        NSetTrapAddress((UniversalProcPtr)blk, _ModalDialog, ToolTrap);
+                    } else {
+                        blk = NULL;
+                    }
+                }
+            }
+        }
+        msg = (blk != NULL) ? "installed" : "install failed";
+        L = (short)strlen(msg);
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)L);
+        *f++ = '\r'; f = StatStr(f, msg); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, responseBuffer, (long)(f - responseBuffer));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+
+    /* DLGTREE: read the dlgpatch block (populated by the patch in the FRONT app's
+     * context) and format it as JSON — the cross-app dialog tree with exact rects. */
+    if (strncmp(request, "DLGTREE", 7) == 0) {
+        Ptr blk; Handle jh; CommandResult res;
+        short up, gen, cnt, i;
+        SetActivity("DLGTREE");
+        blk = FindDlgPatch();
+        jh = NewHandle(0);
+        if (jh == NULL) {
+            strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:9\rno memory\r\r");
+            ABSend(conn, responseBuffer, strlen(responseBuffer));
+            NoteErr("dlgtree"); gLastTX = TickCount();
+            return true;
+        }
+        if (blk == NULL) {
+            JStr(jh, "{\"installed\":false}");
+        } else {
+            short *dr = (short *)((char *)blk + oDP_Rect);
+            up  = *(short *)((char *)blk + oDP_Up);
+            gen = *(short *)((char *)blk + oDP_Gen);
+            cnt = *(short *)((char *)blk + oDP_Cnt);
+            JStr(jh, "{\"installed\":true,\"dialog_up\":");
+            JStr(jh, up ? "true" : "false");
+            JStr(jh, ",\"generation\":"); JNum(jh, (long)gen);
+            JStr(jh, ",\"rect\":["); JNum(jh, (long)dr[0]); JStr(jh, ",");
+            JNum(jh, (long)dr[1]); JStr(jh, ","); JNum(jh, (long)dr[2]); JStr(jh, ",");
+            JNum(jh, (long)dr[3]); JStr(jh, "],\"items\":[");
+            for (i = 0; i < cnt; i++) {
+                unsigned char *rc = (unsigned char *)((char *)blk + oDP_Recs) + (long)i * DP_RECSIZE;
+                short *rr = (short *)(rc + 4);
+                short flags = *(short *)(rc + 12);
+                short tl = *(short *)(rc + 14);
+                short cx = (short)((rr[1] + rr[3]) / 2);
+                short cy = (short)((rr[0] + rr[2]) / 2);
+                Str255 t; short k;
+                if (tl > 31) tl = 31;
+                t[0] = (unsigned char)tl;
+                for (k = 0; k < tl; k++) t[1 + k] = rc[16 + k];
+                if (i > 0) JStr(jh, ",");
+                JStr(jh, "{\"index\":");   JNum(jh, (long)*(short *)(rc + 0));
+                JStr(jh, ",\"type\":");    JNum(jh, (long)*(short *)(rc + 2));
+                JStr(jh, ",\"enabled\":"); JStr(jh, (flags & 1) ? "true" : "false");
+                if (flags & 2) JStr(jh, ",\"default\":true");
+                JStr(jh, ",\"rect\":[");   JNum(jh, (long)rr[0]); JStr(jh, ",");
+                JNum(jh, (long)rr[1]); JStr(jh, ","); JNum(jh, (long)rr[2]); JStr(jh, ",");
+                JNum(jh, (long)rr[3]); JStr(jh, "],\"center\":["); JNum(jh, (long)cx);
+                JStr(jh, ","); JNum(jh, (long)cy); JStr(jh, "]");
+                JStr(jh, ",\"text\":\""); JPStr(jh, t); JStr(jh, "\"}");
+            }
+            JStr(jh, "]}");
+        }
+        res.exitCode = 0; res.outData = jh; res.outLen = GetHandleSize(jh);
+        res.errData[0] = '\0';
+        SendCommandResult(conn, &res);
+        DisposeHandle(jh);
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+
+    /* DLGUNINSTALL: restore the real _ModalDialog IF our block is still the trap
+     * head (can't safely unchain from the middle). Block left resident. */
+    if (strncmp(request, "DLGUNINSTALL", 12) == 0) {
+        unsigned long live; char *blk; const char *msg; short L; char *f = responseBuffer;
+        SetActivity("DLGUNINSTALL");
+        live = (unsigned long)NGetTrapAddress(_ModalDialog, ToolTrap);
+        blk = (char *)live;
+        if (*(unsigned short *)(blk + 4) == 0x4450) {
+            unsigned long real = *(unsigned long *)(blk + oDP_Real);
+            NSetTrapAddress((UniversalProcPtr)real, _ModalDialog, ToolTrap);
+            msg = "uninstalled";
+        } else {
+            msg = "not-head";
+        }
+        L = (short)strlen(msg);
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)L);
+        *f++ = '\r'; f = StatStr(f, msg); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, responseBuffer, (long)(f - responseBuffer));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+
+    /* DLGSELFMODAL: the DISCRIMINATOR (notes 18:13). Call a real ModalDialog via
+     * the $A991 trap IN THE DAEMON'S OWN process (where a DLGINSTALL'd, app-local
+     * patch, if it works at all, IS in force). g1>g0 => the patch head FIRES when
+     * the trap dispatches — the BlockMove'd code runs — so cross-app generation:0
+     * is REACH (app-installed patches are process-local, Route B; needs the boot
+     * INIT), NOT a firing bug. g1==g0 => a firing bug the INIT could never fix.
+     * The filter dismisses on the first pass, so this can't spin in the background. */
+    if (strncmp(request, "DLGSELFMODAL", 12) == 0) {
+        Ptr blk; Ptr trap; DialogPtr dp; short hit = 0, g0 = -1, g1 = -1;
+        int hooked; char body[192]; char *b = body; short L; char *f = responseBuffer;
+        SetActivity("DLGSELFMODAL");
+        blk  = FindDlgPatch();
+        trap = (Ptr)NGetTrapAddress(_ModalDialog, ToolTrap);
+        hooked = (blk != NULL && trap == blk) ? 1 : 0;
+        if (blk != NULL) g0 = *(short *)((char *)blk + oDP_Gen);
+        dp = GetNewDialog(5000, NULL, (WindowPtr)-1L);
+        if (dp != NULL) {
+            SetPort((GrafPtr)dp);
+            ModalDialog((ModalFilterUPP)DlgSelfFilter, &hit);  /* via $A991 -> patch if hooked here */
+            DisposeDialog(dp);
+        }
+        blk = FindDlgPatch();
+        if (blk != NULL) g1 = *(short *)((char *)blk + oDP_Gen);
+        b = StatStr(b, "{\"hooked\":");  b = StatStr(b, hooked ? "true" : "false");
+        b = StatStr(b, ",\"dialog\":"); b = StatStr(b, dp ? "true" : "false");
+        b = StatStr(b, ",\"g0\":");     b = StatDec(b, (long)g0);
+        b = StatStr(b, ",\"g1\":");     b = StatDec(b, (long)g1);
+        b = StatStr(b, ",\"hit\":");    b = StatDec(b, (long)hit);
+        b = StatStr(b, ",\"fired\":");  b = StatStr(b, (g1 > g0) ? "true" : "false");
+        b = StatStr(b, "}");
+        L = (short)(b - body);
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)L);
+        *f++ = '\r';
+        { short k; for (k = 0; k < L; k++) *f++ = body[k]; }
+        f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, responseBuffer, (long)(f - responseBuffer));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
     }
 
     /* PING verb: lightweight heartbeat (sent raw, not COMMAND-wrapped) */

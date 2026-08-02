@@ -14,4 +14,7 @@
 #   nohup ./run_server.sh &      # background, logs to /tmp/applebridge_server.log
 #
 cd "$(dirname "$0")" || exit 1
+# Homebrew's bin is not on launchd's PATH; the HOSTCLICK/HOSTMENU verbs need
+# `cliclick` there to drive the guest's real mouse.
+export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
 exec /usr/bin/python3 -u host_server.py

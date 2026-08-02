@@ -1,0 +1,55 @@
+*-------------------------------------------------------------------------------------------
+*  dlgpatch.a — global head patch on _ModalDialog ($A991) for ApfelPilot.
+*
+*  Mirrors mac/journal/mspatch.a: a MAIN code resource, BlockMove'd into the
+*  system heap and locked, fully position-independent (all refs are Entry(PC)-
+*  relative), no A5 world. Unlike mspatch it does NOT intercept — it OBSERVES
+*  then passes through: on every _ModalDialog it calls the A5-free C walk
+*  (dlgwalk.c) to snapshot the FRONT app's dialog into the shared block, then
+*  chains to the real trap. Because it runs in the foreground app's context,
+*  FrontWindow / the DITL are valid there (WindowList is per-process).
+*
+*  Block layout (fixed offsets, shared with dlgwalk.c and main.c DLGTREE):
+*    +0   BRA.W Go
+*    +4   Magic    $4450 ('DP')
+*    +6   Real     (long)  saved real ModalDialog address (pass-through target)
+*    +10  DialogUp (word)  1 = last walk found a modal dialog
+*    +12  Generatn (word)  bumped each _ModalDialog call (freshness)
+*    +14  ItemCnt  (word)  items captured
+*    +16  DlgRect  (4 words) dialog global rect: top,left,bottom,right
+*    +24  Records  (1152 bytes) 24 * 48-byte item records
+*    ...  Go (code)
+*
+*  The daemon finds this block by scanning the system heap for word0=$6000
+*  (BRA.W) AND word@+4=$4450 (FindDlgPatch, clone of FindMSPatch). Built with
+*  -model near so the BSR to DlgWalk is PC-relative (survives BlockMove).
+*-------------------------------------------------------------------------------------------
+
+        CASE    OBJ
+        STRING  ASIS
+        IMPORT  DlgWalk
+
+DlgPatch        PROC    EXPORT
+Entry
+        BRA.W   Go
+Magic     DC.W    $4450
+Real      DC.L    0
+DialogUp  DC.W    0
+Generatn  DC.W    0
+ItemCnt   DC.W    0
+DlgRect   DC.W    0,0,0,0
+Records   DCB.B   1152,0
+
+Go
+        MOVEM.L D0-D7/A0-A6,-(SP)       ; save everything (the C walk clobbers scratch)
+        LEA     Entry(PC),A0            ; A0 = block base (PC-relative; survives BlockMove)
+        ADDQ.W  #1,Generatn-Entry(A0)   ; freshness counter
+        MOVE.L  A0,-(SP)                ; arg: block ptr
+        BSR     DlgWalk                 ; PC-relative call into the C walk
+        ADDQ.L  #4,SP                   ; C caller cleans the arg
+        MOVEM.L (SP)+,D0-D7/A0-A6       ; restore -> stack is exactly as at trap entry
+        LEA     Entry(PC),A0
+        MOVE.L  Real-Entry(A0),A0       ; chain to the real _ModalDialog
+        JMP     (A0)
+
+        END
