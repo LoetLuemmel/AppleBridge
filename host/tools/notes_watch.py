@@ -33,8 +33,28 @@ import notes  # noqa: E402
 # so this only bounds a session that is abandoned mid-turn.
 MAX_LIFETIME = float(os.environ.get("APPLEBRIDGE_WATCH_SECONDS", "1800"))
 POLL = float(os.environ.get("APPLEBRIDGE_WATCH_POLL", "5"))
-LOCK = os.environ.get("APPLEBRIDGE_WATCH_LOCK", "/tmp/applebridge_watch.lock")
 LOG = os.environ.get("APPLEBRIDGE_WATCH_LOG", "/tmp/applebridge_watch.log")
+
+
+def lock_path(who):
+    """One lock PER SESSION, not one for the machine.
+
+    A single global lock made the watcher first-come-first-served: whichever
+    session went idle first held it, and the other one's watcher exited
+    immediately — so only one of the two could ever be woken. Measured within
+    minutes of the first deploy, with this session holding the lock while the
+    other had none.
+
+    The lock exists to stop ONE session stacking a watcher per turn, which is a
+    per-session concern; making it global quietly turned it into a per-machine
+    mutex on being reachable at all.
+
+    `who` is sanitised because it comes from the environment and ends up in a
+    path — a session named `../../etc/x` must not point the lock elsewhere.
+    """
+    safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in (who or "anon"))
+    return os.environ.get("APPLEBRIDGE_WATCH_LOCK",
+                          f"/tmp/applebridge_watch.{safe}.lock")
 
 
 def relevant(lines, who, since):
@@ -63,7 +83,8 @@ def another_watcher_running(path=None):
     First one wins rather than newest: an older watcher has an EARLIER baseline,
     so it still fires for anything new. Replacing it would only reset the clock.
     """
-    path = path or LOCK
+    if path is None:
+        raise TypeError("pass the session's own lock path")
     try:
         with open(path, encoding="utf-8") as handle:
             pid = int(handle.read().strip())
@@ -88,10 +109,11 @@ def _note(message):
 
 def main():
     who = notes.WHO
-    if another_watcher_running():
+    lock = lock_path(who)
+    if another_watcher_running(lock):
         return 0
     try:
-        with open(LOCK, "w", encoding="utf-8") as handle:
+        with open(lock, "w", encoding="utf-8") as handle:
             handle.write(str(os.getpid()))
     except OSError:
         return 0                 # cannot lock -> do not risk a second watcher
@@ -115,7 +137,7 @@ def main():
         return 0
     finally:
         try:
-            os.remove(LOCK)
+            os.remove(lock)
         except OSError:
             pass
 
