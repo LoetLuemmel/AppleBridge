@@ -102,15 +102,32 @@ def note_lines():
     The brief is the one push that already happens, so it carries them.
     """
     try:
+        import datetime as _dt
         import notes
-        pending = notes.open_notes(notes.read())
+        lines = notes.read()
+        pending = notes.open_notes(lines)
+        # Answers are bounded by a day rather than shown forever: a session
+        # start is a "what happened recently" moment, and an answer from last
+        # week is history, not news.
+        replies = notes.recent(notes.answers_for(lines, notes.WHO),
+                               _dt.datetime.now(), 86400)
     except Exception:
         return []
-    if not pending:
-        return []
-    out = [f"open questions     : {len(pending)} (notes.py answer <ts> \"…\")"]
-    for note in pending[-5:]:
-        out.append(f"  [{note['ts']}] {note['from']}: {note['text'][:88]}")
+
+    out = []
+    if pending:
+        out.append(f"open questions     : {len(pending)} (notes.py answer <ts> \"…\")")
+        for note in pending[-5:]:
+            out.append(f"  [{note['ts']}] {note['from']}: {note['text'][:88]}")
+    if replies:
+        out.append(f"answers to you     : {len(replies)}")
+        for note in replies[-3:]:
+            out.append(f"  [{note['ts']}] {note['from']}: {note['text'][:88]}")
+    if out and notes.WHO == "agent":
+        # Both sides answer to the same name, so `to=` and "a question I asked"
+        # cannot distinguish them. Say it instead of routing silently wrong.
+        out.append("                     set APPLEBRIDGE_WHO per session, or "
+                   "answers cannot be addressed back")
     return out
 
 

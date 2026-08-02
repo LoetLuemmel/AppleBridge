@@ -64,6 +64,11 @@ def parse_note(line):
             "re": None if fields["re"] == "-" else fields["re"], "text": text}
 
 
+def all_notes(lines):
+    """Every line this channel wrote, in order; foreign lines dropped."""
+    return [n for n in (parse_note(l) for l in lines) if n]
+
+
 def open_notes(lines):
     """Questions nobody has answered yet, oldest first.
 
@@ -71,9 +76,49 @@ def open_notes(lines):
     tracks who has READ what: answering is the only signal, and it is one the
     file can actually carry.
     """
-    notes = [n for n in (parse_note(l) for l in lines) if n]
+    notes = all_notes(lines)
     answered = {n["re"] for n in notes if n["re"]}
     return [n for n in notes if not n["re"] and n["ts"] not in answered]
+
+
+def answers_for(lines, who):
+    """Answers this session should be told about — the RETURN PATH.
+
+    `open_notes` was the whole delivery rule at first, and it carries questions
+    only: an answer sets `re=`, which closes the question and removes it from
+    the list. The asker therefore learned nothing on either surface — the
+    channel delivered outward and was silent coming back. Found by asking
+    "did the other side get a trigger for the answer?" and reading the code.
+
+    Two things count as addressed to this session: an answer to a question it
+    asked, and an answer explicitly sent `to=` it. Both need `APPLEBRIDGE_WHO`
+    to be set per session — with the default both sides are called "agent" and
+    the return path cannot be addressed at all. That is a precondition, not a
+    detail, so `session_brief` says so rather than quietly routing nothing.
+    """
+    notes = all_notes(lines)
+    asked_by_me = {n["ts"] for n in notes if n["from"] == who}
+    return [n for n in notes
+            if n["re"] and (n["to"] == who or n["re"] in asked_by_me)]
+
+
+def recent(notes_, now, seconds):
+    """Of the open notes, those deposited within the last `seconds`.
+
+    The PostToolUse hook fires on EVERY tool call, so announcing all open notes
+    there would repeat the same question after every step until somebody
+    answered it — noise that gets a hook switched off. A time window is the
+    stateless way to say it once and then be quiet: the note announces itself
+    for a while, and the session brief still lists every open one at the next
+    start.
+
+    Deliberately not a "seen" marker. One marker cannot mean two sessions, and
+    a shared one would silence a note for the side that never saw it.
+    """
+    if seconds is None:
+        return list(notes_)
+    cutoff = (now - datetime.timedelta(seconds=seconds)).isoformat(timespec="milliseconds")
+    return [n for n in notes_ if n["ts"] >= cutoff]
 
 
 def read(path=None):
@@ -118,12 +163,20 @@ def main():
     a.add_argument("text")
     a.add_argument("--from", dest="who", default=WHO)
 
-    sub.add_parser("list", help="open questions")
+    lst = sub.add_parser("list", help="open questions")
+    lst.add_argument("--since", type=int, default=None, metavar="SECONDS",
+                     help="only those deposited within the last N seconds "
+                          "(what the PostToolUse hook uses, so it announces a "
+                          "note once instead of after every tool call)")
     args = parser.parse_args()
 
     if args.verb == "list":
-        for note in open_notes(read()):
-            print(f"{note['ts']}  from={note['from']}  {note['text']}")
+        now = datetime.datetime.now()
+        lines = read()
+        for note in recent(open_notes(lines), now, args.since):
+            print(f"note {note['ts']}  from={note['from']}  {note['text']}")
+        for note in recent(answers_for(lines, WHO), now, args.since):
+            print(f"answer {note['ts']}  from={note['from']}  {note['text']}")
         return 0
 
     stamp = _now()
