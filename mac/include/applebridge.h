@@ -72,6 +72,7 @@
 #define PROTO_AFPUNMOUNT "AFPUNMOUNT"  /* host->daemon: unmount a volume by name */
 #define PROTO_DISKINFO "DISKINFO"      /* host->daemon: volume totals/free (PBHGetVInfo, no ToolServer) */
 #define PROTO_MONITOR "MONITOR"        /* host->daemon: hide/show the Verbose window (it covers the desktop) */
+#define PROTO_MACUITREE "MACUITREE"    /* host->daemon: dump the live window/dialog UI tree (Toolbox ground truth) as JSON — read-only, no ToolServer */
 
 /* Wire protocol version advertised in the HELLO reply (see docs/PROTOCOL_v0.2.md). */
 #define AB_PROTOCOL_VERSION 2

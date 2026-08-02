@@ -232,3 +232,30 @@ data 'PICT' (128) {
     $"9D 2B 02 9D 2B 02 9D 2B 02 9D 2B 02 9D 2B 02 9D"
     $"2B 02 9D 2B 02 9D 2B 02 9D 2B 00 FF"
 };
+
+/* ApfelPilot P1.5 test dialog — a real DITL modal so the daemon's own
+ * mac_ui_tree/DLGTREE walk can be validated in-process before the trap patch.
+ * Items: 1=OK (default), 2=Cancel, 3=static text. */
+resource 'DITL' (5000) {
+    {
+        {100, 216, 120, 276}, Button  { enabled, "OK" };
+        {100, 136, 120, 196}, Button  { enabled, "Cancel" };
+        { 20,  20,  84, 276}, StaticText { disabled, "ApfelPilot test dialog — click OK." };
+    }
+};
+
+resource 'DLOG' (5000) {
+    {80, 60, 216, 360},
+    dBoxProc,
+    visible,
+    noGoAway,
+    0x0,
+    5000,
+    "",
+    noAutoCenter
+};
+
+/* The dlgpatch code resource (built separately by BuildDlg.emu) — merged into
+ * the daemon's own fork so DLGINSTALL can Get1Resource('DPAT',128). Absolute
+ * path: Rez runs from ToolServer's default dir, not the AppleBridge folder. */
+include "MeinMac:MPW:AppleBridge:bin:dlgpatch.rsrc" 'DPAT' (128);

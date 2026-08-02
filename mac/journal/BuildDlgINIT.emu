@@ -1,0 +1,29 @@
+# Build AppleBridgeDlgINIT -- the boot INIT that installs the dlgpatch
+# _ModalDialog head patch GLOBALLY (creator 'ABdp'). Run inside MPW from
+# MeinMac:MPW:AppleBridge:.  Mirrors BuildMenuLED.emu / msinit.a.
+#
+#   -model far                 PC-relative refs (a code resource has no A5 world)
+#   -rt INIT=0                 output is a resource of type 'INIT', id 0
+#   -m DlgInit                 entry the System jumps to at boot (must be source-first)
+#   -ra =resSysHeap,resLocked  load into the system heap and lock resident
+# No Interface.o / MacRuntime.o: pure asm, every trap via DC.W OPWORD.
+#
+# SELF-CONTAINED: dlginit.a embeds DPAT 128 (the built dlgpatch, 1780 B) as DC.W
+# literals -- it does NOT Get1Resource it at boot (the INIT's fork is not current
+# during INIT execution; msinit.a documents this). To regenerate the embed after
+# rebuilding dlgpatch, extract the exact bytes DETERMINISTICALLY (DeRez STDOUT over
+# the bridge is flaky for large output):
+#   host:  READFILE:MeinMac:MPW:AppleBridge:bin:dlgpatch.rsrc  -> MacBinary
+#          parse the resource fork, pull 'DPAT' id 128 -> N bytes
+#          emit PatchData as DC.W (8 words/line) + set kPatchLen = N
+# Then rebuild below. (If ToolServer returns STATUS:0 with empty output/no file,
+# its session has degraded -- QUIT:MPSX then relaunch, and re-run.)
+#
+# Install: copy :bin:AppleBridgeDlgINIT into "System Folder:Extensions:" and reboot.
+# After boot: DLGTREE (WITHOUT DLGINSTALL) must report installed:true.
+# Recovery if it wedges the boot: restore the dmg backup host-side (Basilisk shut
+# down), or hold Shift while booting (System 7 skips extensions) then remove it.
+Directory MeinMac:MPW:AppleBridge:
+Asm -model far :src:dlginit.a -o :obj:dlginit.a.o
+Link -rt INIT=0 -m DlgInit -ra =resSysHeap,resLocked :obj:dlginit.a.o -o :bin:AppleBridgeDlgINIT
+SetFile -t INIT -c 'ABdp' :bin:AppleBridgeDlgINIT
