@@ -30,9 +30,68 @@ claimed more than it could see.
 import argparse
 import datetime
 import os
+import shlex
+import subprocess
 import sys
 
 NOTES = os.environ.get("APPLEBRIDGE_NOTES", "/tmp/applebridge_notes.log")
+
+# Remote channel support (Jetson-side). The channel file lives on the Mac; a
+# session driving the Mac by ssh from another host points APPLEBRIDGE_NOTES at
+# `user@host:/path` and this module's TWO i/o points -- read() and append() --
+# transparently go over ssh. Everything downstream (list, brief, the watcher)
+# is unchanged. The price, taken deliberately: a network dependency in a tool
+# that could not fail before, so every ssh error degrades to "nothing" (read ->
+# [], append -> False) rather than raising -- a channel that crashes the hook
+# is worse than one that is briefly silent. Poll slower when remote (the
+# watcher sets APPLEBRIDGE_WATCH_POLL=20).
+_SSH_KEY = os.environ.get("APPLEBRIDGE_SSH_KEY", "")
+_SSH_TIMEOUT = float(os.environ.get("APPLEBRIDGE_SSH_TIMEOUT", "20"))
+
+
+def _remote(spec):
+    """('user@host', '/path') if spec is an ssh target, else None.
+
+    A local path (/tmp/...) has no colon before its first slash; an ssh target
+    is `[user@]host:/path`. The host part must contain no slash and the path
+    must be ABSOLUTE, so none of these are mistaken for a remote target and none
+    triggers an ssh call: a plain local path (no colon at all), a colon inside a
+    filename (`/tmp/a:b` -> host `/tmp/a` has a slash), a Windows-style drive
+    (`C:\\x` -> path `\\x` is not absolute-posix). Only `host:/abs/path` matches."""
+    if not spec or ":" not in spec:
+        return None
+    host, _, path = spec.partition(":")
+    if not host or "/" in host or not path.startswith("/"):
+        return None
+    return host, path
+
+
+def _ssh_run(host, remote_cmd, stdin=None):
+    """Default channel executor: run one ssh command, return (ok, stdout).
+
+    Never raises -- any failure (no network, bad key, timeout) is (False, '').
+    read()/append() take this as an injectable `run` so the remote path is
+    testable without a network, the same shape as run_step(send, ...) in
+    host/mpw.py: the executor is a parameter, and a test passes a fake."""
+    argv = ["ssh"]
+    if _SSH_KEY:
+        argv += ["-i", _SSH_KEY]
+    argv += ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, remote_cmd]
+    try:
+        p = subprocess.run(argv, input=stdin, capture_output=True, text=True,
+                           timeout=_SSH_TIMEOUT)
+        return p.returncode == 0, p.stdout
+    except (OSError, subprocess.SubprocessError):
+        return False, ""
+
+
+# The remote append must be as atomic as the local one. A local `open(a).write`
+# is a single O_APPEND write() -- atomic on a regular file regardless of size.
+# `cat >>` can split a large payload across write()s, so instead run python on
+# the far side doing the IDENTICAL single-write open("a").write(stdin) -- same
+# guarantee, and it needs no `flock` (which macOS lacks anyway).
+_REMOTE_APPEND = ("/usr/bin/python3 -c "
+                  "'import sys; open(sys.argv[1],\"a\").write(sys.stdin.read())' ")
 
 def _default_who():
     """This session's name, without anybody having to configure one.
@@ -171,17 +230,34 @@ def recent(notes_, now, seconds):
     return [n for n in notes_ if n["ts"] >= cutoff]
 
 
-def read(path=None):
+def read(path=None, run=None):
+    """Lines of the channel. Local file, or over ssh when the spec is host:/path.
+    `run` is the ssh executor (default _ssh_run); tests inject a fake."""
+    spec = path or NOTES
+    remote = _remote(spec)
+    if remote:
+        host, rpath = remote
+        ok, out = (run or _ssh_run)(host, "cat " + shlex.quote(rpath))
+        return out.splitlines(keepends=True) if ok else []
     try:
-        with open(path or NOTES, encoding="utf-8") as handle:
+        with open(spec, encoding="utf-8") as handle:
             return handle.readlines()
     except OSError:
         return []
 
 
-def append(line, path=None):
+def append(line, path=None, run=None):
+    """Append one line. Local O_APPEND, or the identical single-write over ssh.
+    `run` is the ssh executor (default _ssh_run); tests inject a fake."""
+    spec = path or NOTES
+    remote = _remote(spec)
+    if remote:
+        host, rpath = remote
+        ok, _ = (run or _ssh_run)(host, _REMOTE_APPEND + shlex.quote(rpath),
+                                  stdin=line + "\n")
+        return ok
     try:
-        with open(path or NOTES, "a", encoding="utf-8") as handle:
+        with open(spec, "a", encoding="utf-8") as handle:
             handle.write(line + "\n")
         return True
     except OSError:
