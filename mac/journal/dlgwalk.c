@@ -42,7 +42,7 @@ void DlgWalk(unsigned char *blk)
     Point          tl, br;
     Handle         ih;
     Str255         tx;
-    short          n, i, itype, btype, count, k, L;
+    short          n, i, itype, btype, count, k, L, defItem;
     unsigned char *rec;
 
     *(short *)(blk + oGeneration) += 1;
@@ -54,6 +54,10 @@ void DlgWalk(unsigned char *blk)
     wp = (WindowPeek)w;
     if (wp->windowKind != dialogKind) return;
     dlg = (DialogPtr)w;
+    defItem = ((DialogPeek)dlg)->aDefItem;       /* the dialog's REAL default item,
+                                                  * not a hardcoded 1 — clicking the
+                                                  * wrong default at a save dialog
+                                                  * means Don't Save instead of Save */
 
     GetPort(&save);
     SetPort((GrafPtr)dlg);
@@ -97,8 +101,8 @@ void DlgWalk(unsigned char *blk)
         *(short *)(rec + 6)  = tl.h;   /* global left   */
         *(short *)(rec + 8)  = br.v;   /* global bottom */
         *(short *)(rec + 10) = br.h;   /* global right  */
-        *(short *)(rec + 12) = (short)(((itype & 0x80) ? 0 : 1) | (i == 1 ? 2 : 0));
-                                        /* bit0=enabled, bit1=default(item 1) */
+        *(short *)(rec + 12) = (short)(((itype & 0x80) ? 0 : 1) | (i == defItem ? 2 : 0));
+                                        /* bit0=enabled, bit1=default (dialog aDefItem) */
         L = tx[0];
         if (L > 31) L = 31;
         *(short *)(rec + 14) = L;

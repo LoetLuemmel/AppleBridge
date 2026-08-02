@@ -2002,7 +2002,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
                 JStr(jh, "{\"index\":");   JNum(jh, (long)i);
                 JStr(jh, ",\"type\":");    JNum(jh, (long)btype);
                 JStr(jh, ",\"enabled\":"); JStr(jh, disabled ? "false" : "true");
-                if (i == 1) JStr(jh, ",\"default\":true");
+                if (i == ((DialogPeek)dlg)->aDefItem) JStr(jh, ",\"default\":true");
                 JStr(jh, ",\"rect\":[");   JNum(jh, (long)tl.v); JStr(jh, ",");
                                            JNum(jh, (long)tl.h); JStr(jh, ",");
                                            JNum(jh, (long)br.v); JStr(jh, ",");

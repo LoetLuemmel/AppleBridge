@@ -9,21 +9,20 @@
 *       points the _ModalDialog ($A991) tool trap at it. Installed at boot from an
 *       extension, the patch lives in the system heap and applies to EVERY app --
 *       the global reach the cross-app dialog walk needs (a running app's
-*       DLGINSTALL is process-local; proven 2026-08-02 via DLGSELFMODAL: the same
-*       code FIRES + walks in-process, generation 0->2, so cross-app generation:0
-*       was reach, not a firing bug).
+*       DLGINSTALL is process-local; proven 2026-08-02 via DLGSELFMODAL).
 *
 *       SELF-CONTAINED like msinit.a: the patch bytes are embedded here (PatchData),
-*       byte-exact from the built DPAT 128 (READFILE + resource-fork parse, 1780 B),
+*       byte-exact from the built DPAT 128 (READFILE + resource-fork parse, 1788 B),
 *       and copied from THIS resource -- NO Get1Resource of a sibling 'DPAT' at boot
 *       (that depends on the extension's fork being current, which it is not during
-*       INIT execution). The dlgpatch code is A5-free + PC-relative (self-sufficient
-*       since the CountDITL fix), so it self-relocates after the BlockMove.
+*       INIT execution). The dlgpatch code is A5-free + PC-relative, so it self-
+*       relocates after the BlockMove.
 *
 *       Position-independent, no A5. Preserves D0-D2/A0-A2. Bails harmlessly (RTS,
 *       trap unchanged) on ANY failure -- a boot INIT must never wedge boot.
 *
-*       Patch block layout: dlgpatch.a (+4 Magic $4450 'DP', +6 Real).
+*       Patch block layout: dlgpatch.a (+4 Magic $4450 'DP', +6 Real). The embedded
+*       walk reports the dialog's REAL default item (aDefItem), not a hardcoded 1.
 *-------------------------------------------------------------------------------------------
 
         CASE    OBJ
@@ -35,42 +34,37 @@ tGetToolTrap    EQU     $A746           ; GetToolTrapAddress (D0=trap -> A0=addr
 tSetToolTrap    EQU     $A647           ; SetToolTrapAddress (A0=addr, D0=trap)
 trModalDialog   EQU     $A991
 kMagic          EQU     $4450           ; dlgpatch 'DP' magic (at block +4)
-kPatchLen       EQU     1780            ; DPAT 128 = 890 words (keep in sync)
+kPatchLen       EQU     1788            ; DPAT 128 = 894 words (keep in sync)
 
 DlgInit         PROC    EXPORT
         MOVEM.L D0-D2/A0-A2,-(SP)
 
-        ; blk = NewPtrSys(kPatchLen)
         MOVE.L  #kPatchLen,D0
         DC.W    tNewPtrSys
         MOVE.L  A0,A2                    ; A2 = blk
         MOVE.L  A0,D0
         BEQ.S   Bail
 
-        ; BlockMove(PatchData, blk, kPatchLen)
         LEA     PatchData(PC),A0         ; src (this resource, PC-relative)
         MOVE.L  A2,A1                    ; dst = blk
         MOVE.L  #kPatchLen,D0
         DC.W    tBlockMove
 
-        ; verify copied magic (at +4) before touching the trap
-        CMP.W   #kMagic,4(A2)
+        CMP.W   #kMagic,4(A2)            ; verify copied magic (at +4)
         BNE.S   Bail
 
-        ; real = GetToolTrapAddress(ModalDialog); stash in blk+6
-        MOVE.W  #trModalDialog,D0
+        MOVE.W  #trModalDialog,D0        ; real = GetToolTrapAddress(ModalDialog)
         DC.W    tGetToolTrap
-        MOVE.L  A0,6(A2)
+        MOVE.L  A0,6(A2)                 ; stash in blk+6
 
-        ; SetToolTrapAddress(blk, ModalDialog) -- go live (global)
-        MOVE.L  A2,A0
+        MOVE.L  A2,A0                     ; SetToolTrapAddress(blk, ModalDialog)
         MOVE.W  #trModalDialog,D0
         DC.W    tSetToolTrap
 Bail
         MOVEM.L (SP)+,D0-D2/A0-A2
         RTS
 
-* ---- embedded 'DPAT' 128 (dlgpatch), byte-exact, 1780 bytes ----
+* ---- embedded 'DPAT' 128 (dlgpatch), byte-exact, 1788 bytes ----
 PatchData
         DC.W    $6000,$0496,$4450,$0000,$0000,$0000,$0000,$0000
         DC.W    $0000,$0000,$0000,$0000,$0000,$0000,$0000,$0000
@@ -147,43 +141,43 @@ PatchData
         DC.W    $0000,$0000,$0000,$0000,$0000,$0000,$0000,$0000
         DC.W    $0000,$0000,$0000,$0000,$48E7,$FFFE,$41FA,$FB62
         DC.W    $5268,$000C,$2F08,$6100,$0012,$588F,$4CDF,$7FFF
-        DC.W    $41FA,$FB4E,$2068,$0006,$4ED0,$4E56,$FEC4,$48E7
+        DC.W    $41FA,$FB4E,$2068,$0006,$4ED0,$4E56,$FEC0,$48E7
         DC.W    $1F38,$266E,$0008,$244B,$526A,$000C,$426A,$000E
         DC.W    $426A,$000A,$594F,$A924,$201F,$2840,$4A80,$6604
-        DC.W    $4EFA,$0200,$200C,$2D40,$FEC4,$2040,$3028,$006C
-        DC.W    $7202,$B041,$6704,$4EFA,$01EA,$200C,$2D40,$FEC8
-        DC.W    $486E,$FECC,$A874,$2F2E,$FEC8,$A873,$246E,$FEC4
-        DC.W    $4AAA,$0076,$671A,$206A,$0076,$4A90,$6712,$206A
-        DC.W    $0076,$2050,$5448,$43EE,$FED8,$22D8,$2290,$600E
-        DC.W    $204C,$7010,$D1C0,$43EE,$FED8,$22D8,$2290,$244B
-        DC.W    $356E,$FED8,$0010,$356E,$FEDA,$0012,$356E,$FEDC
-        DC.W    $0014,$356E,$FEDE,$0016,$206E,$FEC8,$2028,$009C
-        DC.W    $2D40,$FFF8,$6712,$2040,$4A90,$670C,$2040,$2050
-        DC.W    $3010,$5240,$48C0,$6002,$7000,$3A00,$7218,$B041
-        DC.W    $6F02,$7A18,$426E,$FFEE,$204B,$7018,$D1C0,$2D48
-        DC.W    $FFF4,$7C01,$3606,$B645,$6E00,$0134,$2F2E,$FEC8
-        DC.W    $3F03,$486E,$FFEC,$486E,$FEE8,$486E,$FED0,$A98D
-        DC.W    $302E,$FFEC,$727F,$C041,$3E00,$3D6E,$FED2,$FEE2
-        DC.W    $3D6E,$FED0,$FEE0,$486E,$FEE0,$A870,$3D6E,$FED6
-        DC.W    $FEE6,$3D6E,$FED4,$FEE4,$486E,$FEE4,$A870,$422E
-        DC.W    $FEEC,$0C47,$0004,$6D18,$0C47,$0007,$6E12,$202E
-        DC.W    $FEE8,$672A,$2F2E,$FEE8,$486E,$FEEC,$A95E,$601E
-        DC.W    $3607,$7008,$B640,$6706,$7010,$B640,$6610,$202E
-        DC.W    $FEE8,$670A,$2F2E,$FEE8,$486E,$FEEC,$A990,$3606
-        DC.W    $246E,$FFF4,$3483,$3547,$0002,$356E,$FEE0,$0004
-        DC.W    $356E,$FEE2,$0006,$356E,$FEE4,$0008,$356E,$FEE6
-        DC.W    $000A,$302E,$FFEC,$48C0,$0280,$0000,$0080,$6704
-        DC.W    $7000,$6002,$7001,$7201,$B641,$6604,$7202,$6002
-        DC.W    $7200,$8041,$3540,$000C,$7000,$102E,$FEEC,$3D40
-        DC.W    $FFF2,$721F,$B041,$6F06,$3D7C,$001F,$FFF2,$206E
-        DC.W    $FFF4,$316E,$FFF2,$000E,$426E,$FFF0,$362E,$FFF0
-        DC.W    $B66E,$FFF2,$6C28,$3803,$48C4,$2D44,$FFFC,$5284
-        DC.W    $41EE,$FEEC,$1030,$4800,$222E,$FFFC,$7410,$D282
-        DC.W    $2041,$D1EE,$FFF4,$1080,$526E,$FFF0,$60CE,$7030
-        DC.W    $D1AE,$FFF4,$526E,$FFEE,$5246,$6000,$FEC8,$244B
-        DC.W    $356E,$FFEE,$000E,$357C,$0001,$000A,$2F2E,$FECC
-        DC.W    $A873,$4CDF,$1CF8,$4E5E,$4E75,$8744,$6C67,$5761
-        DC.W    $6C6B,$0000
+        DC.W    $4EFA,$0208,$200C,$2D40,$FEC0,$2040,$3028,$006C
+        DC.W    $7202,$B041,$6704,$4EFA,$01F2,$200C,$2D40,$FEC4
+        DC.W    $2040,$3D68,$00A8,$FFF0,$486E,$FEC8,$A874,$2F2E
+        DC.W    $FEC4,$A873,$246E,$FEC0,$4AAA,$0076,$671A,$206A
+        DC.W    $0076,$4A90,$6712,$206A,$0076,$2050,$5448,$43EE
+        DC.W    $FED4,$22D8,$2290,$600E,$204C,$7010,$D1C0,$43EE
+        DC.W    $FED4,$22D8,$2290,$244B,$356E,$FED4,$0010,$356E
+        DC.W    $FED6,$0012,$356E,$FED8,$0014,$356E,$FEDA,$0016
+        DC.W    $206E,$FEC4,$2028,$009C,$2D40,$FFF8,$6712,$2040
+        DC.W    $4A90,$670C,$2040,$2050,$3010,$5240,$48C0,$6002
+        DC.W    $7000,$3A00,$7218,$B041,$6F02,$7A18,$426E,$FFEA
+        DC.W    $204B,$7018,$D1C0,$2D48,$FFF4,$7C01,$3606,$B645
+        DC.W    $6E00,$0134,$2F2E,$FEC4,$3F03,$486E,$FFE8,$486E
+        DC.W    $FEE4,$486E,$FECC,$A98D,$302E,$FFE8,$727F,$C041
+        DC.W    $3E00,$3D6E,$FECE,$FEDE,$3D6E,$FECC,$FEDC,$486E
+        DC.W    $FEDC,$A870,$3D6E,$FED2,$FEE2,$3D6E,$FED0,$FEE0
+        DC.W    $486E,$FEE0,$A870,$422E,$FEE8,$0C47,$0004,$6D18
+        DC.W    $0C47,$0007,$6E12,$202E,$FEE4,$672A,$2F2E,$FEE4
+        DC.W    $486E,$FEE8,$A95E,$601E,$3607,$7008,$B640,$6706
+        DC.W    $7010,$B640,$6610,$202E,$FEE4,$670A,$2F2E,$FEE4
+        DC.W    $486E,$FEE8,$A990,$3606,$246E,$FFF4,$3483,$3547
+        DC.W    $0002,$356E,$FEDC,$0004,$356E,$FEDE,$0006,$356E
+        DC.W    $FEE0,$0008,$356E,$FEE2,$000A,$302E,$FFE8,$48C0
+        DC.W    $0280,$0000,$0080,$6704,$7000,$6002,$7001,$B66E
+        DC.W    $FFF0,$6604,$7202,$6002,$7200,$8041,$3540,$000C
+        DC.W    $7000,$102E,$FEE8,$3D40,$FFEE,$721F,$B041,$6F06
+        DC.W    $3D7C,$001F,$FFEE,$206E,$FFF4,$316E,$FFEE,$000E
+        DC.W    $426E,$FFEC,$362E,$FFEC,$B66E,$FFEE,$6C28,$3803
+        DC.W    $48C4,$2D44,$FFFC,$5284,$41EE,$FEE8,$1030,$4800
+        DC.W    $222E,$FFFC,$7410,$D282,$2041,$D1EE,$FFF4,$1080
+        DC.W    $526E,$FFEC,$60CE,$7030,$D1AE,$FFF4,$526E,$FFEA
+        DC.W    $5246,$6000,$FEC8,$244B,$356E,$FFEA,$000E,$357C
+        DC.W    $0001,$000A,$2F2E,$FEC8,$A873,$4CDF,$1CF8,$4E5E
+        DC.W    $4E75,$8744,$6C67,$5761,$6C6B,$0000
 PatchEnd
         ENDPROC
 
