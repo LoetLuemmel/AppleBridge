@@ -3,7 +3,8 @@
 
 An AI collaborator retains nothing between sessions; what it needs first is the
 small set of things that are true *now*: which version this is, where the branch
-stands, which decisions are of record, what is open on the ledger. This brief is
+stands, which decisions are of record, where the operating notes live, what is
+open on the ledger. This brief is
 the SessionStart counterpart to the Stop-hook `ledger_diff.py` — the pair
 bracket a session with "here is the state" and "did the records drift".
 
@@ -21,6 +22,14 @@ import sys
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# The cross-session record of what to VERIFY before believing the bridge, as
+# opposed to what to know (CLAUDE.md) or what was decided (DECISIONS.md). It is
+# printed rather than merely linked from CLAUDE.md because its entries are the
+# ones a session needs *before* it has a reason to go looking: each was written
+# after somebody spent hours on a layer that was not at fault.
+OPERATING_NOTES = ("https://pit.390er.de/applebridge/workmode/"
+                   "agent-operating-notes-verification-and-traps/")
 
 
 def _run(args, timeout=15):
@@ -86,6 +95,9 @@ def main():
         print(f"last commit        : {last[:100]}")
     print(f"decisions of record: {n_active} active (DECISIONS.md)"
           + (f" — newest: {newest[-1]}" if newest else ""))
+    print(f"operating notes    : {OPERATING_NOTES}")
+    print( "                     read it when a command reports success "
+           "and nothing happened")
     for line in ledger_lines(full):
         print(line)
     return 0
