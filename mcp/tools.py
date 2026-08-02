@@ -2281,4 +2281,22 @@ def call_tool(name: str, arguments: Dict[str, Any]) -> Any:
         raise ValueError(f"Unknown tool: {name}")
 
     handler = TOOL_HANDLERS[name]
-    return handler(**arguments)
+    result = handler(**arguments)
+
+    # One place, so every tool carries it and no tool has to remember to.
+    # The host server appends a NOTES field to the control-port reply when the
+    # session-to-session channel has something; `mac_connection` parks it on the
+    # connection rather than in the result tuple, and it surfaces here as a
+    # sibling key. It rides on traffic that was happening anyway, which is the
+    # whole point: the alternative is a session that only learns of a message
+    # when it thinks to look.
+    #
+    # It never overwrites a handler's own key, and it is only ever added to a
+    # dict — a tool returning something else is left exactly as it was.
+    try:
+        pending = getattr(get_connection(), "last_notes", None)
+        if pending and isinstance(result, dict) and "session_channel" not in result:
+            result["session_channel"] = pending
+    except Exception:                                  # noqa: BLE001
+        pass
+    return result
