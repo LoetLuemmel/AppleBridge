@@ -94,6 +94,26 @@ def ledger_lines(show_all):
     return lines
 
 
+def note_lines():
+    """Open questions from the session-to-session channel, or nothing.
+
+    This is the delivery half of `notes.py`: a session has no event loop, so a
+    question deposited there would sit unseen until somebody thought to look.
+    The brief is the one push that already happens, so it carries them.
+    """
+    try:
+        import notes
+        pending = notes.open_notes(notes.read())
+    except Exception:
+        return []
+    if not pending:
+        return []
+    out = [f"open questions     : {len(pending)} (notes.py answer <ts> \"…\")"]
+    for note in pending[-5:]:
+        out.append(f"  [{note['ts']}] {note['from']}: {note['text'][:88]}")
+    return out
+
+
 def session_line(stamp, hookpid, branch, commit, version):
     """The record of one session start — one greppable line, fields as key=value.
 
@@ -147,6 +167,8 @@ def main():
     print( "                     read it when a command reports success "
            "and nothing happened")
     for line in ledger_lines(full):
+        print(line)
+    for line in note_lines():
         print(line)
 
     record_session(session_line(
