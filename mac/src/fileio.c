@@ -435,7 +435,13 @@ static void LD_unum(char *buf, short *pos, unsigned long n)
 /*
  * LISTDIR:<path> — enumerate a folder with PBGetCatInfo (File Manager only, no
  * ToolServer) and stream a tab-separated listing back. One line per entry:
- *     name<TAB>type<TAB>creator<TAB>dataSize<TAB>modSecs<CR>
+ *     name<TAB>type<TAB>creator<TAB>dataSize<TAB>modSecs<LF>
+ * The row terminator really is LF (0x0A), even though the code below writes
+ * '\r': classic-Mac C maps '\r' to LF and '\n' to CR, the reverse of every
+ * host-side convention. So a response carries BOTH endings — the SendCommandResult
+ * framing around it is CR-separated, these rows are LF-separated. Host parsers
+ * must split on either; assuming CR here yields an empty listing rather than an
+ * error, which is how the trap hides (measured on the wire 2026-08-02).
  * Directories report type "fldr", empty creator, size 0. The listing is built
  * into a Handle and sent via the normal SendCommandResult framing (STATUS:0 +
  * STDOUT), so the host's length-framed reader handles any size.
@@ -652,7 +658,9 @@ OSErr SwapSelf(void)
  * It also pairs with AFPMOUNT — having mounted a server volume, the next
  * question is invariably how much room is on it.
  *
- * One line per volume:  name<TAB>vRefNum<TAB>totalBytes<TAB>freeBytes<CR>
+ * One line per volume:  name<TAB>vRefNum<TAB>totalBytes<TAB>freeBytes<LF>
+ * LF (0x0A), for the same reason as LISTDIR above: the '\r' in the code becomes
+ * LF under classic-Mac C, while the framing around it stays CR.
  *
  * Sizes are computed as blocks * blockSize in UNSIGNED long arithmetic: a 2 GB
  * volume overflows a signed long, and a negative "free space" would be worse
