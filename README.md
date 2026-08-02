@@ -33,6 +33,33 @@ Result: Classic Mac app running in authentic 1990s environment
 - **Debug with feedback** - Full command output capture via ToolServer
 - **Learn retro programming** - AI tutor for 68k assembly and Toolbox APIs
 
+On my bootstrap way developing AppleBridge, I had the desire to have something like 'IP-Runner' ($WINDOWS) for AppleTalk.
+And like in a ferry tail, I typed my wish and BANG! MacNetScan was born: https://macintoshgarden.org/apps/macnetscan
+
+AppleBridge on a command prompt isn't really sexy with its STATUS and DISKLIST commands.
+But it was designed for Claude Code, talking to folks like ToolServer and - oh Boy - MPW!
+In the Garden and the Repository, there are treasure chests of powerful Macintosh tools to simply plug-in and compile what you want in plain Assembler or C.
+These days in the 80/90-ties, someone able to program MPW was someone with Macintosh superpower. - I did work for the big players, even they could not afford MPW.
+
+I set the bar even higher and implemented mouse and system menu operations in MCP.
+That's because my last training at Symantec in Amsterdam got me my own THINK C compiler. And a short while back (~1993), I studied and swallowed Dave Mark's 'Macintosh C Programming' books.
+
+That was really a hart nut for Claude Code, but after introducing how to screenshot, operating the mouse and making use of Macintosh Command Keys, Claude started to explore available libraries
+and did his thing: 
+
+<img width="512" height="352" alt="GraphicsDemo" src="https://github.com/user-attachments/assets/0865a4c8-78cc-493e-96db-6ccd1aa03276" />
+
+You can read the full story here: https://td5.390er.de/applebridge/think-cpp-graphics-demo-walkthrough/
+
+And I was really impressed about what we could establish within three days. - Nope!
+Claude Code made it in about 3 minutes and the biggest challenge were time consuming screenshots.
+But that was the proof, with AppleBridge big things become possible.
+
+But back to MPW. It's syntax is based on unix like commands and here the three Studges MPW, ToolServer and MPW come together for a perfect play.
+In total over 6 months of time I established AppleBridge in a bootstrap way. AppleBridge did some heritage from [ClaudeBridge]([https://example.com](https://td5.390er.de/claudebridge/) "AppleBridge's little sister") . Step-by-step I established 30 MCP tools that allow Claude Code to access the Macintosh System and almost all toggles of MPW and Think C.
+
+
+
 ## Architecture
 
 ```mermaid
