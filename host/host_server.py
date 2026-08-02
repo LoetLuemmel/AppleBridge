@@ -27,6 +27,7 @@ already content-agnostic) — no per-response size limit on this side.
 import base64
 import errno
 import hmac
+import datetime
 import json
 import os
 import re
@@ -41,6 +42,15 @@ try:
     import bridge_doctor  # stdlib-only cross-layer stack diagnosis (DOCTOR verb)
 except ImportError:       # deployed copy predating the module: degrade, don't die
     bridge_doctor = None
+try:
+    import guest_input    # drive the guest's REAL mouse (HOSTCLICK/HOSTMENU verbs)
+except ImportError:       # deployed copy predating the module: degrade, don't die
+    guest_input = None
+try:                      # session-to-session channel, for the MACSTATUS counters
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools"))
+    import notes
+except Exception:         # deployed copy predating it, or an unreadable channel
+    notes = None
 
 import host_config                 # where the host's own address comes from (R1)
 
@@ -1559,6 +1569,65 @@ def _recv_control_command(conn):
     return data.decode("utf-8", errors="replace").strip()
 
 
+def notes_payload(window=600):
+    """One line for the NOTES field, or "" when the channel is quiet.
+
+    Announcing, not routing. The control port carries no identity — every client
+    opens a socket per command and closes it — so the server cannot know WHO is
+    asking and must not pretend to. It reports THAT the channel has something;
+    `notes.py list` reads the caller's own session name from its environment and
+    is the only side that can say whether it is addressed to them.
+
+    Counts and a pointer, never the note text. The field is length-delimited so
+    arbitrary text would be safe to transport, but a body carrying a CR would
+    still break every line-oriented reader downstream, and the text is one
+    command away for anyone who wants it.
+
+    Never raises: this runs on the path of every control response.
+    """
+    if notes is None:
+        return ""
+    try:
+        lines = notes.read()
+        open_count = len(notes.open_notes(lines))
+        fresh = len(notes.recent(notes.all_notes(lines),
+                                 datetime.datetime.now(), window))
+        if not (open_count or fresh):
+            return ""
+        parts = []
+        if open_count:
+            parts.append(f"{open_count} open")
+        if fresh:
+            parts.append(f"{fresh} in the last {window // 60}m")
+        # ASCII only. The declared length counts CHARACTERS here, as everywhere
+        # on this port, so a non-ASCII body would desync any reader that counted
+        # bytes instead. Not a question worth leaving open in a wire format.
+        return f"session channel: {', '.join(parts)} - run host/tools/notes.py list"
+    except Exception:
+        return ""
+
+
+def with_notes(frame):
+    """Splice the optional NOTES field in before the frame's terminator.
+
+    A named field appended at the END is the one extension this protocol takes
+    without a flag day: every reader in the tree seeks its fields BY NAME —
+    `mac_connection` walks lines and skips what it does not recognise,
+    `smoke_e2e` and `build.py` search for their tags, `send_command` does not
+    parse at all — so a field nobody looks for is a field nobody trips over.
+    Verified against all four before this was written, because "it should be
+    ignored" is a prediction and the parsers are checkable.
+
+    Only the normal response path carries it. The two early rejections (control
+    auth, no daemon linked) are left alone: a caller being told the bridge is
+    down does not need a second subject in the same breath.
+    """
+    payload = notes_payload()
+    if not payload or not frame.endswith("\r\r"):
+        return frame
+    return f"{frame[:-1]}NOTES:{len(payload)}\r{payload}\r\r"
+
+
 def run_control_server(server):
     """Non-TTY production path: serve control commands, auto-re-accept the Mac."""
     bind_addr, bind_src = host_config.resolve_control_bind()
@@ -1743,6 +1812,55 @@ def run_control_server(server):
                             except Exception as e:
                                 m = f"doctor failed: {e}"
                                 out = f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(m)}\r{m}\r\r"
+                    elif cmd.startswith("HOSTCLICK:"):
+                        # Click the guest's REAL mouse at guest coords — the only
+                        # way to reach modal dialogs / menus (their tracking loops
+                        # poll the hardware pointer). Handled HOST-side; needs
+                        # cliclick on PATH + Accessibility permission for this
+                        # process. Args: HOSTCLICK:guestX:guestY[:count].
+                        if guest_input is None:
+                            m = "guest_input module not deployed"
+                            out = f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(m)}\r{m}\r\r"
+                        else:
+                            try:
+                                p = cmd[len("HOSTCLICK:"):].split(":")
+                                gx, gy = int(p[0]), int(p[1])
+                                count = int(p[2]) if len(p) > 2 and p[2] else 1
+                                with guest_input.Session() as s:
+                                    pt = s.point(gx, gy)
+                                    s.cliclick(guest_input.build_click(pt, count, None))
+                                payload = json.dumps({"ok": True, "guest": [gx, gy],
+                                                      "host": list(pt), "count": count})
+                                out = (f"STATUS:0\rSTDOUT:{len(payload)}\r{payload}"
+                                       f"\rSTDERR:0\r\r")
+                                log(f"hostclick guest=({gx},{gy}) -> host={list(pt)}")
+                            except Exception as e:
+                                m = f"hostclick failed: {e}"
+                                out = f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(m)}\r{m}\r\r"
+                    elif cmd.startswith("HOSTMENU:"):
+                        # Pull down a menu with the REAL mouse in ONE gesture
+                        # (title press -> drag to item -> release; split gestures
+                        # leave the menu open and starve the daemon). Guest coords:
+                        # HOSTMENU:titleX:titleY:itemX:itemY.
+                        if guest_input is None:
+                            m = "guest_input module not deployed"
+                            out = f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(m)}\r{m}\r\r"
+                        else:
+                            try:
+                                p = cmd[len("HOSTMENU:"):].split(":")
+                                tx, ty, ix, iy = int(p[0]), int(p[1]), int(p[2]), int(p[3])
+                                with guest_input.Session() as s:
+                                    tp = s.point(tx, ty)
+                                    ip = s.point(ix, iy)
+                                    s.cliclick(guest_input.build_menu_gesture(tp, ip))
+                                payload = json.dumps({"ok": True, "title": [tx, ty],
+                                                      "item": [ix, iy]})
+                                out = (f"STATUS:0\rSTDOUT:{len(payload)}\r{payload}"
+                                       f"\rSTDERR:0\r\r")
+                                log(f"hostmenu title=({tx},{ty}) item=({ix},{iy})")
+                            except Exception as e:
+                                m = f"hostmenu failed: {e}"
+                                out = f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(m)}\r{m}\r\r"
                     elif cmd == "CLIPGET":
                         resp = server.clipboard_get()
                         out = resp if resp is not None else "No response"
@@ -1856,7 +1974,10 @@ def run_control_server(server):
                         else:
                             out = f"STATUS:0\rSTDOUT:{len(body)}\r{body}\rSTDERR:0\r\r"
                             log(f"LOG -> {len(body)}B")
-                    elif (cmd == "PING" or cmd == "QUITDAEMON" or cmd == "REBOOT"
+                    elif (cmd == "MACUITREE" or cmd == "DLGTEST" or cmd == "DLGOFF"
+                          or cmd == "DLGINSTALL" or cmd == "DLGTREE" or cmd == "DLGUNINSTALL"
+                          or cmd == "DLGSELFMODAL"
+                          or cmd == "PING" or cmd == "QUITDAEMON" or cmd == "REBOOT"
                           or cmd == "SWAPSELF" or cmd == "SHUTDOWN"
                           or cmd == "JGATE" or cmd == "JMENU" or cmd == "JABOUT"
                           or cmd == "JSF" or cmd == "JSAFE" or cmd == "JPROBE"
@@ -1878,7 +1999,7 @@ def run_control_server(server):
                         log(f"cmd: {redact_secrets(cmd)[:60]!r}")
                         resp = server.send_command(cmd)
                         out = resp if resp is not None else "No response"
-                    ctrl_conn.sendall(out.encode("utf-8", errors="replace"))
+                    ctrl_conn.sendall(with_notes(out).encode("utf-8", errors="replace"))
             except Exception as e:  # never let one bad control conn kill the server
                 log(f"control error: {e}")
                 try:

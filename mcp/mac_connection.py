@@ -35,6 +35,10 @@ class MacConnection:
         self.port = port
         self.socket: Optional[socket.socket] = None
         self.connected = False
+        # Set from the optional NOTES field of the last reply; None when the
+        # session channel is quiet. Deliberately last-write-wins rather than a
+        # queue: it is an announcement that something is there, not the thing.
+        self.last_notes: Optional[str] = None
 
     def connect(self) -> bool:
         """Connect to MacintoshBridgeHost server."""
@@ -204,6 +208,26 @@ class MacConnection:
                         chars_read += len(lines[i]) + 1
                         i += 1
                     stderr = '\n'.join(stderr_lines)
+                    continue
+                except ValueError:
+                    pass
+            elif line.startswith("NOTES:"):
+                # Optional trailing field: the host server announces that the
+                # session-to-session channel has something. Kept OFF the
+                # (status, stdout, stderr) tuple every caller unpacks — it is
+                # not part of the command's result and must not be mistaken for
+                # output. A reader that predates it skips this branch and is
+                # unaffected, which is the property that let the field be added
+                # without a flag day.
+                try:
+                    length = int(line[6:])
+                    i += 1
+                    body, chars_read = [], 0
+                    while i < len(lines) and chars_read < length:
+                        body.append(lines[i])
+                        chars_read += len(lines[i]) + 1
+                        i += 1
+                    self.last_notes = '\n'.join(body).strip() or None
                     continue
                 except ValueError:
                     pass
