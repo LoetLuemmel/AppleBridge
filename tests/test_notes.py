@@ -241,6 +241,28 @@ class TheSessionName(unittest.TestCase):
 
 class TheHelp(unittest.TestCase):
 
+    def _run(self, *args):
+        import subprocess
+        return subprocess.run([sys.executable, notes.__file__, *args],
+                              capture_output=True, text=True, timeout=30)
+
+    def test_the_wrong_flag_is_refused_with_the_right_one(self):
+        """Plain argparse answers `unrecognized arguments: --to x` plus a usage
+        line — true and useless. The help text alone fixed it for whoever asks
+        first, not for whoever stumbles, and stumbling is the case that produced
+        it."""
+        run = self._run("answer", "2026-08-02T10:00:00.000", "text",
+                        "--to", "apfelpilot-live")
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("takes no --to", run.stderr)
+        self.assertIn("note --to apfelpilot-live", run.stderr,
+                      "the refusal never names the verb that does take it")
+
+    def test_the_refused_flag_stays_out_of_the_help(self):
+        """It is accepted to be refused, not offered."""
+        run = self._run("answer", "--help")
+        self.assertNotIn("\n  --to", run.stdout)
+
     def test_the_answer_verb_says_it_needs_no_recipient(self):
         """`ask` and `note` take --to, `answer` does not — the question names
         the recipient. Argparse reported that only AFTER a long answer had been
