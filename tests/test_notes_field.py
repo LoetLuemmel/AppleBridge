@@ -89,6 +89,53 @@ class TheField(unittest.TestCase):
         for junk in ("", "No response", "ERROR: boom", "STATUS:0\rSTDOUT:0"):
             self.assertEqual(host_server.with_notes(junk), junk)
 
+    def test_the_reply_path_actually_calls_it(self):
+        """Every other test here calls `with_notes` DIRECTLY, so all of them stay
+        green while the response path stops calling it — which is exactly what
+        happened: a branch removed the call at the send site, checks passed, and
+        the field would have gone silently dead. A feature nothing wires up is
+        indistinguishable from a feature nothing has.
+
+        So this asserts the WIRING, not the function: no control reply may send
+        the bare `out` variable, and at least one send must pass it through
+        `with_notes`.
+        """
+        import ast
+        with open(os.path.join(_ROOT, "host", "host_server.py"), encoding="utf-8") as h:
+            tree = ast.parse(h.read())
+
+        wrapped = 0
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "sendall"
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "ctrl_conn" and node.args):
+                continue
+            arg = node.args[0]
+            # The send is `<expr>.encode(...)`; <expr> is what we care about.
+            if not (isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute)
+                    and arg.func.attr == "encode"):
+                continue
+            sent = arg.func.value
+            if isinstance(sent, ast.Name) and sent.id == "out":
+                self.fail(f"host_server.py:{node.lineno} sends the raw response; "
+                          "the NOTES field is dropped for every command")
+            if (isinstance(sent, ast.Call) and isinstance(sent.func, ast.Name)
+                    and sent.func.id == "with_notes"):
+                wrapped += 1
+        self.assertTrue(wrapped, "no control reply passes through with_notes at all")
+
+    def test_the_deploy_declares_the_dependency_it_needs(self):
+        """host_server imports tools/notes.py, and the deploy script is the one
+        place that knows the runtime set. Dropped from there, the import
+        degrades to `notes = None` and the field is absent with nothing to
+        show for it — measured once already, on 2026-08-02."""
+        with open(os.path.join(_ROOT, "host", "deploy_host.sh"), encoding="utf-8") as h:
+            script = h.read()
+        self.assertIn("tools/notes.py", script,
+                      "deploy_host.sh no longer carries the notes dependency")
+
     def test_the_channel_being_unreadable_costs_the_field_not_the_reply(self):
         notes.NOTES = "/nonexistent-dir/notes.log"
         self.assertEqual(host_server.notes_payload(), "")
