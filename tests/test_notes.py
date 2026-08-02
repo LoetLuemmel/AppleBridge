@@ -131,7 +131,7 @@ class TheReturnPath(unittest.TestCase):
         ]
 
     def test_the_asker_is_told_the_answer(self):
-        got = notes.answers_for(self._conversation(), "A")
+        got = notes.inbox_for(self._conversation(), "A")
         self.assertEqual([n["text"] for n in got], ["zero, measured"])
 
     def test_an_answer_addressed_to_me_counts_even_if_i_did_not_ask(self):
@@ -139,17 +139,59 @@ class TheReturnPath(unittest.TestCase):
             notes.format_note("2026-08-02T10:04:00.000", "B", "A",
                               "2026-08-02T10:02:00.000", "you may want this too")]
         self.assertIn("you may want this too",
-                      [n["text"] for n in notes.answers_for(lines, "A")])
+                      [n["text"] for n in notes.inbox_for(lines, "A")])
 
     def test_somebody_elses_answer_is_not_mine(self):
-        got = notes.answers_for(self._conversation(), "A")
+        got = notes.inbox_for(self._conversation(), "A")
         self.assertNotIn("answer to C", [n["text"] for n in got])
 
     def test_the_answerer_does_not_get_its_own_answer_back(self):
-        self.assertEqual(notes.answers_for(self._conversation(), "B"), [])
+        self.assertEqual(notes.inbox_for(self._conversation(), "B"), [])
 
     def test_an_unanswered_question_is_not_an_answer(self):
-        self.assertTrue(all(n["re"] for n in notes.answers_for(self._conversation(), "A")))
+        self.assertTrue(all(n["re"] for n in notes.inbox_for(self._conversation(), "A")))
+
+
+class TheThirdKind(unittest.TestCase):
+    """A format with only ask and answer forces every message into one of the
+    two. Twenty minutes of real use showed what that costs: the other session
+    sent a status report, had nothing to point `re=` at, and it registered as a
+    question that would have stayed open forever."""
+
+    def _note(self, ts, who, to, text):
+        return notes.format_note(ts, who, to, notes.NOTE_MARKER, text)
+
+    def test_a_statement_is_never_an_open_question(self):
+        lines = [self._note("2026-08-02T10:00:00.000", "B", "all", "INIT built")]
+        self.assertEqual(notes.open_notes(lines), [])
+
+    def test_a_broadcast_statement_reaches_the_other_side(self):
+        lines = [self._note("2026-08-02T10:00:00.000", "B", "all", "INIT built")]
+        self.assertEqual([n["text"] for n in notes.inbox_for(lines, "A")], ["INIT built"])
+
+    def test_a_statement_does_not_come_back_to_its_author(self):
+        """A channel that echoes you is a channel you stop reading."""
+        lines = [self._note("2026-08-02T10:00:00.000", "B", "all", "INIT built")]
+        self.assertEqual(notes.inbox_for(lines, "B"), [])
+
+    def test_a_statement_addressed_elsewhere_is_not_mine(self):
+        lines = [self._note("2026-08-02T10:00:00.000", "B", "C", "for C only")]
+        self.assertEqual(notes.inbox_for(lines, "A"), [])
+
+    def test_the_three_kinds_are_told_apart(self):
+        question = notes.format_note("T1", "A", "all", None, "q")
+        answer = notes.format_note("T2", "B", "all", "T1", "a")
+        statement = self._note("T3", "B", "all", "s")
+        self.assertEqual(notes.parse_note(question)["kind"], "question")
+        self.assertEqual(notes.parse_note(answer)["kind"], "answer")
+        self.assertEqual(notes.parse_note(statement)["kind"], "note")
+
+    def test_lines_written_before_the_third_kind_still_parse(self):
+        """The kind rides in the existing `re=` field precisely so the format
+        did not change and nothing already in the channel became unreadable."""
+        old = "2026-08-02T10:00:00.000 from=A to=all re=- an older question"
+        self.assertEqual(notes.parse_note(old)["kind"], "question")
+        self.assertIsNone(notes.parse_note(old)["re"])
 
 
 class Delivery(unittest.TestCase):
@@ -184,7 +226,7 @@ class Delivery(unittest.TestCase):
             lines = session_brief.note_lines()
         finally:
             notes.NOTES, notes.WHO = old, oldwho
-        self.assertTrue(any("answers to you" in l for l in lines), lines)
+        self.assertTrue(any("for you" in l for l in lines), lines)
         self.assertTrue(any("zero, measured" in l for l in lines), lines)
 
     def test_the_brief_names_the_precondition_instead_of_routing_blind(self):

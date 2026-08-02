@@ -46,8 +46,21 @@ def format_note(stamp, who, to, answering, text):
     return f"{stamp} from={who or '?'} to={to or 'all'} re={answering or '-'} {flat}"
 
 
+# The `re=` field carries the kind as well as the target, so the line format
+# did not have to change and every line written before this stays parseable:
+#   re=-      a question — stays open until answered
+#   re=note   a statement — nothing to answer, so it is never open
+#   re=<ts>   an answer — closes that question
+#
+# The third kind exists because its absence showed up in twenty minutes of real
+# use: the other session sent a status report, had nothing to point `re=` at,
+# and it registered as a question that would have stayed open forever. A format
+# with only ask and answer forces every message into one of the two.
+NOTE_MARKER = "note"
+
+
 def parse_note(line):
-    """-> dict, or None for a line this channel did not write."""
+    """-> dict with a `kind`, or None for a line this channel did not write."""
     parts = (line or "").strip().split(" ", 4)
     if len(parts) < 5:
         return None
@@ -60,8 +73,15 @@ def parse_note(line):
         fields[key] = value
     if set(fields) != {"from", "to", "re"}:
         return None
+    marker = fields["re"]
+    if marker == "-":
+        kind, target = "question", None
+    elif marker == NOTE_MARKER:
+        kind, target = "note", None
+    else:
+        kind, target = "answer", marker
     return {"ts": stamp, "from": fields["from"], "to": fields["to"],
-            "re": None if fields["re"] == "-" else fields["re"], "text": text}
+            "re": target, "kind": kind, "text": text}
 
 
 def all_notes(lines):
@@ -78,11 +98,12 @@ def open_notes(lines):
     """
     notes = all_notes(lines)
     answered = {n["re"] for n in notes if n["re"]}
-    return [n for n in notes if not n["re"] and n["ts"] not in answered]
+    return [n for n in notes
+            if n["kind"] == "question" and n["ts"] not in answered]
 
 
-def answers_for(lines, who):
-    """Answers this session should be told about — the RETURN PATH.
+def inbox_for(lines, who):
+    """What this session should be told about — the RETURN PATH.
 
     `open_notes` was the whole delivery rule at first, and it carries questions
     only: an answer sets `re=`, which closes the question and removes it from
@@ -90,16 +111,27 @@ def answers_for(lines, who):
     channel delivered outward and was silent coming back. Found by asking
     "did the other side get a trigger for the answer?" and reading the code.
 
-    Two things count as addressed to this session: an answer to a question it
-    asked, and an answer explicitly sent `to=` it. Both need `APPLEBRIDGE_WHO`
-    to be set per session — with the default both sides are called "agent" and
-    the return path cannot be addressed at all. That is a precondition, not a
-    detail, so `session_brief` says so rather than quietly routing nothing.
+    Three things land here: an answer to a question this session asked, an
+    answer sent `to=` it, and a statement addressed to it or broadcast. Its own
+    messages never come back — a channel that echoes you is a channel you stop
+    reading.
+
+    All of it needs `APPLEBRIDGE_WHO` set per session: with the default both
+    sides are called "agent", so nothing can be addressed. That is a
+    precondition, not a detail, so `session_brief` says so rather than quietly
+    routing nothing.
     """
     notes = all_notes(lines)
     asked_by_me = {n["ts"] for n in notes if n["from"] == who}
-    return [n for n in notes
-            if n["re"] and (n["to"] == who or n["re"] in asked_by_me)]
+    out = []
+    for note in notes:
+        if note["from"] == who:
+            continue
+        if note["kind"] == "answer" and (note["to"] == who or note["re"] in asked_by_me):
+            out.append(note)
+        elif note["kind"] == "note" and note["to"] in (who, "all"):
+            out.append(note)
+    return out
 
 
 def recent(notes_, now, seconds):
@@ -163,6 +195,11 @@ def main():
     a.add_argument("text")
     a.add_argument("--from", dest="who", default=WHO)
 
+    n = sub.add_parser("note", help="state something; nothing to answer")
+    n.add_argument("text")
+    n.add_argument("--to", default="all")
+    n.add_argument("--from", dest="who", default=WHO)
+
     lst = sub.add_parser("list", help="open questions")
     lst.add_argument("--since", type=int, default=None, metavar="SECONDS",
                      help="only those deposited within the last N seconds "
@@ -174,13 +211,14 @@ def main():
         now = datetime.datetime.now()
         lines = read()
         for note in recent(open_notes(lines), now, args.since):
-            print(f"note {note['ts']}  from={note['from']}  {note['text']}")
-        for note in recent(answers_for(lines, WHO), now, args.since):
-            print(f"answer {note['ts']}  from={note['from']}  {note['text']}")
+            print(f"question {note['ts']}  from={note['from']}  {note['text']}")
+        for note in recent(inbox_for(lines, WHO), now, args.since):
+            print(f"{note['kind']} {note['ts']}  from={note['from']}  {note['text']}")
         return 0
 
     stamp = _now()
-    answering = args.ts if args.verb == "answer" else None
+    answering = args.ts if args.verb == "answer" else (
+        NOTE_MARKER if args.verb == "note" else None)
     line = format_note(stamp, args.who, getattr(args, "to", "all"), answering, args.text)
     if not append(line):
         print(f"could not write {NOTES}", file=sys.stderr)
