@@ -625,6 +625,40 @@ merely stayed unset would have been consistent with three different causes.
 Distinguishing "the trap was never entered" from "the trap ran and my handler
 was wrong" is what separates a diagnosis from a guess, and it was available here
 for the price of reading one field.
+
+#### Correction, 2026-08-03 — the corollary above is wrong, the rule is not
+
+The **observation** stands: arming while an alert is standing produces no walk,
+and `armed` stays `true`. The **inference** drawn from it — "the `_ModalDialog`
+trap was not entered at any point during the running alert, so the loop itself
+runs off-trap" — does not follow, and it is retracted.
+
+`ModalDialog` is entered **exactly once per dialog**. It does not return on each
+event: it runs its *own* event loop inside the trap and comes back only when an
+enabled item has been hit. So the single trap entry happens when the dialog goes
+up, before any later arming, and there is no second entry while it stands. That
+a mid-alert `DLGARM` changes nothing therefore says nothing whatever about
+on-trap versus off-trap — it says the one entry was already past.
+
+The section above this one records the same question being settled by
+measurement: `Alert`/`CautionAlert` **do** go through the `_ModalDialog` trap;
+the silence was scope, not bypass. This corollary contradicted a finding already
+in this file, and was written anyway.
+
+Two things made it possible, both worth naming because they are cheap to repeat.
+The measurement that produced it — `generation` moving by exactly one per dialog
+— fits *both* explanations, the one-shot self-disarm and the single trap entry;
+one was picked without a test to separate them. And the same author had asserted
+elsewhere that `ModalDialog` "is called in a loop, so one dialog produces many
+entries", which is the opposite of what the same run had just shown.
+
+**What survives, and is now better founded:** arming must strictly precede the
+dialog. The reason is no longer "the loop may be off-trap" but the sharper one —
+**there is exactly one trap entry, at the moment the dialog appears.** Arriving
+after it is not late, it is inert. The practice above is unchanged; only its
+justification was wrong, which is its own lesson: a rule can be right for a
+reason that is not.
+
 ## The keyboard reaches a modal dialog; the synthetic mouse does not
 
 A modal tracking loop **polls the hardware pointer**, which is why `mac_click`
