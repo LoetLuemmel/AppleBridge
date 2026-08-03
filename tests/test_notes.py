@@ -421,5 +421,139 @@ class Delivery(unittest.TestCase):
             notes.NOTES = old
 
 
+class NothingIsLostQuietly(unittest.TestCase):
+    """A channel may fail to read a line. It may not fail SILENTLY.
+
+    Measured 2026-08-03: the other session wrote three notes whose leading
+    timestamp was missing. `parse_note` returned None for each, `all_notes`
+    filtered them away, and so `list`, the session brief and the watcher all
+    said nothing. One of the three asked for a technical review and stated that
+    its author was HOLDING ITS WORK until the answer arrived. The answer was
+    never given, because this side was never shown the question. It surfaced
+    only because the human pasted the other session's transcript and asked
+    whether it was true.
+
+    The same failure struck in the other direction within the hour: `answer`
+    was given a target that named no question, so it wrote a full review that
+    closed nothing, was addressed to nobody, and that `list` does not print.
+    """
+
+    # Verbatim from the channel file, line 69 — the shape that was lost.
+    LOST = ("from=apfelpilot-live to=sess-9e5cc132 re=note "
+            "FERTIGSTELLUNG START: bridge_client.dialog_tree() gegen DLGTREE")
+
+    def _channel(self, *lines):
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(prefix="ab-notes-"), "notes.log")
+        with open(path, "w", encoding="utf-8") as handle:
+            for line in lines:
+                handle.write(line + "\n")
+        return path
+
+    def test_a_line_without_a_timestamp_is_reported_not_dropped(self):
+        good = notes.format_note("2026-08-02T22:35:47.877", "apfelpilot-live",
+                                 "all", notes.NOTE_MARKER, "MESH bestaetigt")
+        lines = [good + "\n", self.LOST + "\n"]
+        self.assertEqual(len(notes.all_notes(lines)), 1)
+        lost = notes.unreadable(lines)
+        self.assertEqual(len(lost), 1)
+        self.assertEqual(lost[0]["lineno"], 2)
+        self.assertIn("FERTIGSTELLUNG", lost[0]["raw"])
+
+    def test_a_well_formed_channel_reports_nothing_lost(self):
+        """The check has to be quiet when there is nothing wrong, or it is a
+        warning nobody reads. Blank lines are not losses either."""
+        good = notes.format_note("2026-08-02T22:35:47.877", "a", "all",
+                                 notes.NOTE_MARKER, "fine")
+        self.assertEqual(notes.unreadable([good + "\n", "\n", "   \n"]), [])
+
+    def test_the_brief_puts_a_lost_line_above_the_open_questions(self):
+        """Mail that was sent and never arrived outranks mail that arrived and
+        is merely unanswered."""
+        path = self._channel(
+            notes.format_note("2026-08-03T06:00:00.000", "other", "all", None,
+                              "an open question"),
+            self.LOST)
+        old, notes.NOTES = notes.NOTES, path
+        oldwho, notes.WHO = notes.WHO, "me"
+        try:
+            out = session_brief.note_lines()
+        finally:
+            notes.NOTES, notes.WHO = old, oldwho
+        self.assertTrue(any("UNREADABLE" in l for l in out), out)
+        first_bad = next(i for i, l in enumerate(out) if "UNREADABLE" in l)
+        first_open = next(i for i, l in enumerate(out) if "open questions" in l)
+        self.assertLess(first_bad, first_open, out)
+
+    def test_the_watcher_wakes_for_a_lost_line_it_did_not_start_with(self):
+        """The watcher was one of the three readers that stayed quiet."""
+        import notes_watch
+        good = notes.format_note("2026-08-03T06:00:00.000", "other", "all",
+                                 notes.NOTE_MARKER, "hello")
+        started_with = [good + "\n"]
+        self.assertEqual(notes_watch.lost_since(started_with, 1), [])
+        arrived = started_with + [self.LOST + "\n"]
+        self.assertEqual(len(notes_watch.lost_since(arrived, 1)), 1)
+
+    def test_a_lost_line_that_predates_the_watcher_does_not_wake_it(self):
+        """Otherwise every turn of every session re-announces the same old
+        breakage, and the wake-up gets switched off within a day."""
+        import notes_watch
+        lines = [self.LOST + "\n"]
+        self.assertEqual(notes_watch.lost_since(lines, len(lines)), [])
+
+
+class AnAnswerReachesSomebody(unittest.TestCase):
+
+    def _run(self, argv, path):
+        """notes.main() with the channel pointed at a temp file."""
+        import contextlib
+        import io
+        old, notes.NOTES = notes.NOTES, path
+        argv_old, sys.argv = sys.argv, ["notes.py"] + argv
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                code = notes.main()
+        except SystemExit as exc:            # argparse
+            code = exc.code
+        finally:
+            notes.NOTES, sys.argv = old, argv_old
+        with open(path, encoding="utf-8") as handle:
+            return code, err.getvalue(), handle.readlines()
+
+    def test_answering_a_timestamp_that_names_no_question_writes_nothing(self):
+        """`answer konsultation "…"` wrote a full technical review that closed
+        nothing and reached nobody. Refusing costs one retry; accepting costs
+        the message."""
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(prefix="ab-notes-"), "notes.log")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(notes.format_note("2026-08-03T07:08:24.547", "other",
+                                           "me", None, "a real question") + "\n")
+        code, err, lines = self._run(
+            ["answer", "konsultation", "the review", "--from", "me"], path)
+        self.assertEqual(code, 2)
+        self.assertEqual(len(lines), 1, "the answer must NOT have been written")
+        self.assertIn("konsultation", err)
+        self.assertIn("2026-08-03T07:08:24.547", err, "it must name what IS open")
+
+    def test_an_answer_is_addressed_to_whoever_asked(self):
+        """`re=` alone routed it; an explicit recipient survives more."""
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(prefix="ab-notes-"), "notes.log")
+        asked = "2026-08-03T07:08:24.547"
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(notes.format_note(asked, "apfelpilot-live", "me",
+                                           None, "a real question") + "\n")
+        code, _, lines = self._run(["answer", asked, "measured", "--from", "me"], path)
+        self.assertEqual(code, 0)
+        answer = notes.parse_note(lines[-1])
+        self.assertEqual(answer["kind"], "answer")
+        self.assertEqual(answer["re"], asked)
+        self.assertEqual(answer["to"], "apfelpilot-live")
+        self.assertEqual(notes.open_notes(lines), [], "the question must close")
+
+
 if __name__ == "__main__":
     unittest.main()

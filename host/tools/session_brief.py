@@ -111,10 +111,18 @@ def note_lines():
         # week is history, not news.
         replies = notes.recent(notes.inbox_for(lines, notes.WHO),
                                _dt.datetime.now(), 86400)
+        broken = notes.unreadable(lines)
     except Exception:
         return []
 
     out = []
+    # Above the questions on purpose: an unreadable line is mail that was sent
+    # and never arrived, which outranks mail that arrived and is unanswered.
+    if broken:
+        out.append(f"UNREADABLE         : {len(broken)} line(s) written to the "
+                   "channel and delivered to nobody")
+        for bad in broken[-2:]:
+            out.append(f"  line {bad['lineno']}: {bad['raw'][:80]}")
     if pending:
         out.append(f"open questions     : {len(pending)} (notes.py answer <ts> \"…\")")
         for note in pending[-5:]:

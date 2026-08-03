@@ -72,6 +72,17 @@ def relevant(lines, who, since):
     return [n for n in fresh if n["ts"] in addressed or n["ts"] in open_q]
 
 
+def lost_since(lines, baseline_lines):
+    """Unreadable lines that appeared after this watcher started.
+
+    Kept as its own decider because it is the one rule here with no timestamp
+    to lean on: a line the parser cannot read has no `ts`, so "newer than the
+    baseline" can only mean "further down the file". Append-only makes the line
+    number a usable clock.
+    """
+    return [b for b in notes.unreadable(lines) if b["lineno"] > baseline_lines]
+
+
 def latest_ts(lines):
     stamps = [n["ts"] for n in notes.all_notes(lines)]
     return max(stamps) if stamps else ""
@@ -118,13 +129,36 @@ def main():
     except OSError:
         return 0                 # cannot lock -> do not risk a second watcher
 
-    baseline = latest_ts(notes.read())
-    _note(f"watch start who={who} baseline={baseline or '-'} pid={os.getpid()}")
+    first = notes.read()
+    baseline = latest_ts(first)
+    # A second baseline, by line NUMBER, because an unreadable line has no
+    # timestamp to compare — and an unreadable line is exactly the case that
+    # must not stay quiet: three notes were written to this channel and
+    # delivered to nobody, and the watcher was one of the three readers that
+    # said nothing. Counting lines is the only handle a broken line offers.
+    baseline_lines = len(first)
+    _note(f"watch start who={who} baseline={baseline or '-'} "
+          f"lines={baseline_lines} pid={os.getpid()}")
     deadline = time.monotonic() + MAX_LIFETIME
     try:
         while time.monotonic() < deadline:
             time.sleep(POLL)
-            hits = relevant(notes.read(), who, baseline)
+            lines = notes.read()
+            hits = relevant(lines, who, baseline)
+            broken = lost_since(lines, baseline_lines)
+            if broken:
+                # Loudest case, so it is checked first: somebody wrote to the
+                # channel and the channel could not read it. Nobody is being
+                # delivered to right now, and the sender does not know.
+                _note(f"wake who={who} unreadable={len(broken)} "
+                      f"first_line={broken[0]['lineno']}")
+                print(f"Session channel: {len(broken)} UNREADABLE line(s) — "
+                      "somebody wrote to the channel and it was delivered to "
+                      f"nobody. First at line {broken[0]['lineno']}: "
+                      f"{broken[0]['raw'][:200]}\n"
+                      "Read all with: host/tools/notes.py list",
+                      file=sys.stderr)
+                return 2
             if hits:
                 newest = hits[-1]
                 _note(f"wake who={who} from={newest['from']} ts={newest['ts']}")

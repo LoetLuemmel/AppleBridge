@@ -180,6 +180,31 @@ def all_notes(lines):
     return [n for n in (parse_note(l) for l in lines) if n]
 
 
+def unreadable(lines):
+    """Lines this channel could not parse — SURFACED, never dropped.
+
+    `all_notes` filters unparseable lines away silently. That is right for a
+    stray line that wandered into the file and catastrophically wrong for what
+    actually happened: the other session wrote three notes whose leading
+    timestamp was missing, so `parse_note` returned None for each and every one
+    fell out of `list`, out of the inbox and out of the watcher. Nobody was
+    told. The sender believed it had asked for a review, said in the note that
+    it was HOLDING ITS WORK until the answer came, and waited on a question this
+    side was never shown. It surfaced only because the human happened to paste
+    the other session's transcript and ask "is this true?".
+
+    A channel is allowed to fail to understand a line. It is not allowed to
+    fail QUIETLY — the whole point of the thing is delivery. So every reader
+    (`list`, the session brief, the watcher) reports these instead of dropping
+    them, and the raw text is kept so the content is recoverable by hand.
+    """
+    out = []
+    for number, line in enumerate(lines, 1):
+        if line.strip() and parse_note(line) is None:
+            out.append({"lineno": number, "raw": line.strip()})
+    return out
+
+
 def open_notes(lines):
     """Questions nobody has answered yet, oldest first.
 
@@ -334,6 +359,17 @@ def main():
     if args.verb == "list":
         now = datetime.datetime.now()
         lines = read()
+        # First, and unconditionally: a line nobody can read is the one thing
+        # here that has already cost a delivery, so it is never below the fold
+        # and never filtered by --since.
+        broken = unreadable(lines)
+        if broken:
+            print(f"!! {len(broken)} UNREADABLE line(s) — written to the "
+                  "channel, delivered to nobody:")
+            for bad in broken[-5:]:
+                print(f"   line {bad['lineno']}: {bad['raw'][:160]}")
+            print("   format is:  <timestamp> from=X to=Y re=Z <text>   "
+                  "— write with notes.py; do not hand-build the line")
         for note in recent(open_notes(lines), now, args.since):
             print(f"question {note['ts']}  from={note['from']}  {note['text']}")
         for note in recent(inbox_for(lines, WHO), now, args.since):
@@ -347,10 +383,38 @@ def main():
               f"notes.py note --to {args.to} \"…\"", file=sys.stderr)
         return 2
 
+    recipient = getattr(args, "to", "all")
+    if args.verb == "answer":
+        # An answer is delivered by naming a question, so a name that matches
+        # NO question is not a typo to write down — it is an answer that closes
+        # nothing and lands in nobody's inbox. That happened here: `answer
+        # konsultation "…"` wrote a full technical review that `list` never
+        # showed and the recipient never received, while the question it meant
+        # to close stayed open. Refuse instead, and say which timestamps exist.
+        known = {n["ts"]: n for n in all_notes(read()) if n["kind"] == "question"}
+        if args.ts not in known:
+            print(f"no question has the timestamp {args.ts!r}, so this answer "
+                  "would close nothing and reach nobody. Nothing was written.",
+                  file=sys.stderr)
+            still_open = [n for n in open_notes(read())][-5:]
+            if still_open:
+                print("open questions you could answer:", file=sys.stderr)
+                for note in still_open:
+                    print(f"  {note['ts']}  from={note['from']}  "
+                          f"{note['text'][:70]}", file=sys.stderr)
+            else:
+                print("no open questions; use `notes.py note` to say something "
+                      "that answers nothing.", file=sys.stderr)
+            return 2
+        # Route it by name as well as by `re=`: the inbox rule that matches on
+        # `re=` alone only works while the asker's own line is still in the
+        # file, and an explicit recipient survives anything.
+        recipient = known[args.ts]["from"]
+
     stamp = _now()
     answering = args.ts if args.verb == "answer" else (
         NOTE_MARKER if args.verb == "note" else None)
-    line = format_note(stamp, args.who, getattr(args, "to", "all"), answering, args.text)
+    line = format_note(stamp, args.who, recipient, answering, args.text)
     if not append(line):
         print(f"could not write {NOTES}", file=sys.stderr)
         return 1
