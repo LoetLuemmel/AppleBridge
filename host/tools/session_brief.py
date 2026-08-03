@@ -29,8 +29,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # printed rather than merely linked from CLAUDE.md because its entries are the
 # ones a session needs *before* it has a reason to go looking: each was written
 # after somebody spent hours on a layer that was not at fault.
-OPERATING_NOTES = ("https://pit.390er.de/applebridge/workmode/"
-                   "agent-operating-notes-verification-and-traps/")
+# A repo-relative path rather than the CMS url it used to be (D-020): a session
+# that needs these notes is mid-debug with the repo open, and a URL behind
+# Authelia is exactly the thing it cannot grep at that moment.
+OPERATING_NOTES = "docs/OPERATING_NOTES.md"
 
 # One line per session start, so "did another instance run?" has an answer that
 # does not depend on catching its process alive. Whether a session READ anything
