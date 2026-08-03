@@ -887,3 +887,46 @@ failure inside the guest before the wire is ever used; the healthy sequence is
 a measurement — the same rule this file applies to code, applied to the
 project's own error text. The message should say Open Transport in the guest is
 not answering, and it does not.
+
+**Re-verifying "a runtime trap patch is process-local" — supported on three legs,
+but the in-window control was not obtained (2026-08-03).**
+
+The claim above — a trap patch installed at runtime from the daemon reaches only
+the daemon's own process — is well supported, and a fourth, tighter check was
+attempted and honestly failed. Both halves belong on the record.
+
+*Supported by:* (1) the Route-B counter measurement noted above (the foreground
+`OtherCount` stayed zero); (2) `dlgpatch` reads a foreign app's dialog cross-app
+ONLY once installed from the boot INIT — the runtime install did not reach it;
+(3) an `_GetNextEvent`/`_WaitNextEvent` counter, armed with SimpleText confirmed
+front, showed `OtherCount = 0` for the foreground across several runs while its own
+`gne` climbed — so the patch was live, and still caught no foreign caller.
+
+*Not obtained:* a paired, in-window proof that the foreground process ENTERED the
+traps at the moment `OtherCount` read zero — i.e. that the zero means "the patch
+did not see a caller that was there", not "no caller was there". This is exactly
+the off-by-one-level ambiguity a naive standing-modal measurement hides: a modal's
+`ModalDialog` loop fetches events below the trap layer through a ROM-internal path,
+so it never exercises `$A970`/`$A860` at all — `jGNE` catches it, the trap counter
+cannot. The first version of this finding rested on such a modal; that is why it
+was re-checked rather than trusted.
+
+*Five attempts to obtain the control failed on the EXPERIMENTAL SETUP, not the
+finding* — and the failure modes are worth recording, because they are the shape of
+this measurement:
+- the counter block keeps a single `LastA5` slot, overwritten ~59×/second by a fast-polling FOREIGN process (A5 107480968, distinct from the daemon's) whose IDENTITY stayed open — first guessed as the health watchdog, but that guess confused a rate for a name: the watchdog is a confirmed `WaitNextEvent` app (`mac/watchdog/watchdog.c`) that sleeps ~60 ticks, i.e. makes ~1 call/second, not the ~59/s seen here. Whatever it is, a bridge-read almost always samples it and the foreground's ~2/s caret-blink is a needle in that haystack — 0 of ~130
+  samples, not because SimpleText was absent but because it is never the *last*
+  stamp before a read (the same signature as the morning's 10/10 `self`);
+- driving the foreground to pump harder needs real keystrokes, and manual keyboard
+  timing over the bridge lost, in turn, to: too few samples against the 59/s poller,
+  an accidental Cmd-Z that erased the carrier, host keyboard focus landing on the
+  terminal instead of the emulator, and an inaudible go-signal. Each round closed
+  one condition and exposed the next; none was the finding.
+
+*The clean closure, if a future question ever depends on it:* add a SECOND
+self-filter to the counter block — skip that fast poller's A5 as well as the daemon's —
+so `LastA5` stamps only a third party, the foreground, and the human, the focus and
+the timing all fall out of the loop. That is a daemon rebuild + reboot; no current
+question depends on it (the runtime-jGNE-walk that this whole reach question serves
+is already proven end-to-end), so it is left undone deliberately, and this note is
+the record of why. A later attempt to turn that fast poller into an in-window WITNESS — argue an application must reach the trap, so its absence from the trap count would prove the patch local — also did not hold: the counters did not reproduce run to run (jGNE-fires vs trap-calls swung from ~4.5 to ~0.03 across same-session runs, and the last-non-self A5 changed identity between them), so no aggregate could carry the argument either.
