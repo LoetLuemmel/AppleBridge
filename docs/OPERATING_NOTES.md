@@ -914,10 +914,7 @@ was re-checked rather than trusted.
 *Five attempts to obtain the control failed on the EXPERIMENTAL SETUP, not the
 finding* — and the failure modes are worth recording, because they are the shape of
 this measurement:
-- the counter block keeps a single `LastA5` slot, overwritten ~59×/second by the
-  daemon's own health WATCHDOG (a legitimate fast-polling guest process whose A5 is
-  distinct from the daemon's), so a bridge-read almost always samples the watchdog
-  and the foreground's ~2/s caret-blink is a needle in that haystack — 0 of ~130
+- the counter block keeps a single `LastA5` slot, overwritten ~59×/second by a fast-polling FOREIGN process (A5 107480968, distinct from the daemon's) whose IDENTITY stayed open — first guessed as the health watchdog, but that guess confused a rate for a name: the watchdog is a confirmed `WaitNextEvent` app (`mac/watchdog/watchdog.c`) that sleeps ~60 ticks, i.e. makes ~1 call/second, not the ~59/s seen here. Whatever it is, a bridge-read almost always samples it and the foreground's ~2/s caret-blink is a needle in that haystack — 0 of ~130
   samples, not because SimpleText was absent but because it is never the *last*
   stamp before a read (the same signature as the morning's 10/10 `self`);
 - driving the foreground to pump harder needs real keystrokes, and manual keyboard
@@ -927,9 +924,9 @@ this measurement:
   one condition and exposed the next; none was the finding.
 
 *The clean closure, if a future question ever depends on it:* add a SECOND
-self-filter to the counter block — skip the watchdog A5 as well as the daemon's —
+self-filter to the counter block — skip that fast poller's A5 as well as the daemon's —
 so `LastA5` stamps only a third party, the foreground, and the human, the focus and
 the timing all fall out of the loop. That is a daemon rebuild + reboot; no current
 question depends on it (the runtime-jGNE-walk that this whole reach question serves
 is already proven end-to-end), so it is left undone deliberately, and this note is
-the record of why.
+the record of why. A later attempt to turn that fast poller into an in-window WITNESS — argue an application must reach the trap, so its absence from the trap count would prove the patch local — also did not hold: the counters did not reproduce run to run (jGNE-fires vs trap-calls swung from ~4.5 to ~0.03 across same-session runs, and the last-non-self A5 changed identity between them), so no aggregate could carry the argument either.
