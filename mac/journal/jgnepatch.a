@@ -1,0 +1,121 @@
+*-------------------------------------------------------------------------------------------
+*  jgnepatch.a -- runtime jGNE ($029A) one-shot walk-on-request for ApfelPilot.
+*
+*  A SECOND trigger for the SAME DlgWalk as dlgpatch, but fired from the jGNE filter
+*  ($029A) instead of _ModalDialog. The Event Manager JSRs $029A from INSIDE every
+*  event fetch, so while a modal STANDS the foreground app's own ModalDialog loop
+*  pumps it -- and this stub runs in THAT app's context, where FrontWindow / the DITL
+*  are valid. It captures the one case dlgpatch cannot: an ALREADY-STANDING dialog
+*  (_ModalDialog is entered once per dialog, before anything can be armed).
+*
+*  Runtime-installed by the daemon (SWAPSELF, NO reboot); a reboot clears $029A and
+*  the system-heap block. dlgpatch is NOT touched -- this is a separate block that
+*  writes into dlgpatch's DP block (its jDPBlock field = FindDlgPatch()), so DLGTREE
+*  reads one block. Two writers coordinate by a DAEMON PROTOCOL RULE (DLGWALK and
+*  DLGARM are mutually exclusive), not a shared 68k flag (owner review 2026-08-03).
+*
+*  Safety (owner review, channel 2026-08-03):
+*    A  full MOVEM.L D0-D7/A0-A6 around the walk -> A1 (EventRecord) and D0 (the GNE
+*       Boolean), which belong to the Event Manager, are preserved for the chain. A
+*       Toolbox call may clobber D0-D2/A0-A1 at will; the old "touch nothing" contract
+*       is gone the moment DlgWalk runs.
+*    B  GetPort/SetPort restore lives in DlgWalk, on every path (jGNE interrupts the
+*       app at an ARBITRARY point -- an unrestored port = mis-drawn windows hours later).
+*    C  target-A5 gate: walk ONLY when the caller's CurrentA5 == jTargetA5, else a
+*       background process with its OWN dialog would be walked instead.
+*    1  FrontWindow NIL test + dialogKind check live in DlgWalk (NIL deref = crash in
+*       the foreign process, from a filter no one connects to us).
+*    2  bounded arm: jTries/jMaxTries self-disarm here; the daemon ALSO disarms on a
+*       timeout. An arm that only stops on SUCCESS stays hot where you forget it.
+*    3  DlgWalk writes each item DIRECTLY into the block -- no local list (the filter
+*       runs on the foreign app's possibly-tight stack).
+*  busy: jgne-LOCAL re-entrancy guard (2 words); cross-trigger is the daemon's rule.
+*  one-shot disarm happens AFTER the block write -> the daemon never sees armed=0
+*  while a walk is still running (residual-window fix).
+*
+*  Block layout (fixed offsets, shared with main.c):
+*    +0   BRA.W jGo
+*    +4   jMagic     $4A47 ('JG')
+*    +6   jReal      (long)   old $029A filter (daemon fills; never 0 -> chain safe)
+*    +10  jArmed     (word)   daemon-owned gate; template ships DISARMED
+*    +12  jOneShot   (word)   1 = disarm after one successful walk
+*    +14  jBusy      (word)   local re-entrancy guard
+*    +16  jTries     (word)   armed-fire count (bounded arm)
+*    +18  jMaxTries  (word)   daemon fills; self-disarm when exceeded
+*    +20  jTargetA5  (long)   daemon fills; the process whose dialog to walk
+*    +24  jDPBlock   (long)   daemon fills = FindDlgPatch(); DlgWalk writes here
+*    +28  jGo (code)
+*
+*  DP-block offsets touched here (mirror dlgpatch.a / dlgwalk.c / main.c):
+*    oDP_Up  = 14   DialogUp (DlgWalk sets 1 on capture)
+*    oDP_Gen = 16   Generation (bumped HERE once per successful capture)
+*
+*  Built -model near so the BSR to DlgWalk is PC-relative (survives BlockMove).
+*-------------------------------------------------------------------------------------------
+
+        CASE    OBJ
+        STRING  ASIS
+        IMPORT  DlgWalk
+
+kCurA5    EQU     $0904          ; low-mem CurrentA5 (Process Manager swaps per process)
+oDP_Up    EQU     14             ; DP block DialogUp
+oDP_Gen   EQU     16             ; DP block Generation
+
+JgnePatch       PROC    EXPORT
+jEntry
+        BRA.W   jGo
+jMagic    DC.W    $4A47
+jReal     DC.L    0
+jArmed    DC.W    0
+jOneShot  DC.W    1
+jBusy     DC.W    0
+jTries    DC.W    0
+jMaxTries DC.W    0
+jTargetA5 DC.L    0
+jDPBlock  DC.L    0
+
+jGo
+        LEA     jEntry(PC),A0            ; A0 = block base (PC-relative; A0 is scratch)
+        TST.W   jArmed-jEntry(A0)        ; daemon-owned gate
+        BEQ.S   jChain                   ; DISARMED -> transparent (A0 + CCR only), zero cost
+        MOVEM.L D0-D7/A0-A6,-(SP)        ; ARMED (rare): save all incl A1/D0/D1/D2 for the chain
+        LEA     jEntry(PC),A0
+        MOVE.L  (kCurA5).W,D0            ; caller's CurrentA5
+        CMP.L   jTargetA5-jEntry(A0),D0
+        BNE.S   jRestore                 ; not our target -> no walk
+        TST.W   jBusy-jEntry(A0)
+        BNE.S   jRestore                 ; local re-entrancy guard
+        ADDQ.W  #1,jTries-jEntry(A0)
+        MOVE.W  jTries-jEntry(A0),D0
+        CMP.W   jMaxTries-jEntry(A0),D0
+        BLS.S   jDo                      ; tries <= max -> walk
+        CLR.W   jArmed-jEntry(A0)        ; exceeded -> self-disarm (bounded arm)
+        BRA.S   jRestore
+jDo
+        MOVE.W  #1,jBusy-jEntry(A0)       ; set local busy
+        MOVE.L  jDPBlock-jEntry(A0),-(SP) ; arg: DP block ptr
+        BSR     DlgWalk                   ; PC-relative into the SAME walk (our own copy)
+        ADDQ.L  #4,SP                     ; C caller cleans the arg
+        LEA     jEntry(PC),A0
+        MOVE.L  jDPBlock-jEntry(A0),A1
+        TST.W   oDP_Up(A1)                ; did DlgWalk capture a dialog?
+        BEQ.S   jClrBusy                  ; no -> stay armed, retry on the next fire
+        ADDQ.W  #1,oDP_Gen(A1)            ; bump generation (fresh capture)
+        TST.W   jOneShot-jEntry(A0)
+        BEQ.S   jClrBusy
+        CLR.W   jArmed-jEntry(A0)         ; one-shot: disarm AFTER the block write
+jClrBusy
+        LEA     jEntry(PC),A0
+        CLR.W   jBusy-jEntry(A0)
+jRestore
+        MOVEM.L (SP)+,D0-D7/A0-A6         ; restore -> A1/D0/D1/D2 as at filter entry
+        LEA     jEntry(PC),A0
+jChain
+        TST.L   jReal-jEntry(A0)          ; was there a prior $029A filter?
+        BEQ.S   jRet                      ; none (jReal=0) -> we are the last: RTS to the EM
+        MOVE.L  jReal-jEntry(A0),A0       ; else chain to the real $029A filter
+        JMP     (A0)
+jRet
+        RTS                               ; return to the Event Manager (D0=makeItSo intact)
+
+        END

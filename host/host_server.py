@@ -1977,6 +1977,7 @@ def run_control_server(server):
                     elif (cmd == "MACUITREE" or cmd == "DLGTEST" or cmd == "DLGOFF"
                           or cmd == "DLGINSTALL" or cmd == "DLGTREE" or cmd == "DLGUNINSTALL"
                           or cmd == "DLGSELFMODAL" or cmd == "DLGARM" or cmd == "DLGDISARM"
+                          or cmd.startswith("DLGWALK") or cmd == "DLGWDISARM"
                           or cmd == "PING" or cmd == "QUITDAEMON" or cmd == "REBOOT"
                           or cmd == "SWAPSELF" or cmd == "SHUTDOWN"
                           or cmd == "JGATE" or cmd == "JMENU" or cmd == "JABOUT"
@@ -1985,6 +1986,9 @@ def run_control_server(server):
                           or cmd.startswith("JSF:") or cmd.startswith("MENU:")
                           or cmd == "MSINSTALL" or cmd == "MSREAD" or cmd == "MSUNINSTALL"
                           or cmd.startswith("MSDRIVE:")
+                          or cmd == "CPINSTALL" or cmd == "CPARM" or cmd == "CPDISARM"
+                          or cmd == "CPREAD" or cmd == "CPUNINSTALL"
+                          or cmd == "CPJINSTALL" or cmd == "CPJUNINSTALL"
                           or cmd.startswith("LAUNCH:") or cmd.startswith("QUIT:")
                           or cmd.startswith("KEY:") or cmd.startswith("TYPE:")
                           or cmd.startswith("CLICK:")):
