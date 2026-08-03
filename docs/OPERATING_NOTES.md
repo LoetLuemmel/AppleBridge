@@ -1,0 +1,627 @@
+# Operating Notes — what to verify before believing the bridge
+
+**This file is the owner of the operating notes (D-020).** What an agent must
+*check* before trusting a result, as opposed to what it must *know* to work —
+that is `CLAUDE.md`. Decisions are `DECISIONS.md`; status of work is the ledger.
+
+Read it when a command reports success and nothing happened.
+
+It is **appended to, not rewritten**: an entry that is overtaken gets a dated
+correction underneath it, never a silent edit, because the wrong belief is
+usually more instructive than the right one. Add what cost you a session.
+
+Entries up to 2026-08-03 were written on the WorkMode page at
+`pit.390er.de/applebridge/workmode/agent-operating-notes-verification-and-traps/`
+and moved here verbatim; that page keeps them as a dated snapshot and is no
+longer appended to.
+
+---
+
+The other WorkMode entries describe how the collaboration is *organised* — the
+artefact as evidence, the process organs kept without a tracker, the
+collaborator that starts every session without memory. This one is the
+operational counterpart: what an agent must actually check before believing the
+bridge.
+
+Several sessions drive this bridge, each with its own context and none able to
+see what the others learned. The same traps therefore get rediscovered, and the
+expensive ones are not the errors — they are the operations that **report
+success and do nothing**. Each entry below states a claim, the evidence for it,
+and the practice that follows. This page is meant to be appended to, not
+rewritten.
+
+## Two line endings inside a single response
+
+The framing of a control-port reply and the payload it carries **do not use the
+same line terminator**. A `LISTDIR` response, dumped byte for byte on
+2026-08-02:
+
+```
+00000000: 5354 4154 5553 3a30 0d53 5444 4f55 543a  STATUS:0.STDOUT:
+00000010: 3333 350d 466f 7274 4170 6f63 0941 5050  335.FortApoc.APP
+00000030: 3432 3231 3732 380a 466f 7274 4170 6f63  4221728.FortApoc
+```
+
+The protocol fields (`STATUS:`, `STDOUT:`) are separated by **CR (0x0D)**. The
+listing rows are separated by **LF (0x0A)**. Fields within a row are tabs.
+
+The cause is a property of the compiler, not a defect in the daemon: **classic-
+Mac C maps `'\n'` to CR (0x0D) and `'\r'` to LF (0x0A)** — the opposite of every
+host-side convention. The daemon's source reads `line[p++] = '\r';` and the
+comment directly above it documents the format as
+`name<TAB>type<TAB>creator<TAB>dataSize<TAB>modSecs<CR>`. Source, comment and
+wire therefore contradict one another, and only the wire is authoritative.
+
+**Practice:** read the payload **by its declared length**, never up to a
+terminator, and split rows on *either* CR or LF. A parser that assumes one of
+the two works against half the verbs and fails against the other half — and it
+fails as an *empty directory* rather than as a parse error, which is why the
+same trap can be rediscovered three times within one session.
+
+## Silent success is the default failure mode
+
+A verb with no host-side route is not rejected. It falls through to ToolServer,
+which does not recognise it either, and the caller receives `STATUS:0` with an
+empty body — indistinguishable from a command that worked. Two probes,
+2026-08-02:
+
+```
+printf 'HELP\n\n' | nc localhost 9001   ->  MPW Help Summaries -- Copyright Apple Computer 1986-2002
+printf 'CAPS\n\n' | nc localhost 9001   ->  STATUS:0 STDOUT:0 STDERR:0
+```
+
+`HELP` returns **MPW's** help text, because MPW happens to have a command by
+that name. `CAPS` returns success and nothing at all. There is no verb registry
+to consult and no way for a client to ask whether a verb exists: the 36 verbs
+live as an `elif` chain in the host server and as string comparisons in the
+daemon.
+
+**Practice:** never treat `STATUS:0` as evidence. Confirm by the artefact the
+command was supposed to produce. When a new verb "works but does nothing",
+inspect the host dispatch first and read the daemon's verbose log, where
+`initAE / found=TS / send=0` identifies the fall-through.
+
+## An empty reply from a silent tool is success, not absence
+
+The previous entry says an empty reply is suspicious. This one is its
+counterpart, and confusing the two costs a session in the opposite direction:
+**most MPW tools print nothing when they succeed.** `Asm`, `SC`, `Link`, `Rez`
+and `SetFile` are all silent on success, so ToolServer's reply carries no output
+descriptor and the daemon logs:
+
+```
+> SC … / Link … / Rez … / SetFile …
+initAE=0
+found=TS psn=8195     <- ToolServer WAS found
+send=0                <- the Apple Event went out cleanly
+getDesc=-1701         <- reply carries no result descriptor
+len=0
+```
+
+`-1701` (`errAEDescNotFound`) here means "the tool printed nothing", not "no
+ToolServer". A session reading that trace concluded ToolServer had died, and
+began diagnosing a process that had been running the whole time.
+
+**The distinguishing signal is `found=`.** An absent ToolServer logs
+`found=NONE`, and when neither it nor MPW Shell is up the daemon says
+`initAE=0 found=NONE 0 no-ToolServer/MPW`. `found=TS` means the command was
+delivered.
+
+**The counter-proof takes one command.** Through the same process number that
+produced every `-1701` above:
+
+```
+Echo TS-MARKER-9   ->  found=TS psn=8195, getDesc=0, rsize=12, "TS-MARKER-9"
+```
+
+Same ToolServer, same code path, a tool that prints. Prefer a marked `Echo` as
+the liveness question over a single status field — a status probe can race with
+a process that is still starting, an `Echo` cannot.
+
+**The consequence for verification is the uncomfortable part.** "Compiled, no
+diagnostics" is *not* evidence of a clean compile: silence looks identical
+whether the compiler ran perfectly or never ran at all. Two things recover the
+evidence, and both are needed.
+
+First, capture the diagnostics explicitly with the `≥` operator, which survives
+the bridge intact — verified 2026-08-02:
+
+```
+SC :src:nosuch.c -o :obj:nosuch.o ≥ :probe.err   ->  reply: "(no output)", as always
+Catenate :probe.err                              ->  Command line error: unable to
+                                                     open input file ':src:nosuch.c'
+```
+
+Never `2>&1`; it crashes the shell.
+
+Second, check the artefact, as the next entry describes. Silence plus a correct
+creator code and a plausible size is evidence. Silence alone is not.
+
+## Verify a build by the artefact, never by the status
+
+Three separate signals lie here, and each has cost a session:
+
+- **A long command may time out and still complete.** `Link` can return `-1712`
+  (Apple Event timeout) with the executable correctly written. The status says
+  nothing; the file does.
+- **A data fork of zero bytes is normal for a 68K application.** The code lives
+  in `CODE` resources in the resource fork. Treating an empty data fork as a
+  failed link is a misdiagnosis that survived months.
+- **The creator code is the honest tell.** A link that did not complete leaves
+  `????` where the project's creator should be. Checking type, creator and a
+  plausible size distinguishes a real build from a truncated one in a single
+  listing.
+
+**Practice:** after any link, list the output and compare creator, type and size
+against a known-good build of the same program. For a resource-level check,
+`DeRez -only 'CODE'` on a working binary gives the baseline.
+
+## A recipe you intend to mirror must first exist as a recipe
+
+"I will stop guessing and mirror the proven recipe" is the right instinct, and
+it fails when the proven thing was never a recipe. A session building a new
+`'DPAT'` code resource went looking for how the working `'MSPT'` menu patch is
+linked. There is no such command anywhere in the tree, because the shipping INIT
+does not link it — it carries the bytes:
+
+```
+* ---- embedded 'MSPT' 128 patch, byte-exact from mspatch.a (DeRez) ----
+PatchData
+        DC.W    $601A,$4D53,$0000,$0001,…
+```
+
+The patch was built once, read back with `DeRez`, and pasted into the INIT's
+assembly as thirty-seven `DC.W` literals. Searching the repository for
+`Link -rt MSPT=` returns nothing.
+
+**A correction, left visible because the mistake is the better lesson.** This
+entry first said "and no amount of further searching will change that". That
+was wrong. The recipe did exist — `Asm mspatch.a` → `Link -rt MSPT=128 -o
+ABMenuPatch`, with the block layout beside it — recorded in an agent's project
+memory, a channel outside the repository that a `grep` over the tree does not
+reach. So the rule is not "establish that it does not exist" but the sharper
+one: **before concluding something was never written down, establish which
+channels your search cannot see.** Here they were the memory directory and this
+article corpus; neither is in the tree.
+
+**Practice:** when a recipe cannot be found, establish whether it exists before
+concluding you are looking in the wrong place. `grep` for the *product* — the
+resource type, the output name — not only for the command you expect.
+
+The same search does, however, turn up the real analogues. Every code resource
+in this tree that contains **C** is linked in one shape:
+
+```
+Link -rt INIT=0   -m ABInitMain -ra =resSysHeap,resLocked :obj:<x>.c.o "{Libraries}Interface.o" -o <out>
+Link -rt cdev=-4064 -m CDEVMAIN                           :obj:<x>.c.o "{Libraries}Interface.o" -o <out> ≥ lk.err
+```
+
+Three things are load-bearing there.
+
+**`"{Libraries}Interface.o"` is not optional** for a code resource that calls the
+Toolbox — `CountDITL`, `GetDialogItem`, `GetControlTitle` and their neighbours
+resolve from it. A pure-assembly patch needs no library, which is exactly why
+the `'MSPT'` source is a poor template for a C-backed one: it has no `IMPORT` at
+all and keeps every byte of its data inline, because it has to survive being
+`BlockMove`d into the system heap as one position-independent blob.
+
+**`-m <entry>` rather than `-sn Main=<name>`.** `-sn` appears in this tree only
+for the journaling `DRVR`, where the resource *name* carries meaning because a
+driver is opened by name. For a multi-function code resource the entry point
+must sit at offset 0, and `-m` is what puts it there.
+
+**The trailing `≥ lk.err` in the cdev recipe is part of the recipe.** Without it
+a link that resolves nothing still answers `status 0` and prints nothing, and
+"links cleanly, no undefined symbols" becomes a conclusion drawn from silence —
+the failure the earlier entries describe, arrived at from the other direction.
+One `≥ lk.err` plus `Catenate` names the missing symbol in a single step, in
+place of several rounds of swapping linker flags in the dark.
+
+**A closing note on that same investigation**, because a wrong explanation is
+worse than none: the missing output file was blamed on a truncated directory
+listing, on the theory that a lowercase name sorts past the uppercase ones and
+falls off the end. Neither half holds. `ListDirVerb` enumerates until
+`PBGetCatInfo` fails and applies no cap of any kind, and HFS orders entries
+**case-insensitively** — a real listing interleaves `bigtest.txt`, `bin`,
+`c.err`, `data` and `fort.r` among the capitalised names. When an entry is
+missing from a listing, the file is missing. That was, in the end, the true
+finding: the linker had produced nothing at all.
+
+## A file without a type is not a file, and the redirect that hid it
+
+A session spent a long sitting on a code resource that would not build. `Asm`,
+`SC` and `Link` all answered `status 0` and printed nothing; no object files and
+no output resource ever appeared. It concluded, in order, that the linker flags
+were wrong, that the proven recipe had to be mirrored, that `Link` was broken,
+and finally that its own stderr capture was destroyed in transit. All four were
+wrong, and the actual causes took two commands to find.
+
+**The first cause is one field in the catalogue.** A directory listing of the
+source folder:
+
+```
+dlgpatch.a   type: \0\0\0\0   creator: \0\0\0\0    2502 B
+dlgwalk.c    type: TEXT       creator: R*ch        3758 B
+```
+
+`dlgpatch.a` has **no file type at all**, and MPW's tools open only `TEXT`.
+Running the same `Asm` with its diagnostics captured says so plainly:
+
+```
+### Cannot open ":src:dlgpatch.a"
+# Not a text file (OS Error -31001)
+Asm - Execution terminated!
+```
+
+The assembler never opened the file. With no object there was nothing to link,
+which is why every step downstream also produced nothing while reporting
+success. The type was lost by `Duplicate` from the shared `Unix:` volume — which
+carried `dlgwalk.c` across as `TEXT` and `dlgpatch.a` as four NUL bytes, so the
+transfer cannot be trusted to be uniform even within one batch.
+
+**Practice:** `SetFile -t TEXT -c 'MPS '` after any `Duplicate` out of `Unix:`,
+and when a tool "does nothing", read the *type* column of a listing before
+suspecting the tool. `-31001` is the error to recognise.
+
+**The second cause was an ordinary compile error** — also never seen:
+
+```
+File ":src:dlgwalk.c"; line 64 #Error: 'port' is not a member of struct 'GrafPort'
+        gr = dlg->port.portRect;
+```
+
+A `DialogPtr` *is* a `GrafPtr` in this world; `->port.portRect` belongs to a
+`DialogPeek`. Two defects, two lines, both stated by the tools on the first
+attempt.
+
+**Why neither was visible is the part worth keeping.** The session had concluded
+its `≥` capture was broken in transit, and stopped using it. It is not broken.
+Measured the same day, both routes:
+
+```
+mpw_execute:        SC :src:kaputt99.c … ≥ :chk99.err   -> chk99.err holds the error
+raw control port:   printf '… ≥ :chk98.err\n\n' | nc localhost 9001
+                    (the ≥ travelling as UTF-8 e2 89 a5) -> chk98.err holds the error
+```
+
+What actually fails is putting the redirect and the read on **one command
+line**. `SC … ≥ f.err ; Catenate f.err` comes back empty; issued as two separate
+commands, the content is there. That is a one-line habit producing a conclusion
+about the transport layer — and from there, a plan to rewrite a working design
+in hand-written assembly to avoid a linker that was never at fault.
+
+**Practice:** redirect and read in **separate** calls, always. And before
+concluding that a layer is broken, test that layer directly with a case whose
+answer you already know.
+
+## Presence is not installation, and each single check is wrong on its own
+
+A trap patch has two facts about it, and they are not the same fact: the code
+is **resident**, and the trap **points at it**. A check that establishes one and
+is read as establishing the other reports success about a machine that will
+never call the patch.
+
+The `'DPAT'` head patch on `_ModalDialog` is verified by scanning the system
+heap for the block's own signature:
+
+```c
+for (; p + 6 < end; p += 2)                      /* SysZone .. ApplZone  */
+    if (*(unsigned short *)p == 0x6000 &&        /* BRA.W at +0          */
+        *(unsigned short *)(p + 4) == 0x4450)    /* magic 'DP' at +4     */
+        return (Ptr)p;
+```
+
+That finds a block whether or not anything was ever hooked. The first guess at
+*which* block was too kind: not one that an install allocated and copied and
+then failed to patch, but **the pristine resource itself**. `'DPAT'` is linked
+`-ra =resSysHeap,resLocked`, so merely *loading* it puts an exact copy of the
+signature in the system heap. Measured by the session that hit it
+(2026-08-02): `DeRez` of `DPAT` 128 gives the header `6000 0496 4450 0000 0000`,
+with `generation: 0` — the entry code had never run — after a reboot, so no
+leftover from an earlier attempt could account for it.
+
+That distinction decides how strong the rule has to be. A stale block from a
+failed install is a case you could hope to avoid; a resource that looks like an
+installed patch the moment it is loaded is one a heap scan **cannot ever**
+separate, no matter how carefully written. The old code's failure follows
+directly: `blk = FindDlgPatch()` came back non-null, the install branch was
+skipped, `NSetTrapAddress` was never called — reported installed, hooked
+nothing.
+
+**The obvious repair is the opposite error.** Checking the trap head alone —
+`NGetTrapAddress` against the expected address — is unreliable here for a
+recorded reason: **ToolServer restores the Toolbox trap table around every tool
+run.** A patch installed from an MPW tool reads back correctly inside that
+process and is gone by the next command, so the trap head reports *absent*
+about a patch that is fine. That is why the earlier `'MSPT'` spike settled on
+the heap scan in the first place.
+
+**Practice: require the conjunction, never one of them.**
+
+1. the heap scan finds a candidate block — the code is resident;
+2. the trap vector equals that block's entry — it is actually hooked;
+3. the block's saved-original field is non-zero and is not the block itself —
+   an "adopted" block has a zero there, which separates *installed by us* from
+   *lying around*.
+
+The general form is worth carrying past this one patch: when a thing has two
+independent properties, a check that can only see one of them is not a weak
+check, it is a check of a different question.
+
+## MPW Shell's empty reply is not an absence of output
+
+MPW Shell returns empty Apple Event replies, so any step that must run there —
+a `Link`, where ToolServer's linker is not trusted for the job — appears to
+produce nothing. The output is not lost. It is in the **Worksheet** window
+(`MeinMac:System Folder:Preferences:MPW:Worksheet`).
+
+Bring the process to the front and take a screenshot. A link that reported
+`(no output)` over the bridge had in fact printed two
+`### Link: Warning: File was not needed for link: (Error 52)` lines naming the
+two libraries that were superfluous — harmless, and invisible by any other
+route.
+
+## Foregrounding, and why it matters more than it looks
+
+- **Synthetic input reaches the front application only.** Key, type and click
+  verbs post into the OS event queue; whatever is frontmost consumes them.
+  Sending a keystroke to a background application silently addresses the wrong
+  process.
+- **Launching an application that already runs re-foregrounds it.** The daemon's
+  `LAUNCH` verb calls `LaunchApplication` without `launchDontSwitch`, and the
+  Process Manager will not start a second instance. This is the cheapest way to
+  bring a specific process forward — and the reason a rebuild can appear not to
+  take effect: relaunching a stale binary just foregrounds the old one.
+- **`SetFrontProcess` is asynchronous.** The layer switch lands only once the
+  caller services the event system. Pump `WaitNextEvent` until `GetFrontProcess`
+  confirms, and abandon the attempt if it never does — otherwise the process
+  spins at full CPU waiting for something that will not happen.
+- **Tracking loops poll the hardware pointer.** Menus, Standard File dialogs and
+  modal dialogs cannot be reached by synthetic clicks at all; they need the
+  host's real mouse.
+
+## Absent tiers are not broken installations
+
+Two layers are optional by design. Without MCP the bridge is still a host server
+and a guest daemon reachable by any socket client. Without ToolServer the
+command tier disappears — execute, compile, link — while everything native
+continues to work: screenshots read out of the guest's framebuffer, volume
+information, directory listings, input injection, the clipboard, fork-aware file
+transfer, launching and shutdown.
+
+**Practice:** when a command returns `found=NONE`, establish which tier is
+missing before diagnosing anything else. The status verb answers even when the
+daemon is down, which is what makes it the correct first question.
+
+## A resource in the system heap looks exactly like an installed patch
+
+A discovery scan that keys only on a block's signature will match the pristine
+code **resource** as readily as an installed patch, because a resource built
+with `=resSysHeap,resLocked` is loaded into the very zone the scan walks.
+
+Building the `'DPAT' 128` dialog patch, `DLGTREE` reported an installed patch the
+instant the daemon came up — with no `DLGINSTALL` ever run, and straight after a
+reboot that clears every process-local block:
+
+```
+DLGTREE      -> {"installed":true,"dialog_up":false,"generation":0,"rect":[0,0,0,0],"items":[]}
+DLGUNINSTALL -> not-head          <- the _ModalDialog trap was never hooked
+```
+
+`FindDlgPatch` — a clone of `FindMSPatch`, scanning `SysZone`→`ApplZone` for
+`6000` (`BRA.W`) and `4450` (`'DP'`) — had matched the resource's **own bytes**,
+resident in the system heap because the resource carries the sysheap attribute.
+`generation:0` is the tell: the patch's entry code bumps that counter on every
+`_ModalDialog`, and it had never run. The block was the un-installed resource,
+not a live patch.
+
+**Practice:** see the conjunction in *Presence is not installation, and each
+single check is wrong on its own* above — this entry first suggested matching
+magic **and** `Real != 0`, or "asking the trap directly", and both are
+incomplete: the trap head alone is unreliable because ToolServer restores the
+trap table around every tool run. The robust test needs all three at once — a
+resident block, the trap vector equal to it, **and** `Real` non-zero and not the
+block itself. Verified 2026-08-02 at the live system: the adopted block's `Real`
+field read `0x00000000` — the resource's own `DC.L 0`, never overwritten because
+nothing was ever hooked, which is exactly what separates it from an install.
+
+`FindMSPatch` never hit this because the menu patch's `'MSPT'` ships as inline
+`DC.W` bytes inside the INIT, not as a `sysheap` resource loaded into the same
+zone the scan walks — so the resource copy and an installed block never coexist
+there. A C-backed patch delivered as its own resource does put both in reach of
+one scan, and the signature stops being enough to tell them apart.
+
+## Firing and reaching are two questions, and a dead mechanism answers neither
+
+A mechanism that produces no visible effect has failed in one of two ways, and
+they are not the same failure: either it **never ran** — a defect in the
+mechanism itself — or it ran and **never reached its target** — correct code,
+wrong scope. From outside the two are identical, both are *nothing happened*, and
+they have opposite repairs. Mistaking one for the other sends you into a
+mechanism's internals when the fix was its reach, or the reverse.
+
+The `'DPAT'` head patch on `_ModalDialog` read `generation: 0` after a *foreign*
+application's save-alert stood open and was dismissed: the patch's entry code,
+which bumps that counter first thing, had never run for that dialog — even though
+the conjunction check said the trap was genuinely hooked. Two explanations fit
+the one reading. The tempting one was about the mechanism's internals:
+*`CautionAlert` must call `ModalDialog` directly, bypassing the trap table* — a
+claim that would have sent the next step into patching lower traps
+(`_GetNewDialog`/`_NewDialog`). The cheaper one was about reach: a patch installed
+at runtime from the daemon is **process-local** (a recorded Route-B finding), so
+it was simply not present in the foreign process — the same `generation: 0` a
+firing bug would produce.
+
+**The discriminator holds reach constant and asks only whether the thing fires.**
+A verb (`DLGSELFMODAL`) had the daemon call a real `ModalDialog` **in its own
+process**, where a process-local patch is guaranteed to be in scope, with a
+filter that returns on the first pass so a background modal cannot spin. Measured
+2026-08-02 by the session driving the dialog-patch work: `generation` went
+`0 → 2` and the dialog was walked — the code fires and walks correctly. That one
+measurement decided it. The cross-app `0` was reach, not a firing bug, and the
+internals theory was never worth pursuing. The repair was reach — a boot INIT
+(`AppleBridgeDlgINIT`, in `System Folder:Extensions`) that installs the patch
+globally before any application runs. After it, the same foreign save-alert read
+`generation: 2` with its five items and exact global rects, out of the daemon, a
+different process. The bypass theory was falsified by the very same run:
+`Alert`/`CautionAlert` **do** go through the `_ModalDialog` trap; the earlier
+silence was only scope.
+
+**Practice:** when a mechanism has no effect, do not begin by debugging the
+mechanism. First run it where reach is guaranteed — its own process, a
+controlled caller you wrote — and watch for the smallest sign of life: a counter,
+a log line, one side effect. If it fires there, the bug is in reach — scope,
+process, install timing, wiring — and the mechanism's internals are a wrong turn.
+If it does not fire even there, reach is irrelevant until the mechanism itself
+works. The two failures look identical from outside and cost the most when the
+wrong one is assumed; one measurement that fixes reach and varies nothing else
+tells them apart. It generalises past this patch: whenever *nothing happened*,
+the first question is not *why is it broken* but *did it run at all* — and those
+are answered by different experiments.
+
+## A comment is a claim about the code, not a measurement of it
+
+A comment is prose that was true when it was written and that nothing holds to
+the code beneath it. The other entries here are about a *check* reporting on the
+wrong evidence; this is the cheapest wrong evidence of all — a sentence beside
+the code, read *instead of* the code. Two sessions hit it the same day, in
+opposite directions, from two different files.
+
+**The comment read as the mechanism (2026-08-02).** `tests/run_all.sh` carries the
+line *"every `tests/test_*.py` belongs in this list"*. A session adding a new test
+read that as **auto-discovery** — "the runner globs `test_*.py`, so my file just
+runs" — and shipped it. The runner does the opposite: it enumerates an explicit
+`files=(...)` array, and
+`test_process_mutations.py::test_every_test_file_is_registered_in_the_runner`
+exists precisely to fail on an *unregistered* file. The comment was a
+**prescription to the human** ("put it in the list"), read as a **description of
+the machine** ("the machine finds it"). Measured: the PR's checks were red at that
+commit until the filename was added to `files=(...)`, then green. The comment
+never lied — it simply was not the mechanism.
+
+**The comment read as the wire (also 2026-08-02).** In the other direction,
+`fileio.c`'s `LISTDIR` builds each row and a comment documents the separator as
+`<CR>`. On the wire the rows are separated by **LF (0x0A)** — classic-Mac C maps
+`'\n'` to CR and `'\r'` to LF, the inverse of every host convention, so the source
+writes `'\r'` and the byte that lands is LF. A parser that trusted the comment
+split on CR, found nothing, and reported an **empty directory** — rediscovered
+three times in one sitting, because an empty listing is a plausible answer for an
+empty folder. (The byte dump is in *Two line endings inside a single response*
+above; the point here is narrower — the comment was the thing trusted, and it was
+wrong.)
+
+**One shape.** A count in a doc, a separator in a code comment, a "belongs in this
+list" note beside a runner — each is a statement *about* the artefact that drifted
+from it, or never matched it, while still reading true. The compiler does not
+check comments; nobody does.
+
+**Practice:** when a comment makes a *mechanically checkable* claim — a count, a
+file's content, a wire format, whether a file is registered, which branch is
+checked out — take the measurement from the **artefact**, not the sentence: run
+the thing and read what returns, dump the bytes, `grep` the list,
+`git branch --show-current`. Read the comment for *intent*; read the code for
+*fact*. Both errors above — a red PR and three empty directories — were one
+command of checking away.
+
+## Two things never to do
+
+**Never `2>&1` in MPW.** It crashes the shell. Redirect diagnostics with the
+`≥` operator instead.
+
+**Never hard-kill the emulator.** It can corrupt the guest image. The clean stop
+is the `SHUTDOWN` verb or Special → Shut Down inside the guest. An unclean stop
+also leaves a modal "not shut down properly" dialog on the next boot — a
+tracking loop that no synthetic input can dismiss, on a machine that may have no
+one at the keyboard.
+
+## The shape all of these share
+
+The entries above were written on one day, from six separate defects in five
+different layers, and they are the same defect. It is worth naming, because the
+name is what lets you recognise the seventh.
+
+**Something reports on evidence that is not the thing it claims.**
+
+| what it claimed | what it actually saw |
+|---|---|
+| `mac_compile`: the compile succeeded | an Apple Event was delivered — the compiler's exit status cannot cross the bridge at all |
+| `build.py`'s `file_exists`: the artefact is there | a token this protocol has never emitted, so it answered False for every successful build |
+| the decider ratchet: this function is tested | the string `main.c` in five unrelated tests, which covered eleven functions through one called `main` |
+| `FindDlgPatch`: the patch is installed | the patch's signature in the system heap — which the resource itself has, merely by being loaded |
+| the notes channel: you have been told | a question was deposited; an answer closes the question and dropped off the only surface |
+| a required setting: the session has an identity | a human remembering to set it, for an id the platform already exported into the environment |
+
+Every one of them passes review. Read the code and it does what it says: it
+runs a check and reports the result. The gap is one level down, between the
+evidence and the claim, and it is invisible from inside — a wrong verdict looks
+exactly like a right one.
+
+**Two things follow, and they are the whole practice.**
+
+*Ask what the check can see, not whether it runs.* "Does this test pass" is the
+wrong question; "what would this test still pass with" is the right one. The
+ratchet counted a filename. The heap scan counted a resource. Both ran
+perfectly.
+
+*Use the thing.* Not one of the six was found by review, and five had survived
+weeks or months of it. Every single one surfaced the first time somebody
+performed the actual operation and looked at what came back: a compile of a file
+with the wrong type, a listing that lacked an entry, an answer that never
+arrived, two questions landing in the same second. The pattern is strong enough
+to plan around — when a mechanism is finished, the next step is not another read
+of it, it is one real run with the result inspected.
+
+The repair is always one of two moves. Either make the check see the thing it
+claims — the artefact, the trap vector, the delivery, the arrival — or say
+plainly that it cannot, and let the caller decide. What must not survive is the
+third option: a report that sounds like the first and is the second.
+
+## A dialog walk fires only on a trap entry that happens while armed
+
+The `_ModalDialog` head patch that gives `DLGTREE` its cross-application dialog
+perception is armed explicitly (`DLGARM`) and disarms itself after one walk.
+That much is by design. What is *not* obvious, and what an agent will otherwise
+infer wrongly, is **when** the walk can still be caught. Measured on
+2026-08-03 against a real SimpleText "Save changes?" alert, three runs:
+
+| Situation | Result |
+|---|---|
+| Armed, **then** the dialog appears | walk happens, `generation` +1, `armed` self-clears |
+| Disarmed when a new dialog appears | **no walk**, `generation` unchanged — while a real second dialog stands on screen |
+| `DLGARM` **while** a dialog already stands | **no walk**, `generation` unchanged, `armed` stays `true` |
+
+The rule behind all three: the walk fires **only on a `_ModalDialog` trap entry
+that occurs while the patch is armed**. Arming must strictly *precede* the
+dialog it is meant to capture.
+
+**Practice:** re-arm after handling a dialog and *before* the next one is
+expected — not at an arbitrary point in the loop. An arm that arrives late is
+not delayed, it is **inert**: the dialog it was meant to catch will never be
+walked, and `generation` will never move for it. A driver that treats
+"`generation` greater than the last handled value" as its only test for "a new
+dialog is up" is therefore blind to every dialog that appeared while the patch
+was disarmed, and blind to any dialog that was already on screen when the loop
+started. Reading the screen is not a refinement of that test; for those two
+cases it is the **only** source of truth.
+
+### A free corollary about where the alert's loop runs
+
+Case three carries an inference that costs nothing to obtain and needs neither a
+rebuild nor ToolServer. When `DLGARM` was issued while the alert was standing,
+`armed` stayed `true` — so the one-shot never fired, so the patch head never
+ran, so **the `_ModalDialog` trap was not entered at any point during the
+running alert**. A modal loop of the usual shape (`do ModalDialog(…) until item
+is enabled`) would have entered the trap many times per second and produced a
+walk immediately.
+
+This is independent evidence for a claim otherwise inferred from a *negative*
+result — that the alert's teardown bypasses `_CloseDialog`/`_DisposDialog`. The
+corollary widens it: not only the teardown, **the loop itself runs off-trap**.
+
+**Practice:** when a patch appears not to fire, check whether the *arming* state
+observably changed rather than concluding anything about the trap. `armed`
+staying `true` is a positive measurement that the head did not run; a flag that
+merely stayed unset would have been consistent with three different causes.
+Distinguishing "the trap was never entered" from "the trap ran and my handler
+was wrong" is what separates a diagnosis from a guess, and it was available here
+for the price of reading one field.
