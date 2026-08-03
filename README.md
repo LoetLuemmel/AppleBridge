@@ -466,7 +466,7 @@ AppleBridge/
 
 ## Status
 
-**Current daemon:** 0.8d33 ("the journaling self-test tells the truth") — the version the
+**Current daemon:** 0.8d34 ("jGNE walk-on-request reads an already-standing dialog") — the version the
 daemon itself reports, from `mac/vers.r`.
 
 - TCP bridge, NAT-reversed (the guest dials OUT), with an asynchronous connect

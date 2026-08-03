@@ -1736,6 +1736,304 @@ static Ptr FindDlgPatch(void)
     return 0L;
 }
 
+/* ---- P4: honest dialog_up — clear it when a dialog is CLOSED/DISPOSED --------
+ * dlgpatch SETS DialogUp(+oDP_Up) on _ModalDialog entry, but nothing CLEARS it,
+ * so DLGTREE kept reporting a dismissed dialog as up — a stale snapshot (caught
+ * 2026-08-02: DLGTREE said dialog_up:true over an empty screen). Route B (daemon-
+ * side, no boot INIT, no reboot): install tiny PIC head-patches on _CloseDialog /
+ * _DisposDialog in the system heap that zero DialogUp and chain to the real trap.
+ * Installed idempotently on DLGARM, restored on DLGUNINSTALL.
+ *
+ * REACH (measured 2026-08-03, corrected): a RUNTIME trap patch is PROCESS-LOCAL
+ * here — unlike the boot-installed dlgpatch, these stubs fire ONLY in the daemon's
+ * OWN process. They clear DialogUp for a dialog the DAEMON itself disposes (which
+ * is why DLGSELFMODAL's own-process self-test sees dialog_up drop), but NEVER for a
+ * foreign app's dialog: a cross-app dialog_up stays stale until the next walk bumps
+ * generation. Do NOT read "system heap" as "global" — installation site, not heap
+ * location, decides reach (OPERATING_NOTES, the trap-table note). Kept only because
+ * DLGSELFMODAL needs it; this is NOT a cross-app dialog_up honesty mechanism. */
+#define kCloseDialogTrap   0xA982
+#define kDisposDialogTrap  0xA983
+#define kCDMagic           0x43445054L   /* 'CDPT' */
+#define oCD_DlgBlk    4
+#define oCD_RealClose 8
+#define oCD_RealDisp  12
+#define oCD_CloseStub 16
+#define oCD_DispStub  34
+#define kCD_Size      52
+
+/* Two PIC head-patch stubs, hand-assembled and verified byte-for-byte:
+ *   CloseStub (+16):  LEA CDBase(PC),A0 ; A1=[DlgBlk] ; CLR.W oDP_Up(A1) ;
+ *                     A0=[RealClose] ; JMP (A0)
+ *   DispStub  (+34):  identical, chaining [RealDisp]
+ * DlgBlk/RealClose/RealDisp (+4/+8/+12) are filled by the daemon after the move;
+ * the code is PC-relative so it survives BlockMove into the system heap. The
+ * CLR.W target 14(A1) is oDP_Up in the DPAT block. */
+static const unsigned char kCDTemplate[kCD_Size] = {
+    0x43,0x44,0x50,0x54, 0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00,
+    0x41,0xFA,0xFF,0xEE, 0x22,0x68,0x00,0x04, 0x42,0x69,0x00,0x0E, 0x20,0x68,0x00,0x08, 0x4E,0xD0,
+    0x41,0xFA,0xFF,0xDC, 0x22,0x68,0x00,0x04, 0x42,0x69,0x00,0x0E, 0x20,0x68,0x00,0x0C, 0x4E,0xD0
+};
+
+/* The system-heap 'CDPT' stub currently head-patching _CloseDialog, or NULL —
+ * read from the LIVE trap vector, so a daemon hot-swap (SWAPSELF) that lost its
+ * globals still finds the resident stub. */
+static Ptr FindClosePatch(void)
+{
+    unsigned long ct = (unsigned long)NGetTrapAddress(kCloseDialogTrap, ToolTrap);
+    if (ct != 0L && *(unsigned long *)(ct - oCD_CloseStub) == kCDMagic)
+        return (Ptr)(ct - oCD_CloseStub);
+    return 0L;
+}
+
+/* Install (or adopt) the close/dispose honesty patch, pointed at dlgblk. */
+static Ptr InstallDlgClosePatch(Ptr dlgblk)
+{
+    Ptr s;
+    if (dlgblk == NULL) return NULL;
+    s = FindClosePatch();
+    if (s != NULL) {                                    /* adopt a resident stub */
+        *(unsigned long *)((char *)s + oCD_DlgBlk) = (unsigned long)dlgblk;
+        return s;
+    }
+    s = NewPtrSys((Size)kCD_Size);
+    if (s == NULL) return NULL;
+    BlockMove((Ptr)kCDTemplate, s, (Size)kCD_Size);
+    *(unsigned long *)((char *)s + oCD_DlgBlk)    = (unsigned long)dlgblk;
+    *(unsigned long *)((char *)s + oCD_RealClose) = (unsigned long)NGetTrapAddress(kCloseDialogTrap, ToolTrap);
+    *(unsigned long *)((char *)s + oCD_RealDisp)  = (unsigned long)NGetTrapAddress(kDisposDialogTrap, ToolTrap);
+    NSetTrapAddress((UniversalProcPtr)((char *)s + oCD_CloseStub), kCloseDialogTrap, ToolTrap);
+    NSetTrapAddress((UniversalProcPtr)((char *)s + oCD_DispStub),  kDisposDialogTrap, ToolTrap);
+    return s;
+}
+
+/* ---- Counter-probe: do the _GetNextEvent/_WaitNextEvent TRAPS fire while a modal
+ * alert stands? -------------------------------------------------------------------
+ * The question that decides the uncaptured-dialog perception (2026-08-03): the
+ * Event Manager provably RUNS during a standing alert (a background daemon got time),
+ * but does the alert's loop fetch events through the A970/A860 TRAPS (patchable) or
+ * through a ROM-internal path (needs a jGNE filter, which sits inside the Event
+ * Manager, below the trap layer)? Arm these two counters, hold an alert up, and see
+ * if they climb. A970/A860 are the HOTTEST traps in the system, so each stub is a
+ * PURE counter — touch only A0 (scratch) + CCR, bump one long, chain — exactly
+ * dlgpatch's pass-through shape. It ships DISARMED (Armed=0 -> transparent JMP, zero
+ * cost) and is armed only for a ~2s window, so a fault costs a reboot, not data.
+ * Route B: a runtime system-heap block, no boot INIT. */
+#define kGNETrap    0xA970          /* _GetNextEvent  */
+#define kWNETrap    0xA860          /* _WaitNextEvent */
+#define kCPMagic    0x43505242L     /* 'CPRB' */
+#define oCP_Armed    4              /* word */
+#define oCP_CntGNE   8              /* long */
+#define oCP_CntWNE   12             /* long */
+#define oCP_RealGNE  16             /* long */
+#define oCP_RealWNE  20             /* long */
+#define oCP_LastA5   24             /* long: CurrentA5 of the last FOREGROUND (non-self) caller */
+#define oCP_SelfA5   28             /* long: the daemon's OWN CurrentA5 (set at install) */
+#define oCP_OtherCnt 32             /* long: count of non-self (foreground) armed calls */
+#define oCP_GNEStub  36
+#define oCP_WNEStub  74
+#define oCP_jReal    112            /* long: old jGNE filter (or &jRTS if there was none) */
+#define oCP_jCnt     116            /* long: jGNE armed call count */
+#define oCP_jStub    120            /* the jGNE-filter counter stub (0x29A hook) */
+#define oCP_jRTS     166            /* a bare RTS: so the chain never JMPs to 0 */
+#define kCP_Size     168
+#define kCurrentA5   0x0904L        /* low-mem: Process Manager swaps it per process */
+#define kJGNEFilter  0x029AL        /* low-mem: the GetNextEvent filter ProcPtr (SINGLE slot) */
+
+/* Two PIC head-counter stubs, hand-assembled and verified byte-for-byte. Each ARMED
+ * call bumps the per-trap counter, loads CurrentA5, and — only if it is NOT the daemon's
+ * own A5 (SelfA5) — bumps OtherCount and stamps LastA5. The SELF-FILTER is essential: the
+ * daemon pumps GetNextEvent/WaitNextEvent so fast that an unfiltered LastA5 is almost
+ * always the daemon (measured 10/10 self). Filtered, LastA5 is the last FOREGROUND caller,
+ * and OtherCount separates a true off-trap NO (others went through, the target did not)
+ * from an invalid window (nobody foreign went through — measured nothing). Per stub:
+ *   LEA Base(PC),A0 ; TST.W Armed(A0) ; BEQ.S p ; ADDQ.L #1,Cnt(A0) ;
+ *   MOVE.L ($0904).W,D0 ; CMP.L SelfA5(A0),D0 ; BEQ.S p ;
+ *   ADDQ.L #1,OtherCount(A0) ; MOVE.L D0,LastA5(A0) ; p: MOVE.L Real(A0),A0 ; JMP (A0)
+ * Only D0 + A0 (both scratch) + CCR touched. Fields Armed/CntGNE/CntWNE/RealGNE/RealWNE/
+ * LastA5/SelfA5/OtherCount (+4/+8/+12/+16/+20/+24/+28/+32) are filled by the daemon. */
+static const unsigned char kCPTemplate[kCP_Size] = {
+    'C','P','R','B', 0x00,0x00, 0x00,0x00, 0x00,0x00,0x00,0x00,    /* magic,armed,pad,cntGNE */
+    0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00, /* cntWNE,realGNE,realWNE */
+    0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00, /* LastA5,SelfA5,OtherCount */
+    /* +36 GNEStub */
+    0x41,0xFA,0xFF,0xDA, 0x4A,0x68,0x00,0x04, 0x67,0x16, 0x52,0xA8,0x00,0x08,
+    0x20,0x38,0x09,0x04, 0xB0,0xA8,0x00,0x1C, 0x67,0x08, 0x52,0xA8,0x00,0x20,
+    0x21,0x40,0x00,0x18, 0x20,0x68,0x00,0x10, 0x4E,0xD0,
+    /* +74 WNEStub */
+    0x41,0xFA,0xFF,0xB4, 0x4A,0x68,0x00,0x04, 0x67,0x16, 0x52,0xA8,0x00,0x0C,
+    0x20,0x38,0x09,0x04, 0xB0,0xA8,0x00,0x1C, 0x67,0x08, 0x52,0xA8,0x00,0x20,
+    0x21,0x40,0x00,0x18, 0x20,0x68,0x00,0x14, 0x4E,0xD0,
+    /* +112 jReal, +116 jCnt */
+    0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00,
+    /* +120 jGNE-filter counter stub. Preserves A1/D0 (the Event Manager's event ptr +
+     * result). Saves D1-D2 in the ARMED branch only (the jGNE caller's scratch is an
+     * assumption, not a guarantee — this is what crashed the earlier spike). Disarmed =
+     * LEA/TST/BEQ/MOVE/JMP, A0-only, the system's hottest path kept minimal. Chains via
+     * jReal, which is never 0 (install points it at jRTS when 0x29A had no old filter):
+     *   LEA jBase(PC),A0 ; TST.W Armed(A0) ; BEQ.S .chain ;
+     *   MOVEM.L D1-D2,-(SP) ; ADDQ.L #1,jCnt(A0) ; MOVE.L ($0904).W,D1 ;
+     *   CMP.L SelfA5(A0),D1 ; BEQ.S .norec ; ADDQ.L #1,OtherCount(A0) ; MOVE.L D1,LastA5(A0) ;
+     *   .norec: MOVEM.L (SP)+,D1-D2 ; .chain: MOVE.L jReal(A0),A0 ; JMP (A0) */
+    0x41,0xFA,0xFF,0x86, 0x4A,0x68,0x00,0x04, 0x67,0x1E, 0x48,0xE7,0x60,0x00,
+    0x52,0xA8,0x00,0x74, 0x22,0x38,0x09,0x04, 0xB2,0xA8,0x00,0x1C, 0x67,0x08,
+    0x52,0xA8,0x00,0x20, 0x21,0x41,0x00,0x18, 0x4C,0xDF,0x00,0x06, 0x20,0x68,0x00,0x70,
+    0x4E,0xD0,
+    /* +166 jRTS */
+    0x4E,0x75
+};
+
+static Ptr FindCounterProbe(void)
+{
+    unsigned long gt = (unsigned long)NGetTrapAddress(kGNETrap, ToolTrap);
+    if (gt != 0L && *(unsigned long *)(gt - oCP_GNEStub) == kCPMagic)
+        return (Ptr)(gt - oCP_GNEStub);
+    return 0L;
+}
+
+static Ptr InstallCounterProbe(void)
+{
+    Ptr s = FindCounterProbe();
+    if (s != NULL) return s;                        /* idempotent / adopt across swap */
+    s = NewPtrSys((Size)kCP_Size);
+    if (s == NULL) return NULL;
+    BlockMove((Ptr)kCPTemplate, s, (Size)kCP_Size);
+    *(short *)((char *)s + oCP_Armed) = 0;          /* DISARMED by default */
+    *(unsigned long *)((char *)s + oCP_RealGNE) = (unsigned long)NGetTrapAddress(kGNETrap, ToolTrap);
+    *(unsigned long *)((char *)s + oCP_RealWNE) = (unsigned long)NGetTrapAddress(kWNETrap, ToolTrap);
+    *(unsigned long *)((char *)s + oCP_SelfA5)  = *(unsigned long *)kCurrentA5;  /* the daemon's own A5 */
+    *(long *)((char *)s + oCP_OtherCnt) = 0L;
+    NSetTrapAddress((UniversalProcPtr)((char *)s + oCP_GNEStub), kGNETrap, ToolTrap);
+    NSetTrapAddress((UniversalProcPtr)((char *)s + oCP_WNEStub), kWNETrap, ToolTrap);
+    return s;
+}
+
+/* ---- jgnepatch: runtime jGNE ($029A) one-shot walk-on-request ---------------------
+ * A SECOND trigger for the SAME DlgWalk as dlgpatch -- a BYTE-IDENTICAL copy: the
+ * jgnepatch resource is linked from the very same dlgwalk.c.o. Fired from the jGNE
+ * filter ($029A), which the Event Manager JSRs from inside every event fetch, so while
+ * a modal STANDS the foreground app's own ModalDialog loop pumps it and this stub runs
+ * in THAT app's context -- FrontWindow/the DITL valid. It captures the one case
+ * _ModalDialog cannot: an ALREADY-STANDING dialog (that trap is entered once per dialog,
+ * before anything can be armed). Writes dlgpatch's DP block (jDPBlock = FindDlgPatch());
+ * DLGTREE reads that one block. Cross-trigger safety is a DAEMON PROTOCOL RULE -- DLGWALK
+ * and DLGARM are mutually exclusive -- NOT a shared 68k flag (the 2026-08-03 owner review
+ * retracted the flag when it turned out to cost a dlgpatch rebuild + reboot). Runtime only
+ * (SWAPSELF, no reboot); a reboot clears $029A and the sysheap block. NOTE: dialogKind
+ * means "a dialog window", not "a MODAL dialog" -- a modeless foreground dialog would also
+ * be walked; no cheap modality test exists (documented, not a bug). */
+#define kJGMagic      0x4A47L
+#define oJG_Magic     4
+#define oJG_jReal     6                /* long: old $029A filter (0 -> the stub RTSs) */
+#define oJG_jArmed    10               /* word: daemon-owned gate; template ships DISARMED */
+#define oJG_jOneShot  12               /* word */
+#define oJG_jBusy     14               /* word: LOCAL re-entrancy guard */
+#define oJG_jTries    16               /* word: armed-fire count (bounded arm) */
+#define oJG_jMaxTries 18               /* word: self-disarm backstop */
+#define oJG_jTargetA5 20               /* long: the process whose dialog to walk */
+#define oJG_jDPBlock  24               /* long: = FindDlgPatch(); DlgWalk writes here */
+#define kJG_Size      740
+#define kJG_DefTries  10000            /* ~60s at ~150 fires/s: a backstop; the client
+                                        * disarms on a short timeout well before this */
+
+static const unsigned char kJGTemplate[kJG_Size] = {
+    0x60,0x00,0x00,0x1A,0x4A,0x47,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x00,0x00,0x00,0x00,0x41,0xFA,0xFF,0xE2,0x4A,0x68,0x00,0x0A,
+    0x67,0x68,0x48,0xE7,0xFF,0xFE,0x41,0xFA,0xFF,0xD4,0x20,0x38,
+    0x09,0x04,0xB0,0xA8,0x00,0x14,0x66,0x4E,0x4A,0x68,0x00,0x0E,
+    0x66,0x48,0x52,0x68,0x00,0x10,0x30,0x28,0x00,0x10,0xB0,0x68,
+    0x00,0x12,0x63,0x06,0x42,0x68,0x00,0x0A,0x60,0x34,0x31,0x7C,
+    0x00,0x01,0x00,0x0E,0x2F,0x28,0x00,0x18,0x61,0x00,0x00,0x3E,
+    0x58,0x8F,0x41,0xFA,0xFF,0x9C,0x22,0x68,0x00,0x18,0x4A,0x69,
+    0x00,0x0E,0x67,0x0E,0x52,0x69,0x00,0x10,0x4A,0x68,0x00,0x0C,
+    0x67,0x04,0x42,0x68,0x00,0x0A,0x41,0xFA,0xFF,0x80,0x42,0x68,
+    0x00,0x0E,0x4C,0xDF,0x7F,0xFF,0x41,0xFA,0xFF,0x74,0x4A,0xA8,
+    0x00,0x06,0x67,0x06,0x20,0x68,0x00,0x06,0x4E,0xD0,0x4E,0x75,
+    0x4E,0x56,0xFE,0xC0,0x48,0xE7,0x1F,0x38,0x26,0x6E,0x00,0x08,
+    0x24,0x4B,0x42,0x6A,0x00,0x12,0x42,0x6A,0x00,0x0E,0x42,0x6A,
+    0x00,0x14,0x59,0x4F,0xA9,0x24,0x20,0x1F,0x28,0x40,0x4A,0x80,
+    0x66,0x04,0x4E,0xFA,0x02,0x0E,0x20,0x0C,0x2D,0x40,0xFE,0xC0,
+    0x20,0x40,0x30,0x28,0x00,0x6C,0x72,0x02,0xB0,0x41,0x67,0x04,
+    0x4E,0xFA,0x01,0xF8,0x20,0x0C,0x2D,0x40,0xFE,0xC4,0x20,0x40,
+    0x3D,0x68,0x00,0xA8,0xFF,0xF0,0x48,0x6E,0xFE,0xC8,0xA8,0x74,
+    0x2F,0x2E,0xFE,0xC4,0xA8,0x73,0x24,0x6E,0xFE,0xC0,0x4A,0xAA,
+    0x00,0x76,0x67,0x1A,0x20,0x6A,0x00,0x76,0x4A,0x90,0x67,0x12,
+    0x20,0x6A,0x00,0x76,0x20,0x50,0x54,0x48,0x43,0xEE,0xFE,0xD4,
+    0x22,0xD8,0x22,0x90,0x60,0x0E,0x20,0x4C,0x70,0x10,0xD1,0xC0,
+    0x43,0xEE,0xFE,0xD4,0x22,0xD8,0x22,0x90,0x24,0x4B,0x35,0x6E,
+    0xFE,0xD4,0x00,0x16,0x35,0x6E,0xFE,0xD6,0x00,0x18,0x35,0x6E,
+    0xFE,0xD8,0x00,0x1A,0x35,0x6E,0xFE,0xDA,0x00,0x1C,0x20,0x6E,
+    0xFE,0xC4,0x20,0x28,0x00,0x9C,0x2D,0x40,0xFF,0xF8,0x67,0x12,
+    0x20,0x40,0x4A,0x90,0x67,0x0C,0x20,0x40,0x20,0x50,0x30,0x10,
+    0x52,0x40,0x48,0xC0,0x60,0x02,0x70,0x00,0x3A,0x00,0x72,0x18,
+    0xB0,0x41,0x6F,0x08,0x35,0x7C,0x00,0x01,0x00,0x14,0x7A,0x18,
+    0x42,0x6E,0xFF,0xEA,0x20,0x4B,0x70,0x1E,0xD1,0xC0,0x2D,0x48,
+    0xFF,0xF4,0x7C,0x01,0x36,0x06,0xB6,0x45,0x6E,0x00,0x01,0x34,
+    0x2F,0x2E,0xFE,0xC4,0x3F,0x03,0x48,0x6E,0xFF,0xE8,0x48,0x6E,
+    0xFE,0xE4,0x48,0x6E,0xFE,0xCC,0xA9,0x8D,0x30,0x2E,0xFF,0xE8,
+    0x72,0x7F,0xC0,0x41,0x3E,0x00,0x3D,0x6E,0xFE,0xCE,0xFE,0xDE,
+    0x3D,0x6E,0xFE,0xCC,0xFE,0xDC,0x48,0x6E,0xFE,0xDC,0xA8,0x70,
+    0x3D,0x6E,0xFE,0xD2,0xFE,0xE2,0x3D,0x6E,0xFE,0xD0,0xFE,0xE0,
+    0x48,0x6E,0xFE,0xE0,0xA8,0x70,0x42,0x2E,0xFE,0xE8,0x0C,0x47,
+    0x00,0x04,0x6D,0x18,0x0C,0x47,0x00,0x07,0x6E,0x12,0x20,0x2E,
+    0xFE,0xE4,0x67,0x2A,0x2F,0x2E,0xFE,0xE4,0x48,0x6E,0xFE,0xE8,
+    0xA9,0x5E,0x60,0x1E,0x36,0x07,0x70,0x08,0xB6,0x40,0x67,0x06,
+    0x70,0x10,0xB6,0x40,0x66,0x10,0x20,0x2E,0xFE,0xE4,0x67,0x0A,
+    0x2F,0x2E,0xFE,0xE4,0x48,0x6E,0xFE,0xE8,0xA9,0x90,0x36,0x06,
+    0x24,0x6E,0xFF,0xF4,0x34,0x83,0x35,0x47,0x00,0x02,0x35,0x6E,
+    0xFE,0xDC,0x00,0x04,0x35,0x6E,0xFE,0xDE,0x00,0x06,0x35,0x6E,
+    0xFE,0xE0,0x00,0x08,0x35,0x6E,0xFE,0xE2,0x00,0x0A,0x30,0x2E,
+    0xFF,0xE8,0x48,0xC0,0x02,0x80,0x00,0x00,0x00,0x80,0x67,0x04,
+    0x70,0x00,0x60,0x02,0x70,0x01,0xB6,0x6E,0xFF,0xF0,0x66,0x04,
+    0x72,0x02,0x60,0x02,0x72,0x00,0x80,0x41,0x35,0x40,0x00,0x0C,
+    0x70,0x00,0x10,0x2E,0xFE,0xE8,0x3D,0x40,0xFF,0xEE,0x72,0x1F,
+    0xB0,0x41,0x6F,0x06,0x3D,0x7C,0x00,0x1F,0xFF,0xEE,0x20,0x6E,
+    0xFF,0xF4,0x31,0x6E,0xFF,0xEE,0x00,0x0E,0x42,0x6E,0xFF,0xEC,
+    0x36,0x2E,0xFF,0xEC,0xB6,0x6E,0xFF,0xEE,0x6C,0x28,0x38,0x03,
+    0x48,0xC4,0x2D,0x44,0xFF,0xFC,0x52,0x84,0x41,0xEE,0xFE,0xE8,
+    0x10,0x30,0x48,0x00,0x22,0x2E,0xFF,0xFC,0x74,0x10,0xD2,0x82,
+    0x20,0x41,0xD1,0xEE,0xFF,0xF4,0x10,0x80,0x52,0x6E,0xFF,0xEC,
+    0x60,0xCE,0x70,0x30,0xD1,0xAE,0xFF,0xF4,0x52,0x6E,0xFF,0xEA,
+    0x52,0x46,0x60,0x00,0xFE,0xC8,0x24,0x4B,0x35,0x6E,0xFF,0xEA,
+    0x00,0x12,0x35,0x7C,0x00,0x01,0x00,0x0E,0x2F,0x2E,0xFE,0xC8,
+    0xA8,0x73,0x4C,0xDF,0x1C,0xF8,0x4E,0x5E,0x4E,0x75,0x87,0x44,
+    0x6C,0x67,0x57,0x61,0x6C,0x6B,0x00,0x00
+};
+
+/* Scan the system heap for the jgne block by signature (word0=$6000 BRA.W, word@+4='JG').
+ * Unlike FindDlgPatch there is no boot resource to confuse it with -- the only 'JG' block
+ * in the heap is one this daemon installed at runtime. */
+/* Track the jgne block by a daemon GLOBAL, NOT a heap signature scan. The block
+ * lives only within one daemon boot: a reboot clears both $029A and the sysheap,
+ * and activating a swapped daemon REQUIRES a reboot -- so there is never an existing
+ * block to adopt across instances (unlike boot-resident dlgpatch). A word0=$6000 +
+ * word@+4='JG' scan is far too weak: BRA.W is a common opcode, and on a fresh boot it
+ * matched the kJGTemplate CONSTANT itself -- which DLGWALK would then wire live with a
+ * NULL jDPBlock and crash. The global resets on the daemon restart a reboot forces,
+ * exactly when the block also vanishes; the magic recheck guards a stale pointer. */
+static Ptr gJGBlk = 0L;
+
+static Ptr FindJGProbe(void)
+{
+    if (gJGBlk != NULL
+        && *(unsigned short *)((char *)gJGBlk + oJG_Magic) == (unsigned short)kJGMagic)
+        return gJGBlk;
+    return 0L;
+}
+
+static Ptr InstallJGProbe(void)        /* idempotent within a daemon lifetime */
+{
+    Ptr s = FindJGProbe();
+    if (s != NULL) return s;
+    s = NewPtrSys((Size)kJG_Size);
+    if (s == NULL) return NULL;
+    BlockMove((Ptr)kJGTemplate, s, (Size)kJG_Size);
+    *(short *)((char *)s + oJG_jArmed) = 0;      /* DISARMED until wired + armed */
+    gJGBlk = s;
+    return s;
+}
+
 Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
 {
     char responseBuffer[RESP_SCRATCH];   /* small: fixed verb/error strings only (was 64 KB on the stack) */
@@ -2125,6 +2423,8 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
             trunc = *(short *)((char *)blk + oDP_Trunc);
             JStr(jh, "{\"installed\":true,\"armed\":");
             JStr(jh, (*(short *)((char *)blk + oDP_Armed)) ? "true" : "false");
+            JStr(jh, ",\"close_patch\":");
+            JStr(jh, FindClosePatch() ? "true" : "false");
             JStr(jh, ",\"dialog_up\":");
             JStr(jh, up ? "true" : "false");
             JStr(jh, ",\"generation\":"); JNum(jh, (long)gen);
@@ -2177,6 +2477,17 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
             msg = "uninstalled";
         } else {
             msg = "not-head";
+        }
+        {   /* P4: also unhook the close/dispose honesty patch if we are its head */
+            Ptr s = FindClosePatch();
+            if (s != NULL) {
+                unsigned long dt = (unsigned long)NGetTrapAddress(kDisposDialogTrap, ToolTrap);
+                NSetTrapAddress((UniversalProcPtr)*(unsigned long *)((char *)s + oCD_RealClose),
+                                kCloseDialogTrap, ToolTrap);
+                if (dt == (unsigned long)((char *)s + oCD_DispStub))
+                    NSetTrapAddress((UniversalProcPtr)*(unsigned long *)((char *)s + oCD_RealDisp),
+                                    kDisposDialogTrap, ToolTrap);
+            }
         }
         L = (short)strlen(msg);
         f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)L);
@@ -2236,10 +2547,19 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
     if (strncmp(request, "DLGARM", 6) == 0) {
         Ptr blk; const char *msg; short L; char *f = responseBuffer;
         SetActivity("DLGARM");
+        { Ptr jg = FindJGProbe();          /* mutual exclusion: DLGWALK holds the DP block */
+          if (jg != NULL && *(short *)((char *)jg + oJG_jArmed) != 0) {
+              const char *m = "walk-armed"; short l = (short)strlen(m); char *g = responseBuffer;
+              g = StatStr(g, "STATUS:0\rSTDOUT:"); g = StatDec(g, (long)l);
+              *g++ = '\r'; g = StatStr(g, m); g = StatStr(g, "\rSTDERR:0\r\r");
+              ABSend(conn, responseBuffer, (long)(g - responseBuffer));
+              gLastTX = TickCount(); gTXCount++; return true;
+          } }
         blk = FindDlgPatch();
         if (blk != NULL) {
             *(short *)((char *)blk + oDP_OneShot) = 1;   /* capture one, then disarm */
             *(short *)((char *)blk + oDP_Armed)   = 1;
+            InstallDlgClosePatch(blk);                   /* P4: keep dialog_up honest */
             msg = "armed";
         } else {
             msg = "no-block";
@@ -2257,6 +2577,202 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         blk = FindDlgPatch();
         if (blk != NULL) { *(short *)((char *)blk + oDP_Armed) = 0; msg = "disarmed"; }
         else             { msg = "no-block"; }
+        L = (short)strlen(msg);
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)L);
+        *f++ = '\r'; f = StatStr(f, msg); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, responseBuffer, (long)(f - responseBuffer));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+
+    /* DLGWALK <targetA5> : arm the runtime jGNE one-shot walk against a STANDING
+     * dialog owned by the process whose CurrentA5 == <targetA5> (the caller pins the
+     * target in a quiet reference window, exactly like the jGNE-reach measurement).
+     * MUTUALLY EXCLUSIVE with dlgpatch's entry walk: refused while DLGARM is armed
+     * (and DLGARM is refused while this is armed) so the two writers of the DP block
+     * never run at once -- the owner rule that replaced the shared 68k busy flag.
+     * Installs+wires the jgne block if needed, fills jDPBlock/jTargetA5, resets jTries,
+     * arms LAST (after wiring $029A). Disarm with DLGWDISARM; a reboot clears $029A.
+     * The client disarms on a short timeout; jMaxTries is the in-block backstop. */
+    if (strncmp(request, "DLGWALK", 7) == 0) {
+        Ptr jg, dp; unsigned long targetA5 = 0L, old; const char *p; const char *msg;
+        short L; char *f = responseBuffer;
+        SetActivity("DLGWALK");
+        for (p = request + 7; *p == ' '; p++) ;            /* skip to decimal targetA5 */
+        while (*p >= '0' && *p <= '9') { targetA5 = targetA5 * 10 + (unsigned long)(*p - '0'); p++; }
+        dp = FindDlgPatch();
+        if (dp == NULL)                                     msg = "no-dpblock";
+        else if (*(short *)((char *)dp + oDP_Armed) != 0)   msg = "entry-armed";
+        else if (targetA5 == 0L)                            msg = "no-target";
+        else {
+            jg = InstallJGProbe();
+            if (jg == NULL) msg = "no-mem";
+            else {
+                *(unsigned long *)((char *)jg + oJG_jTargetA5) = targetA5;
+                *(unsigned long *)((char *)jg + oJG_jDPBlock)  = (unsigned long)dp;
+                *(short *)((char *)jg + oJG_jOneShot)  = 1;
+                *(short *)((char *)jg + oJG_jBusy)     = 0;
+                *(short *)((char *)jg + oJG_jTries)    = 0;
+                *(short *)((char *)jg + oJG_jMaxTries) = kJG_DefTries;
+                old = *(unsigned long *)kJGNEFilter;         /* chain the old $029A */
+                if (old != (unsigned long)jg)                /* not already us */
+                    *(unsigned long *)((char *)jg + oJG_jReal) = old;   /* 0 -> stub RTSs */
+                *(short *)((char *)jg + oJG_jArmed) = 1;      /* arm LAST, after wiring */
+                *(unsigned long *)kJGNEFilter = (unsigned long)jg;      /* head = block+0 */
+                msg = "walking";
+            }
+        }
+        L = (short)strlen(msg);
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)L);
+        *f++ = '\r'; f = StatStr(f, msg); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, responseBuffer, (long)(f - responseBuffer));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+    if (strncmp(request, "DLGWDISARM", 10) == 0) {
+        Ptr jg; const char *msg; short L; char *f = responseBuffer;
+        SetActivity("DLGWDISARM");
+        jg = FindJGProbe();
+        if (jg != NULL) { *(short *)((char *)jg + oJG_jArmed) = 0; msg = "disarmed"; }
+        else            { msg = "no-block"; }
+        L = (short)strlen(msg);
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)L);
+        *f++ = '\r'; f = StatStr(f, msg); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, responseBuffer, (long)(f - responseBuffer));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+
+    /* CPINSTALL / CPARM / CPDISARM / CPREAD / CPUNINSTALL: the A970/A860 counter
+     * probe. Ships DISARMED; arm only for a brief measurement window. CPREAD returns
+     * the per-trap counts, the A5 of the last armed caller (WHO), and the daemon's
+     * own A5 (self) so a foreground A5 can be told from the daemon's own pumping. */
+    if (strncmp(request, "CPINSTALL", 9) == 0) {
+        Ptr s; const char *msg; short L; char *f = responseBuffer;
+        SetActivity("CPINSTALL");
+        s = InstallCounterProbe();
+        msg = (s != NULL) ? "installed" : "install failed";
+        L = (short)strlen(msg);
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)L);
+        *f++ = '\r'; f = StatStr(f, msg); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, responseBuffer, (long)(f - responseBuffer));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+    if (strncmp(request, "CPUNINSTALL", 11) == 0) {
+        Ptr s; const char *msg; short L; char *f = responseBuffer;
+        SetActivity("CPUNINSTALL");
+        s = FindCounterProbe();
+        if (s != NULL) {
+            unsigned long wt = (unsigned long)NGetTrapAddress(kWNETrap, ToolTrap);
+            NSetTrapAddress((UniversalProcPtr)*(unsigned long *)((char *)s + oCP_RealGNE),
+                            kGNETrap, ToolTrap);      /* GNE head is ours (FindCounterProbe) */
+            if (wt == (unsigned long)((char *)s + oCP_WNEStub))
+                NSetTrapAddress((UniversalProcPtr)*(unsigned long *)((char *)s + oCP_RealWNE),
+                                kWNETrap, ToolTrap);
+            msg = "uninstalled";
+        } else { msg = "no-block"; }
+        L = (short)strlen(msg);
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)L);
+        *f++ = '\r'; f = StatStr(f, msg); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, responseBuffer, (long)(f - responseBuffer));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+    if (strncmp(request, "CPDISARM", 8) == 0) {
+        Ptr s; const char *msg; short L; char *f = responseBuffer;
+        SetActivity("CPDISARM");
+        s = FindCounterProbe();
+        if (s != NULL) { *(short *)((char *)s + oCP_Armed) = 0; msg = "disarmed"; }
+        else           { msg = "no-block"; }
+        L = (short)strlen(msg);
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)L);
+        *f++ = '\r'; f = StatStr(f, msg); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, responseBuffer, (long)(f - responseBuffer));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+    if (strncmp(request, "CPARM", 5) == 0) {
+        Ptr s; const char *msg; short L; char *f = responseBuffer;
+        SetActivity("CPARM");
+        s = FindCounterProbe();
+        if (s != NULL) {
+            *(long *)((char *)s + oCP_CntGNE) = 0L;   /* fresh window */
+            *(long *)((char *)s + oCP_CntWNE) = 0L;
+            *(long *)((char *)s + oCP_LastA5) = 0L;
+            *(long *)((char *)s + oCP_OtherCnt) = 0L;
+            *(long *)((char *)s + oCP_jCnt) = 0L;
+            *(short *)((char *)s + oCP_Armed) = 1;
+            msg = "armed";
+        } else { msg = "no-block"; }
+        L = (short)strlen(msg);
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)L);
+        *f++ = '\r'; f = StatStr(f, msg); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, responseBuffer, (long)(f - responseBuffer));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+    if (strncmp(request, "CPREAD", 6) == 0) {
+        Ptr s; char body[160]; char *b = body; short L; char *f = responseBuffer;
+        SetActivity("CPREAD");
+        s = FindCounterProbe();
+        if (s == NULL) {
+            b = StatStr(b, "{\"installed\":false}");
+        } else {
+            b = StatStr(b, "{\"installed\":true,\"armed\":");
+            b = StatStr(b, (*(short *)((char *)s + oCP_Armed)) ? "true" : "false");
+            b = StatStr(b, ",\"gne\":");  b = StatDec(b, *(long *)((char *)s + oCP_CntGNE));
+            b = StatStr(b, ",\"wne\":");  b = StatDec(b, *(long *)((char *)s + oCP_CntWNE));
+            b = StatStr(b, ",\"last\":");  b = StatDec(b, *(long *)((char *)s + oCP_LastA5));
+            b = StatStr(b, ",\"other\":"); b = StatDec(b, *(long *)((char *)s + oCP_OtherCnt));
+            b = StatStr(b, ",\"jcnt\":");  b = StatDec(b, *(long *)((char *)s + oCP_jCnt));
+            b = StatStr(b, ",\"self\":");  b = StatDec(b, *(long *)kCurrentA5);
+            b = StatStr(b, "}");
+        }
+        L = (short)(b - body);
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)L);
+        *f++ = '\r';
+        { short k; for (k = 0; k < L; k++) *f++ = body[k]; }
+        f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, responseBuffer, (long)(f - responseBuffer));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+
+    /* CPJINSTALL / CPJUNINSTALL: hook the jGNE filter (0x29A) at the SAME counter block,
+     * to test whether 0x29A is a per-process-swapped low-mem global (then a runtime hook is
+     * daemon-local, like the trap patch) or truly global (then runtime jGNE reaches the
+     * foreground). Runtime only, nothing persisted -> a reboot clears 0x29A + the sysheap. */
+    if (strncmp(request, "CPJINSTALL", 10) == 0) {
+        Ptr s; unsigned long old; const char *msg; short L; char *f = responseBuffer;
+        SetActivity("CPJINSTALL");
+        s = FindCounterProbe();
+        if (s != NULL) {
+            old = *(unsigned long *)kJGNEFilter;                     /* existing filter, or 0 */
+            *(unsigned long *)((char *)s + oCP_jReal) =
+                (old != 0L) ? old : (unsigned long)((char *)s + oCP_jRTS);  /* never 0: chain is safe */
+            *(long *)((char *)s + oCP_jCnt) = 0L;
+            *(unsigned long *)kJGNEFilter = (unsigned long)((char *)s + oCP_jStub);
+            msg = "jhooked";
+        } else { msg = "no-block"; }
+        L = (short)strlen(msg);
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)L);
+        *f++ = '\r'; f = StatStr(f, msg); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, responseBuffer, (long)(f - responseBuffer));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+    if (strncmp(request, "CPJUNINSTALL", 12) == 0) {
+        Ptr s; unsigned long jr; const char *msg; short L; char *f = responseBuffer;
+        SetActivity("CPJUNINSTALL");
+        s = FindCounterProbe();
+        if (s != NULL && *(unsigned long *)kJGNEFilter == (unsigned long)((char *)s + oCP_jStub)) {
+            jr = *(unsigned long *)((char *)s + oCP_jReal);          /* restore the TRUE original: */
+            *(unsigned long *)kJGNEFilter =
+                (jr == (unsigned long)((char *)s + oCP_jRTS)) ? 0L : jr;  /* 0 if there was none */
+            msg = "junhooked";
+        } else if (s != NULL) { msg = "not-head"; }
+        else { msg = "no-block"; }
         L = (short)strlen(msg);
         f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)L);
         *f++ = '\r'; f = StatStr(f, msg); f = StatStr(f, "\rSTDERR:0\r\r");

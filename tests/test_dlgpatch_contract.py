@@ -20,9 +20,10 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DLGPATCH_A = os.path.join(_ROOT, "mac", "journal", "dlgpatch.a")
 DLGWALK_C = os.path.join(_ROOT, "mac", "journal", "dlgwalk.c")
 MAIN_C = os.path.join(_ROOT, "mac", "src", "main.c")
+JGNEPATCH_A = os.path.join(_ROOT, "mac", "journal", "jgnepatch.a")
 
 
-def _asm_layout(path):
+def _asm_layout(path, start="Entry", end="Go"):
     """Byte offsets of the labeled fields in dlgpatch.a's block (Entry..Records),
     plus the Records region's declared byte size. The block runs from the `Entry`
     label to the `Go` code label; each `<label> DC.W/DC.L/DCB.B ...` advances the
@@ -31,10 +32,10 @@ def _asm_layout(path):
     for raw in open(path).read().splitlines():
         s = raw.strip()
         if not started:
-            if s == "Entry":
+            if s == start:
                 started, off = True, 0
             continue
-        if s.startswith("Go"):          # code begins -> header done
+        if s.startswith(end):           # code begins -> header done
             break
         m = re.match(r"(?:(\w+)\s+)?(BRA\.W|DC\.W|DC\.L|DC\.B|DCB\.B)\b\s*(.*)", s)
         if not m:
@@ -125,6 +126,58 @@ def test_generation_is_asm_only():
     src = open(DLGWALK_C).read()
     assert "oGeneration" not in src, \
         "dlgwalk.c references oGeneration again -> generation would be double-counted"
+
+
+def _asm_equ(path, names):
+    src = open(path).read()
+    out = {}
+    for n in names:
+        m = re.search(r"^\s*" + re.escape(n) + r"\s+EQU\s+(\d+)", src, re.M)
+        assert m, os.path.basename(path) + ": EQU " + n + " not found"
+        out[n] = int(m.group(1))
+    return out
+
+
+# jgnepatch.a block field -> main.c #define (the SECOND DlgWalk trigger; owner review
+# 2026-08-03 accepted a duplicated read-path only with this static drift guard).
+_JG_CONTRACT = [
+    ("jMagic", "oJG_Magic"),
+    ("jReal", "oJG_jReal"),
+    ("jArmed", "oJG_jArmed"),
+    ("jOneShot", "oJG_jOneShot"),
+    ("jBusy", "oJG_jBusy"),
+    ("jTries", "oJG_jTries"),
+    ("jMaxTries", "oJG_jMaxTries"),
+    ("jTargetA5", "oJG_jTargetA5"),
+    ("jDPBlock", "oJG_jDPBlock"),
+]
+
+
+def test_jgnepatch_block_offsets_agree():
+    jg, _ = _asm_layout(JGNEPATCH_A, start="jEntry", end="jGo")
+    main = _defines(MAIN_C, [d for _, d in _JG_CONTRACT])
+    for field, mkey in _JG_CONTRACT:
+        assert field in jg, "jgnepatch.a: field %r not found" % field
+        assert jg[field] == main[mkey], \
+            "%s: jgnepatch.a @%d != main.c %s @%d" % (field, jg[field], mkey, main[mkey])
+
+
+def test_jgnepatch_magic_at_4():
+    jg, _ = _asm_layout(JGNEPATCH_A, start="jEntry", end="jGo")
+    assert jg.get("jMagic") == 4, "jgnepatch.a: jMagic @%r, must be +4" % jg.get("jMagic")
+
+
+def test_jgnepatch_dp_offsets_agree():
+    """jgnepatch's copy writes the SAME DP block; its oDP_Up/oDP_Gen EQUs must match
+    dlgpatch.a's DialogUp/Generatn and main.c's oDP_Up/oDP_Gen, or the jGNE walk sets
+    the wrong words in a block the entry patch also writes."""
+    equ = _asm_equ(JGNEPATCH_A, ["oDP_Up", "oDP_Gen"])
+    asm, _ = _asm_layout(DLGPATCH_A)
+    main = _defines(MAIN_C, ["oDP_Up", "oDP_Gen"])
+    assert equ["oDP_Up"] == asm["DialogUp"] == main["oDP_Up"], \
+        "oDP_Up drift: jgnepatch %d, dlgpatch %d, main %d" % (equ["oDP_Up"], asm["DialogUp"], main["oDP_Up"])
+    assert equ["oDP_Gen"] == asm["Generatn"] == main["oDP_Gen"], \
+        "oDP_Gen drift: jgnepatch %d, dlgpatch %d, main %d" % (equ["oDP_Gen"], asm["Generatn"], main["oDP_Gen"])
 
 
 if __name__ == "__main__":
