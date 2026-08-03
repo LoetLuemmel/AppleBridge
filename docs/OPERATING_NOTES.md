@@ -930,3 +930,32 @@ the timing all fall out of the loop. That is a daemon rebuild + reboot; no curre
 question depends on it (the runtime-jGNE-walk that this whole reach question serves
 is already proven end-to-end), so it is left undone deliberately, and this note is
 the record of why. A later attempt to turn that fast poller into an in-window WITNESS — argue an application must reach the trap, so its absence from the trap count would prove the patch local — also did not hold: the counters did not reproduce run to run (jGNE-fires vs trap-calls swung from ~4.5 to ~0.03 across same-session runs, and the last-non-self A5 changed identity between them), so no aggregate could carry the argument either.
+
+**An autonomous actuator's verb allowlist must exclude any verb that can cancel
+its own preconditions (2026-08-03).**
+
+The perceive→reason→act loop that drives a *foreign* application rests on one
+precondition: the TARGET owns the foreground. Both halves of perception read
+foreground state — the target A5 is pinned from whichever process is pumping the
+Event Manager, and the DITL walk fires in the front app's context. A verb that can
+move the foreground therefore does not belong in the loop's action space.
+
+The concrete case: the conductor's allowlist carried `monitor`, which shows the
+daemon's Verbose window. A faceless daemon cannot own the foreground; a daemon
+WITH a window can, and can steal it. So a loop able to emit `monitor(show=true)`
+can put the daemon in front and silently invalidate the ground its own next
+perceive stands on — the pin then reads the wrong process, or the walk finds the
+wrong front, and NO error fires. It was removed from both the conductor allowlist
+and the planner's grammar (a grammar-constrained model cannot emit what the
+grammar forbids). It was also the likely cause of the Verbose window reappearing
+before an autonomous run — seen, but unattributable at the time.
+
+The general rule: a verb that touches FOCUS, PROCESS MEMBERSHIP or DAEMON STATE
+must be excluded from an autonomous loop's action space *by construction* — unless
+the loop explicitly re-establishes the precondition afterward and verifies it. The
+danger is that the failure is SILENT: the loop removes its own footing and keeps
+going as if nothing changed, so it cannot be caught by an error check downstream.
+Exclude such verbs at the grammar, do not hope to catch them at runtime. (First
+autonomous run of the conductor against a standing dialog, 2026-08-03: qwen chose
+Cancel, the leash held, and the stale-`dialog_up` re-walk correctly resolved to
+"gone" with no second click — the actual danger the allowlist protects against.)
