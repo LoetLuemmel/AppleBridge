@@ -798,3 +798,92 @@ perception path actually chosen, a runtime jGNE walk-on-request, needs no boot I
 at all. `cpinit` is kept only as the template for the day a boot INIT must hook a
 hot-patched trap for an unrelated reason. This note is what that day will need:
 scan the heap, verify the code ran, and do not read a head check as install state.
+
+## Seeing the guest when the daemon is down
+
+Every screen-reading tool in this project goes *through* the daemon —
+`mac_screenshot` has the daemon capture the emulated framebuffer, and
+`guest_input.py shot` asks `System Events` for the emulator's window geometry
+first. Both fail exactly when the answer matters most: the daemon is not
+dialling in and nobody can say whether the guest is wedged, sitting on a modal,
+or perfectly fine.
+
+Measured 2026-08-03, during a daemon that had not connected for over 150 s:
+
+- `guest_input.py shot` failed with `-1719` — *"window 1 of process BasiliskII
+  cannot be read, invalid index"*. `System Events` reported **0 windows** for a
+  process that plainly had one. AX is an unreliable narrator for SDL2 apps.
+- A plain full-screen `screencapture` showed the host desktop and **no
+  emulator** — the window was on another Space, and `screencapture` only ever
+  captures the current one.
+
+**The path that works** goes around both, and touches nothing:
+
+```python
+import Quartz
+wins = Quartz.CGWindowListCopyWindowInfo(
+    Quartz.kCGWindowListOptionAll, Quartz.kCGNullWindowID)
+# match kCGWindowOwnerName == "BasiliskII", take the one whose Width > 500
+```
+
+`CGWindowListCopyWindowInfo` sees windows **across Spaces** and independently of
+Accessibility. It yields the window id, which `screencapture` will grab
+directly:
+
+```
+screencapture -x -o -l <windowid> guest.png
+```
+
+That produced a full, readable 1024×768 guest screen with the emulator on
+another Space, the app not frontmost, and the daemon dead.
+
+**Practice:** when the bridge is down, reach for this **before** reaching for
+the mouse. It is a pure read — no click, no key, no activation, nothing that can
+change what you are trying to diagnose. On the run above it showed the guest was
+healthy and the daemon's own console carried the cause, which no amount of
+host-side guessing would have produced.
+
+**And it earns its place by the counter-example.** On that same run the next
+step was a real-mouse click, aimed by *computing* guest coordinates from the
+window bounds instead of calibrating them. The pointer landed ~120 px off, in
+the daemon's Verbose console — a window that is `getFrontClicks` and therefore
+takes the foreground when clicked. The emulator hung shortly after, and whether
+the click caused it could not be ruled out. Calibration costs one `cliclick m:`
+and a capture; the ordering is not a detail. **Read first, calibrate second,
+click last** — and if reading answers the question, do not proceed to the other
+two at all.
+
+## An error message can name the wrong machine
+
+`OTOpenEndpoint` is a **local** call: it creates the guest's own Open Transport
+endpoint, before any connection to anything is attempted. When it fails, nothing
+about the host has been touched yet.
+
+The daemon's console nevertheless prints, verbatim (observed 2026-08-03 after a
+`SWAPSELF` + reboot):
+
+```
+Opening TCP endpoint...
+OTOpenEndpoint failed!
+*** HOST SERVER NOT REACHABLE - bridge i…
+  the connection attempt failed
+  check on the HOST, in this order:
+   1. is host_server.py running?
+   2. is 10.0.2.2 on the default-route N…
+   3. emulator NIC alive? quit BasiliskI…
+```
+
+All three instructions point at the host. The host was fine throughout — `:9000`
+and `:9001` listening, the log accepting control connections and rejecting them
+with *"no daemon connected"*. A session that followed the message would have
+searched the machine that was never at fault, and the retry loop reuses the same
+broken Open Transport state, so it repeats the misdirection every 30 s.
+
+**Practice:** read the *last successful* line, not the loudest one. Here
+`Opening TCP endpoint…` with no `Connecting to host…` after it places the
+failure inside the guest before the wire is ever used; the healthy sequence is
+`Opening TCP endpoint… / Connecting to host… / SYNC-OK / connected to
+10.0.2.2:9000`. A diagnosis banner is a claim about a cause, and a claim is not
+a measurement — the same rule this file applies to code, applied to the
+project's own error text. The message should say Open Transport in the guest is
+not answering, and it does not.
