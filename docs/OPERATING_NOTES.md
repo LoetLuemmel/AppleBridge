@@ -625,3 +625,39 @@ merely stayed unset would have been consistent with three different causes.
 Distinguishing "the trap was never entered" from "the trap ran and my handler
 was wrong" is what separates a diagnosis from a guess, and it was available here
 for the price of reading one field.
+## The keyboard reaches a modal dialog; the synthetic mouse does not
+
+A modal tracking loop **polls the hardware pointer**, which is why `mac_click`
+never reaches one — the daemon sets the low-memory mouse for an instant and the
+emulator immediately restores the real cursor position. That rule is old. What
+was not written down, and reframes what a driver has to do, is the other half:
+the same loop takes **keystrokes from the event queue**, and the event queue is
+exactly where `PostEvent` writes.
+
+Measured 2026-08-03 on Basilisk against a ROM `Alert()` — SimpleText's *"Save
+changes to the document … before closing?"*:
+
+| Key sent with `mac_key` | Result |
+|---|---|
+| `escape` | **Cancel** — the alert closed, the document stayed open with its unsaved text |
+| `d` + `command` | **Don't Save** — the alert closed and the document was discarded |
+
+Both confirmed by screenshot, and **no coordinates were involved in either**.
+The same trick had been recorded once for a Standard File dialog on an SE/30,
+i.e. a machine with no host-mouse channel at all; it is not a property of that
+machine, it is a property of where the two input kinds are read from.
+
+**Practice:** for a dialog whose item rectangles are unknown, stale, or were
+never captured, do not reach for pixel coordinates first. The keyboard turns
+*"where is the button"* into *"which named action"* — a question a screenshot
+answers far more reliably than any coordinate estimate, and one whose failure
+mode is a no-op rather than a click somewhere unintended.
+
+**And never probe with Return.** It fires the *default* button, which on any
+save-changes alert is the destructive or escalating one — here `Save`, which
+opens a Standard File dialog and leaves a second tracking loop owning the
+machine. `Escape` is the safe probe: its worst case is that nothing happens.
+The buttons that matter live in one row, and `Save` and `Erase Disk` are drawn
+by the same code — a driver that guesses in a modal is not risking a misplaced
+pixel, it is risking an irreversible action. Report and stop instead of
+guessing; a visible gap beats a confident wrong click.
