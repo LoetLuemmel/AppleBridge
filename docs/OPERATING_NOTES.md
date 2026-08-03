@@ -755,3 +755,46 @@ would look like success and mean the wrong process. The question is never *did
 something foreign go through* but *did the specific target go through*, and that
 needs the target's identity pinned first, in a quiet reference window, before the
 event you care about.
+
+**A boot INIT that hooks a hot-patched trap will not be at the head — scan the
+heap, do not trust the vector (2026-08-03).** The counter block above was also
+installed the other way, to confirm from the counter side what `dlgpatch` already
+shows functionally: a boot-installed trap patch is global. A boot INIT (`cpinit`,
+`INIT` id 0, `resSysHeap`/`resLocked`) head-patched `_GetNextEvent` (`$A970`) and
+`_WaitNextEvent` (`$A860`) at boot. The confirmation came back inconclusive for a
+reason worth recording. After a clean, non-wedging boot, the daemon's
+`FindCounterProbe` — which checks the trap **head** alone, `NGetTrapAddress($A970)`
+less the stub offset against the block magic — reported the block **absent**
+(`installed=0`), while `dlgpatch` (which hooks `_ModalDialog`, `$A991`) reported
+**present** on the very same boot (`DLGTREE installed=1`), and the `cpinit`
+resource was verifiably in `Extensions:` and had run.
+
+The block was there; it was simply not at the head. `_GetNextEvent` and
+`_WaitNextEvent` are the most-patched traps in the system — the Notification
+Manager, desk utilities, and countless extensions all chain there, and they
+install *after* a boot INIT, so they become the head and chain **downward** to the
+INIT's block. A head check therefore false-negatives: the patch is alive, it is
+just no longer first. This is the same signature already recorded above for
+`_MenuSelect` (the Route-B block was not head after boot though the INIT had
+provably run); for a trap this hot it is not a risk but the expected outcome, and
+the method note *"checking the trap head alone is unreliable here"* is exactly this
+case.
+
+The trustworthy check is the **conjunction, never one half.** A **heap scan** for
+the magic (as `FindDlgPatch` does) finds the block regardless of chain position —
+but the heap scan *alone* deceives in the other direction: a `resSysHeap` block is
+in the system heap the instant its resource is *loaded*, magic and all, with its
+install code never run. Presence in the heap does not prove the install ran;
+absence from the head does not prove it failed. Confirm **both** — a heap-resident
+block *and* evidence its code executed (a field the install sets, or the block
+reached by walking the chain down from the current head) — before concluding
+anything about a boot INIT on a hot trap.
+
+**Consequence.** The counter confirmation was retired, not repaired. It would
+re-prove from a third angle a statement already carried by two — runtime trap =
+process-local (measured twice, two trap pairs), runtime jGNE = global (12/12), boot
+INIT = global (functional via `dlgpatch`, re-confirmed on this very boot) — and the
+perception path actually chosen, a runtime jGNE walk-on-request, needs no boot INIT
+at all. `cpinit` is kept only as the template for the day a boot INIT must hook a
+hot-patched trap for an unrelated reason. This note is what that day will need:
+scan the heap, verify the code ran, and do not read a head check as install state.
