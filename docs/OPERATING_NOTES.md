@@ -695,3 +695,106 @@ The buttons that matter live in one row, and `Save` and `Erase Disk` are drawn
 by the same code — a driver that guesses in a modal is not risking a misplaced
 pixel, it is risking an irreversible action. Report and stop instead of
 guessing; a visible gap beats a confident wrong click.
+
+
+## The trap table is per-process here, but the jGNE filter is not — measured 2026-08-03
+
+The Route-B finding above — *a patch installed at runtime from the daemon is
+process-local* — was reproduced from a second, independent angle, and then
+qualified by a result that moves where cross-app work can live.
+
+A counter probe (`CPINSTALL`/`CPARM`/`CPREAD`: a disarmed-by-default system-heap
+block, armed only for a ~2 s window) head-patched `_GetNextEvent` (`$A970`) and
+`_WaitNextEvent` (`$A860`) with a pure counter that also stamped `CurrentA5`
+(low-mem `$0904`) — so a climbing count, meaningless on globally-hot traps that
+every app pumps thousands of times a minute, became *which process went through*.
+Filtered to skip the daemon's own A5, the foreground count (`OtherCount`) stayed
+**zero** in every scenario: the idle Finder, a standing SimpleText modal, even
+ToolServer kept busy in the window. The daemon's own calls counted; no foreign
+process ever did. The tool-trap table is effectively **per-process** here — a
+runtime `NSetTrapAddress` reaches only the installing process, exactly the reach
+the boot INIT exists to give the `_ModalDialog` patch. Two measurements, different
+trap pairs, one statement.
+
+**But the level below the trap dispatch is a different question, and its answer is
+the opposite.** The `jGNEFilter` low-memory hook (`$029A`), which the Event Manager
+calls from *inside* every event fetch, was installed at runtime by the daemon with
+the same counter and self-filter. Its foreground count climbed at once: the idle
+Finder's A5 appeared with no activity at all, and while a SimpleText save-alert
+stood open, **12 of 12 samples carried SimpleText's A5** at ~150 calls/second — the
+modal dialog's own `ModalDialog` loop pumping the Event Manager, seen from the
+daemon's block in a foreign process. `$029A` is **not** in the per-process-swapped
+set (`CurrentA5`, `CurApName`, `WindowList`); a runtime jGNE hook is global where a
+runtime trap patch is not.
+
+**Consequence.** Cross-app perception of an *already-standing* dialog — the one
+case the `_ModalDialog` entry patch cannot serve, because that trap is entered
+exactly once per dialog, before anything can be armed — is reachable at **runtime**
+through a jGNE walk-on-request, with no boot INIT and its boot-wedge risk: Route B,
+and a reboot clears `$029A` and the system-heap block. "Everything cross-app needs a
+boot INIT" was too strong; it holds for the trap table, not for jGNE.
+
+**Retraction (2026-08-03), the same shape as the corollary correction above.** The
+session driving the ApfelPilot loop had concluded that a ROM `Alert()` *tears its
+dialog down off-trap*, from the observation that a daemon-installed head patch on
+`_CloseDialog`/`_DisposDialog` never cleared `DialogUp` for SimpleText's alert. That
+was the bypass theory again, one trap level below `_ModalDialog`, and wrong for the
+same reason: the close patch is **process-local**, so it never fired in SimpleText's
+process at all — `DLGSELFMODAL` cleared the flag only because it disposes the
+daemon's *own* dialog in the daemon's *own* process. Scope, not off-trap. The
+teardown was never measured to bypass the traps; it was never in scope to be seen.
+
+**Method, reusable.** Two guards made the jGNE reading trustworthy and are worth
+keeping. (1) A **self-filter** — stamp the caller's A5 only when it is *not* the
+daemon's own — because a background daemon pumps these hot paths so fast it
+otherwise owns every sample. (2) **Three distinguishable identities** — the daemon,
+the background app that keeps running behind a modal (the Finder here), and the
+target — because once you know a global filter catches *idle background processes
+too*, a bare non-self A5 proves nothing: the Finder's A5 during a standing alert
+would look like success and mean the wrong process. The question is never *did
+something foreign go through* but *did the specific target go through*, and that
+needs the target's identity pinned first, in a quiet reference window, before the
+event you care about.
+
+**A boot INIT that hooks a hot-patched trap will not be at the head — scan the
+heap, do not trust the vector (2026-08-03).** The counter block above was also
+installed the other way, to confirm from the counter side what `dlgpatch` already
+shows functionally: a boot-installed trap patch is global. A boot INIT (`cpinit`,
+`INIT` id 0, `resSysHeap`/`resLocked`) head-patched `_GetNextEvent` (`$A970`) and
+`_WaitNextEvent` (`$A860`) at boot. The confirmation came back inconclusive for a
+reason worth recording. After a clean, non-wedging boot, the daemon's
+`FindCounterProbe` — which checks the trap **head** alone, `NGetTrapAddress($A970)`
+less the stub offset against the block magic — reported the block **absent**
+(`installed=0`), while `dlgpatch` (which hooks `_ModalDialog`, `$A991`) reported
+**present** on the very same boot (`DLGTREE installed=1`), and the `cpinit`
+resource was verifiably in `Extensions:` and had run.
+
+The block was there; it was simply not at the head. `_GetNextEvent` and
+`_WaitNextEvent` are the most-patched traps in the system — the Notification
+Manager, desk utilities, and countless extensions all chain there, and they
+install *after* a boot INIT, so they become the head and chain **downward** to the
+INIT's block. A head check therefore false-negatives: the patch is alive, it is
+just no longer first. This is the same signature already recorded above for
+`_MenuSelect` (the Route-B block was not head after boot though the INIT had
+provably run); for a trap this hot it is not a risk but the expected outcome, and
+the method note *"checking the trap head alone is unreliable here"* is exactly this
+case.
+
+The trustworthy check is the **conjunction, never one half.** A **heap scan** for
+the magic (as `FindDlgPatch` does) finds the block regardless of chain position —
+but the heap scan *alone* deceives in the other direction: a `resSysHeap` block is
+in the system heap the instant its resource is *loaded*, magic and all, with its
+install code never run. Presence in the heap does not prove the install ran;
+absence from the head does not prove it failed. Confirm **both** — a heap-resident
+block *and* evidence its code executed (a field the install sets, or the block
+reached by walking the chain down from the current head) — before concluding
+anything about a boot INIT on a hot trap.
+
+**Consequence.** The counter confirmation was retired, not repaired. It would
+re-prove from a third angle a statement already carried by two — runtime trap =
+process-local (measured twice, two trap pairs), runtime jGNE = global (12/12), boot
+INIT = global (functional via `dlgpatch`, re-confirmed on this very boot) — and the
+perception path actually chosen, a runtime jGNE walk-on-request, needs no boot INIT
+at all. `cpinit` is kept only as the template for the day a boot INIT must hook a
+hot-patched trap for an unrelated reason. This note is what that day will need:
+scan the heap, verify the code ran, and do not read a head check as install state.
