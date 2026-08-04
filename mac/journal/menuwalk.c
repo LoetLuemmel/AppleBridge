@@ -93,14 +93,19 @@ void MenuWalk(unsigned char *blk)
         Ptr             mi;                /* MenuInfo (dereferenced menu handle) */
         unsigned char  *md;               /* menuData: title, then packed items */
         unsigned char  *p;
-        long            enMask;
-        short           menuID, menuW, menuH, menuLeft, tLen, k, idx, pointsValid, predH;
+        long            enMask, mdSize;
+        unsigned char  *mdEnd;             /* one past the end of the menu record (fix A) */
+        short           menuID, menuW, menuH, menuLeft, tLen, k, idx, pointsValid;
 
         if (menuN >= MAX_MENUS) { *(short *)(blk + oMB_Trunc) = 1; break; }
 
         mh = *(Handle *)(mp + off);
         if (mh == NULL || *mh == NULL) continue;
         mi = (Ptr)(*mh);
+        mdSize = GetHandleSize(mh);        /* fix A: bound the item walk to the menu record.
+                                            * The handle is relocatable; GetHandleSize moves
+                                            * nothing (same trap as the outer MenuList bound). */
+        mdEnd  = (unsigned char *)mi + mdSize;
 
         menuID   = *(short *)(mi + 0);
         menuW    = *(short *)(mi + 2);
@@ -124,9 +129,12 @@ void MenuWalk(unsigned char *blk)
         p = md + 1 + md[0];                      /* skip the title Pascal string */
         enMask = enMask >> 1;                    /* drop the menu's own bit -> bit0 = item 1 */
         idx = 0;
-        while (*p != 0 && idx < kItemGuard) {     /* 0-length byte ends the item list */
+        /* bounded three ways (fix A): the handle end, the 0-byte terminator, and the
+         * per-menu runaway guard — a corrupt MenuInfo can no longer walk p off the block. */
+        while (p < mdEnd && *p != 0 && idx < kItemGuard) {
             short il = *p;
             short tl, kk, flags2 = 0;
+            if (p + 1 + il + 4 > mdEnd) { *(short *)(blk + oMB_Trunc) = 1; break; }  /* item overruns the record (fix A) */
             if (itemTotal >= MAX_ITEMS) { *(short *)(blk + oMB_Trunc) = 1; break; }
             idx++;
             tl = il;
@@ -151,15 +159,15 @@ void MenuWalk(unsigned char *blk)
             p += 1 + il + 4;                              /* Pascal string + 4 metadata bytes */
         }
         *(short *)(mrec + 10) = idx;                       /* itemN for this menu */
+        if (idx >= kItemGuard) *(short *)(blk + oMB_Trunc) = 1;   /* per-menu guard hit: NOT a silent cap (fix B) */
 
-        /* menuHeight guard: does the flat 16px-per-item model predict menuH? If not,
-         * this is not a plain text menu (SICN / variable items) — points are untrusted. */
-        predH = (short)(idx << 4);                         /* idx * 16, constant shift */
-        pointsValid = 1;
-        if (menuH > 0) {
-            short d = (short)(menuH - predH);
-            if (d < -8 || d > 8) pointsValid = 0;
-        }
+        /* menuHeight guard (fix C — generous until h_sep is MEASURED): a standard-MDEF menu
+         * is at most 16px/item tall, and separators are SHORTER, so menuH <= 16*itemN. Trust
+         * the item points only when menuH fits under that upper bound (+slack); a custom MDEF
+         * with taller items exceeds it and is flagged. The exact separator-adjusted Y model
+         * (predH = 16*(n-sep) + h_sep*sep) needs h_sep measured on a real menu — until then the
+         * client derives the separator count from ITEM_REC bit1 and the carried menuH. */
+        pointsValid = (menuH > 0 && menuH <= (short)(idx << 4) + 8) ? 1 : 0;
         *(short *)(mrec + 12) = (short)((( *(long *)(mi + 10) ) & 1L ? 1 : 0)
                                         | (pointsValid ? 2 : 0));   /* bit0 menu-enabled, bit1 points-valid */
 
