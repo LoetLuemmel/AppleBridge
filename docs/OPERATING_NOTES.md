@@ -1325,6 +1325,54 @@ result.** `AESend` with `kAENoReply`, `PostEvent`, `PBVolumeMount` on a queue �
 anything whose success means "handed over" needs a second question asked of the
 world, or it will report success for a thing that never happened.
 
+## A host-side window query can fail transiently — and I called it a loss — 2026-08-04
+
+**Corrected the same evening; the first version of this note is kept below the
+line because the mistake is the more useful half.**
+
+What was measured, at 17:41: `BasiliskII` running, `visible` true, System Events
+reporting **zero windows**, and `host/guest_input.py` refusing every gesture. All
+true. What was written down was *"the emulator has lost its host window"* — a
+standing condition — and two conclusions drawn from it: that the real mouse was
+unavailable, and that `AppleBridgeConfig` could not be closed.
+
+Both were wrong. At 17:46, with no intervening action, System Events reported
+**one** window, `guest_input.py geometry` answered normally (origin 448,128, the
+same as an hour earlier), and `PROCLIST` showed `AppleBridgeConfig` **gone** —
+the Command-Q sent minutes before had worked; it was merely slower than the
+single moment I looked. A host screenshot taken while the note was being written
+showed the emulator window plainly on screen, which alone should have stopped
+the sentence.
+
+The failure is not the wrong reading. It is that **one sample of a changing
+thing was reported as a state**, and then two further claims were built on top
+of it without either being checked — the real mouse was never tried, and the
+process list was never re-read. That is this file's own subject arriving from
+the inside: a report on evidence that is not the thing it claims.
+
+The practical rule: **before writing down that something is broken, sample it
+twice, and check the claim you are about to derive rather than the observation
+you started from.** A transient around a guest reboot looks exactly like a
+failure if you only look once, and the difference costs nothing to establish.
+
+What survives from the original note, unchanged and still worth having:
+
+### The two capture paths are not redundant
+
+`mac_host_screenshot` photographs a **window on this desk** and fails with
+anything that happens to it — including a query that momentarily cannot see it.
+`mac_screenshot` reads the guest's own framebuffer over the bridge and is
+indifferent to all of that; it returned a perfect 1024×768 frame throughout,
+while `PROCLIST`, `DISKINFO` and every command answered normally.
+
+So when one of them returns nothing, **try the other before concluding anything
+about the guest.** Here the guest was in no trouble whatsoever — the difference
+between the two answers was entirely on the host side.
+
+---
+
+*Superseded — the original wording, 2026-08-04 17:41:*
+
 ## A guest can lose its host window and keep running — 2026-08-04
 
 Observed while deploying 0.8d38: `BasiliskII` was running, `visible` was true,
