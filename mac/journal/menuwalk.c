@@ -88,8 +88,9 @@ void MenuWalk(unsigned char *blk)
     irec = blk + oMB_Items;
 
     for (off = 6; off <= lastMenu && (long)(off + 6) <= blockSize; off += 6) {
-        MenuHandle      mh;
-        Ptr             mi;                /* MenuInfo (dereferenced MenuHandle) */
+        Handle          mh;                /* a menu handle (kept as Handle to avoid
+                                            * <Menus.h> — we never call a Menu Mgr trap) */
+        Ptr             mi;                /* MenuInfo (dereferenced menu handle) */
         unsigned char  *md;               /* menuData: title, then packed items */
         unsigned char  *p;
         long            enMask;
@@ -97,7 +98,7 @@ void MenuWalk(unsigned char *blk)
 
         if (menuN >= MAX_MENUS) { *(short *)(blk + oMB_Trunc) = 1; break; }
 
-        mh = *(MenuHandle *)(mp + off);
+        mh = *(Handle *)(mp + off);
         if (mh == NULL || *mh == NULL) continue;
         mi = (Ptr)(*mh);
 
