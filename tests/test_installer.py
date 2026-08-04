@@ -368,7 +368,10 @@ def test_seeding_says_so_when_the_guest_has_no_prefs_file_yet():
     # and a test pinned to a phrase would have failed for no defect — while one
     # pinned to "refuses" alone would pass even if the message went blank.
     assert not ok
-    assert ib.GUEST_PREFS_HFS in msg, msg
+    # Was `ib.GUEST_PREFS_HFS in msg` — the English path, which the seeder no
+    # longer names because it no longer assumes it. The property survives the
+    # change: it refuses, and it says what it looked for.
+    assert "AppleBridge Prefs" in msg, msg
     assert "installer" in msg, msg
 
 
@@ -1426,7 +1429,12 @@ def test_the_seeder_finds_the_prefs_in_a_KIT_as_well_as_an_installed_guest():
     # A downloaded release kit is stamped before it is ever mounted, so the
     # seeder must handle a volume that has no System Folder at all.
     assert ib.KIT_PREFS_HFS == ":AppleBridge Prefs"
-    assert ib.GUEST_PREFS_HFS.startswith(":System Folder:")
+    # The installed-guest path used to be a sibling constant reading
+    # ":System Folder:Preferences:…" — the ENGLISH name, on a project with two
+    # German guests. It is discovered now, so there is nothing left to assert
+    # here except that nobody has quietly put it back.
+    assert not hasattr(ib, "GUEST_PREFS_HFS"), \
+        "the hardcoded English System Folder path is back"
 
     seen = []
 
@@ -1434,8 +1442,15 @@ def test_the_seeder_finds_the_prefs_in_a_KIT_as_well_as_an_installed_guest():
         seen.append(list(argv))
         if argv[0] == "hmount":
             return "Volume name is whatever\n"
-        if argv[0] == "hcopy" and argv[2] == ib.GUEST_PREFS_HFS:
-            return ""                      # absent: this is a kit, not a guest
+        # A KIT volume, described the way hfsutils really describes one: the
+        # prefs file at the ROOT and no directories at all, so the search for a
+        # System Folder finds nothing and falls through to the root copy. It
+        # used to be expressed as "hcopy of the English path returns nothing",
+        # which tested the absence of one spelling rather than the shape of a
+        # kit — and would have passed just as happily on a German guest that
+        # the seeder could not read.
+        if argv[0] == "hls":
+            return "f  TEXT/ttxt    0    441 Jul 29 11:46 AppleBridge Prefs\n"
         if argv[0] == "hcopy" and argv[2] == ib.KIT_PREFS_HFS:
             open(argv[3], "wb").write(b"# prefs\nIP=\nNET=OT\n")
         return ""
@@ -1455,7 +1470,10 @@ def test_the_seeder_says_both_places_it_looked_when_it_finds_neither():
         run=lambda a: "Volume name is x\n" if a[0] == "hmount" else "",
         hfs={"tmp": "/tmp/_ab_seed_missing"})
     assert ok is False
-    assert ib.GUEST_PREFS_HFS in msg and ib.KIT_PREFS_HFS in msg, msg
+    # Both places, still — but stated as what was SEARCHED rather than as one
+    # spelling of the folder. A German image reaches this message too.
+    assert ib.KIT_PREFS_HFS in msg, msg
+    assert "root" in msg, msg
 
 
 def test_seeding_preserves_the_prefs_type_and_creator():
@@ -1471,7 +1489,12 @@ def test_seeding_preserves_the_prefs_type_and_creator():
             return "Volume name is whatever\n"
         if argv[0] == "hls":
             return "f  TEXT/ABrg    0    441 Jul 29 11:46 AppleBridge Prefs\n"
-        if argv[0] == "hcopy" and argv[2] == ib.GUEST_PREFS_HFS:
+        # Was `argv[2] == ib.GUEST_PREFS_HFS` — a constant that no longer
+        # exists, because the path is now FOUND. This stub answers every `hls`
+        # with the same one-file listing, so the search lands on the kit's root
+        # copy; matching on the file NAME keeps the test about what it is about
+        # (type and creator are restored) rather than about where it lives.
+        if argv[0] == "hcopy" and argv[2].endswith("AppleBridge Prefs"):
             open(argv[3], "wb").write(b"# prefs\nIP=1.2.3.4\nNET=OT\n")
         return ""
 

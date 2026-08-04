@@ -466,7 +466,7 @@ AppleBridge/
 
 ## Status
 
-**Current daemon:** 0.8d37 ("jGNE walk-on-request reads an already-standing dialog") — the version the
+**Current daemon:** 0.8d38 ("QUIT reports whether the app went away, not whether the event was sent") — the version the
 daemon itself reports, from `mac/vers.r`.
 
 - TCP bridge, NAT-reversed (the guest dials OUT), with an asynchronous connect

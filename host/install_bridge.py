@@ -101,11 +101,12 @@ GUEST_RESOLVER = "10.0.2.3"
 
 # Where the guest's own configuration lives, so the installer can name it rather
 # than let somebody look in the installation folder first (R3).
-GUEST_PREFS_HFS = ":System Folder:Preferences:AppleBridge Prefs"
-# ...and where the same file lives inside a KIT image, whose volume has no
-# System Folder. A downloaded release kit is stamped here before it is ever
-# mounted, which is what lets a published artifact carry no address.
-KIT_PREFS_HFS = ":AppleBridge Prefs"
+# Not a constant: this was the ENGLISH ":System Folder:...", on a project whose
+# SE/30 runs German System 7.5 and whose second host has a German guest. There
+# the folder is `Systemordner` and the seed silently found nothing. guest_paths
+# looks for the folder that holds the `System` file, which is untranslated.
+from guest_paths import (find_guest_prefs, describe_prefs_location,  # noqa: E402
+                         KIT_PREFS_HFS)
 
 # Emulator bundles, most authoritative first. A running process beats any guess.
 # Gatekeeper runs a quarantined app from a per-launch throwaway mount. Anything
@@ -747,7 +748,7 @@ def guest_checklist(addresses):
         f"       Name server   {GUEST_RESOLVER}     <- the one that gets forgotten",
         "",
         "2. AppleBridge Prefs — `IP=` here is THE HOST's address, NOT the guest's.",
-        f"   The file lives in `{GUEST_PREFS_HFS}`,",
+        f"   The file lives in `{describe_prefs_location()}`,",
         "   not in the installation folder, which is where one looks first (R3).",
     ]
     if addresses:
@@ -1319,10 +1320,11 @@ def seed_guest_prefs(image, host_ip, probes, run=None, hfs=None):
         return False, f"hmount failed: {out.strip()[:200]}"
     try:
         # An installed guest keeps it in the System Folder; a KIT volume has no
-        # System Folder and keeps it at the root. Try both rather than making
-        # the caller say which kind of image this is.
+        # System Folder and keeps it at the root. Both are FOUND rather than
+        # named, so a German guest (`:Systemordner:`) is not a silent miss.
         original, where = None, None
-        for candidate in (GUEST_PREFS_HFS, KIT_PREFS_HFS):
+        candidate, found_why = find_guest_prefs(run)
+        if candidate:
             if os.path.exists(tmp):
                 os.remove(tmp)
             run(["hcopy", "-r", candidate, tmp])
@@ -1330,14 +1332,13 @@ def seed_guest_prefs(image, host_ip, probes, run=None, hfs=None):
                 with open(tmp, "rb") as fh:
                     original = fh.read()
                 where = candidate
-                break
             except OSError:
-                continue
+                original = None
         if original is None:
-            return False, (f"no `{GUEST_PREFS_HFS}` and no `{KIT_PREFS_HFS}` in "
-                           "that image. An installed guest gets the first from "
-                           "the GUEST-side installer; a kit ships the second. "
-                           "This only edits an existing file.")
+            return False, (f"no AppleBridge Prefs in that image — {found_why}. "
+                           "An installed guest gets one from the GUEST-side "
+                           "installer; a kit ships it at the volume root. This "
+                           "only edits an existing file.")
 
         shutil.copyfile(tmp, tmp + ".orig")
         updated = rewrite_ip_line(original, host_ip)
@@ -1580,8 +1581,12 @@ def main(argv=None):
             dialable_address(probes["addresses"],
                              probes.get("default_route_interface")) or ""
         if dry_run:
-            seed = (True, f"dry run: would seed IP={host_ip} into "
-                          f"{seed_image}{GUEST_PREFS_HFS}"
+            # Names the FILE, not a path. A dry run mounts nothing, so it
+            # cannot know whether this image says `System Folder` or
+            # `Systemordner` — and printing one of them would be a claim about
+            # an image nobody looked at.
+            seed = (True, f"dry run: would seed IP={host_ip} into the "
+                          f"AppleBridge Prefs inside {seed_image}"
                           + ("  (image discovered from the emulator prefs)"
                              if auto_seeded else ""))
         else:

@@ -107,16 +107,16 @@
 
 resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
-    development, 0x28,   /* development stage, non-release revision 27 (BCD) */
+    development, 0x29,   /* development stage, non-release revision 38 (BCD) */
     verUS,
-    "0.8d37",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d37 - jGNE walk-on-request reads an already-standing dialog"  /* long -> Get Info */
+    "0.8d38",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d38 - QUIT reports whether the app went away, not whether the event was sent"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
-    development, 0x28,
+    development, 0x29,
     verUS,
-    "0.8d37",
+    "0.8d38",
     "AppleBridge"        /* the shared/suite version line */
 };
