@@ -1,0 +1,63 @@
+# Build the jGNE code resource (JGNE 128) — jgnepatch.a + dlgwalk.c + menuwalk.c
+# linked as ONE code resource, installed by the daemon at runtime (MENUARM /
+# DLGWALK). Run inside MPW/ToolServer from MeinMac:MPW:AppleBridge:.
+#
+# WHY THIS FILE EXISTS. AppleBridge_res.r:259 names a script "BuildDlg.emu" that
+# is in no branch, no deleted-file history, and no share folder — searched
+# 2026-08-04. Its absence cost the parallel session about two hours: the recipe
+# for the sibling resource lived only in an earlier session's memory. Every line
+# below is now MEASURED against the build that produced the live JGNE 128
+# (1618 B), not reconstructed.
+#
+#   -model near      the whole resource. A far-model object mixed in does not
+#                    link against these.
+#   -rt JGNE=128     output IS a resource of that type and id. This alone is
+#                    enough — four scripts in this repo build loadable INITs the
+#                    same way (mac/init/BuildInit.emu, mac/menuled/BuildMenuLED.emu,
+#                    mac/journal/BuildDlgINIT.emu), and the System loads those at
+#                    boot, which requires a valid resource map. A result with
+#                    numTypes=0 is evidence the LINK did not complete, never
+#                    evidence against -rt.
+#   -m JgnePatch     the entry, matching `JgnePatch PROC EXPORT` in jgnepatch.a.
+#   NO Interface.o, NO MacRuntime.o. The walk must stay A5-free and PC-relative
+#                    to survive the BlockMove into the system heap. dlgwalk.c
+#                    avoids CountDITL for exactly this reason (dlgwalk.c:77), and
+#                    on 2026-08-04 a single GetHandleSize call — recommended in
+#                    review, safe at RUNTIME, glue at LINK time — broke the link
+#                    with "Undefined entry (Error 28) GETHANDLESIZE". Runtime
+#                    safety and linkability are different questions.
+#
+# ---- three rules, each of which cost a failed build that reported success -----
+#  1. LIBS must be EXPORTED, not merely Set. A script is its own context; a
+#     Set-only LIBS expands to EMPTY inside it and the link dies with
+#     "Invalid object file specification (Error 134)".
+#  2. DELETE the target first. The linker writes its output file even when it
+#     fails, so `Exists :bin:jgnepatch.rsrc` is TRUE afterwards and proves
+#     nothing. Two failed links were "verified" that way.
+#  3. stderr to a file, and read the file in a SEPARATE call. Redirect and read
+#     on one line come back empty. Never 2>&1 — it kills the MPW shell. The
+#     follow-up lines append with >>= : a plain >= truncates, and the assembler's
+#     error would be overwritten by the compiler run before anyone reads it.
+#
+# AFTERWARDS, ALWAYS — status 0 means nothing here:
+#   Catenate :jgne.err                                  <- own call, read it even on "success"
+#   host/tools/rsrc_extract.py list <the pulled file>   <- must show JGNE 128, ~1618 B
+# Then emit the bytes for main.c's kJGTemplate[]:
+#   rsrc_extract.py emit <file> --type JGNE --id 128 --as c --name kJGTemplate
+#
+# NOTE ON ENCODING: this file uses the MacRoman stderr operator and the option-d
+# continuation, so it must be converted before it reaches the guest —
+#   host/encoding_convert.py to-mac mac/journal/BuildJGNE.emu <dest>
+# Pushing it RAW breaks it silently, the same way a raw Makefile push destroyed
+# every dependency line on 2026-08-04 (MPW's option-f is one MacRoman byte and
+# two in UTF-8).
+Set LIBS "MeinMac:Interfaces&Libraries:Libraries:"
+Export LIBS
+Directory MeinMac:MPW:AppleBridge:
+Delete -i :bin:jgnepatch.rsrc :jgne.err
+Asm -model near :src:jgnepatch.a -o :obj:jgnepatch.a.o ≥ :jgne.err
+SC  -model near :src:dlgwalk.c   -o :obj:dlgwalk.c.o   ≥≥ :jgne.err
+SC  -model near :src:menuwalk.c  -o :obj:menuwalk.c.o  ≥≥ :jgne.err
+Link -model near -rt JGNE=128 -m JgnePatch ∂
+     :obj:jgnepatch.a.o :obj:dlgwalk.c.o :obj:menuwalk.c.o ∂
+     -o :bin:jgnepatch.rsrc ≥≥ :jgne.err
