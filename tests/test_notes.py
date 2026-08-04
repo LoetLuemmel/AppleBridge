@@ -805,6 +805,32 @@ class TheShellNeverSeesTheText(unittest.TestCase):
                                  capture_output=True, text=True, timeout=30)
             self.assertIn("--stdin", run.stdout, verb)
 
+    def test_a_question_without_a_question_mark_is_flagged_as_maybe_a_note(self):
+        """The mirror of the `note`-should-have-been-`answer` warning, and the
+        one that was missing. On 2026-08-04 EIGHT status reports stood open as
+        questions at once — every one substantively handled, every one still
+        shown by every reader, because a report written with `ask` waits for an
+        answer nobody will write while both sides consider it settled."""
+        run = self.run_cli(["ask", "Branch steht, rebaset und gepusht",
+                            "--from", "t"])
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("note", run.stderr)
+        self.assertIn("kein Fragezeichen", run.stderr)
+        self.assertIn("x", "x")
+
+    def test_a_real_question_is_not_flagged(self):
+        run = self.run_cli(["ask", "which trap does it hook?", "--from", "t"])
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertNotIn("kein Fragezeichen", run.stderr)
+
+    def test_the_flagged_question_is_still_written(self):
+        """A hint, never a refusal: a question without a question mark is still
+        a question ("name the trap it hooks"). A false positive must cost a
+        line of stderr and nothing else."""
+        self.run_cli(["ask", "no question mark here", "--from", "t"])
+        self.assertIn("no question mark here",
+                      open(self.path, encoding="utf-8").read())
+
     def test_a_long_argv_text_is_mentioned_but_still_written(self):
         """A hint, not a refusal: a long argv text may be perfectly intact, and
         refusing it would break every caller that predates this. But the two

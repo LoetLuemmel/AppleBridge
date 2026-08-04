@@ -797,6 +797,27 @@ def main():
         return 1
     print(line)
 
+    # The mirror of the warning below, and the one that was missing. `note`
+    # warns when it should have been an `answer`; nothing warned when an `ask`
+    # should have been a `note`. That is the direction the channel actually
+    # silted up in: on 2026-08-04 EIGHT status reports stood open as questions
+    # at once, every one of them substantively handled, every one still shown
+    # by every reader — because a report written with `ask` waits for an answer
+    # that will never be written, while both sides consider it settled.
+    #
+    # A missing question mark is a heuristic, so this is a hint and never a
+    # refusal: "name the trap it hooks" is a question without one. But the note
+    # is already written when it appears, so a false positive costs a line of
+    # stderr, and a true one saves a question that would stand open for ever.
+    if args.verb == "ask" and "?" not in text:
+        print("\n>> Diese Frage enthaelt kein Fragezeichen. War es eine "
+              "Statusmeldung? Dann ist `note` richtig — eine Frage bleibt "
+              "offen, bis jemand sie beantwortet, und eine, die niemand als "
+              "Frage liest, bleibt es fuer immer:\n"
+              f"   notes.py note --to {recipient} …    (statt ask)\n"
+              f"   notes.py answer {stamp} \"…\"   schliesst diese hier.",
+              file=sys.stderr)
+
     # A `note --to X` while X has an open question is almost always an `answer`
     # that forgot its timestamp — the question then stays open for ever while
     # both sides consider it handled. THREE stood open that way on 2026-08-04,
