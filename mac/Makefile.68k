@@ -4,10 +4,27 @@
 
 # Compiler and tools (68k versions)
 CC = SC
-LINK = Link
+# ILink, not Link. `-model far` at COMPILE time (CFLAGS below) was NOT enough:
+# measured 2026-08-04, plain Link still fails this binary with
+#   Error 48: PC-relative edit, offset out of range  ___MAIN (342)
+#     Reference to: main in file: :obj:main.c.o
+#     Reference to: ___MAIN in file: ...Libraries:MacRuntime.o
+# i.e. the runtime bootstrap's reach into main, which no compile flag widens.
+# CLAUDE.md's hard rule and docs/SETUP.md both said ILink; this file was the
+# outlier, and every build from it failed at the link with the output file left
+# behind (see below).
+LINK = ILink
 
-# You must set LIBS before running make:
-# Set LIBS 'MeinMac:Interfaces&Libraries:Libraries:'
+# You must EXPORT LIBS before running make, not merely Set it (measured
+# 2026-08-04): `Set` is local to the shell, and BuildIt is a separate script, so
+# a Set-only LIBS expands to EMPTY inside it and the link dies with
+# "Invalid object file specification (Error 134) CLibraries:StdCLib.o".
+#   Set LIBS 'MeinMac:Interfaces&Libraries:Libraries:'; Export LIBS
+#
+# And check the link by the ERROR FILE, not by `Exists {BIN_DIR}AppleBridge`:
+# the linker creates its output file even when it fails, so the artefact is
+# present after a failed link and `Exists` answers yes. Both failed links above
+# were "verified" that way before the .err was read.
 
 # Directories
 SRC_DIR = :src:

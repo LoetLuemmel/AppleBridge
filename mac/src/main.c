@@ -1821,7 +1821,11 @@ static Ptr InstallDlgClosePatch(Ptr dlgblk)
  * Route B: a runtime system-heap block, no boot INIT. */
 #define kGNETrap    0xA970          /* _GetNextEvent  */
 #define kWNETrap    0xA860          /* _WaitNextEvent */
-#define kCPMagic    0x43505242L     /* 'CPRB' */
+/* 'CPR2', not 'CPRB': the layout changed (PrevA5), so a NEW daemon must not adopt
+ * an OLD block via FindCounterProbe and then write PrevA5 past its end. A changed
+ * magic makes that impossible instead of unlikely; the stale block simply stays in
+ * the chain as a disarmed pass-through. */
+#define kCPMagic    0x43505232L     /* 'CPR2' */
 #define oCP_Armed    4              /* word */
 #define oCP_CntGNE   8              /* long */
 #define oCP_CntWNE   12             /* long */
@@ -1830,56 +1834,86 @@ static Ptr InstallDlgClosePatch(Ptr dlgblk)
 #define oCP_LastA5   24             /* long: CurrentA5 of the last FOREGROUND (non-self) caller */
 #define oCP_SelfA5   28             /* long: the daemon's OWN CurrentA5 (set at install) */
 #define oCP_OtherCnt 32             /* long: count of non-self (foreground) armed calls */
-#define oCP_GNEStub  36
-#define oCP_WNEStub  74
-#define oCP_jReal    112            /* long: old jGNE filter (or &jRTS if there was none) */
-#define oCP_jCnt     116            /* long: jGNE armed call count */
-#define oCP_jStub    120            /* the jGNE-filter counter stub (0x29A hook) */
-#define oCP_jRTS     166            /* a bare RTS: so the chain never JMPs to 0 */
-#define kCP_Size     168
+#define oCP_PrevA5   36             /* long: the PREVIOUS DISTINCT non-self A5 (see below) */
+#define oCP_GNEStub  40
+#define oCP_WNEStub  90
+#define oCP_jReal    140            /* long: old jGNE filter (or &jRTS if there was none) */
+#define oCP_jCnt     144            /* long: jGNE armed call count */
+#define oCP_jStub    148            /* the jGNE-filter counter stub (0x29A hook) */
+#define oCP_jRTS     206            /* a bare RTS: so the chain never JMPs to 0 */
+#define kCP_Size     208
 #define kCurrentA5   0x0904L        /* low-mem: Process Manager swaps it per process */
 #define kJGNEFilter  0x029AL        /* low-mem: the GetNextEvent filter ProcPtr (SINGLE slot) */
 
 /* Two PIC head-counter stubs, hand-assembled and verified byte-for-byte. Each ARMED
  * call bumps the per-trap counter, loads CurrentA5, and — only if it is NOT the daemon's
- * own A5 (SelfA5) — bumps OtherCount and stamps LastA5. The SELF-FILTER is essential: the
- * daemon pumps GetNextEvent/WaitNextEvent so fast that an unfiltered LastA5 is almost
- * always the daemon (measured 10/10 self). Filtered, LastA5 is the last FOREGROUND caller,
- * and OtherCount separates a true off-trap NO (others went through, the target did not)
- * from an invalid window (nobody foreign went through — measured nothing). Per stub:
+ * own A5 (SelfA5) — bumps OtherCount and records the caller. The SELF-FILTER is essential:
+ * the daemon pumps GetNextEvent/WaitNextEvent so fast that an unfiltered LastA5 is almost
+ * always the daemon (measured 10/10 self).
+ *
+ * ---- why there are TWO recorded slots (2026-08-04) --------------------------------
+ * One slot was not enough, and the reason is measured: with the daemon filtered out, a
+ * SECOND, FOREIGN process still polled the traps ~59x/second (A5 107480968), while the
+ * foreground app's caret blink calls about 2x/second. A single LastA5 is therefore
+ * overwritten by the poller almost immediately, and the foreground's call — the whole
+ * question — vanished in 0 of ~130 samples.
+ *
+ * The recorded closure for this was "a second self-filter: skip that process's A5 too".
+ * It cannot be built as stated: the poller was first attributed to the health watchdog
+ * and that attribution was REFUTED in source (watchdog.c sleeps ~60 ticks => ~1 call/s,
+ * not 59), so it has no name — and its A5 is a heap address that no reboot preserves,
+ * so there is no constant to compile in either.
+ *
+ * What is built instead needs no identity at all: a repeat of the A5 already in LastA5
+ * does NOT shift. A process polling at any rate therefore occupies exactly ONE slot,
+ * and the foreground's rare call parks in the other and STAYS there until a THIRD
+ * distinct A5 appears. Reading LastA5 *or* PrevA5 answers "did the foreground enter this
+ * trap during the window?" without knowing who the noisy neighbour is — and it names the
+ * neighbour as a side effect, which is what the identification still owes.
+ *
+ * Per counter stub:
  *   LEA Base(PC),A0 ; TST.W Armed(A0) ; BEQ.S p ; ADDQ.L #1,Cnt(A0) ;
- *   MOVE.L ($0904).W,D0 ; CMP.L SelfA5(A0),D0 ; BEQ.S p ;
- *   ADDQ.L #1,OtherCount(A0) ; MOVE.L D0,LastA5(A0) ; p: MOVE.L Real(A0),A0 ; JMP (A0)
- * Only D0 + A0 (both scratch) + CCR touched. Fields Armed/CntGNE/CntWNE/RealGNE/RealWNE/
- * LastA5/SelfA5/OtherCount (+4/+8/+12/+16/+20/+24/+28/+32) are filled by the daemon. */
+ *   MOVE.L ($0904).W,D0 ; CMP.L SelfA5(A0),D0 ; BEQ.S p ; ADDQ.L #1,OtherCount(A0) ;
+ *   CMP.L LastA5(A0),D0 ; BEQ.S p ; MOVE.L LastA5(A0),PrevA5(A0) ; MOVE.L D0,LastA5(A0) ;
+ *   p: MOVE.L Real(A0),A0 ; JMP (A0)
+ * Still straight-line — no loop in the system's hottest trap — and still only D0 + A0
+ * (both scratch) + CCR. Generated and label-resolved rather than typed, then verified by
+ * an INDEPENDENT disassembler (capstone), because hand-computed PC-relative displacements
+ * are what crashed the earlier spike. */
 static const unsigned char kCPTemplate[kCP_Size] = {
-    'C','P','R','B', 0x00,0x00, 0x00,0x00, 0x00,0x00,0x00,0x00,    /* magic,armed,pad,cntGNE */
+    'C','P','R','2', 0x00,0x00, 0x00,0x00, 0x00,0x00,0x00,0x00,    /* magic,armed,pad,cntGNE */
     0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00, /* cntWNE,realGNE,realWNE */
     0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00, /* LastA5,SelfA5,OtherCount */
-    /* +36 GNEStub */
-    0x41,0xFA,0xFF,0xDA, 0x4A,0x68,0x00,0x04, 0x67,0x16, 0x52,0xA8,0x00,0x08,
-    0x20,0x38,0x09,0x04, 0xB0,0xA8,0x00,0x1C, 0x67,0x08, 0x52,0xA8,0x00,0x20,
-    0x21,0x40,0x00,0x18, 0x20,0x68,0x00,0x10, 0x4E,0xD0,
-    /* +74 WNEStub */
-    0x41,0xFA,0xFF,0xB4, 0x4A,0x68,0x00,0x04, 0x67,0x16, 0x52,0xA8,0x00,0x0C,
-    0x20,0x38,0x09,0x04, 0xB0,0xA8,0x00,0x1C, 0x67,0x08, 0x52,0xA8,0x00,0x20,
-    0x21,0x40,0x00,0x18, 0x20,0x68,0x00,0x14, 0x4E,0xD0,
-    /* +112 jReal, +116 jCnt */
+    0x00,0x00,0x00,0x00,                                           /* +36 PrevA5 */
+    /* +40 GNEStub */
+    0x41,0xFA,0xFF,0xD6, 0x4A,0x68,0x00,0x04, 0x67,0x22, 0x52,0xA8,0x00,0x08,
+    0x20,0x38,0x09,0x04, 0xB0,0xA8,0x00,0x1C, 0x67,0x14, 0x52,0xA8,0x00,0x20,
+    0xB0,0xA8,0x00,0x18, 0x67,0x0A, 0x21,0x68,0x00,0x18,0x00,0x24, 0x21,0x40,0x00,0x18,
+    0x20,0x68,0x00,0x10, 0x4E,0xD0,
+    /* +90 WNEStub */
+    0x41,0xFA,0xFF,0xA4, 0x4A,0x68,0x00,0x04, 0x67,0x22, 0x52,0xA8,0x00,0x0C,
+    0x20,0x38,0x09,0x04, 0xB0,0xA8,0x00,0x1C, 0x67,0x14, 0x52,0xA8,0x00,0x20,
+    0xB0,0xA8,0x00,0x18, 0x67,0x0A, 0x21,0x68,0x00,0x18,0x00,0x24, 0x21,0x40,0x00,0x18,
+    0x20,0x68,0x00,0x14, 0x4E,0xD0,
+    /* +140 jReal, +144 jCnt */
     0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00,
-    /* +120 jGNE-filter counter stub. Preserves A1/D0 (the Event Manager's event ptr +
+    /* +148 jGNE-filter counter stub. Preserves A1/D0 (the Event Manager's event ptr +
      * result). Saves D1-D2 in the ARMED branch only (the jGNE caller's scratch is an
      * assumption, not a guarantee — this is what crashed the earlier spike). Disarmed =
      * LEA/TST/BEQ/MOVE/JMP, A0-only, the system's hottest path kept minimal. Chains via
      * jReal, which is never 0 (install points it at jRTS when 0x29A had no old filter):
      *   LEA jBase(PC),A0 ; TST.W Armed(A0) ; BEQ.S .chain ;
      *   MOVEM.L D1-D2,-(SP) ; ADDQ.L #1,jCnt(A0) ; MOVE.L ($0904).W,D1 ;
-     *   CMP.L SelfA5(A0),D1 ; BEQ.S .norec ; ADDQ.L #1,OtherCount(A0) ; MOVE.L D1,LastA5(A0) ;
+     *   CMP.L SelfA5(A0),D1 ; BEQ.S .norec ; ADDQ.L #1,OtherCount(A0) ;
+     *   CMP.L LastA5(A0),D1 ; BEQ.S .norec ; MOVE.L LastA5(A0),PrevA5(A0) ;
+     *   MOVE.L D1,LastA5(A0) ;
      *   .norec: MOVEM.L (SP)+,D1-D2 ; .chain: MOVE.L jReal(A0),A0 ; JMP (A0) */
-    0x41,0xFA,0xFF,0x86, 0x4A,0x68,0x00,0x04, 0x67,0x1E, 0x48,0xE7,0x60,0x00,
-    0x52,0xA8,0x00,0x74, 0x22,0x38,0x09,0x04, 0xB2,0xA8,0x00,0x1C, 0x67,0x08,
-    0x52,0xA8,0x00,0x20, 0x21,0x41,0x00,0x18, 0x4C,0xDF,0x00,0x06, 0x20,0x68,0x00,0x70,
+    0x41,0xFA,0xFF,0x6A, 0x4A,0x68,0x00,0x04, 0x67,0x2A, 0x48,0xE7,0x60,0x00,
+    0x52,0xA8,0x00,0x90, 0x22,0x38,0x09,0x04, 0xB2,0xA8,0x00,0x1C, 0x67,0x14,
+    0x52,0xA8,0x00,0x20, 0xB2,0xA8,0x00,0x18, 0x67,0x0A, 0x21,0x68,0x00,0x18,0x00,0x24,
+    0x21,0x41,0x00,0x18, 0x4C,0xDF,0x00,0x06, 0x20,0x68,0x00,0x8C,
     0x4E,0xD0,
-    /* +166 jRTS */
+    /* +206 jRTS */
     0x4E,0x75
 };
 
@@ -1903,6 +1937,7 @@ static Ptr InstallCounterProbe(void)
     *(unsigned long *)((char *)s + oCP_RealWNE) = (unsigned long)NGetTrapAddress(kWNETrap, ToolTrap);
     *(unsigned long *)((char *)s + oCP_SelfA5)  = *(unsigned long *)kCurrentA5;  /* the daemon's own A5 */
     *(long *)((char *)s + oCP_OtherCnt) = 0L;
+    *(long *)((char *)s + oCP_PrevA5)   = 0L;   /* 0 = nothing recorded; no A5 is ever 0 */
     NSetTrapAddress((UniversalProcPtr)((char *)s + oCP_GNEStub), kGNETrap, ToolTrap);
     NSetTrapAddress((UniversalProcPtr)((char *)s + oCP_WNEStub), kWNETrap, ToolTrap);
     return s;
@@ -2700,6 +2735,9 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
             *(long *)((char *)s + oCP_CntGNE) = 0L;   /* fresh window */
             *(long *)((char *)s + oCP_CntWNE) = 0L;
             *(long *)((char *)s + oCP_LastA5) = 0L;
+            *(long *)((char *)s + oCP_PrevA5) = 0L;   /* both slots, or a stale PrevA5
+                                                       * from the last window would be
+                                                       * read as evidence from this one */
             *(long *)((char *)s + oCP_OtherCnt) = 0L;
             *(long *)((char *)s + oCP_jCnt) = 0L;
             *(short *)((char *)s + oCP_Armed) = 1;
@@ -2713,7 +2751,10 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         return true;
     }
     if (strncmp(request, "CPREAD", 6) == 0) {
-        Ptr s; char body[160]; char *b = body; short L; char *f = responseBuffer;
+        /* 224, not 160: with "prev" the worst case (every long printed signed, 11 chars)
+         * reaches 164 and would have run off a 160-byte stack buffer. Counted, not
+         * guessed — the field was added and the buffer was NOT, at first. */
+        Ptr s; char body[224]; char *b = body; short L; char *f = responseBuffer;
         SetActivity("CPREAD");
         s = FindCounterProbe();
         if (s == NULL) {
@@ -2724,6 +2765,9 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
             b = StatStr(b, ",\"gne\":");  b = StatDec(b, *(long *)((char *)s + oCP_CntGNE));
             b = StatStr(b, ",\"wne\":");  b = StatDec(b, *(long *)((char *)s + oCP_CntWNE));
             b = StatStr(b, ",\"last\":");  b = StatDec(b, *(long *)((char *)s + oCP_LastA5));
+            /* The second slot. "Did the target enter this trap in the window?" is
+             * answered by last OR prev — a fast poller can hold only one of them. */
+            b = StatStr(b, ",\"prev\":");  b = StatDec(b, *(long *)((char *)s + oCP_PrevA5));
             b = StatStr(b, ",\"other\":"); b = StatDec(b, *(long *)((char *)s + oCP_OtherCnt));
             b = StatStr(b, ",\"jcnt\":");  b = StatDec(b, *(long *)((char *)s + oCP_jCnt));
             b = StatStr(b, ",\"self\":");  b = StatDec(b, *(long *)kCurrentA5);

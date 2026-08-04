@@ -931,6 +931,65 @@ question depends on it (the runtime-jGNE-walk that this whole reach question ser
 is already proven end-to-end), so it is left undone deliberately, and this note is
 the record of why. A later attempt to turn that fast poller into an in-window WITNESS — argue an application must reach the trap, so its absence from the trap count would prove the patch local — also did not hold: the counters did not reproduce run to run (jGNE-fires vs trap-calls swung from ~4.5 to ~0.03 across same-session runs, and the last-non-self A5 changed identity between them), so no aggregate could carry the argument either.
 
+**Correction, 2026-08-04 — the closure above was taken, and NOT as written.**
+The "second self-filter" cannot be built as specified, because its premise fell:
+the poller was attributed to the health watchdog and that attribution was
+refuted in source (`mac/watchdog/watchdog.c` sleeps ~60 ticks ⇒ ~1 call/s, not
+59). It has **no name**, and its A5 is a heap address no reboot preserves — so
+there is neither an identity to filter nor a constant to compile in. Asking for
+"the second self-filter" therefore asks for a mechanism that cannot exist.
+
+What was built instead needs no identity: the counter block keeps **two** slots,
+`LastA5` and `PrevA5`, with a distinctness gate — an A5 equal to the one already
+in `LastA5` does **not** shift. A process polling at any rate therefore occupies
+exactly ONE slot, and the foreground's rare call parks in the other and stays
+there until a THIRD distinct A5 appears. "Did the target enter this trap in the
+window?" is answered by `last` **or** `prev`, and the noisy neighbour names
+itself as a side effect — which is what the identification still owes. Block
+magic went `CPRB` → `CPR2` so a new daemon cannot adopt an old, shorter block
+and write past its end. Daemon 0.8d35; the geometry is held by
+`tests/test_counter_probe_contract.py`, which decodes the stubs and re-derives
+every displacement from the declared offsets rather than comparing against a
+stored copy.
+
+*Generalise the method, not the note:* the request named a **mechanism**
+("filter that process"), and the mechanism's precondition was gone while the
+**goal** ("get the foreground out from under the noise") was still reachable by
+other means. When a recorded closure stops being buildable, check whether what
+it was FOR is still buildable before reporting it blocked.
+
+**The fast poller is ToolServer — measured 2026-08-04, differentially.**
+Built, deployed (0.8d35) and run the same day. With the **global jGNE** hook
+installed (`CPJINSTALL`; the two trap stubs are process-local and can never see
+a foreign caller — measuring on them gives `other=0` by construction, which cost
+two runs and a wrong conclusion here):
+
+| | jGNE fires / 8 s | rate | `last` |
+|---|---|---|---|
+| ToolServer running | 328 | ~41/s | 115373528 |
+| after `QUIT:MPSX`  | 8   | ~1/s  | 129785544 |
+
+Quitting ToolServer collapses the rate by a factor of 41, and the remainder
+arrives from a **different** A5 at the ~1/s that `mac/watchdog/watchdog.c`'s
+~60-tick sleep produces. So the FIRST attribution (ToolServer), which was made
+and then abandoned, was right; the second (the watchdog) was wrong; and the
+watchdog is the ~1/s remainder. Honest residual: this is a differential — the
+rate collapses when ToolServer quits — not a direct name-to-A5 binding. A
+Process-Manager listing verb (`GetNextProcess`/`GetProcessInformation`) would
+supply that, and does not exist yet.
+
+`prev` stayed 0 in **both** windows, and that is itself the result the single
+slot could not produce: `other=328` with only ONE distinct A5 says *one process
+hammering*, which a single overwritten slot cannot tell apart from *many
+processes overwriting each other*. The two-slot gate answers a question the
+one-slot version could only pose.
+
+*Method note, because it bit here too:* the acceptance run was first pointed at
+the **process-local** trap path, where `other=0` is guaranteed regardless of what
+is running — and that zero was briefly read as "the poller is not present on a
+fresh boot". Wrong instrument, wrong conclusion, same shape as everything else
+in this file. `jcnt=0` in the reply was the tell.
+
 **An autonomous actuator's verb allowlist must exclude any verb that can cancel
 its own preconditions (2026-08-03).**
 
