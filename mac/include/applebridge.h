@@ -70,6 +70,7 @@
 #define PROTO_NBPLOOK "NBPLOOK"        /* host->daemon: AppleTalk NBP name lookup (no Chooser, no ToolServer) */
 #define PROTO_AFPMOUNT "AFPMOUNT"      /* host->daemon: mount an AppleShare volume (PBVolumeMount; 5th field is a PASSWORD) */
 #define PROTO_AFPUNMOUNT "AFPUNMOUNT"  /* host->daemon: unmount a volume by name */
+#define PROTO_PROCLIST "PROCLIST"      /* host->daemon: running processes (Process Manager, no ToolServer) */
 #define PROTO_DISKINFO "DISKINFO"      /* host->daemon: volume totals/free (PBHGetVInfo, no ToolServer) */
 #define PROTO_MONITOR "MONITOR"        /* host->daemon: hide/show the Verbose window (it covers the desktop) */
 #define PROTO_MACUITREE "MACUITREE"    /* host->daemon: dump the live window/dialog UI tree (Toolbox ground truth) as JSON — read-only, no ToolServer */
@@ -176,6 +177,16 @@ Boolean AfpUnmountVerb(ABConn *conn, char *request, long requestLen);
  * (so it also answers on a machine that has none). One line per volume:
  * name<TAB>vRefNum<TAB>totalBytes<TAB>freeBytes<CR> */
 Boolean DiskInfoVerb(ABConn *conn, char *request, long requestLen);
+
+/* PROCLIST (fileio.c): the running processes from the Process Manager — no
+ * ToolServer, no GUI, no actuation. The system's own "what is running" view is
+ * the Application menu, which is a pull-down and therefore effectively
+ * unreadable over the bridge (a held-open menu starves the daemon). One line
+ * per process:
+ * name<TAB>type<TAB>signature<TAB>psnHi<TAB>psnLo<TAB>location<TAB>size<TAB>free<TAB>front<CR>
+ * `location`+`size` bound the process partition, so an A5 observed elsewhere
+ * (the counter probe's LastA5) can be attributed to a NAME by containment. */
+Boolean ProcListVerb(ABConn *conn, char *request, long requestLen);
 
 /* Monitor window visibility (main.c): the Verbose console covers the desktop,
  * which is in the way when the guest's GUI is being driven. MONITOR:0 hides it

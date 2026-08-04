@@ -221,6 +221,26 @@ def _framed_failure(text):
     return f"STATUS:{status}" + (f" {detail.strip()[:160]}" if detail else "")
 
 
+# The control-port verbs, derived ONCE so the hint below cannot drift from the
+# dispatch above it. A hint that lists the wrong verbs is worse than none: it
+# reads as authoritative and sends the caller somewhere else again.
+ROUTED_VERBS = ("PING", "STATUS-via-mac_status", "DISKINFO", "LISTDIR", "MONITOR",
+                "PROCLIST", "SCREENSHOT", "NBPLOOK", "AFPMOUNT", "AFPUNMOUNT",
+                "CLIPGET", "CLIPSET", "LAUNCH:", "QUIT:", "KEY:", "TYPE:",
+                "CLICK:", "REBOOT", "SHUTDOWN", "SWAPSELF", "QUITDAEMON")
+
+
+def looks_like_verb(cmd):
+    """True for a single ALL-CAPS token, i.e. something typed AS a verb.
+
+    Deliberately narrow: an MPW command line (`Files -l :bin:`, `SC main.c`)
+    has spaces and lower case, so it never trips this. `MENUTREE`, `STAT` and
+    `STATUS` all do — which is the whole point.
+    """
+    head = (cmd or "").split(":", 1)[0].strip()
+    return bool(head) and head.isupper() and " " not in head and head.isalnum()
+
+
 def redact_secrets(text):
     """Mask the password in an AFP-shaped request before it is logged.
 
@@ -1989,6 +2009,7 @@ def run_control_server(server):
                           or cmd == "CPINSTALL" or cmd == "CPARM" or cmd == "CPDISARM"
                           or cmd == "CPREAD" or cmd == "CPUNINSTALL"
                           or cmd == "CPJINSTALL" or cmd == "CPJUNINSTALL"
+                          or cmd == "PROCLIST"
                           or cmd.startswith("LAUNCH:") or cmd.startswith("QUIT:")
                           or cmd.startswith("KEY:") or cmd.startswith("TYPE:")
                           or cmd.startswith("CLICK:")):
@@ -2003,6 +2024,21 @@ def run_control_server(server):
                         log(f"cmd: {redact_secrets(cmd)[:60]!r}")
                         resp = server.send_command(cmd)
                         out = resp if resp is not None else "No response"
+                        # A command that LOOKS like a control verb and is not
+                        # routed gets an answer about ToolServer — which sends
+                        # the caller to entirely the wrong layer. Measured
+                        # 2026-08-04, three times in one day: `STATUS` and `STAT`
+                        # (237 daemon errors from one polling loop) and
+                        # `MENUTREE` (an hour spent believing a fresh daemon
+                        # deploy had failed). In each case the reply named
+                        # ToolServer while the real fault was a missing route.
+                        # The verb is not silently rewritten — this only says
+                        # what happened.
+                        if looks_like_verb(cmd) and "no-ToolServer" in (out or ""):
+                            out = out.rstrip("\r") + (
+                                "\rHINT:this is not a routed control-port verb, "
+                                "so it was sent to ToolServer as an MPW command. "
+                                "Routed verbs: " + ", ".join(ROUTED_VERBS) + "\r\r")
                     ctrl_conn.sendall(with_notes(out).encode("utf-8", errors="replace"))
             except Exception as e:  # never let one bad control conn kill the server
                 log(f"control error: {e}")
