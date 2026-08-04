@@ -2693,6 +2693,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         dp = FindDlgPatch();
         if (dp == NULL)                                     msg = "no-dpblock";
         else if (*(short *)((char *)dp + oDP_Armed) != 0)   msg = "entry-armed";
+        else if (FindJGProbe() != NULL && *(short *)((char *)FindJGProbe() + oJG_jArmed) != 0)  msg = "walk-armed";
         else if (targetA5 == 0L)                            msg = "no-target";
         else {
             jg = InstallJGProbe();
@@ -2747,6 +2748,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         while (*p >= '0' && *p <= '9') { targetA5 = targetA5 * 10 + (unsigned long)(*p - '0'); p++; }
         dp = FindDlgPatch();
         if (dp != NULL && *(short *)((char *)dp + oDP_Armed) != 0)  msg = "entry-armed";
+        else if (FindJGProbe() != NULL && *(short *)((char *)FindJGProbe() + oJG_jArmed) != 0)  msg = "walk-armed";
         else if (targetA5 == 0L)                                    msg = "no-target";
         else {
             mb = InstallMBBlk();
