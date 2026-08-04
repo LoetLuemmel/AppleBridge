@@ -11,11 +11,13 @@
  * reason). Writes a fixed BINARY record layout into the shared MB block; the
  * daemon formats JSON via MENUTREE.
  *
- * A5-FREE ON PURPOSE: no globals/statics/string-literals, no long multiply/divide
- * and no VARIABLE-count shift (the enable bit is stepped with a running >>1 mask;
- * the 16px model uses a constant <<4). Low-mem is read by absolute address; the
- * only trap is GetHandleSize (Memory Manager, moves nothing — owner-confirmed
- * filter-safe). So the linked resource survives the BlockMove into the system heap.
+ * A5-FREE ON PURPOSE: no globals/statics/string-literals, no long multiply/divide,
+ * no VARIABLE-count shift (the enable bit is stepped with a running >>1 mask; the 16px
+ * model uses a constant <<4), and NO TRAPS — every read is an absolute low-mem address
+ * or a pointer walk. GetHandleSize was dropped because it links as GLUE here (not an
+ * inline trap: link Error 28, 2026-08-04); the two bounds it fed use lastMenu-only and a
+ * fixed byte cap instead. So the linked resource has an EMPTY externals list and survives
+ * the BlockMove into the system heap.
  *
  * Reached via the jGNE stub's Walk() dispatcher when the block magic at +4 is 'MB'.
  * The stub reads oMB_Up(+14) and bumps oMB_Gen(+16) exactly as for the DP block, so
@@ -58,13 +60,15 @@
 #define kMenuListLM    0x0A1CL   /* low-mem: Handle to the current menu-bar list */
 #define kMBarHeightLM  0x0BAAL   /* low-mem: menu bar height (word) */
 #define kItemGuard     64        /* runaway guard: max items scanned per menu */
+#define kMaxMenuData   2048      /* fix A bound, A5-free: GetHandleSize is GLUE here (link
+                                  * Error 28, 2026-08-04), so bound the item walk by a fixed
+                                  * byte cap from menuData start instead of the handle size */
 
 void MenuWalk(unsigned char *blk)
 {
     Handle          mlH;
     Ptr             mp;
     short           lastMenu, mbarH, menuN, itemTotal, off;
-    long            blockSize;
     unsigned char  *mrec, *irec;
 
     *(short *)(blk + oMB_MenuCount) = 0;
@@ -75,9 +79,10 @@ void MenuWalk(unsigned char *blk)
     mlH = *(Handle *)kMenuListLM;
     if (mlH == NULL || *mlH == NULL) return;
     mp        = *mlH;
-    lastMenu  = *(short *)mp;              /* offset TO the last 6-byte entry, inclusive */
-    blockSize = GetHandleSize(mlH);        /* second bound: a garbage lastMenu can't run us
-                                            * off the block end in the foreign process */
+    lastMenu  = *(short *)mp;              /* offset TO the last 6-byte entry, inclusive.
+                                           * (No GetHandleSize second bound: it links as GLUE
+                                           * here, not an inline trap — link Error 28, 2026-08-04.
+                                           * lastMenu-only is what main.c's MENU verb uses too.) */
     mbarH     = *(short *)kMBarHeightLM;
     if (mbarH <= 0) mbarH = 20;
     *(short *)(blk + oMB_MBarH) = mbarH;
@@ -87,14 +92,14 @@ void MenuWalk(unsigned char *blk)
     mrec = blk + oMB_Menus;
     irec = blk + oMB_Items;
 
-    for (off = 6; off <= lastMenu && (long)(off + 6) <= blockSize; off += 6) {
+    for (off = 6; off <= lastMenu; off += 6) {
         Handle          mh;                /* a menu handle (kept as Handle to avoid
                                             * <Menus.h> — we never call a Menu Mgr trap) */
         Ptr             mi;                /* MenuInfo (dereferenced menu handle) */
         unsigned char  *md;               /* menuData: title, then packed items */
         unsigned char  *p;
-        long            enMask, mdSize;
-        unsigned char  *mdEnd;             /* one past the end of the menu record (fix A) */
+        long            enMask;
+        unsigned char  *mdEnd;             /* item-walk byte bound (fix A, A5-free cap) */
         short           menuID, menuW, menuH, menuLeft, tLen, k, idx, pointsValid;
 
         if (menuN >= MAX_MENUS) { *(short *)(blk + oMB_Trunc) = 1; break; }
@@ -102,17 +107,13 @@ void MenuWalk(unsigned char *blk)
         mh = *(Handle *)(mp + off);
         if (mh == NULL || *mh == NULL) continue;
         mi = (Ptr)(*mh);
-        mdSize = GetHandleSize(mh);        /* fix A: bound the item walk to the menu record.
-                                            * The handle is relocatable; GetHandleSize moves
-                                            * nothing (same trap as the outer MenuList bound). */
-        mdEnd  = (unsigned char *)mi + mdSize;
-
         menuID   = *(short *)(mi + 0);
         menuW    = *(short *)(mi + 2);
         menuH    = *(short *)(mi + 4);
         enMask   = *(long  *)(mi + 10);    /* enableFlags: bit i = item i, bit0 = the menu */
         menuLeft = *(short *)(mp + off + 4);
         md       = (unsigned char *)(mi + 14);   /* title Pascal string */
+        mdEnd    = md + kMaxMenuData;             /* fix A, A5-free: fixed byte cap (no GetHandleSize) */
 
         /* --- menu title into MENU_REC --- */
         tLen = md[0];
