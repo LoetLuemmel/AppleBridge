@@ -163,10 +163,6 @@ def untested_deciders():
 # an untested decider is now a thing somebody chose, not a thing nobody noticed.
 # --------------------------------------------------------------------------
 BASELINE = {
-    ("guest_input.py", "_osascript"):
-        "wraps the host's own osascript; the wrappers around it are tested",
-    ("guest_input.py", "frontmost_app"):
-        "reads host window state; meaningful only against a live desktop",
     ("guest_input.py", "cmd_geometry"): "argparse entry point, not a decision",
     ("guest_input.py", "cmd_move"): "argparse entry point, not a decision",
     ("guest_input.py", "cmd_click"): "argparse entry point, not a decision",
@@ -179,7 +175,12 @@ BASELINE = {
 # that examines nothing, in the file whose whole subject is checks that
 # examine nothing. Caught 2026-07-28 while taking get_file_list off the list.
 # Lower it when an entry leaves; raising it is the change that needs an argument.
-HIGH_WATER = 8   # was 9 until get_file_list was tested (PR #117)
+HIGH_WATER = 6   # 9 -> 8 with get_file_list (PR #117); 8 -> 6 when the
+                 # gesture-cost work put a recording stub in front of _run,
+                 # which reaches _osascript and frontmost_app for real. Both
+                 # entries claimed they needed "a live desktop"; they needed a
+                 # stub. Written down because a debt entry's REASON can go
+                 # stale as quietly as the debt itself.
 
 
 # --- the ratchet ------------------------------------------------------------

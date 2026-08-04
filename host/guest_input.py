@@ -79,6 +79,20 @@ def parse_window_geometry(osascript_output):
     return tuple(nums[:4])
 
 
+def parse_front_and_geometry(output):
+    """Parse 'Terminal|605|104|1024|796' -> ('Terminal', (605, 104, 1024, 796)).
+
+    A separator rather than AppleScript's own ', ' list form, and the name kept
+    OUT of the number scan: `parse_window_geometry` reads every integer it can
+    find, so an application with a digit in its name ("Basilisk II 2") would
+    have donated it to the window rect and shifted every click by that amount.
+    """
+    parts = (output or "").split("|")
+    if len(parts) != 5:
+        raise InputError(f"could not read front app + window rect: {output!r}")
+    return parts[0].strip(), parse_window_geometry("|".join(parts[1:]))
+
+
 def title_bar_height(win_h, guest_h):
     """Height of the host window chrome above the emulated screen.
 
@@ -205,6 +219,31 @@ def frontmost_app():
                       'process whose frontmost is true')
 
 
+def front_and_geometry(app):
+    """Who is frontmost AND where the emulator window is — in ONE osascript.
+
+    Measured 2026-08-04: a host click costs 1.851 s, of which four separate
+    `osascript` invocations account for ~1.03 s. Each pays its own interpreter
+    start, so asking both questions in one call removes a whole start (~0.15 s)
+    without changing what is asked or when.
+
+    Reading the rect BEFORE the activation is safe — bringing a window forward
+    does not move it — and it is still read once per gesture, which is the
+    property that matters: the emulator window moved mid-session once, and a
+    rect cached ACROSS gestures turns every later click into a silent miss.
+    """
+    return parse_front_and_geometry(_osascript(
+        'tell application "System Events"\n'
+        '  set f to name of first process whose frontmost is true\n'
+        f'  tell process "{app}"\n'
+        '    set p to position of window 1\n'
+        '    set s to size of window 1\n'
+        '  end tell\n'
+        '  return f & "|" & (item 1 of p) & "|" & (item 2 of p) & '
+        '"|" & (item 1 of s) & "|" & (item 2 of s)\n'
+        'end tell'))
+
+
 class Session:
     """Geometry + focus handling for one gesture.
 
@@ -212,11 +251,23 @@ class Session:
     once already, and a cached origin turns every later click into a silent miss.
     """
 
-    def __init__(self, app=None, activate=True, dry_run=False):
+    def __init__(self, app=None, activate=True, dry_run=False,
+                 keep_front=False):
         self.app = running_emulator(app)
         self.activate = activate
         self.dry_run = dry_run
+        # Leave the emulator frontmost instead of handing focus back. OFF by
+        # default, and deliberately opt-in: the restore exists because a stray
+        # click once landed in the host's browser, and a driver that silently
+        # keeps the machine is worse than a slow one. Measured 2026-08-04, the
+        # cost of the courtesy is 0.695 s per gesture — 37 % — because handing
+        # focus back means the NEXT gesture must take it again (set frontmost,
+        # a deliberate 400 ms settle, set back). For a run of gestures that is
+        # paid every time; for a single one it is paid once and is the right
+        # trade. Hand focus back with `guest_input.py front <app>`.
+        self.keep_front = keep_front
         self.previous_front = None
+        self._geom = None
 
     def guest_size(self):
         try:
@@ -226,15 +277,30 @@ class Session:
             return DEFAULT_GUEST_SIZE
 
     def geometry(self):
+        """Where the emulator window is — read once per gesture, then reused.
+
+        Once per GESTURE, not once per session-of-many: `__enter__` reads it
+        alongside the frontmost check and caches it here, so a menu (which needs
+        the rect for both the title and the item) no longer pays for it twice.
+        Across gestures it is always re-read; a stale origin is a silent miss.
+        """
+        if self._geom is not None:
+            return self._geom
         out = _osascript(f'tell application "System Events" to tell process '
                          f'"{self.app}" to get {{position, size}} of window 1')
         x, y, w, h = parse_window_geometry(out)
+        return self._cache_geometry(x, y, w, h)
+
+    def _cache_geometry(self, x, y, w, h):
         gw, gh = self.guest_size()
-        return {"app": self.app, "origin": (x, y), "window": (w, h),
-                "guest_size": (gw, gh), "title_h": title_bar_height(h, gh)}
+        self._geom = {"app": self.app, "origin": (x, y), "window": (w, h),
+                      "guest_size": (gw, gh), "title_h": title_bar_height(h, gh)}
+        return self._geom
 
     def __enter__(self):
-        front = frontmost_app()
+        # One osascript for both questions; see front_and_geometry().
+        front, rect = front_and_geometry(self.app)
+        self._cache_geometry(*rect)
         if front != self.app:
             if not self.activate:
                 raise InputError(f"{self.app} is not frontmost ({front!r} is) — "
@@ -248,7 +314,7 @@ class Session:
         return self
 
     def __exit__(self, *exc):
-        if self.previous_front and not self.dry_run:
+        if self.previous_front and not self.dry_run and not self.keep_front:
             _osascript('tell application "System Events" to set frontmost of '
                        f'process "{self.previous_front}" to true')
         return False
@@ -282,25 +348,41 @@ def cmd_geometry(args):
 
 
 def cmd_move(args):
-    with Session(args.app, not args.no_activate, args.dry_run) as s:
+    with Session(args.app, not args.no_activate, args.dry_run,
+                 keep_front=args.keep_front) as s:
         s.cliclick(["m:%d,%d" % s.point(args.x, args.y)])
     return 0
 
 
 def cmd_click(args):
-    with Session(args.app, not args.no_activate, args.dry_run) as s:
+    with Session(args.app, not args.no_activate, args.dry_run,
+                 keep_front=args.keep_front) as s:
         s.cliclick(build_click(s.point(args.x, args.y), args.count, args.hold))
     return 0
 
 
 def cmd_menu(args):
-    with Session(args.app, not args.no_activate, args.dry_run) as s:
+    with Session(args.app, not args.no_activate, args.dry_run,
+                 keep_front=args.keep_front) as s:
         g = s.geometry()
         check_in_bounds(args.title_x, args.title_y, g["guest_size"])
         check_in_bounds(args.item_x, args.item_y, g["guest_size"])
         title = guest_to_host(g["origin"], g["title_h"], args.title_x, args.title_y)
         item = guest_to_host(g["origin"], g["title_h"], args.item_x, args.item_y)
         s.cliclick(build_menu_gesture(title, item))
+    return 0
+
+
+def cmd_front(args):
+    """Hand focus back to a named application.
+
+    The counterpart to --keep-front, and the reason that flag is safe to offer:
+    a driver that can take the machine must have a one-liner that gives it back.
+    """
+    app = args.name
+    _osascript('tell application "System Events" to set frontmost of process '
+               f'"{app}" to true')
+    print(f"front app:  {frontmost_app()}")
     return 0
 
 
@@ -336,6 +418,10 @@ def main(argv=None):
     p.add_argument("--no-activate", action="store_true",
                    help="abort instead of bringing the emulator forward")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--keep-front", action="store_true",
+                   help="leave the emulator frontmost instead of handing focus "
+                        "back (saves ~0.7s on EVERY following gesture; give it "
+                        "back with `guest_input.py front <app>`)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("geometry").set_defaults(func=cmd_geometry)
@@ -353,6 +439,10 @@ def main(argv=None):
     for name in ("title_x", "title_y", "item_x", "item_y"):
         mn.add_argument(name, type=int)
     mn.set_defaults(func=cmd_menu)
+
+    fr = sub.add_parser("front", help="hand focus back to an application")
+    fr.add_argument("name")
+    fr.set_defaults(func=cmd_front)
 
     sh = sub.add_parser("shot"); sh.add_argument("out", nargs="?")
     sh.add_argument("--region", help="guest sub-rect 'gx,gy,w,h'")

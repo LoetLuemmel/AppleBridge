@@ -36,6 +36,9 @@ def _load_tools():
 
 tools = _load_tools()
 gi = tools.guest_input
+# Captured BEFORE setup() swaps in the fake, so the surface comparison below
+# has something real to compare against.
+REAL_SESSION = gi.Session
 
 # The live geometry on 2026-07-25; guest (0,0) -> host (605,132).
 ORIGIN, TITLE_H, GUEST = (605, 104), 28, (1024, 768)
@@ -46,8 +49,13 @@ class FakeSession:
     """Stands in for the real driver: same surface, records instead of clicking."""
     raise_on_enter = None
 
-    def __init__(self, app=None, activate=True, dry_run=False):
-        CALLS.append(("session", app, activate))
+    def __init__(self, app=None, activate=True, dry_run=False,
+                 keep_front=False):
+        # The signature is copied from the real Session on purpose, and this
+        # docstring's "same surface" claim went stale the moment keep_front was
+        # added: every tool raised TypeError while the unit tests stayed green,
+        # because a fake only fails where somebody asserts on it.
+        CALLS.append(("session", app, activate, keep_front))
 
     def __enter__(self):
         if FakeSession.raise_on_enter:
@@ -246,3 +254,25 @@ if __name__ == "__main__":
             print(f"FAIL {t.__name__}: {e}")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")
     sys.exit(1 if failed else 0)
+
+
+def test_the_fake_session_takes_what_the_real_one_takes():
+    """The fake claims "same surface". It stopped being true once, silently:
+    keep_front was added to the real Session and every tool raised TypeError
+    while these tests stayed green. Compare the signatures instead of trusting
+    the claim."""
+    import inspect
+    real = set(inspect.signature(REAL_SESSION.__init__).parameters)
+    fake = set(inspect.signature(FakeSession.__init__).parameters)
+    assert real == fake, f"real-only {real - fake}, fake-only {fake - real}"
+
+
+def test_keep_front_reaches_the_driver():
+    """A parameter the tool accepts and drops would report a saving nobody
+    gets — 0.695 s per gesture, invisibly not taken."""
+    setup()
+    tools.mac_host_click(10, 10, keep_front=True)
+    assert ("session", None, True, True) in CALLS, CALLS
+    setup()
+    tools.mac_host_menu(18, 9, 70, 112, keep_front=True)
+    assert ("session", None, True, True) in CALLS, CALLS

@@ -1255,3 +1255,43 @@ prefer a channel the shell does not parse.** `argv` is a parameter list that
 happens to accept prose. Two of its metacharacters destroy text silently and
 leave no evidence, which puts this in the same class as `Exists` answering
 true after a failed link — plausible output, no way to tell from the outside.
+
+## What a gesture costs, and where the courtesy is paid — measured 2026-08-04
+
+A `mac_host_click` was believed to have ~1.4 s unaccounted for. It did not.
+Timing every subprocess a gesture actually makes:
+
+| step | median | note |
+|---|---|---|
+| `osascript` frontmost check | 0.146 s | |
+| `osascript` set frontmost (×2) | 0.249 s | there and back |
+| `cliclick w:400` | 0.436 s | **deliberate 400 ms settle** |
+| `osascript` window rect | 0.584 s | biggest single item |
+| `cliclick m + w:120 + c` | 0.410 s | includes a deliberate 120 ms wait |
+| **total** | **1.851 s** | sum 1.885 s, **unaccounted −0.034 s** |
+
+The harness wrapped `guest_input._run`, so it timed the calls that *happened*
+rather than the ones expected — anything it did not see would have shown up as
+unaccounted. A breakdown that always sums to 100 % cannot find a missing
+second, which is why it was built to be able to fail.
+
+Two things fall out. **Four separate `osascript` invocations cost ~1.03 s**,
+most of it interpreter start, so asking two questions in one script removes a
+whole start. And **handing focus back costs 0.695 s on the NEXT gesture** —
+37 % — because the emulator then has to be brought forward again (set
+frontmost + the 400 ms settle + set back). In the documented loop *screenshot →
+click → screenshot* that is paid at every step.
+
+The restore is still the default. It exists because a stray click once landed
+in the host's browser, and a driver that silently keeps the machine is worse
+than a slow one. `--keep-front` / `keep_front=True` opts out for a run of
+gestures; `guest_input.py front <app>` hands it back.
+
+**Two side findings worth more than the timings.** The window origin was
+`605,104` at the start of the session and `448,128` an hour later — it moved
+while this very change was being measured, which is exactly why the rect is
+re-read per gesture and never cached across them. And the process list taken
+before and after showed the guest's Finder going `front=0` → `front=1`: proof
+the click actually landed, rather than a number produced by a gesture that did
+nothing. Take the process list around a measurement; a harness that measures a
+no-op reports a beautiful, believable, wrong number.
