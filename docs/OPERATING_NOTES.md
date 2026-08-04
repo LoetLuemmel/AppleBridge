@@ -1159,3 +1159,60 @@ obtainable this way. A trap patch installed at RUNTIME is process-local by
 construction, so `other = 0` on the trap path is a property of the design and
 never evidence about the foreground. Naming the callers does not change that —
 only a boot INIT would.
+
+**Two ledger items cited two different figures for the same machine, and both
+were wrong (2026-08-04).**
+
+A screenshot over the control port costs **4.7 s** on this host — ten runs,
+median 4.70 s with ToolServer running and 5.02 s without, spread 4.15–5.08 s.
+The two open items that rest on that cost said, of the same machine:
+
+    Compression        "one capture takes ~15 s on the slirp tier"
+    Region argument    "~1–2 s on Basilisk"
+
+Three times too high and two and a half times too low, in items sitting a
+screenful apart. Neither was measured; each was carried forward from a different
+session's impression, and nobody compared them because they were never read side
+by side.
+
+Two things worth keeping from re-measuring it:
+
+*The process set is not always the variable.* It explained the counter swing
+completely (see the entry above), so the temptation is to reach for it again.
+Here it changes almost nothing — 0.3 s, and in the unexpected direction. The
+cost is in the transfer and the PNG encode, not in the cooperative scheduling.
+A rule that just worked is not a rule that always works.
+
+*Know which leg you are talking about.* The 768 KB of raw PixMap crosses the
+GUEST→HOST link; the control-port reply is only ~30 KB of base64 PNG. The two
+open items address different legs — compression relieves the bridge, a region
+argument relieves both — and stating a single "screenshot cost" without saying
+which leg is how they drifted apart in the first place.
+
+The priority did not change. 4.7 s per look is what a GUI-driving loop pays on
+every step, and that is reason enough to keep both items at P2. What changed is
+that the next person plans against a measured number rather than against two
+that disagree.
+
+*Method note, since this measurement needed three attempts:* the first timing
+harness computed shell arithmetic across two `python3` invocations and reported
+`-0.00s`; the second waited for EOF on a socket the server never closes and hung
+in its own 90-second timeout. Both would have been just as capable of returning
+a plausible wrong number as an obvious one. Read a control-port reply by its
+DECLARED LENGTH — the protocol carries it for exactly this reason — and never
+time anything across two processes.
+
+And the reason those two cost minutes rather than hours: **they failed
+visibly.** `-0.00s` is nonsense on its face and a hang cannot be mistaken for a
+result. Compare the expensive failures in this file — `Exists` answering true
+after a link that died, the converter reporting `[BIN]` and copying raw, a
+swallowed verb answering `STATUS:0` with empty output, counters that reproduced
+beautifully while the machine underneath them did not. Every one of those
+returned something plausible, and plausible is what gets written down and built
+on.
+
+So when choosing between two ways to measure something, prefer the one that
+cannot fail quietly, even if it is clumsier. A harness that crashes costs an
+afternoon at worst. A harness that returns a believable wrong number costs
+whatever gets decided on it, and the bill arrives much later and somewhere
+else.
