@@ -431,6 +431,7 @@ front app afterwards.""",
                 "x": {"type": "integer", "description": "Guest X (from a mac_screenshot image)"},
                 "y": {"type": "integer", "description": "Guest Y (from a mac_screenshot image)"},
                 "count": {"type": "integer", "description": "Clicks at that point (2 = double-click)"},
+                "keep_front": {"type": "boolean", "description": "Leave the emulator frontmost instead of handing focus back. Saves ~0.7 s on EVERY following gesture (measured 2026-08-04: 1.85 s -> 1.16 s), because handing focus back means the next gesture must take it again. Use for a RUN of gestures; the last one should omit it, or the host machine stays on the emulator."},
                 "modifiers": {
                     "type": "array", "items": {"type": "string"},
                     "description": "Held during the click: cmd, shift, option/alt, control/ctrl"
@@ -461,7 +462,8 @@ LOCAL emulator only. Refuses if either point is off-screen.""",
                 "title_x": {"type": "integer", "description": "Guest X of the menu title in the menu bar"},
                 "title_y": {"type": "integer", "description": "Guest Y of the menu title (~9 for the menu bar)"},
                 "item_x": {"type": "integer", "description": "Guest X inside the dropped-down item"},
-                "item_y": {"type": "integer", "description": "Guest Y of the item"}
+                "item_y": {"type": "integer", "description": "Guest Y of the item"},
+                "keep_front": {"type": "boolean", "description": "Leave the emulator frontmost instead of handing focus back. Saves ~0.7 s on EVERY following gesture (measured 2026-08-04). Use for a RUN of gestures; the last one should omit it."}
             },
             "required": ["title_x", "title_y", "item_x", "item_y"]
         }
@@ -1814,7 +1816,8 @@ def _host_input_error(e) -> Dict[str, Any]:
 
 
 def mac_host_click(x: int, y: int, count: int = 1,
-                   modifiers: Optional[list] = None) -> Dict[str, Any]:
+                   modifiers: Optional[list] = None,
+                   keep_front: bool = False) -> Dict[str, Any]:
     """Click the guest's REAL mouse at guest coordinates (local emulator only).
 
     Coordinates are read straight off a mac_screenshot image — that capture IS
@@ -1822,17 +1825,19 @@ def mac_host_click(x: int, y: int, count: int = 1,
     """
     hold = ",".join(modifiers) if modifiers else None
     try:
-        with guest_input.Session() as s:
+        with guest_input.Session(keep_front=bool(keep_front)) as s:
             pt = s.point(int(x), int(y))
             s.cliclick(guest_input.build_click(pt, count, hold))
         return {"success": True, "guest": [int(x), int(y)], "host": list(pt),
-                "count": count, "modifiers": modifiers or []}
+                "count": count, "modifiers": modifiers or [],
+                "kept_front": bool(keep_front)}
     except guest_input.InputError as e:
         return _host_input_error(e)
 
 
 def mac_host_menu(title_x: int, title_y: int,
-                  item_x: int, item_y: int) -> Dict[str, Any]:
+                  item_x: int, item_y: int,
+                  keep_front: bool = False) -> Dict[str, Any]:
     """Pull down a menu with the REAL mouse: press on the title, release on the item.
 
     Issued as ONE gesture on purpose. A menu left open blocks the guest's event
@@ -1840,7 +1845,7 @@ def mac_host_menu(title_x: int, title_y: int,
     so there is deliberately no "open the menu and look" mode here.
     """
     try:
-        with guest_input.Session() as s:
+        with guest_input.Session(keep_front=bool(keep_front)) as s:
             g = s.geometry()
             guest_input.check_in_bounds(int(title_x), int(title_y), g["guest_size"])
             guest_input.check_in_bounds(int(item_x), int(item_y), g["guest_size"])
@@ -1850,7 +1855,8 @@ def mac_host_menu(title_x: int, title_y: int,
                                              int(item_x), int(item_y))
             s.cliclick(guest_input.build_menu_gesture(title, item))
         return {"success": True, "title": [int(title_x), int(title_y)],
-                "item": [int(item_x), int(item_y)]}
+                "item": [int(item_x), int(item_y)],
+                "kept_front": bool(keep_front)}
     except guest_input.InputError as e:
         return _host_input_error(e)
 

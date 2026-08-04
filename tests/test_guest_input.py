@@ -159,3 +159,163 @@ if __name__ == "__main__":
             print(f"FAIL {t.__name__}: {e}")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")
     sys.exit(1 if failed else 0)
+
+
+# --- the cost of a gesture, and what was done about it ---------------------
+# Measured 2026-08-04 by timing every subprocess a click makes: 1.851 s total,
+# subprocesses 1.885 s, unaccounted -0.034 s. Nothing was missing — the time was
+# four separate `osascript` invocations (~1.03 s, each paying its own
+# interpreter start), 520 ms of deliberate waits, and the focus dance.
+# None of these tests move the real cursor.
+
+class _Spy:
+    """Stands in for guest_input._run and records what would have been run."""
+
+    def __init__(self, front="Terminal", rect="448|128|1024|796"):
+        self.calls = []
+        self.front, self.rect = front, rect
+
+    def __call__(self, argv, check=True):
+        self.calls.append(argv)
+        if argv[0] != "osascript":
+            return ""
+        script = argv[-1]
+        if "position of window 1" in script and "frontmost is true" in script:
+            return f"{self.front}|{self.rect}"
+        if "position, size" in script:
+            return self.rect.replace("|", ", ")
+        if "frontmost is true" in script:
+            return self.front
+        return ""
+
+    def osascripts(self):
+        return [a[-1] for a in self.calls if a[0] == "osascript"]
+
+
+def _with_spy(spy, fn):
+    real_run, real_size = gi._run, gi.Session.guest_size
+    gi._run = spy
+    gi.Session.guest_size = lambda self: (1024, 768)
+    try:
+        return fn()
+    finally:
+        gi._run, gi.Session.guest_size = real_run, real_size
+
+
+def test_the_front_check_and_the_window_rect_are_one_osascript():
+    """Two questions, one interpreter start. Each `osascript` invocation cost
+    ~0.15 s of pure startup, and a click made four of them."""
+    spy = _Spy()
+
+    def gesture():
+        with gi.Session(app="BasiliskII") as s:
+            s.point(300, 472)
+    _with_spy(spy, gesture)
+    combined = [s for s in spy.osascripts()
+                if "frontmost is true" in s and "position of window 1" in s]
+    assert len(combined) == 1, spy.osascripts()
+
+
+def test_the_window_rect_is_not_read_twice_in_one_gesture():
+    """A menu needs the rect for the title AND the item. It used to pay for it
+    twice — 0.584 s each, the single biggest item in the breakdown."""
+    spy = _Spy()
+
+    def gesture():
+        with gi.Session(app="BasiliskII") as s:
+            s.geometry()
+            s.geometry()
+            s.point(300, 472)
+    _with_spy(spy, gesture)
+    rect_reads = [s for s in spy.osascripts() if "position" in s or "size" in s]
+    assert len(rect_reads) == 1, rect_reads
+
+
+def test_the_rect_is_still_re_read_for_the_NEXT_gesture():
+    """The cache is per gesture, never across. The emulator window moved
+    mid-session twice now (448,128 -> 605,104 on 2026-07-25, and back again
+    while this very change was being measured), and a rect held across gestures
+    turns every later click into a silent miss that reports success."""
+    spy = _Spy()
+
+    def two():
+        for _ in range(2):
+            with gi.Session(app="BasiliskII") as s:
+                s.point(300, 472)
+    _with_spy(spy, two)
+    combined = [s for s in spy.osascripts()
+                if "frontmost is true" in s and "position of window 1" in s]
+    assert len(combined) == 2, spy.osascripts()
+
+
+def test_focus_is_handed_back_by_default():
+    """The default must stay the courteous one: a stray click landed in the
+    host's browser once, which is why the restore exists at all."""
+    spy = _Spy(front="Terminal")
+
+    def gesture():
+        with gi.Session(app="BasiliskII") as s:
+            s.point(300, 472)
+    _with_spy(spy, gesture)
+    back = [s for s in spy.osascripts() if 'process "Terminal"' in s]
+    assert len(back) == 1, spy.osascripts()
+
+
+def test_keep_front_skips_the_restore():
+    """0.695 s per gesture — 37 % — because handing focus back means the next
+    gesture must take it again (set frontmost + a 400 ms settle + set back)."""
+    spy = _Spy(front="Terminal")
+
+    def gesture():
+        with gi.Session(app="BasiliskII", keep_front=True) as s:
+            s.point(300, 472)
+    _with_spy(spy, gesture)
+    back = [s for s in spy.osascripts() if 'process "Terminal"' in s]
+    assert back == [], spy.osascripts()
+
+
+def test_an_app_name_with_a_digit_cannot_poison_the_window_rect():
+    """`parse_window_geometry` takes every integer it can find. Putting the
+    front app's NAME in the same reply would have donated its digits to the
+    rect and shifted every click by that amount — silently, and only for people
+    whose frontmost app happens to have a number in its name."""
+    name, rect = gi.parse_front_and_geometry("Photoshop 2.5|448|128|1024|796")
+    assert name == "Photoshop 2.5"
+    assert rect == (448, 128, 1024, 796)
+
+
+def test_a_short_combined_reply_is_refused_not_guessed():
+    try:
+        gi.parse_front_and_geometry("Terminal|448|128")
+        assert False, "expected InputError"
+    except gi.InputError as e:
+        assert "front app" in str(e)
+
+
+def test_the_combined_query_asks_the_named_process():
+    """Direct cover for front_and_geometry: the process name must reach the
+    script, or the rect belongs to whatever window System Events picks."""
+    spy = _Spy(front="Safari", rect="10|20|1024|796")
+    real, gi._run = gi._run, spy
+    try:
+        front, rect = gi.front_and_geometry("SheepShaver")
+    finally:
+        gi._run = real
+    assert front == "Safari" and rect == (10, 20, 1024, 796)
+    assert 'tell process "SheepShaver"' in spy.osascripts()[0]
+
+
+def test_handing_focus_back_names_the_app_it_was_asked_for():
+    """`front` is the counterpart that makes --keep-front safe to offer: a
+    driver that can take the machine needs a one-liner that gives it back."""
+    spy = _Spy(front="Terminal")
+    real, gi._run = gi._run, spy
+
+    class A:
+        name = "Terminal"
+    try:
+        assert gi.cmd_front(A()) == 0
+    finally:
+        gi._run = real
+    assert any('set frontmost of process "Terminal" to true' in s
+               for s in spy.osascripts()), spy.osascripts()
