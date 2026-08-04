@@ -1947,6 +1947,47 @@ def run_control_server(server):
                             except Exception as e:
                                 m = f"hostmenu failed: {e}"
                                 out = f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(m)}\r{m}\r\r"
+                    elif cmd.startswith("HOSTHOLDSHOT:"):
+                        # Press-and-HOLD the guest's REAL mouse on a menu title,
+                        # capture the open menu HOST-side, then ALWAYS release. For
+                        # menus whose items you cannot know in advance (the
+                        # Application menu's running-process list): HOSTMENU wants the
+                        # item up front, HOSTCLICK does not hold. The capture is
+                        # host-side because the daemon is starved while a menu
+                        # tracking loop owns the guest. HOSTHOLDSHOT:titleX:titleY[:dwellMs].
+                        if guest_input is None:
+                            m = "guest_input module not deployed"
+                            out = f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(m)}\r{m}\r\r"
+                        else:
+                            import tempfile
+                            tmp = None
+                            try:
+                                p = cmd[len("HOSTHOLDSHOT:"):].split(":")
+                                tx, ty = int(p[0]), int(p[1])
+                                dwell = int(p[2]) if len(p) > 2 and p[2] else 250
+                                fd, tmp = tempfile.mkstemp(suffix=".png")
+                                os.close(fd)
+                                with guest_input.Session() as s:
+                                    tp = s.point(tx, ty)
+                                    guest_input.hold_and_capture(s, tp, tmp, None, dwell)
+                                with open(tmp, "rb") as fh:
+                                    b64 = base64.b64encode(fh.read()).decode("ascii")
+                                payload = json.dumps({"ok": True, "title": [tx, ty],
+                                                      "host": list(tp), "dwell_ms": dwell,
+                                                      "png_b64": b64})
+                                out = (f"STATUS:0\rSTDOUT:{len(payload)}\r{payload}"
+                                       f"\rSTDERR:0\r\r")
+                                log(f"hostholdshot title=({tx},{ty}) dwell={dwell} "
+                                    f"b64={len(b64)}")
+                            except Exception as e:
+                                m = f"hostholdshot failed: {e}"
+                                out = f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(m)}\r{m}\r\r"
+                            finally:
+                                if tmp and os.path.exists(tmp):
+                                    try:
+                                        os.remove(tmp)
+                                    except OSError:
+                                        pass
                     elif cmd == "CLIPGET":
                         resp = server.clipboard_get()
                         out = resp if resp is not None else "No response"

@@ -36,6 +36,7 @@ Usage
     guest_input.py click <gx> <gy> [--count N] [--hold cmd,shift]
     guest_input.py menu  <titleX> <titleY> <itemX> <itemY>
     guest_input.py shot  [out.png] [--region gx,gy,w,h]
+    guest_input.py menushot <titleX> <titleY> [out.png] [--dwell ms] [--region ...]
 
     --app NAME      emulator process (default: auto-detect Basilisk/SheepShaver)
     --no-activate   never bring the emulator forward; abort if it is not front
@@ -404,9 +405,54 @@ def capture(out_path, region=None, app=None, dry_run=False):
     return out_path
 
 
+def hold_and_capture(session, title_pt, out_path, region=None, dwell_ms=250):
+    """Press-and-HOLD the real mouse on a menu title, capture the open menu
+    HOST-side, then ALWAYS release.
+
+    This is the one place the module deliberately does what `menu` refuses to:
+    it leaves the button DOWN across a screencapture. That is required to READ a
+    menu whose contents cannot be known in advance -- the Application menu's list
+    of running processes is the case that motivated it, and `menu`/HOSTMENU cannot
+    serve it because they want the item coordinate up front. The capture is
+    host-side for the same reason `shot` is: while the menu is held the guest's
+    event loop (and the background daemon) is starved, so only a picture taken off
+    the daemon's path can be read during that window. The release lives in a
+    `finally` -- a held button that leaks is a stuck machine, and that must never
+    depend on the capture succeeding.
+    """
+    tx, ty = title_pt
+    # cliclick leaves the button DOWN when it exits after `dd` (the difference
+    # from `c`), so the menu stays open for the capture below. The trailing wait
+    # is the menu's render time, paid inside this one invocation.
+    session.cliclick(["m:%d,%d" % (tx, ty), "w:150",
+                      "dd:%d,%d" % (tx, ty), "w:%d" % max(0, int(dwell_ms))])
+    try:
+        g = session.geometry()
+        x, y, w, h = build_capture_region(g["origin"], g["title_h"],
+                                          g["guest_size"], region)
+        if session.dry_run:
+            print("screencapture -x -R%d,%d,%d,%d %s" % (x, y, w, h, out_path))
+        else:
+            _run(["screencapture", "-x", "-R%d,%d,%d,%d" % (x, y, w, h), out_path])
+    finally:
+        session.cliclick(["du:%d,%d" % (tx, ty)])
+    return out_path
+
+
 def cmd_shot(args):
     region = parse_region(args.region) if args.region else None
     out = capture(args.out or "guest.png", region, args.app, args.dry_run)
+    if not args.dry_run:
+        print(out)
+    return 0
+
+
+def cmd_menushot(args):
+    region = parse_region(args.region) if args.region else None
+    with Session(args.app, not args.no_activate, args.dry_run,
+                 keep_front=args.keep_front) as s:
+        title = s.point(args.title_x, args.title_y)
+        out = hold_and_capture(s, title, args.out or "menu.png", region, args.dwell)
     if not args.dry_run:
         print(out)
     return 0
@@ -447,6 +493,17 @@ def main(argv=None):
     sh = sub.add_parser("shot"); sh.add_argument("out", nargs="?")
     sh.add_argument("--region", help="guest sub-rect 'gx,gy,w,h'")
     sh.set_defaults(func=cmd_shot)
+
+    ms = sub.add_parser("menushot",
+                        help="hold a menu open and capture it (reads menus "
+                             "whose items you cannot know in advance)")
+    ms.add_argument("title_x", type=int)
+    ms.add_argument("title_y", type=int)
+    ms.add_argument("out", nargs="?")
+    ms.add_argument("--region", help="guest sub-rect 'gx,gy,w,h' to capture")
+    ms.add_argument("--dwell", type=int, default=250,
+                    help="ms to hold before capturing (menu render time)")
+    ms.set_defaults(func=cmd_menushot)
 
     args = p.parse_args(argv)
     if not args.dry_run and args.cmd != "shot" and not shutil.which("cliclick"):
