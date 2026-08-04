@@ -139,16 +139,15 @@ def note_lines():
     if replies:
         out.append(f"for you            : {len(replies)}")
         out += [preview(note) for note in replies[-3:]]
-    if out and notes.WHO == "agent":
-        # Only reachable when neither APPLEBRIDGE_WHO nor CLAUDE_CODE_SESSION_ID
-        # is in the environment. It used to fire whenever nobody had configured
-        # a name, which was most of the time — until the session id turned out
-        # to be exported already. If this line ever appears at a real session
-        # start, the hook's environment lacks that variable and the automatic
-        # naming needs another source: that is what it is here to report.
-        out.append("                     no session identity (neither "
-                   "APPLEBRIDGE_WHO nor CLAUDE_CODE_SESSION_ID) — nothing can "
-                   "be addressed back")
+    # Reachability of this session's NAME, always — not only when the identity
+    # is missing entirely. The case that cost two days was subtler than a
+    # missing name: the other machine watched under one name and posted under
+    # another, so every directed message reached a name its wake path did not
+    # know. Neither half could see the other; only a reader of the channel can,
+    # and this is one. Unconditional because a warning that fires only in the
+    # obvious case is not where the defect lives.
+    for warning in notes.identity_warnings(lines, notes.WHO):
+        out.append(f"channel identity   : {warning}")
     return out
 
 
