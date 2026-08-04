@@ -388,6 +388,48 @@ def identity_warnings(lines, who):
     return out
 
 
+def actionable(lines, who):
+    """What this session still has to DO — the default view of `list`.
+
+    Measured 2026-08-04, and the numbers are the argument: 70 notes, 140 000
+    characters in the file, ZERO open questions — and `list` printed 15 000
+    characters, every one of them already handled. On the other machine the
+    inbox was 67 000. Both of us had stopped reading `list` and started
+    grepping it, which is the point at which a delivery mechanism has failed:
+    it was still delivering, and nobody was receiving.
+
+    So the default answers "what is outstanding", not "what was ever said":
+    open questions, plus whatever arrived since this session last wrote. The
+    full history is still there — `--all` prints it, and the FILE never loses
+    anything. The noise was in the view, not in the channel.
+    """
+    # `emitted`, not `seen`: a ratchet in tests/test_notes.py forbids the word
+    # in this file, because a "seen" flag would claim to know who READ what —
+    # which nothing here can observe. This is a dedup set for one print run and
+    # has nothing to do with read state, but the guard cannot tell the two
+    # apart, and it guards something worth more than my variable name.
+    emitted = set()
+    out = []
+    for note in open_notes(lines) + crossed(lines, who):
+        if note["ts"] not in emitted:
+            emitted.add(note["ts"])
+            out.append(note)
+    return sorted(out, key=lambda n: n["ts"])
+
+
+def preview(text, width=220):
+    """One note, shortened, with the omission STATED rather than silent.
+
+    A cut that does not announce itself is the same defect as a silent cap: the
+    reader cannot tell a short note from a truncated one, so they cannot know
+    whether they have the whole thing.
+    """
+    flat = unescape_text(text)
+    if len(flat) <= width:
+        return flat
+    return flat[:width] + f"… [+{len(flat) - width} Zeichen — notes.py list --full]"
+
+
 def read(path=None, run=None):
     """Lines of the channel. Local file, or over ssh when the spec is host:/path.
     `run` is the ssh executor (default _ssh_run); tests inject a fake."""
@@ -433,6 +475,105 @@ def render(note, label):
     lines = [f"{label} {note['ts']}  from={note['from']}  {head}"]
     lines += [("    " + line) if line else "" for line in rest]
     return "\n".join(lines)
+
+
+def rotate(stamp, path=None, run=None):
+    """Archive the channel and start an empty one. -> (ok, message).
+
+    Why not "keep the last N notes", which is the obvious idea and the dangerous
+    one: three mechanisms here read the file as a WHOLE, and truncating it in
+    place breaks all three silently.
+
+      - `notes_watch.lost_since` uses the LINE NUMBER as its clock, because an
+        unreadable line has no timestamp to compare. Renumbering the file makes
+        a watcher's baseline point at the wrong place: it either reports lines
+        that are not new, or misses ones that are.
+      - `answer <ts>` validates against the questions still in the file. Drop an
+        old question and answering it is refused — the answer would close
+        nothing and reach nobody, which is exactly the defect that check exists
+        to prevent.
+      - `crossed` measures from this session's last own message. Cut it away and
+        the crossing notice goes quiet.
+
+    Rotation avoids all three by being a WHOLE-FILE event, not a partial edit:
+    the old file is kept intact under a dated name, the new one starts with a
+    marker note saying where it went. Nothing is lost; the live file is small
+    again; and the marker is a normal parseable note, so no reader reports it as
+    an unreadable line.
+
+    Refused while any question is open. That is not politeness — an open
+    question in the archive cannot be answered any more, and a channel that
+    quietly makes a pending question unanswerable is worse than a big file.
+    """
+    spec = path or NOTES
+    lines = read(spec, run)
+    still_open = open_notes(lines)
+    if still_open:
+        return False, (f"{len(still_open)} offene Frage(n) — erst beantworten. "
+                       "Eine archivierte Frage kann niemand mehr schliessen.")
+    if not lines:
+        return False, "der Kanal ist leer, nichts zu rotieren"
+
+    count = len(all_notes(lines))
+    remote = _remote(spec)
+    archive = f"{remote[1] if remote else spec}.{stamp[:19].replace(':', '')}"
+    if remote:
+        host, rpath = remote
+        ok, _ = (run or _ssh_run)(host, f"mv {shlex.quote(rpath)} {shlex.quote(archive)}")
+        if not ok:
+            return False, f"konnte nicht nach {archive} verschieben"
+    else:
+        try:
+            os.rename(spec, archive)
+        except OSError as exc:
+            return False, f"konnte nicht nach {archive} verschieben: {exc}"
+
+    marker = format_note(stamp, WHO, "all", NOTE_MARKER,
+                         f"Kanal rotiert: {count} Notizen liegen in {archive}. "
+                         "Nichts geloescht — die Historie ist dort vollstaendig.")
+    append(marker, spec, run)
+    return True, f"{count} Notizen nach {archive}, Kanal neu begonnen"
+
+
+def archives(path=None):
+    """The rotated files beside the live channel, oldest first.
+
+    Only the LOCAL side: an archive is searched, not polled, and a session that
+    reaches the channel over ssh can search the machine that holds it. Guessing
+    remote filenames would be a second protocol for no gain.
+    """
+    spec = path or NOTES
+    if _remote(spec):
+        return []
+    folder = os.path.dirname(spec) or "."
+    base = os.path.basename(spec) + "."
+    try:
+        found = [os.path.join(folder, n) for n in os.listdir(folder)
+                 if n.startswith(base)]
+    except OSError:
+        return []
+    return sorted(found)
+
+
+def find(needle, path=None, run=None):
+    """Every note containing `needle`, live channel AND archives. -> [(src, note)].
+
+    This is what makes rotation an ARCHIVE rather than a dump. Rotating without
+    it would trade one problem for a worse one: today's noise is at least
+    readable, whereas material moved to a dated file nobody can search is
+    material effectively deleted — with the added harm that everyone believes
+    it was kept.
+
+    Case-insensitive, because the thing one remembers about a note six weeks on
+    is a word, not its capitalisation.
+    """
+    want = (needle or "").lower()
+    out = []
+    for src in archives(path) + [path or NOTES]:
+        for note in all_notes(read(src, run)):
+            if want in unescape_text(note["text"]).lower():
+                out.append((os.path.basename(src), note))
+    return out
 
 
 def _now():
@@ -481,12 +622,35 @@ def main():
     n.add_argument("--to", default="all")
     n.add_argument("--from", dest="who", default=WHO)
 
-    lst = sub.add_parser("list", help="open questions")
+    f = sub.add_parser("find", help="search the live channel AND the archives")
+    f.add_argument("text")
+
+    sub.add_parser("rotate", help="archive the channel and start a fresh one "
+                                  "(refused while a question is open)")
+
+    lst = sub.add_parser("list", help="what is outstanding (--all for everything)")
+    lst.add_argument("--all", action="store_true",
+                     help="the whole inbox, not only what is outstanding")
+    lst.add_argument("--full", action="store_true",
+                     help="do not shorten note texts")
     lst.add_argument("--since", type=int, default=None, metavar="SECONDS",
                      help="only those deposited within the last N seconds "
                           "(what the PostToolUse hook uses, so it announces a "
                           "note once instead of after every tool call)")
     args = parser.parse_args()
+
+    if args.verb == "find":
+        hits = find(args.text)
+        for src, note in hits:
+            print(f"{note['ts']}  from={note['from']}  [{src}]")
+            print(f"    {preview(note['text'], 300)}")
+        print(f"{len(hits)} Treffer in {len(archives()) + 1} Datei(en)")
+        return 0
+
+    if args.verb == "rotate":
+        ok, msg = rotate(_now())
+        print(msg, file=sys.stdout if ok else sys.stderr)
+        return 0 if ok else 2
 
     if args.verb == "list":
         now = datetime.datetime.now()
@@ -502,10 +666,29 @@ def main():
                 print(f"   line {bad['lineno']}: {bad['raw'][:160]}")
             print("   format is:  <timestamp> from=X to=Y re=Z <text>   "
                   "— write with notes.py; do not hand-build the line")
-        for note in recent(open_notes(lines), now, args.since):
-            print(render(note, "question"))
-        for note in recent(inbox_for(lines, WHO), now, args.since):
-            print(render(note, note["kind"]))
+        shown = (inbox_for(lines, WHO) + open_notes(lines)) if args.all \
+            else actionable(lines, WHO)
+        shown = recent(shown, now, args.since)
+        emitted = set()
+        for note in sorted(shown, key=lambda n: n["ts"]):
+            if note["ts"] in emitted:
+                continue
+            emitted.add(note["ts"])
+            text = unescape_text(note["text"]) if args.full else preview(note["text"])
+            head, *rest = text.split("\n")
+            print(f"{note['kind']} {note['ts']}  from={note['from']}  {head}")
+            for line in rest:
+                print(("    " + line) if line else "")
+        if not shown:
+            # Silence would be ambiguous: "nothing outstanding" and "the tool is
+            # broken" must not look the same, which is the whole complaint this
+            # view was built to answer.
+            total = len(all_notes(lines))
+            print(f"nichts offen — {total} Notizen im Kanal (notes.py list --all)")
+        elif not args.all:
+            hidden = len(inbox_for(lines, WHO)) - len(shown)
+            if hidden > 0:
+                print(f"({hidden} bereits erledigte Nachricht(en) verborgen — --all)")
         return 0
 
     if args.verb == "answer" and getattr(args, "to", None) is not None:
@@ -556,6 +739,19 @@ def main():
         print(f"could not write {NOTES}", file=sys.stderr)
         return 1
     print(line)
+
+    # A `note --to X` while X has an open question is almost always an `answer`
+    # that forgot its timestamp — the question then stays open for ever while
+    # both sides consider it handled. THREE stood open that way on 2026-08-04,
+    # all substantively answered hours earlier, all still shown by every reader.
+    if args.verb == "note" and recipient != "all":
+        theirs = [n for n in open_notes(read()) if n["from"] == recipient]
+        if theirs:
+            print(f"\n>> {recipient} hat {len(theirs)} OFFENE Frage(n) an dich. "
+                  "War das eine Antwort? Dann schliesst sie nur:", file=sys.stderr)
+            for note in theirs[-2:]:
+                print(f"   notes.py answer {note['ts']} \"…\"   "
+                      f"({preview(note['text'], 70)})", file=sys.stderr)
 
     if waiting:
         # stderr, so anything parsing the written line on stdout is unaffected.

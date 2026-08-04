@@ -232,6 +232,115 @@ class TheWakePathCanBeBlind(unittest.TestCase):
                          notes_watch.latest_ts(lines))
 
 
+class TheViewIsNotTheChannel(unittest.TestCase):
+    """`list` shows what is OUTSTANDING; the file still holds everything.
+
+    Measured 2026-08-04 and the numbers are the whole argument: 70 notes,
+    139 739 characters in the file, ZERO open questions — and `list` printed
+    14 989 characters, every one already handled. The other machine's inbox was
+    67 469. Both sides had stopped reading `list` and started grepping it, which
+    is the point where a delivery mechanism has quietly failed: still
+    delivering, nobody receiving.
+    """
+
+    def _lines(self):
+        return [
+            notes.format_note("2026-08-04T10:00:00.000", "B", "A", None, "alt, gefragt"),
+            notes.format_note("2026-08-04T10:01:00.000", "A", "B",
+                              "2026-08-04T10:00:00.000", "alt, beantwortet"),
+            notes.format_note("2026-08-04T10:02:00.000", "A", "all", notes.NOTE_MARKER,
+                              "As letzte eigene Nachricht"),
+            notes.format_note("2026-08-04T10:03:00.000", "B", "A", None, "NEU und offen"),
+        ]
+
+    def test_the_default_view_is_what_is_outstanding(self):
+        got = notes.actionable(self._lines(), "A")
+        self.assertEqual([n["text"] for n in got], ["NEU und offen"])
+
+    def test_handled_history_is_hidden_but_not_lost(self):
+        """The noise was in the VIEW. `--all` still reaches everything, and the
+        file is untouched — that distinction is the entire design."""
+        lines = self._lines()
+        # Against all_notes, not inbox_for: `inbox_for` carries answers and
+        # statements, never questions, so the open question is not in it at all.
+        # The first version of this test compared the wrong two sets and failed
+        # on its own premise rather than on the code.
+        self.assertEqual(len(notes.all_notes(lines)), 4)
+        self.assertEqual(len(notes.actionable(lines, "A")), 1)
+        self.assertGreater(len(notes.all_notes(lines)),
+                           len(notes.actionable(lines, "A")))
+
+    def test_nothing_outstanding_is_an_empty_view(self):
+        """The measured case: zero open questions, and the old view still
+        printed fifteen thousand characters."""
+        lines = self._lines()[:3]
+        self.assertEqual(notes.actionable(lines, "A"), [])
+
+    def test_a_shortened_note_says_that_it_was_shortened(self):
+        """A cut that does not announce itself is a silent cap: the reader
+        cannot tell a short note from a truncated one."""
+        short = notes.preview("kurz", 220)
+        self.assertEqual(short, "kurz")
+        long_text = "x" * 500
+        cut = notes.preview(long_text, 220)
+        self.assertIn("+280 Zeichen", cut)
+        self.assertLess(len(cut), len(long_text))
+
+
+class RotationKeepsEverything(unittest.TestCase):
+    """Rotation is an archive, not a bin — and never a partial truncation.
+
+    "Keep the last N" is the obvious idea and breaks three mechanisms silently:
+    `lost_since` reads the LINE NUMBER as its clock, `answer` validates against
+    the questions still present, and `crossed` measures from this session's last
+    own message. A whole-file move breaks none of them.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "notes.log")
+
+    def test_rotation_is_refused_while_a_question_is_open(self):
+        """An archived question can never be closed by anyone. Refusing is the
+        only honest option — the alternative makes a pending question silently
+        unanswerable."""
+        notes.append(notes.format_note("T1", "B", "A", None, "offen"), self.path)
+        ok, msg = notes.rotate("2026-08-04T15:00:00.000", self.path)
+        self.assertFalse(ok)
+        self.assertIn("offene Frage", msg)
+
+    def test_rotation_archives_and_leaves_a_readable_marker(self):
+        """The marker must be a NORMAL note: an unparseable line would be
+        reported by every reader as a lost delivery, which is precisely the
+        alarm this project built to be trusted."""
+        notes.append(notes.format_note("T1", "B", "all", notes.NOTE_MARKER, "eins"),
+                     self.path)
+        ok, msg = notes.rotate("2026-08-04T15:00:00.000", self.path)
+        self.assertTrue(ok, msg)
+        fresh = notes.read(self.path)
+        self.assertEqual(notes.unreadable(fresh), [])
+        self.assertEqual(len(notes.all_notes(fresh)), 1)
+        self.assertIn("rotiert", notes.all_notes(fresh)[0]["text"])
+        self.assertEqual(len(notes.archives(self.path)), 1)
+
+    def test_the_archive_is_searchable_or_it_is_a_bin(self):
+        """An archive nobody can search is material effectively deleted, with
+        the added harm that everyone believes it was kept."""
+        notes.append(notes.format_note("T1", "B", "all", notes.NOTE_MARKER,
+                                       "GETHANDLESIZE zieht Glue"), self.path)
+        notes.rotate("2026-08-04T15:00:00.000", self.path)
+        notes.append(notes.format_note("T2", "B", "all", notes.NOTE_MARKER, "neu"),
+                     self.path)
+        hits = notes.find("gethandlesize", self.path)
+        self.assertEqual(len(hits), 1)
+        self.assertIn("Glue", hits[0][1]["text"])
+
+    def test_an_empty_channel_is_not_rotated(self):
+        ok, msg = notes.rotate("2026-08-04T15:00:00.000", self.path)
+        self.assertFalse(ok)
+
+
 class WhatIsOpen(unittest.TestCase):
 
     def _lines(self):

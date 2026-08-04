@@ -146,6 +146,17 @@ def note_lines():
     # know. Neither half could see the other; only a reader of the channel can,
     # and this is one. Unconditional because a warning that fires only in the
     # obvious case is not where the defect lives.
+    # The channel is append-only by design, so it only grows. That is right for
+    # the FILE and wrong for the reader — measured 2026-08-04: 70 notes, 140 000
+    # characters, and the remote side re-fetches the whole thing over ssh on
+    # every poll. Say so once it is worth a rotation, rather than waiting for
+    # somebody to notice the poll getting slow.
+    size = sum(len(l) for l in lines)
+    if size > 200_000:
+        out.append(f"channel size       : {size // 1000} kB, "
+                   f"{len(notes.all_notes(lines))} Notizen — `notes.py rotate` "
+                   "archiviert und beginnt neu (verweigert bei offenen Fragen)")
+
     for warning in notes.identity_warnings(lines, notes.WHO):
         out.append(f"channel identity   : {warning}")
     return out
