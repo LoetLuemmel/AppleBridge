@@ -3247,7 +3247,36 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         SetActivity(m);                     /* daemon activity -> top bar */
         qerr = QuitAppBySignature(sig);
         if (qerr == noErr) {
-            strcpy(responseBuffer, "STATUS:0\rSTDOUT:7\rQuit OK\rSTDERR:0\r\r");
+            /* noErr from AESend(kAENoReply) means the event was DELIVERED, not
+             * that anything quit. An application with no Apple Event handler at
+             * all — AppleBridgeConfig is one — leaves it sitting in its queue
+             * for ever, and this verb answered "Quit OK" while the app kept
+             * running. Verify by the artefact instead: the process is gone.
+             *
+             * The wait must YIELD or it disproves itself: a target starved of
+             * CPU can never process the quit, so a busy loop would report
+             * "still running" every time. Same bounded, yielding shape as the
+             * front-process pump above — 60 x 2 ticks is about two seconds,
+             * and a guard means a target that never quits costs that and no
+             * more. An app that puts up "Save changes?" stays, correctly. */
+            {
+                EventRecord vev;
+                short       vguard;
+                Boolean     vgone = false;
+                for (vguard = 0; vguard < 60 && !vgone; vguard++) {
+                    WaitNextEvent(everyEvent, &vev, 2L, NULL);
+                    vgone = !IsAppRunning(sig);
+                }
+                if (vgone) {
+                    strcpy(responseBuffer,
+                           "STATUS:0\rSTDOUT:7\rQuit OK\rSTDERR:0\r\r");
+                } else {
+                    strcpy(responseBuffer,
+                           "STATUS:-1\rSTDOUT:0\rSTDERR:54\rquit event sent, but the app is STILL RUNNING 2s later\r\r");
+                    NoteErr("quitstuck");
+                    SetActivity("QUIT still running");
+                }
+            }
         } else {
             strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:11\rQuit failed\r\r"); NoteErr("quit");
             SetActivity("QUIT no such app");

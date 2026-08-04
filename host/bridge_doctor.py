@@ -240,7 +240,13 @@ def probe_installation(read=None, exists=None, local_env=LOCAL_ENV_PATH,
     }
 
 
-GUEST_PREFS_HFS = ":System Folder:Preferences:AppleBridge Prefs"
+# NOT a constant any more, and the comment is the point: this used to be
+# ":System Folder:Preferences:AppleBridge Prefs", the ENGLISH name, on a project
+# whose SE/30 runs German System 7.5 and whose second host's guest is German too.
+# There the folder is `Systemordner`, every hcopy of the hardcoded path returned
+# nothing, and the fall-through below blamed the IMAGES — the same shape as the
+# hfsutils note further down, one layer deeper. guest_paths finds it instead.
+from guest_paths import find_guest_prefs  # noqa: E402
 
 
 def probe_guest_ip(run, disks, emulator_running, exists=None, read=None,
@@ -292,7 +298,11 @@ def probe_guest_ip(run, disks, emulator_running, exists=None, read=None,
             # and a helpful conversion would corrupt the bridge's own config
             # (R20).
             tmp = os.path.join(tempfile.gettempdir(), "ab_guest_prefs.probe")
-            run(["hcopy", "-r", GUEST_PREFS_HFS, tmp])
+            prefs_path, where = find_guest_prefs(run)
+            if not prefs_path:
+                return {"ip": None, "image": image, "checked": True,
+                        "why": f"no AppleBridge Prefs in that image: {where}"}
+            run(["hcopy", "-r", prefs_path, tmp])
             text = (read or _read)(tmp)
             try:
                 os.unlink(tmp)
@@ -300,14 +310,14 @@ def probe_guest_ip(run, disks, emulator_running, exists=None, read=None,
                 pass
             if not text:
                 return {"ip": None, "image": image, "checked": True,
-                        "why": "the guest's AppleBridge Prefs is empty or absent"}
+                        "why": f"`{prefs_path}` is empty"}
             for line in text.splitlines():
                 line = line.strip()
                 if line.startswith("IP="):
                     return {"ip": line[3:].strip(), "image": image,
                             "checked": True, "why": ""}
             return {"ip": None, "image": image, "checked": True,
-                    "why": "no IP= line in the guest's AppleBridge Prefs"}
+                    "why": f"no IP= line in `{prefs_path}`"}
         finally:
             run(["humount"])
     return {"ip": None, "image": None, "checked": False,

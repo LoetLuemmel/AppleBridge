@@ -1295,3 +1295,51 @@ before and after showed the guest's Finder going `front=0` → `front=1`: proof
 the click actually landed, rather than a number produced by a gesture that did
 nothing. Take the process list around a measurement; a harness that measures a
 no-op reports a beautiful, believable, wrong number.
+
+## `noErr` from a no-reply Apple Event means DELIVERED, not done — 2026-08-04
+
+`AESend(..., kAENoReply, ...)` returns as soon as the event is in the target's
+queue. It says nothing whatever about the target. An application with no Apple
+Event handler at all leaves the quit sitting there for ever, and the daemon's
+`QUIT:` verb answered **`Quit OK`** while the app kept running — measured
+against `AppleBridgeConfig`, which is exactly such an app.
+
+The repair is the one this file keeps arriving at from new directions: **verify
+by the artefact.** The process is gone, or it is not. Two things make that
+verification honest rather than decorative:
+
+- **The wait must yield.** A target starved of CPU can never process the quit,
+  so a busy loop would report "still running" every time and prove only that it
+  had not yielded. The daemon is cooperative; `WaitNextEvent` in the loop is not
+  a nicety, it is what makes the answer mean anything.
+- **The wait must be bounded.** An application that puts up *Save changes?* is
+  never going away, and an unbounded loop would take the bridge with it.
+
+Both directions verified live: `QUIT:ABwd` answered `Quit OK` in 0.15 s and the
+process really was gone; `QUIT:ABcf` took 2.07 s and answered `STATUS:-1`,
+*"quit event sent, but the app is STILL RUNNING 2s later"* — confirmed
+independently by `PROCLIST`, not by the daemon's own account of itself.
+
+The general form, for the next verb: **a send that cannot fail is not a
+result.** `AESend` with `kAENoReply`, `PostEvent`, `PBVolumeMount` on a queue —
+anything whose success means "handed over" needs a second question asked of the
+world, or it will report success for a thing that never happened.
+
+## A guest can lose its host window and keep running — 2026-08-04
+
+Observed while deploying 0.8d38: `BasiliskII` was running, `visible` was true,
+and System Events reported **zero windows** for it. `host/guest_input.py`
+refused every gesture — correctly, and that refusal is the whole reason the
+front-app check exists.
+
+What still worked, and this is the part worth keeping: the **daemon-side**
+screenshot (`mac_screenshot`, the `screenshot` verb) returned a perfect 1024×768
+frame, and `PROCLIST`, `DISKINFO` and every command answered normally. The
+emulation and the bridge were untouched; only the host's SDL window was gone.
+
+So the two capture paths are not redundant, they answer different questions.
+`mac_host_screenshot` photographs a **window on this desk** and dies with it.
+`mac_screenshot` reads the guest's own framebuffer over the bridge and survives
+anything that happens to the host's window. When one returns nothing, try the
+other before concluding the guest is in trouble — here it was in no trouble at
+all.
