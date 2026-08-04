@@ -42,10 +42,40 @@ def _moment(stamp):
 SITE = os.environ.get("CMS_SITE", "https://pit.390er.de")
 SECTION = "applebridge"
 LEDGER = "applebridge-roadmap-ledger-progress-and-status-tracker"
+
+# Two pages, because two sessions keep two ledgers. Until 2026-08-04 this tool
+# knew only the first, and reported "in step" on that basis — a claim about ONE
+# page, printed by a Stop hook that runs on BOTH machines. It could never say
+# that the other page was three weeks stale, and it would have stayed just as
+# quiet if it were. The parallel session mentioned the split in passing while
+# reporting an entry it had just made; nothing here would have surfaced it.
+#
+# Override with APPLEBRIDGE_LEDGERS="section/slug,section/slug" — a third
+# workstream should not need a code change.
+_DEFAULT_LEDGERS = (
+    (SECTION, LEDGER, "AppleBridge"),
+    ("nvidia", "projekt-ledger-edge-ki-auf-jetson-xavier-orin", "ApfelPilot/Jetson"),
+)
+
+
+def _configured_ledgers():
+    raw = os.environ.get("APPLEBRIDGE_LEDGERS", "").strip()
+    if not raw:
+        return _DEFAULT_LEDGERS
+    out = []
+    for part in raw.split(","):
+        part = part.strip()
+        if "/" in part:
+            sect, _, slug = part.partition("/")
+            out.append((sect, slug, sect))
+    return tuple(out) or _DEFAULT_LEDGERS
+
+
+LEDGERS = _configured_ledgers()
 REPO = os.environ.get("APPLEBRIDGE_REPO", "LoetLuemmel/AppleBridge")
 
 
-def fetch_ledger(quiet=False):
+def fetch_ledger(quiet=False, section=None, slug=None):
     """-> (updated_iso, body). Raises SystemExit with a usable message.
 
     Under --quiet every failure exits 0 in silence: this runs as a Stop hook, and
@@ -57,7 +87,7 @@ def fetch_ledger(quiet=False):
     key = os.environ.get("CMS_API_KEY") or os.environ.get("GENERIC_CMS_KEY")
     if not key:
         give_up("CMS_API_KEY is not set — export it, or pass --since <date> to skip the fetch.")
-    url = f"{SITE}/api/v1/articles/{SECTION}/{LEDGER}.md"
+    url = f"{SITE}/api/v1/articles/{section or SECTION}/{slug or LEDGER}.md"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"})
     try:
         with urllib.request.urlopen(req, timeout=30) as fh:
@@ -113,35 +143,52 @@ def main():
                     help="say nothing when nothing merged since the ledger was edited")
     args = ap.parse_args()
 
-    body = ""
     if args.since:
-        updated, day = args.since, args.since[:10]
+        pages = [(None, None, "since " + args.since, args.since, "")]
     else:
-        updated, body = fetch_ledger(args.quiet)
-        day = updated[:10]
+        pages = []
+        for section, slug, label in LEDGERS:
+            try:
+                updated, body = fetch_ledger(args.quiet, section, slug)
+            except SystemExit:
+                # A page that cannot be fetched must not read as "in step" — that
+                # is the exact failure this tool was extended to remove. Quiet
+                # mode still says nothing (a Stop hook that complains about an
+                # offline network is a Stop hook people switch off), but the
+                # normal run names it.
+                pages.append((section, slug, label, None, ""))
+                continue
+            pages.append((section, slug, label, updated, body))
 
-    prs = merged_since(day, args.quiet)
-    # A same-day PR may still predate the edit, so compare instants — and the two
-    # sources speak different time zones (see _moment).
-    if args.since:
-        newer = prs
-    else:
-        cutoff = _moment(updated)
-        newer = [p for p in prs if _moment(p["mergedAt"]) > cutoff]
+    drift = False
+    lines = []
+    for section, slug, label, updated, body in pages:
+        if updated is None:
+            lines.append(f"{label:<18}: NOT REACHED — this run says nothing about it")
+            continue
+        prs = merged_since(updated[:10], args.quiet)
+        if args.since:
+            newer = prs
+        else:
+            cutoff = _moment(updated)
+            newer = [p for p in prs if _moment(p["mergedAt"]) > cutoff]
+        if newer:
+            drift = True
+            lines.append(f"{label:<18}: last edited {updated}, {len(newer)} PR(s) since")
+            for p in newer:
+                lines.append(f"    #{p['number']:<4} {p['mergedAt'][:16].replace('T', ' ')}  {p['title']}")
+        else:
+            lines.append(f"{label:<18}: last edited {updated} — in step")
 
-    if not newer and args.quiet:
+    unreachable = any(u is None for _, _, _, u, _ in pages)
+    if not drift and not unreachable and args.quiet:
         return 0
 
-    print(f"ledger last edited : {updated}")
-    print(f"PRs merged since   : {len(newer)}")
-    if newer:
-        print()
-        for p in newer:
-            print(f"  #{p['number']:<4} {p['mergedAt'][:16].replace('T', ' ')}  {p['title']}")
-        print("\n  ^ each of these should be reflected on the ledger, or deliberately not.")
-    else:
-        print("\n  nothing merged since the last edit — in step.")
+    print("\n".join(lines))
+    if drift:
+        print("\n  ^ each of these should be reflected on ITS ledger, or deliberately not.")
 
+    body = next((b for _, _, _, u, b in pages if u is not None and b), "")
     if args.show_open and body:
         items = open_items(body)
         print(f"\nopen on the ledger : {len(items)}")
