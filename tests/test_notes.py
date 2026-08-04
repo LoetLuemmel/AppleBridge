@@ -30,14 +30,86 @@ class TheLine(unittest.TestCase):
         self.assertIsNone(got["re"])
         self.assertEqual(got["text"], "does the block carry a zero Real field?")
 
-    def test_a_multiline_question_is_flattened_so_one_note_is_one_line(self):
+    def test_a_multiline_question_is_still_exactly_one_line_in_the_file(self):
+        """The invariant the whole file format rests on. Whatever the escaping
+        does, a note that occupied two lines would make the line NUMBER of every
+        note after it wrong — which is the clock `notes_watch.lost_since` reads
+        to decide whether an unreadable line is new."""
         line = notes.format_note("T", "a", "b", None, "two\nlines   and  spaces")
         self.assertNotIn("\n", line)
-        self.assertEqual(notes.parse_note(line)["text"], "two lines and spaces")
+        self.assertNotIn("\r", line)
+        self.assertEqual(len(line.splitlines()), 1)
 
     def test_a_foreign_line_is_ignored_rather_than_crashing_the_reader(self):
         for junk in ("", "hello", "2026-08-02 not a note at all", "a b c d"):
             self.assertIsNone(notes.parse_note(junk))
+
+
+class TheShapeTheAuthorTyped(unittest.TestCase):
+    """A note is one line in the file and the author's paragraphs on screen.
+
+    Before this, `format_note` collapsed every run of whitespace, so a
+    five-paragraph review arrived as one unbroken block. Authors worked around
+    it by typing a literal `\\n` into the shell string — which is not
+    whitespace, survived the collapse, and reached the reader as two characters
+    of noise mid-sentence. Both halves are pinned here: the file stays
+    line-per-note, and what comes back out is what went in.
+    """
+
+    def test_a_paragraph_break_survives_the_round_trip(self):
+        text = "first paragraph.\n\nsecond paragraph."
+        line = notes.format_note("T", "a", "all", None, text)
+        self.assertNotIn("\n", line)
+        got = notes.unescape_text(notes.parse_note(line)["text"])
+        self.assertEqual(got, text)
+
+    def test_a_note_about_the_escape_is_not_read_as_a_line_break(self):
+        """Why the backslash doubles. Without it, a note discussing the
+        sequence would come back to the reader as a paragraph break — the same
+        defect one level down, and the harder one to notice because the note
+        still looks like prose."""
+        text = r"grep for \n in the log"
+        line = notes.format_note("T", "a", "all", None, text)
+        got = notes.unescape_text(notes.parse_note(line)["text"])
+        self.assertEqual(got, text)
+        self.assertNotIn("\n", got)
+
+    def test_a_carriage_return_cannot_reach_the_file_by_another_spelling(self):
+        """MacRoman/CR is this project's daily traffic, so a note quoting guest
+        output can carry CR or CRLF. Either would split the line just as well
+        as LF."""
+        for spelling in ("a\rb", "a\r\nb", "a\nb"):
+            line = notes.format_note("T", "x", "all", None, spelling)
+            self.assertEqual(len(line.splitlines()), 1, spelling)
+            self.assertEqual(notes.unescape_text(notes.parse_note(line)["text"]),
+                             "a\nb", spelling)
+
+    def test_the_compact_readers_render_a_note_on_one_line(self):
+        """The session brief and the watcher print a truncated preview into a
+        fixed-shape block. A real newline there splits one note across what
+        reads as two events, so those two callers ask for `inline`."""
+        text = "line one\nline two"
+        escaped = notes.escape_text(text)
+        self.assertNotIn("\n", notes.unescape_text(escaped, inline=True))
+        self.assertEqual(notes.unescape_text(escaped, inline=True),
+                         "line one line two")
+
+    def test_a_line_written_before_the_escaping_still_displays(self):
+        """Backward compatibility, stated rather than hoped for: the channel
+        already holds notes whose author typed a literal `\\n` to get a
+        paragraph. Those now render as the break they meant."""
+        old = "2026-08-04T08:48:30.773 from=A to=B re=- one\\n\\ntwo"
+        got = notes.unescape_text(notes.parse_note(old)["text"])
+        self.assertEqual(got, "one\n\ntwo")
+
+    def test_list_indents_the_continuation_so_one_note_reads_as_one_block(self):
+        """Without the indent, a multi-paragraph note in `list` is a wall of
+        text in which the boundary between two senders is invisible."""
+        note = notes.parse_note(
+            notes.format_note("T", "sender", "all", None, "head\ntail"))
+        out = notes.render(note, "question").split("\n")
+        self.assertEqual(out[0], "question T  from=sender  head")
+        self.assertEqual(out[1], "    tail")
 
 
 class WhatIsOpen(unittest.TestCase):

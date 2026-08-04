@@ -162,8 +162,10 @@ def main():
             if hits:
                 newest = hits[-1]
                 _note(f"wake who={who} from={newest['from']} ts={newest['ts']}")
+                # inline: this goes to stderr as a system reminder, where a real
+                # newline would split one note across what reads as two events.
                 print(f"Session channel: {len(hits)} new from {newest['from']} — "
-                      f"{newest['text'][:300]}\n"
+                      f"{notes.unescape_text(newest['text'], inline=True)[:300]}\n"
                       f"Read all with: host/tools/notes.py list",
                       file=sys.stderr)
                 return 2
