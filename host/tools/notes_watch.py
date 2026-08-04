@@ -99,6 +99,57 @@ def latest_ts(lines):
     return max(stamps) if stamps else ""
 
 
+def seen_path(who):
+    """Where this watcher records the newest timestamp it has ALREADY reported."""
+    safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in (who or "anon"))
+    return os.environ.get("APPLEBRIDGE_WATCH_SEEN",
+                          f"/tmp/applebridge_watch.{safe}.seen")
+
+
+def read_seen(who):
+    try:
+        with open(seen_path(who), encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+
+def write_seen(who, stamp):
+    try:
+        with open(seen_path(who), "w", encoding="utf-8") as handle:
+            handle.write(stamp)
+    except OSError:
+        pass
+
+
+def baseline_for(lines, who, already_seen):
+    """From WHEN to report — and this is where a message was being lost.
+
+    It used to be `latest_ts(lines)`: everything in the file when the watcher
+    starts counts as old. But the watcher starts at the END of a turn, so the
+    whole time the session was WORKING is unwatched, and anything that arrived
+    in it is marked "already seen" without having been seen. Measured
+    2026-08-04: two answers written at 10:45:41 during the other session's turn,
+    its watcher armed at 10:46:47 with `baseline=10:46:29` — older than the
+    baseline, therefore never new, therefore never reported. It re-asked what
+    had already been answered. The longer the turns, the wider the blind window,
+    and these turns are long.
+
+    So: report anything since this session last WROTE. Reading is not
+    observable and never will be; writing is. A session that has never written
+    keeps the old behaviour, because there is no better marker for it.
+
+    `already_seen` is what stops this from becoming a nag: without it, a message
+    that stays unanswered is newer than the last write at EVERY turn end, so the
+    watcher would wake the session again and again for the same thing — and a
+    watcher that wakes you for what you have already been told is one that gets
+    switched off, which costs more than the defect it fixes.
+    """
+    mine = [n["ts"] for n in notes.all_notes(lines) if n["from"] == who]
+    own = max(mine) if mine else latest_ts(lines)
+    return max(own, already_seen) if already_seen else own
+
+
 def another_watcher_running(path=None):
     """True when a live watcher already holds the lock.
 
@@ -141,7 +192,13 @@ def main():
         return 0                 # cannot lock -> do not risk a second watcher
 
     first = notes.read()
-    baseline = latest_ts(first)
+    baseline = baseline_for(first, who, read_seen(who))
+    # A watcher whose name is not the one being addressed reports nothing and
+    # cannot know it. Logged at every start, because that is the only place this
+    # can be noticed from inside — the two halves of a split identity are blind
+    # to each other by construction.
+    for warning in notes.identity_warnings(first, who):
+        _note(f"identity who={who}: {warning}")
     # A second baseline, by line NUMBER, because an unreadable line has no
     # timestamp to compare — and an unreadable line is exactly the case that
     # must not stay quiet: three notes were written to this channel and
@@ -172,6 +229,7 @@ def main():
                 return 2
             if hits:
                 newest = hits[-1]
+                write_seen(who, newest["ts"])
                 _note(f"wake who={who} from={newest['from']} ts={newest['ts']}")
                 # inline: this goes to stderr as a system reminder, where a real
                 # newline would split one note across what reads as two events.

@@ -16,6 +16,7 @@ import unittest
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(_ROOT, "host", "tools"))
 import notes  # noqa: E402
+import notes_watch  # noqa: E402
 import session_brief  # noqa: E402
 
 
@@ -154,6 +155,81 @@ class TwoSessionsCrossing(unittest.TestCase):
             notes.format_note("2026-08-04T10:46:29.000", "B", "A", None, "re-ask"),
         ]
         self.assertEqual(notes.crossed(lines, "B"), [])
+
+
+class TheWakePathCanBeBlind(unittest.TestCase):
+    """Two defects that between them lost a message for two days, both measured
+    on the live channel 2026-08-04.
+
+    The other machine's Stop-hook watcher ran as `apfelpilot-live` while its
+    session posted as `sess-64c74122`. Inbox 3 against 15; **zero** wake reasons
+    in an hour against ten. Neither half can see the other, so neither could
+    report it — and on top of that the watcher's baseline marked everything
+    present at arming as old, which is the entire time the session was working.
+    """
+
+    def _split_identity(self):
+        return [
+            notes.format_note("2026-08-04T10:00:00.000", "poster", "other",
+                              None, "a question from the posting name"),
+            notes.format_note("2026-08-04T10:45:41.000", "other", "poster",
+                              "2026-08-04T10:00:00.000", "the answer"),
+        ]
+
+    def test_a_watching_name_that_never_wrote_is_reported(self):
+        """The watcher's name is not the posted name — the exact live case."""
+        warnings = notes.identity_warnings(self._split_identity(), "watcher-name")
+        self.assertTrue(any("never written" in w for w in warnings), warnings)
+
+    def test_a_name_derived_from_the_session_id_is_reported_as_temporary(self):
+        """It changes on restart, so an address recorded today reaches nobody
+        tomorrow — true of both sides of this channel."""
+        warnings = notes.identity_warnings(self._split_identity(), "sess-abc12345")
+        self.assertTrue(any("CHANGES on restart" in w for w in warnings), warnings)
+
+    def test_an_absent_channel_says_nothing_at_all(self):
+        """Silence on an absent channel is a rule here, not an oversight: a
+        brief that complains where there is no conversation is one that gets
+        switched off, and then every warning it could have carried is lost too."""
+        self.assertEqual(notes.identity_warnings([], "sess-abc12345"), [])
+        self.assertEqual(notes.identity_warnings([], "agent"), [])
+
+    def test_a_stable_name_that_takes_part_draws_no_warning(self):
+        self.assertEqual(notes.identity_warnings(self._split_identity(), "poster"), [])
+
+    def test_what_arrived_while_the_session_worked_is_still_reported(self):
+        """THE defect. The watcher arms at the END of a turn; with the old
+        `latest_ts` baseline, an answer written during that turn was already in
+        the file and therefore never new. Measured: answers at 10:45:41, watcher
+        armed 10:46:47 with baseline 10:46:29, nothing reported, the question
+        re-asked."""
+        lines = self._split_identity()
+        base = notes_watch.baseline_for(lines, "poster", already_seen="")
+        self.assertEqual(base, "2026-08-04T10:00:00.000")
+        hits = notes_watch.relevant(lines, "poster", base)
+        self.assertEqual([n["text"] for n in hits], ["the answer"])
+
+    def test_the_old_baseline_would_have_lost_it(self):
+        """Pins WHY the change was needed, so nobody reverts it as cosmetic."""
+        lines = self._split_identity()
+        self.assertEqual(notes_watch.relevant(lines, "poster",
+                                              notes_watch.latest_ts(lines)), [])
+
+    def test_the_same_message_is_not_reported_twice(self):
+        """Without this the fix becomes a nag: an unanswered message stays newer
+        than the last write at EVERY turn end, and a watcher that repeats itself
+        gets switched off — which costs more than the defect it fixes."""
+        lines = self._split_identity()
+        base = notes_watch.baseline_for(lines, "poster",
+                                        already_seen="2026-08-04T10:45:41.000")
+        self.assertEqual(notes_watch.relevant(lines, "poster", base), [])
+
+    def test_a_session_that_never_wrote_keeps_the_old_baseline(self):
+        """There is no better marker for it, and inventing one would claim
+        knowledge about reading that nothing here can observe."""
+        lines = self._split_identity()
+        self.assertEqual(notes_watch.baseline_for(lines, "newcomer", ""),
+                         notes_watch.latest_ts(lines))
 
 
 class WhatIsOpen(unittest.TestCase):

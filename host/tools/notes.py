@@ -348,6 +348,46 @@ def crossed(lines, who):
     return [n for n in inbox_for(lines, who) if n["ts"] > max(mine)]
 
 
+def identity_warnings(lines, who):
+    """Reasons this name may not be reachable — measured, not guessed.
+
+    Found 2026-08-04 on the other machine and it had been true for two days: its
+    Stop-hook watcher ran as `apfelpilot-live` (set in the hook) while its
+    session posted as `sess-64c74122` (auto-derived from the session id). Two
+    identities for one participant, so `inbox_for` for the watching name matched
+    nothing addressed to the posting name — a `note` counts only on `to == who`
+    or `to == all`, and an `answer` only on `to == who` or a `re=` pointing at a
+    question that name asked. Measured on the live channel: inbox 3 versus 15,
+    and **zero** wake reasons in an hour against ten.
+
+    Neither half can see the other, so neither can report it. This is the check
+    that can: it reads the channel and asks what is true of THIS name.
+    """
+    everyone = all_notes(lines)
+    if not everyone:
+        # No conversation yet, so nothing about reachability is actionable —
+        # and a brief that complains where there is no channel at all is the
+        # kind of noise that gets a brief switched off. Silence on an absent
+        # channel is a rule here, not an oversight.
+        return []
+    out = []
+    if who == "agent":
+        out.append("no session identity (neither APPLEBRIDGE_WHO nor "
+                   "CLAUDE_CODE_SESSION_ID) — nothing can be addressed back")
+        return out
+    if who.startswith("sess-"):
+        out.append(f"'{who}' is derived from the session id, so it CHANGES on "
+                   "restart: whoever addresses it today addresses nobody "
+                   "tomorrow. Set APPLEBRIDGE_WHO for a name that lasts.")
+    if not any(n["from"] == who for n in everyone):
+        out.append(f"'{who}' has never written to this channel, so nothing can "
+                   "reach it by `re=` and only messages explicitly addressed to "
+                   "it — or broadcast — arrive. If a watcher runs under this "
+                   "name while the session posts under another, the wake path "
+                   "is blind (measured 2026-08-04).")
+    return out
+
+
 def read(path=None, run=None):
     """Lines of the channel. Local file, or over ssh when the spec is host:/path.
     `run` is the ssh executor (default _ssh_run); tests inject a fake."""
