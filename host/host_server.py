@@ -1548,6 +1548,43 @@ def split_ctrl_auth(request):
     return request, None
 
 
+def split_ctrl_deadline(request):
+    """Strip an optional leading 'DEADLINE:<unix-seconds>' line. -> (command, deadline).
+
+    The sibling of `split_ctrl_auth`, and it exists because of a measured defect:
+    the control port is ONE accept loop, so while a command runs, further clients
+    wait in the kernel backlog where the server cannot see them at all. A client
+    whose own timeout expires there is gone — and the server still accepts its
+    connection afterwards and RUNS the command. Reported failure, real effect.
+
+    Reproduced 2026-08-04 with a harmless verb: client B gave up after 1.0 s and
+    CLOSED its socket; the server logged `verb: 'PROCLIST'` about four seconds
+    later, while a screenshot ahead of it finished. The exposure is not academic
+    — an `mpw_execute` running a link holds the port for minutes (AE_SCRIPT_TIMEOUT
+    is five), while the MCP client's default timeout is 30 s.
+
+    Why a deadline and not a liveness check: there is none to be had. A closed
+    peer is indistinguishable from a polite one, because `nc` half-closes as soon
+    as its stdin ends — every well-behaved `printf ... | nc` sends FIN while still
+    waiting for its reply. FIN therefore cannot mean "gave up". The client is the
+    only party that knows when it stops caring, so it says so.
+
+    ABSOLUTE, not a TTL: the server cannot know when the request was sent, only
+    when it accepted it. Both ends share a clock here — the control port is
+    loopback-only — so an absolute instant is exact where a relative one would be
+    a guess. Absent or malformed, the deadline is None and behaviour is unchanged.
+    """
+    if request.startswith("DEADLINE:"):
+        nl = request.find("\n")
+        head = request[len("DEADLINE:"):nl if nl >= 0 else len(request)]
+        rest = request[nl + 1:].lstrip("\n") if nl >= 0 else ""
+        try:
+            return rest, float(head)
+        except ValueError:
+            return rest, None          # unreadable -> behave as if not sent
+    return request, None
+
+
 def ctrl_authorized(token):
     """Whether a control request bearing `token` (str or None) may proceed.
 
@@ -1711,6 +1748,24 @@ def run_control_server(server):
                 # AUTH: line, then gate: with a token configured, an absent/wrong one
                 # is rejected before the command ever reaches the daemon.
                 cmd, ctrl_token = split_ctrl_auth(cmd)
+                cmd, ctrl_deadline = split_ctrl_deadline(cmd)
+                # Refuse BEFORE dispatch, never after: the whole point is that a
+                # caller who has stopped listening must not have its LAUNCH, KEY,
+                # CLICK or SWAPSELF change the guest anyway. A verb that only
+                # reads is refused too — a client that is gone cannot use the
+                # answer either, and one rule is easier to trust than two.
+                if ctrl_deadline is not None and time.time() > ctrl_deadline:
+                    late = time.time() - ctrl_deadline
+                    log(f"expired: {redact_secrets(cmd)[:50]!r} — caller's deadline "
+                        f"passed {late:.1f}s ago, NOT executed")
+                    msg = (f"the caller's deadline passed {late:.1f}s before this "
+                           "reached the front of the queue, so it was NOT executed. "
+                           "The control port serves one command at a time; a long "
+                           "one (a link, a screenshot) makes the next wait.")
+                    ctrl_conn.sendall(
+                        f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(msg)}\r{msg}\r\r".encode(
+                            "utf-8"))
+                    continue          # finally: closes the conn
                 if not ctrl_authorized(ctrl_token):
                     log("control auth: rejected (missing/invalid token)")
                     msg = "control auth required"
