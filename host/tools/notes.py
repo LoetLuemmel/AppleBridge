@@ -587,12 +587,54 @@ def _now():
     return datetime.datetime.now().isoformat(timespec="milliseconds")
 
 
+STDIN_HELP = ("read the text from stdin instead of the command line "
+              "(use for anything long or technical)")
+
+# The heredoc that is actually safe. The quotes around EOF are the whole point
+# and are the part people leave off.
+STDIN_IDIOM = """  notes.py {verb} --stdin <<'EOF'
+  … your text, verbatim …
+  EOF"""
+
+
+def text_from_stdin_or_argv(args, verb):
+    """The text to write, or (None, complaint) — never a silently wrong one.
+
+    Why this exists. On 2026-08-04 both sessions lost text to the shell on the
+    same day and neither noticed: one wrote `$0A1C` in double quotes and the
+    shell substituted an empty variable; the other wrote a sentence containing
+    `\x60nc\x60` and the shell EXECUTED it, deleting the subjects of two
+    sentences. The channel reported zero unreadable lines both times, correctly
+    — the damage happens before the tool is reached, so the tool cannot see it.
+    It can only offer a path the shell does not touch.
+    """
+    from_stdin = getattr(args, "stdin", False)
+    if from_stdin and args.text is not None:
+        return None, ("--stdin and a text argument both given; "
+                      "which one did you mean? Nothing was written.")
+    if from_stdin:
+        if sys.stdin.isatty():
+            return None, ("--stdin with nothing piped in would hang waiting "
+                          "for a terminal. Nothing was written.\n"
+                          + STDIN_IDIOM.format(verb=verb))
+        text = sys.stdin.read().rstrip("\n")
+        if not text.strip():
+            return None, "stdin was empty; nothing was written."
+        return text, None
+    if args.text is None:
+        return None, ("no text given. For anything long or technical prefer "
+                      "stdin, which the shell cannot touch:\n"
+                      + STDIN_IDIOM.format(verb=verb))
+    return args.text, None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="verb", required=True)
 
     q = sub.add_parser("ask", help="deposit a question (--to someone, or all)")
-    q.add_argument("text")
+    q.add_argument("text", nargs="?")
+    q.add_argument("--stdin", action="store_true", help=STDIN_HELP)
     q.add_argument("--to", default="all")
     q.add_argument("--from", dest="who", default=WHO)
 
@@ -608,7 +650,8 @@ def main():
                     "there is no --to; use `note --to <who>` to tell somebody "
                     "something that answers nothing.")
     a.add_argument("ts")
-    a.add_argument("text")
+    a.add_argument("text", nargs="?")
+    a.add_argument("--stdin", action="store_true", help=STDIN_HELP)
     a.add_argument("--from", dest="who", default=WHO)
     # Accepted only so it can be REFUSED with a sentence. Plain argparse answers
     # `unrecognized arguments: --to x` plus a usage line, which is true and
@@ -618,7 +661,8 @@ def main():
 
     n = sub.add_parser("note", help="state something; nothing to answer "
                                     "(--to someone, or all)")
-    n.add_argument("text")
+    n.add_argument("text", nargs="?")
+    n.add_argument("--stdin", action="store_true", help=STDIN_HELP)
     n.add_argument("--to", default="all")
     n.add_argument("--from", dest="who", default=WHO)
 
@@ -727,6 +771,19 @@ def main():
         # file, and an explicit recipient survives anything.
         recipient = known[args.ts]["from"]
 
+    text, complaint = text_from_stdin_or_argv(args, args.verb)
+    if complaint:
+        print(complaint, file=sys.stderr)
+        return 2
+    if not getattr(args, "stdin", False) and len(text) > 400:
+        # Not a refusal: a long argv text is legal and may be perfectly intact.
+        # But every character of it passed through the shell, and the two
+        # constructs that eat text leave NO trace once they have — so the only
+        # honest moment to mention it is before the next long one.
+        print(f">> {len(text)} Zeichen über die Kommandozeile — die Shell hat "
+              "jedes davon gesehen. Für den nächsten langen Text:\n"
+              + STDIN_IDIOM.format(verb=args.verb) + "\n", file=sys.stderr)
+
     # Read the channel BEFORE appending, so "since I last wrote" does not have to
     # exclude the line this call is about to add.
     waiting = crossed(read(), args.who)
@@ -734,7 +791,7 @@ def main():
     stamp = _now()
     answering = args.ts if args.verb == "answer" else (
         NOTE_MARKER if args.verb == "note" else None)
-    line = format_note(stamp, args.who, recipient, answering, args.text)
+    line = format_note(stamp, args.who, recipient, answering, text)
     if not append(line):
         print(f"could not write {NOTES}", file=sys.stderr)
         return 1

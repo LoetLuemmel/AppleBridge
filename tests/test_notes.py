@@ -722,6 +722,100 @@ class Delivery(unittest.TestCase):
             notes.NOTES = old
 
 
+class TheShellNeverSeesTheText(unittest.TestCase):
+    """`--stdin`, and the reason it had to exist.
+
+    On 2026-08-04 BOTH sessions lost text to the shell within hours of each
+    other, writing about the very defect class this project keeps re-finding:
+
+      * one wrote `$0A1C` (the MenuList low-memory address) inside double
+        quotes; the shell substituted an undefined variable and the address
+        vanished from the sentence explaining it.
+      * the other wrote a sentence containing a backquoted `nc`; the shell
+        EXECUTED it and deleted the subjects of two sentences.
+
+    Neither was noticed at the time, and neither COULD be: `list` reported zero
+    unreadable lines, correctly — the line was syntactically perfect. The
+    damage happens in the shell, before any byte reaches this tool, so the tool
+    cannot detect it. It can only offer a path the shell does not touch.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.path = os.path.join(tempfile.mkdtemp(prefix="ab-stdin-"), "notes.log")
+
+    def run_cli(self, args, stdin=None):
+        import subprocess
+        env = dict(os.environ, APPLEBRIDGE_NOTES=self.path)
+        return subprocess.run([sys.executable, notes.__file__, *args],
+                              input=stdin, capture_output=True, text=True,
+                              env=env, timeout=30)
+
+    def test_the_two_constructs_that_ate_text_survive_verbatim(self):
+        payload = "`nc` half-closes, and $0A1C is the MenuList."
+        run = self.run_cli(["note", "--stdin", "--from", "t"], stdin=payload)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        written = open(self.path, encoding="utf-8").read()
+        self.assertIn("`nc`", written)
+        self.assertIn("$0A1C", written)
+
+    def test_line_breaks_survive_the_round_trip(self):
+        """Multi-line is the whole reason to reach for a heredoc; if it arrived
+        as one run-on line nobody would use it and the class would stay open."""
+        run = self.run_cli(["note", "--stdin", "--from", "t"],
+                           stdin="first line\nsecond line")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        note = notes.all_notes(notes.read(self.path))[0]
+        self.assertEqual(notes.unescape_text(note["text"]),
+                         "first line\nsecond line")
+
+    def test_the_advice_quotes_the_heredoc_delimiter(self):
+        """An UNQUOTED delimiter (`<<EOF`) still expands `$` and backquotes
+        inside the heredoc — the same trap, one layer down. The tool must not
+        hand out advice that reopens the hole it is closing."""
+        self.assertIn("<<'EOF'", notes.STDIN_IDIOM)
+
+    def test_stdin_and_an_argument_together_are_refused(self):
+        """Silently preferring one would be this project's signature failure:
+        a report about text that is not the text that was written."""
+        run = self.run_cli(["note", "--stdin", "also this", "--from", "t"],
+                           stdin="piped")
+        self.assertEqual(run.returncode, 2)
+        self.assertFalse(os.path.exists(self.path) and
+                         open(self.path, encoding="utf-8").read().strip())
+
+    def test_empty_stdin_writes_nothing(self):
+        run = self.run_cli(["note", "--stdin", "--from", "t"], stdin="")
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("nothing was written", run.stderr.lower())
+
+    def test_no_text_at_all_names_the_safe_idiom(self):
+        """argparse alone would say "the following arguments are required:
+        text", which is true and teaches nothing."""
+        run = self.run_cli(["note", "--from", "t"], stdin="")
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("<<'EOF'", run.stderr)
+
+    def test_all_three_writing_verbs_offer_it(self):
+        """`answer` is the one that carries the long technical replies, so
+        leaving it out would miss the case that caused this."""
+        import subprocess
+        for verb in ("ask", "answer", "note"):
+            run = subprocess.run([sys.executable, notes.__file__, verb, "--help"],
+                                 capture_output=True, text=True, timeout=30)
+            self.assertIn("--stdin", run.stdout, verb)
+
+    def test_a_long_argv_text_is_mentioned_but_still_written(self):
+        """A hint, not a refusal: a long argv text may be perfectly intact, and
+        refusing it would break every caller that predates this. But the two
+        constructs that eat text leave no trace once they have, so the only
+        honest moment to raise it is before the NEXT long one."""
+        run = self.run_cli(["note", "x" * 500, "--from", "t"])
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("<<'EOF'", run.stderr)
+        self.assertIn("x" * 500, open(self.path, encoding="utf-8").read())
+
+
 class NothingIsLostQuietly(unittest.TestCase):
     """A channel may fail to read a line. It may not fail SILENTLY.
 
