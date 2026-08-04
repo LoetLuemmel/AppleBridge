@@ -12,7 +12,20 @@ def _auth_prefix():
 
 
 def send_command(command, host='127.0.0.1', port=9001):
-    """Send command to the bridge's local control port"""
+    """Send command to the bridge's local control port.
+
+    Deliberately sends NO `DEADLINE:` line, unlike mcp/mac_connection.py. That
+    line tells the server when the caller stops caring, so that a command whose
+    client has given up is refused instead of run — and this client sets no
+    socket timeout at all. It waits as long as the work takes and never
+    abandons anything, so a deadline here could only refuse work nobody gave up
+    on. A deadline belongs to a client that CAN give up.
+
+    (Note the `shutdown(SHUT_WR)` below: it is why the server cannot detect an
+    abandoned caller by itself. Every well-behaved client half-closes after
+    sending, so FIN arrives while the client is still waiting for its reply and
+    therefore cannot mean "gone".)
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         sock.connect((host, port))

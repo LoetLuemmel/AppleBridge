@@ -5,6 +5,7 @@ Connects to MacintoshBridgeHost server on localhost.
 
 import socket
 import subprocess
+import time
 import os
 import sys
 from typing import Optional, Tuple
@@ -106,7 +107,21 @@ class MacConnection:
             # Use UTF-8 to match the control-port decoder (utf-8). When a
             # control-port token is configured, lead with an "AUTH:<token>\n" line.
             auth = f"AUTH:{CTRL_TOKEN}\n" if CTRL_TOKEN else ""
-            message = f"{auth}{command}\n\n"
+            # Tell the server when we stop caring. The control port serves ONE
+            # command at a time, so a long one ahead of us (a link runs for
+            # minutes; AE_SCRIPT_TIMEOUT is five) leaves this request waiting in
+            # the kernel backlog, where the server cannot see it. Without this
+            # line the server accepts it afterwards and RUNS it — measured
+            # 2026-08-04: a client gave up after 1.0 s, CLOSED its socket, and
+            # its command executed four seconds later. For LAUNCH, KEY, CLICK or
+            # SWAPSELF that means the guest changes while the caller has already
+            # read a failure.
+            #
+            # Absolute, because only the caller knows this instant and the server
+            # cannot infer it: it learns of the request only when it accepts it.
+            # Both ends are on this machine, so the clock is shared.
+            deadline = f"DEADLINE:{time.time() + timeout}\n"
+            message = f"{auth}{deadline}{command}\n\n"
             sock.sendall(message.encode('utf-8'))
 
             # Receive until the control server closes the socket (the normal
