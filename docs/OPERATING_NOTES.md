@@ -1018,3 +1018,100 @@ Exclude such verbs at the grammar, do not hope to catch them at runtime. (First
 autonomous run of the conductor against a standing dialog, 2026-08-03: qwen chose
 Cancel, the leash held, and the stale-`dialog_up` re-walk correctly resolved to
 "gone" with no second click — the actual danger the allowlist protects against.)
+
+**A counter is not a health indicator: `err_count` is cumulative for the daemon
+PROCESS (2026-08-04).**
+
+The operator saw 61 errors on the bridge and reasonably suspected the other
+machine. Sixty were mine, from one polling loop; one was the parallel session's
+probe of a verb that did not exist yet. Later the same day the number reached
+237 for the same reason. Nothing was wrong with the bridge at any point.
+
+`err_count` counts every `STATUS != 0` reply since the daemon started, so a
+single caller with a malformed verb drowns the history of everybody else, and it
+keeps doing so until the next guest reboot. Read it as "how many badly formed
+requests has anyone made since boot", never as "how healthy is the link". The
+liveness questions are answered by `idle_seconds`, `missed_heartbeats` and
+`link_id`.
+
+**There is no liveness verb on `:9001` except `PING` (2026-08-04).**
+
+`STATUS` and `STAT` both look like control-port verbs and neither is routed. An
+unrouted verb is passed to the daemon as an MPW command line, which hands it to
+ToolServer — so with ToolServer down you get `no-ToolServer/MPW`, an answer about
+entirely the wrong layer, and with ToolServer UP you get `STATUS:0` and empty
+output, which reads as success. `mac_status` works because the MCP tool uses a
+different path, not because the verb is routed.
+
+Two loops built on `STATUS`/`STAT` produced 237 daemon errors in one afternoon.
+Use `PING` (or `mac_status`), and read the server log: a routed verb is logged as
+`verb:`, an unrouted one as `cmd:`. That one word is the whole diagnosis. Since
+this note was written the fall-through also says so itself.
+
+**The launchd host server is a SEPARATE COPY; a repo edit does not reach it
+(2026-08-04).**
+
+`~/Library/Application Support/AppleBridge/host_server.py` is what actually runs.
+Editing `host/host_server.py` in the repo — or in a worktree — changes nothing
+until you copy it across and `launchctl kickstart -k gui/$(id -u)/de.390er.applebridge-host`.
+
+This cost an hour twice in one day, in both directions. The parallel session
+added a route for its new verb, deployed a freshly built daemon, saw the verb
+fall through, and concluded the deploy had failed — the daemon was fine and the
+host was not routing. Then the same trap caught the author of this note on the
+next deploy, having warned about it an hour earlier.
+
+**MPW's assembler needs CR line endings; the C compiler does not (2026-08-04).**
+
+`SC` compiles a source file with LF endings and UTF-8 comments without
+complaint — the guest's `main.c` is byte-identical to the repository copy and
+builds. Generalising from that to `Asm` is wrong: an assembly file pushed raw
+with LF produces a **6-byte object file** and no error anybody sees, because the
+assembler reaches the end of the input without an `END` and gives up quietly.
+The link then fails for a reason that has nothing to do with the real problem.
+
+The rule is not "always convert" but "convert when a special character or a line
+ending is part of the SYNTAX". A `.c` file whose only non-ASCII lives in comments
+survives a raw push. A Makefile does not (`ƒ` is one MacRoman byte and two in
+UTF-8, so every dependency line breaks and `Make` emits an EMPTY script that then
+"runs" without complaint). An `.a` file does not either.
+
+**Runtime safety and linkability are different questions (2026-08-04).**
+
+`GetHandleSize` moves nothing, is safe to call from a jGNE filter, and was
+recommended in review as a second bound for a walk that had only a terminator.
+It broke the link: `Undefined entry (Error 28) GETHANDLESIZE`. A code resource
+that must stay A5-free links with NO library, so any call that goes through
+Interface.o glue is an unresolved symbol — which is exactly why `dlgwalk.c`
+avoids `CountDITL` (`dlgwalk.c:77`).
+
+Before adding a Toolbox call to an A5-free resource, ask whether it compiles to
+an inline trap or to glue. The mechanical answer is `DumpObj` on the linked
+object: an empty externals list is the proof, and "it does not move memory" is
+not an argument about linking.
+
+**A constraint names what you must not touch, not how little you may do
+(2026-08-04).**
+
+Told to hold off while the other session deployed, this session read the
+prohibition as paralysis and watched the other one stall for two hours on a file
+it could have been handed. The hold covered the guest and `main`. It did not
+cover the channel, the shared folder (`~/Desktop/Share`, `Unix:` on the guest,
+host-writable and guest-readable), or any host-side tool.
+
+When told to wait, enumerate what the wait actually forbids. Everything else is
+still available, and the other side usually needs something from exactly there.
+
+**When a measurement cannot answer the question, too many hypotheses fit
+(2026-08-04).**
+
+A verb was falling through on the host, so every test of it measured the host.
+Against that one observation, three different explanations of the guest fitted
+equally well — the watchdog launching the wrong binary, the reboot verb not
+doing a full restart, an ambiguity between two files with the same creator. All
+three were wrong, and none could be eliminated by more of the same test.
+
+The tell is not that a hypothesis fails to fit. It is that too many fit. When
+that happens, stop generating explanations and go find an instrument that can
+distinguish them — here, a negative control: a verb that certainly does not
+exist, to see what "not implemented" actually looks like.
