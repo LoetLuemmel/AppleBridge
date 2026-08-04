@@ -2069,6 +2069,61 @@ static Ptr InstallJGProbe(void)        /* idempotent within a daemon lifetime */
     return s;
 }
 
+/* MENUWALK MB block — MenuWalk (in the rebuilt jGNE resource) writes here; MENUTREE
+ * reads it. Unlike the DP block (a boot resource found by FindDlgPatch), the MB block
+ * is daemon-allocated and tracked by a global. Magic 'MB' at +4 so the jGNE stub's
+ * Walk() dispatcher routes to MenuWalk. Offsets +14/+16 ARE the stub's oDP_Up/oDP_Gen.
+ * Layout MUST match menuwalk.c (test_dlgpatch_contract guards it). */
+#define kMBMagic       0x4D42L
+#define oMB_Magic      4
+#define oMB_Up         14      /* = oDP_Up  : MenuWalk sets 1 on capture (stub reads) */
+#define oMB_Gen        16      /* = oDP_Gen : stub bumps once per fresh capture */
+#define oMB_MenuCount  18
+#define oMB_Trunc      20
+#define oMB_ItemCount  22
+#define oMB_MBarH      24
+#define oMB_Menus      30
+#define kMB_MENU_REC   40
+#define kMB_MAX_MENUS  16
+#define oMB_Items      (oMB_Menus + kMB_MAX_MENUS * kMB_MENU_REC)   /* 670 */
+#define kMB_ITEM_REC   32
+#define kMB_MAX_ITEMS  128
+#define kMB_Size       (oMB_Items + kMB_MAX_ITEMS * kMB_ITEM_REC)   /* 4766 */
+
+/* ITEM_REC flags (canonical, three-way contract with menuwalk.c + this MENUTREE
+ * emitter + docs/MENUWALK_DESIGN.md): bit0 enabled (0 when bit4), bit1 separator,
+ * bit2 text-truncated, bit3 RESERVED, bit4 enabled-UNKNOWN -> emit enabled:null. */
+#define kMBI_Enabled   1
+#define kMBI_Separator 2
+#define kMBI_TextTrunc 4
+#define kMBI_EnUnknown 16
+/* MENU_REC flags: bit0 menu-enabled, bit1 item-points-valid (menuHeight matched). */
+#define kMBM_Enabled   1
+#define kMBM_PtsValid  2
+
+static Ptr gMBBlk = 0L;
+
+static Ptr FindMBBlk(void)
+{
+    if (gMBBlk != NULL
+        && *(unsigned short *)((char *)gMBBlk + oMB_Magic) == (unsigned short)kMBMagic)
+        return gMBBlk;
+    return 0L;
+}
+
+static Ptr InstallMBBlk(void)          /* idempotent within a daemon lifetime */
+{
+    Ptr  s = FindMBBlk();
+    long i;
+    if (s != NULL) return s;
+    s = NewPtrSys((Size)kMB_Size);
+    if (s == NULL) return NULL;
+    for (i = 0; i < kMB_Size; i++) ((char *)s)[i] = 0;
+    *(unsigned short *)((char *)s + oMB_Magic) = (unsigned short)kMBMagic;   /* 'MB' */
+    gMBBlk = s;
+    return s;
+}
+
 Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
 {
     char responseBuffer[RESP_SCRATCH];   /* small: fixed verb/error strings only (was 64 KB on the stack) */
@@ -2667,6 +2722,163 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
     if (strncmp(request, "DLGWDISARM", 10) == 0) {
         Ptr jg; const char *msg; short L; char *f = responseBuffer;
         SetActivity("DLGWDISARM");
+        jg = FindJGProbe();
+        if (jg != NULL) { *(short *)((char *)jg + oJG_jArmed) = 0; msg = "disarmed"; }
+        else            { msg = "no-block"; }
+        L = (short)strlen(msg);
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)L);
+        *f++ = '\r'; f = StatStr(f, msg); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, responseBuffer, (long)(f - responseBuffer));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+
+    /* MENUARM <targetA5> : arm the runtime jGNE walk against the FOREGROUND app's
+     * MENU BAR (targetA5 pinned by the caller in a quiet reference window, as for
+     * DLGWALK). Same shared jGNE probe as DLGWALK, but jDPBlock = the MB block, so
+     * the stub's Walk() dispatcher runs MenuWalk. Mutually exclusive with dlgpatch's
+     * entry walk (refused while DLGARM is armed) — the DP-block ⊥ rule, one level up.
+     * The client disarms on a short timeout (MENUWDISARM); jMaxTries is the backstop. */
+    if (strncmp(request, "MENUARM", 7) == 0) {
+        Ptr jg, mb, dp; unsigned long targetA5 = 0L, old; const char *p; const char *msg;
+        short L; char *f = responseBuffer;
+        SetActivity("MENUARM");
+        for (p = request + 7; *p == ' '; p++) ;
+        while (*p >= '0' && *p <= '9') { targetA5 = targetA5 * 10 + (unsigned long)(*p - '0'); p++; }
+        dp = FindDlgPatch();
+        if (dp != NULL && *(short *)((char *)dp + oDP_Armed) != 0)  msg = "entry-armed";
+        else if (targetA5 == 0L)                                    msg = "no-target";
+        else {
+            mb = InstallMBBlk();
+            jg = InstallJGProbe();
+            if (mb == NULL || jg == NULL) msg = "no-mem";
+            else {
+                *(unsigned long *)((char *)jg + oJG_jTargetA5) = targetA5;
+                *(unsigned long *)((char *)jg + oJG_jDPBlock)  = (unsigned long)mb;  /* MB, not DP */
+                *(short *)((char *)jg + oJG_jOneShot)  = 1;
+                *(short *)((char *)jg + oJG_jBusy)     = 0;
+                *(short *)((char *)jg + oJG_jTries)    = 0;
+                *(short *)((char *)jg + oJG_jMaxTries) = kJG_DefTries;
+                old = *(unsigned long *)kJGNEFilter;
+                if (old != (unsigned long)jg)
+                    *(unsigned long *)((char *)jg + oJG_jReal) = old;
+                *(short *)((char *)jg + oJG_jArmed) = 1;       /* arm LAST, after wiring */
+                *(unsigned long *)kJGNEFilter = (unsigned long)jg;
+                msg = "walking";
+            }
+        }
+        L = (short)strlen(msg);
+        f = StatStr(f, "STATUS:0\rSTDOUT:"); f = StatDec(f, (long)L);
+        *f++ = '\r'; f = StatStr(f, msg); f = StatStr(f, "\rSTDERR:0\r\r");
+        ABSend(conn, responseBuffer, (long)(f - responseBuffer));
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+
+    /* MENUTREE : read the MB block (populated by MenuWalk in the front app's context)
+     * and emit JSON — menus[] each { id, title, title_x, width, enabled, points_valid,
+     * title_point:[x,y], items[] { index, text, separator, enabled(true/false/null),
+     * point:[x,y] when points_valid } }. enabled is null when bit4 (item index > 31,
+     * beyond enableFlags) so a bit4-unaware client never reads "disabled". Same send
+     * shape as DLGTREE. */
+    if (strncmp(request, "MENUTREE", 8) == 0) {
+        Ptr blk, jg; Handle jh; CommandResult res;
+        short mc, ic, i, j, up, gen, trunc, mbarH;
+        SetActivity("MENUTREE");
+        blk = FindMBBlk();
+        jh  = NewHandle(0);
+        if (jh == NULL) {
+            strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:9\rno memory\r\r");
+            ABSend(conn, responseBuffer, strlen(responseBuffer));
+            NoteErr("menutree"); gLastTX = TickCount();
+            return true;
+        }
+        JStr(jh, "{");
+        if (blk == NULL) {
+            JStr(jh, "\"installed\":false,\"armed\":false,\"up\":false,\"generation\":0,\"menus\":[]");
+        } else {
+            up    = *(short *)((char *)blk + oMB_Up);
+            gen   = *(short *)((char *)blk + oMB_Gen);
+            mc    = *(short *)((char *)blk + oMB_MenuCount);
+            ic    = *(short *)((char *)blk + oMB_ItemCount);
+            trunc = *(short *)((char *)blk + oMB_Trunc);
+            mbarH = *(short *)((char *)blk + oMB_MBarH);
+            jg    = FindJGProbe();
+            JStr(jh, "\"installed\":true,\"armed\":");
+            JStr(jh, (jg != NULL && *(short *)((char *)jg + oJG_jArmed) != 0
+                      && *(unsigned long *)((char *)jg + oJG_jDPBlock) == (unsigned long)blk)
+                     ? "true" : "false");
+            JStr(jh, ",\"up\":");          JStr(jh, up ? "true" : "false");
+            JStr(jh, ",\"generation\":");  JNum(jh, (long)gen);
+            JStr(jh, ",\"truncated\":");   JStr(jh, trunc ? "true" : "false");
+            JStr(jh, ",\"mbar_height\":"); JNum(jh, (long)mbarH);
+            JStr(jh, ",\"menus\":[");
+            for (i = 0; i < mc; i++) {
+                unsigned char *mrec = (unsigned char *)((char *)blk + oMB_Menus) + (long)i * kMB_MENU_REC;
+                short menuID    = *(short *)(mrec + 0);
+                short titleX    = *(short *)(mrec + 2);
+                short titleW    = *(short *)(mrec + 4);
+                short itemFirst = *(short *)(mrec + 8);
+                short itemN     = *(short *)(mrec + 10);
+                short mflags    = *(short *)(mrec + 12);
+                short tl        = *(short *)(mrec + 14);
+                short titleXc   = (short)(titleX + (titleW > 24 ? titleW / 2 : 12));
+                Str255 title;   short k;
+                if (tl > 24) tl = 24;
+                title[0] = (unsigned char)tl;
+                for (k = 0; k < tl; k++) title[1 + k] = mrec[16 + k];
+                if (i > 0) JStr(jh, ",");
+                JStr(jh, "{\"id\":");            JNum(jh, (long)menuID);
+                JStr(jh, ",\"title\":\"");       JPStr(jh, title); JStr(jh, "\"");
+                JStr(jh, ",\"title_x\":");       JNum(jh, (long)titleX);
+                JStr(jh, ",\"width\":");         JNum(jh, (long)titleW);
+                JStr(jh, ",\"enabled\":");       JStr(jh, (mflags & kMBM_Enabled) ? "true" : "false");
+                JStr(jh, ",\"points_valid\":");  JStr(jh, (mflags & kMBM_PtsValid) ? "true" : "false");
+                JStr(jh, ",\"title_point\":[");  JNum(jh, (long)titleXc); JStr(jh, ",");
+                JNum(jh, (long)(mbarH / 2));     JStr(jh, "]");
+                JStr(jh, ",\"items\":[");
+                for (j = 0; j < itemN; j++) {
+                    unsigned char *irec = (unsigned char *)((char *)blk + oMB_Items)
+                                          + (long)(itemFirst + j) * kMB_ITEM_REC;
+                    short iIdx   = *(short *)(irec + 2);
+                    short iflags = *(short *)(irec + 4);
+                    short itl    = *(short *)(irec + 6);
+                    short iy     = (short)(mbarH + 16 * (iIdx - 1) + 8);
+                    Str255 itxt; short kk;
+                    if (itl > 24) itl = 24;
+                    itxt[0] = (unsigned char)itl;
+                    for (kk = 0; kk < itl; kk++) itxt[1 + kk] = irec[8 + kk];
+                    if (j > 0) JStr(jh, ",");
+                    JStr(jh, "{\"index\":");     JNum(jh, (long)iIdx);
+                    JStr(jh, ",\"text\":\"");    JPStr(jh, itxt); JStr(jh, "\"");
+                    JStr(jh, ",\"separator\":"); JStr(jh, (iflags & kMBI_Separator) ? "true" : "false");
+                    if (iflags & kMBI_EnUnknown) JStr(jh, ",\"enabled\":null");
+                    else { JStr(jh, ",\"enabled\":"); JStr(jh, (iflags & kMBI_Enabled) ? "true" : "false"); }
+                    if (iflags & kMBI_TextTrunc) JStr(jh, ",\"text_truncated\":true");
+                    if (mflags & kMBM_PtsValid) {
+                        JStr(jh, ",\"point\":["); JNum(jh, (long)titleXc); JStr(jh, ",");
+                        JNum(jh, (long)iy);       JStr(jh, "]");
+                    }
+                    JStr(jh, "}");
+                }
+                JStr(jh, "]}");
+            }
+            JStr(jh, "]");
+        }
+        JStr(jh, "}");
+        res.exitCode = 0; res.outData = jh; res.outLen = GetHandleSize(jh);
+        res.errData[0] = '\0';
+        SendCommandResult(conn, &res);
+        DisposeHandle(jh);
+        gLastTX = TickCount(); gTXCount++;
+        return true;
+    }
+
+    /* MENUWDISARM : disarm the shared jGNE probe (same block DLGWDISARM disarms —
+     * one probe serves both walks). Provided under its own name for verb symmetry. */
+    if (strncmp(request, "MENUWDISARM", 11) == 0) {
+        Ptr jg; const char *msg; short L; char *f = responseBuffer;
+        SetActivity("MENUWDISARM");
         jg = FindJGProbe();
         if (jg != NULL) { *(short *)((char *)jg + oJG_jArmed) = 0; msg = "disarmed"; }
         else            { msg = "no-block"; }

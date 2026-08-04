@@ -70,7 +70,8 @@ MENU_REC (40 B)
 ITEM_REC (32 B)
   +0   2   menuIdx         (0-based owning menu)
   +2   2   itemIndex       (1-based, Menu Manager numbering)
-  +4   2   flags           (bit0 enabled, bit1 checkmark, bit2 has-submenu, bit3 separator)
+  +4   2   flags           (bit0 enabled [0 when bit4], bit1 separator, bit2 text-truncated,
+                            bit3 reserved, bit4 enabled-UNKNOWN — itemIndex>31, emit enabled:null)
   +6   2   cmdChar         (command-key char, 0 if none)
   +8   24  text            (Str, Pascal, len byte + up to 23 chars; truncate)
 ```
@@ -135,13 +136,54 @@ able to cancel its own perception preconditions.
 - Kept out of the running `planner.py`/`conductor.py` until MENUWALK is real, so an
   untested verb can't reach an autonomous run.
 
-## Open questions for the owner (before any assembly)
+## Resolved questions (owner review, channel 2026-08-04 11:11 / 12:04)
 
-1. **Reading `MenuList` `$0A1C` inside the jGNE filter** instead of `GetMenuBar()`
-   (which allocates a handle — unwanted in the filter). `menuled` already scans
-   `$0A1C`. Is the low-mem block's per-entry layout the SAME as the handle
-   `GetMenuBar()` returns (header `lastMenu@0`/`lastRight@2`/`mbResID@4`, then
-   `MenuHandle@0`/`menuLeft@4`), or is there a difference to account for?
-2. **First-round field scope:** is title + item-text (+ the computed points) enough
-   for v1, deferring enabled/checkmark/cmd-key/submenu to a second pass? Simpler
-   records ship sooner.
+1. **`MenuList` `$0A1C` layout — SAME as the `GetMenuBar()` copy.** Enumerate with
+   `lastMenu = *(short*)mp; for (off=6; off<=lastMenu; off+=6)` — `lastMenu` is the
+   offset TO the last entry, inclusive; there is no count to compute. Take it
+   verbatim. Read `$0A1C` low-mem directly (no `GetMenuBar` allocation in the filter).
+2. **v1 field scope — title + item-text + points, PLUS `enabled`.** `enabled` MUST be
+   in v1: a disabled item does nothing, and the conductor would read the click as
+   "done" (the #196 rule one level deeper). `checkmark`/`cmd-key`/`submenu` deferred.
+
+## Review incorporated (owner 12:04 — "Sie trägt")
+
+- **Item read is a DIRECT menuData handwalk, not `GetMenuItemText`/`CountMItems`** —
+  owner self-corrected: those drag in Interface.o glue (`dlgwalk.c:77` names
+  `CountDITL` as the walk's *only* glue reference, avoided for exactly this). The
+  handwalk keeps the resource A5-free / PC-relative.
+- **MECHANICAL GATE — `DumpObj` the linked resource for ANY unresolved external.**
+  That is how `CountDITL` was found. Applies to `GetHandleSize` too (the second
+  bound): normally an inline trap, but "normally" stopped being proof after the
+  `CountDITL` surprise. An empty externals list is the proof; if `GetHandleSize`
+  drags in glue, fall back to the `lastMenu`-only bound.
+- **`jgnepatch.a` IS the (standing-)dialog path (DLGWALK, #194), not untouched.**
+  Only `dlgpatch.a` stays byte-identical. The `BSR DlgWalk → BSR Walk` change adds
+  one indirection to the proven path → run `tests/test_dlgpatch_contract.py` AND
+  extend it to the MB block, so the reuse of `oDP_Up(+14)`/`oDP_Gen(+16)` is a
+  checked coupling, not a silent one (move DP's offsets and MB must break loudly).
+- **`enableFlags` is 32-bit; item ≥ 32 falls off the long.** Reporting those as
+  *disabled* is the inverse of the bug `enabled` prevents (Apple menu has >31 DAs).
+  → `ITEM_REC.flags` **bit4** = enabled-UNKNOWN for `itemIndex > 31` (bit3 stays
+  separator — kept DISTINCT, owner 12:11); bit0 forced 0 and MENUTREE emits
+  `enabled: null`, so a client that does not know bit4 never reads "disabled" (the
+  conductor is such a client). (Implemented in `menuwalk.c`.)
+- **Known boundary — standard MDEF 0 only.** The menuData handwalk assumes the
+  standard menu def; a custom MDEF lays items out differently and the walk would read
+  garbage. The `menuHeight` guard catches part, not all. The apps we target (Finder,
+  SimpleText, ToolServer) all use MDEF 0 — documented boundary, not built against.
+
+## Build-time gates (before the reboot)
+
+1. `DumpObj` the linked jGNE menu resource → externals list MUST be empty.
+2. `tests/test_dlgpatch_contract.py` green, extended to the MB block. Assert the
+   full THREE-WAY contract (owner 12:15 — the bit layout lives in `menuwalk.c` writer,
+   `main.c` MENUTREE emitter, and this doc; nothing else holds them in agreement):
+   - MB/MENU/ITEM offsets across `menuwalk.c` and `main.c`.
+   - the ITEM_REC **bit assignment** parsed from all three sources → a SINGLE mapping
+     (else the drift we just found by hand recurs silently).
+   - `bit3` asserted RESERVED (so no one double-assigns it later).
+   - `bit4 && bit0` asserted a FORBIDDEN combination (the one combo that would tell a
+     bit4-unaware client "disabled" again).
+3. Full suite green (a `vers.r` bump pulls doc-version obligations — `test_doc_claims`).
+4. Post the built code to the owner for review, THEN the final reboot heads-up.
