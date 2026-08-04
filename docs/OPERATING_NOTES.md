@@ -931,6 +931,33 @@ question depends on it (the runtime-jGNE-walk that this whole reach question ser
 is already proven end-to-end), so it is left undone deliberately, and this note is
 the record of why. A later attempt to turn that fast poller into an in-window WITNESS — argue an application must reach the trap, so its absence from the trap count would prove the patch local — also did not hold: the counters did not reproduce run to run (jGNE-fires vs trap-calls swung from ~4.5 to ~0.03 across same-session runs, and the last-non-self A5 changed identity between them), so no aggregate could carry the argument either.
 
+**Correction, 2026-08-04 — the closure above was taken, and NOT as written.**
+The "second self-filter" cannot be built as specified, because its premise fell:
+the poller was attributed to the health watchdog and that attribution was
+refuted in source (`mac/watchdog/watchdog.c` sleeps ~60 ticks ⇒ ~1 call/s, not
+59). It has **no name**, and its A5 is a heap address no reboot preserves — so
+there is neither an identity to filter nor a constant to compile in. Asking for
+"the second self-filter" therefore asks for a mechanism that cannot exist.
+
+What was built instead needs no identity: the counter block keeps **two** slots,
+`LastA5` and `PrevA5`, with a distinctness gate — an A5 equal to the one already
+in `LastA5` does **not** shift. A process polling at any rate therefore occupies
+exactly ONE slot, and the foreground's rare call parks in the other and stays
+there until a THIRD distinct A5 appears. "Did the target enter this trap in the
+window?" is answered by `last` **or** `prev`, and the noisy neighbour names
+itself as a side effect — which is what the identification still owes. Block
+magic went `CPRB` → `CPR2` so a new daemon cannot adopt an old, shorter block
+and write past its end. Daemon 0.8d35; the geometry is held by
+`tests/test_counter_probe_contract.py`, which decodes the stubs and re-derives
+every displacement from the declared offsets rather than comparing against a
+stored copy.
+
+*Generalise the method, not the note:* the request named a **mechanism**
+("filter that process"), and the mechanism's precondition was gone while the
+**goal** ("get the foreground out from under the noise") was still reachable by
+other means. When a recorded closure stops being buildable, check whether what
+it was FOR is still buildable before reporting it blocked.
+
 **An autonomous actuator's verb allowlist must exclude any verb that can cancel
 its own preconditions (2026-08-03).**
 
