@@ -929,7 +929,7 @@ so `LastA5` stamps only a third party, the foreground, and the human, the focus 
 the timing all fall out of the loop. That is a daemon rebuild + reboot; no current
 question depends on it (the runtime-jGNE-walk that this whole reach question serves
 is already proven end-to-end), so it is left undone deliberately, and this note is
-the record of why. A later attempt to turn that fast poller into an in-window WITNESS — argue an application must reach the trap, so its absence from the trap count would prove the patch local — also did not hold: the counters did not reproduce run to run (jGNE-fires vs trap-calls swung from ~4.5 to ~0.03 across same-session runs, and the last-non-self A5 changed identity between them), so no aggregate could carry the argument either.
+the record of why. A later attempt to turn that fast poller into an in-window WITNESS — argue an application must reach the trap, so its absence from the trap count would prove the patch local — also did not hold: the counters did not reproduce run to run (jGNE-fires vs trap-calls swung from ~4.5 to ~0.03 across same-session runs, and the last-non-self A5 changed identity between them), so no aggregate could carry the argument either. **The conclusion holds, the reason given for it does not — see the 2026-08-04 entry at the end of this file: the counters reproduce to the digit when the process set is held still, and the swing was one application starting and stopping. It could not be seen at the time because nothing could enumerate processes.**
 
 **Correction, 2026-08-04 — the closure above was taken, and NOT as written.**
 The "second self-filter" cannot be built as specified, because its premise fell:
@@ -1115,3 +1115,47 @@ The tell is not that a hypothesis fails to fit. It is that too many fit. When
 that happens, stop generating explanations and go find an instrument that can
 distinguish them — here, a negative control: a verb that certainly does not
 exist, to see what "not implemented" actually looks like.
+
+**"The counters do not reproduce" was an uncontrolled variable, not an
+instrument limit — and the variable had a name nobody could read (2026-08-04).**
+
+The trap-locality note above records that the jGNE-to-trap ratio "swung from
+~4.5 to ~0.03 across same-session runs" and concludes that no aggregate could
+carry the argument. That conclusion stands; the reason given for it was wrong.
+
+Measured on demand, once `PROCLIST` made the running processes enumerable:
+
+| | ToolServer absent | ToolServer running |
+|---|---|---|
+| `other` / `jcnt` in 8 s | 8 | **326** (×41) |
+| `last` bound to a name | Finder | **ToolServer** |
+| `jcnt / gne` | 0.049 | **4.18** |
+
+Against the note's own figures — 0.03 and 4.5 — that is the same swing,
+produced deliberately by starting and quitting one application. Two consecutive
+runs with the process set unchanged were identical to the digit: `gne` 162,
+`other` 8, the same `last`. The counters reproduce perfectly. What did not
+reproduce was the machine.
+
+The variable was invisible because nothing could enumerate processes: a
+foreground application, a helper, and the daemon all showed up as bare A5
+values. `processLocation` + `processSize` bound each one to a name by
+containment, and the poller stopped being "an unidentified fast process".
+
+Two consequences for how to run one of these:
+
+  A measurement without a process list is incomplete. Take `PROCLIST` before and
+  after, bind every observed A5 by containment, and record the process set as
+  part of the result — not as context.
+
+  And when a number refuses to reproduce, ask what else changed before
+  concluding the instrument is noisy. Noise is a property of the instrument;
+  irreproducibility usually is not. Here the instrument was exact and the
+  experiment was uncontrolled, which looks the same from the inside and is the
+  opposite problem.
+
+Unchanged by this: the in-window control for trap locality is still not
+obtainable this way. A trap patch installed at RUNTIME is process-local by
+construction, so `other = 0` on the trap path is a property of the design and
+never evidence about the foreground. Naming the callers does not change that —
+only a boot INIT would.
