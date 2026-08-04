@@ -29,6 +29,17 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import notes  # noqa: E402
 
+# The command to print in a wake message, DERIVED rather than written down.
+# `host/tools/notes.py list` is only right when the reader stands in the repo
+# root, and the second machine on this channel runs a copy from a directory that
+# is not a checkout at all — so its operator had hand-edited this one string to
+# a local path, which is a fork of one line: it silently reverts on every update
+# and made the copy impossible to compare against main. The watcher knows where
+# it lives; asking it costs nothing and is right on both machines.
+READ_CMD = ("python3 " +
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "notes.py") +
+            " list")
+
 # How long a single watcher lives. It is replaced by the next Stop hook anyway,
 # so this only bounds a session that is abandoned mid-turn.
 MAX_LIFETIME = float(os.environ.get("APPLEBRIDGE_WATCH_SECONDS", "1800"))
@@ -156,7 +167,7 @@ def main():
                       "somebody wrote to the channel and it was delivered to "
                       f"nobody. First at line {broken[0]['lineno']}: "
                       f"{broken[0]['raw'][:200]}\n"
-                      "Read all with: host/tools/notes.py list",
+                      f"Read all with: {READ_CMD}",
                       file=sys.stderr)
                 return 2
             if hits:
@@ -166,7 +177,7 @@ def main():
                 # newline would split one note across what reads as two events.
                 print(f"Session channel: {len(hits)} new from {newest['from']} — "
                       f"{notes.unescape_text(newest['text'], inline=True)[:300]}\n"
-                      f"Read all with: host/tools/notes.py list",
+                      f"Read all with: {READ_CMD}",
                       file=sys.stderr)
                 return 2
         _note(f"watch timeout who={who}")

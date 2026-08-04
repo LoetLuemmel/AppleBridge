@@ -321,6 +321,33 @@ def recent(notes_, now, seconds):
     return [n for n in notes_ if n["ts"] >= cutoff]
 
 
+def crossed(lines, who):
+    """What arrived for `who` since `who` last wrote — the CROSSING check.
+
+    Measured 2026-08-04: one side answered two questions at 10:45:41 and the
+    other re-asked the same two at 10:46:29, 48 seconds later, because its turn
+    had already begun. Nothing can deliver into a turn already in flight — that
+    part is inherent to a channel between sessions with no event loop.
+
+    But at the moment it wrote, the answer was ALREADY IN THE FILE, and the tool
+    that wrote said nothing about it. This closes that half: posting reads the
+    channel anyway (`answer` validates its timestamp against it), so it can also
+    report what came in meanwhile. The writer learns it in its OWN turn, with no
+    watcher and no waiting.
+
+    "Since I last wrote" rather than "since I last read", because reading is not
+    observable here and never will be — the same reason `open_notes` tracks
+    answers instead of a `seen` flag. A session that has never written gets
+    nothing: the session brief already covers the cold start, and dumping the
+    whole inbox on a first post would be noise where this is meant to be a
+    signal.
+    """
+    mine = [n["ts"] for n in all_notes(lines) if n["from"] == who]
+    if not mine:
+        return []
+    return [n for n in inbox_for(lines, who) if n["ts"] > max(mine)]
+
+
 def read(path=None, run=None):
     """Lines of the channel. Local file, or over ssh when the spec is host:/path.
     `run` is the ssh executor (default _ssh_run); tests inject a fake."""
@@ -477,6 +504,10 @@ def main():
         # file, and an explicit recipient survives anything.
         recipient = known[args.ts]["from"]
 
+    # Read the channel BEFORE appending, so "since I last wrote" does not have to
+    # exclude the line this call is about to add.
+    waiting = crossed(read(), args.who)
+
     stamp = _now()
     answering = args.ts if args.verb == "answer" else (
         NOTE_MARKER if args.verb == "note" else None)
@@ -485,6 +516,21 @@ def main():
         print(f"could not write {NOTES}", file=sys.stderr)
         return 1
     print(line)
+
+    if waiting:
+        # stderr, so anything parsing the written line on stdout is unaffected.
+        # Loudest first when it is an ANSWER to something this session asked:
+        # that is the case where writing again may mean re-asking what is
+        # already answered, which is what this exists to stop.
+        replies = [n for n in waiting if n["kind"] == "answer"]
+        print(f"\n>> {len(waiting)} message(s) arrived since you last wrote"
+              + (f", {len(replies)} of them ANSWERS to you" if replies else "")
+              + " — you may have crossed:", file=sys.stderr)
+        for note in waiting[-3:]:
+            body = unescape_text(note["text"], inline=True)
+            print(f"   [{note['ts']}] {note['from']} ({note['kind']}): "
+                  f"{body[:220]}", file=sys.stderr)
+        print("   read them in full with: notes.py list", file=sys.stderr)
     return 0
 
 
