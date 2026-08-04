@@ -131,10 +131,62 @@ def _default_who():
 WHO = _default_who()
 
 
+# A note is ONE line — that is what makes the file greppable, append-safe and
+# parseable by position, and it is not negotiable. But "one line" used to be
+# achieved by `" ".join(text.split())`, which collapses every run of whitespace
+# and therefore DESTROYS the author's paragraph breaks. For a one-sentence
+# question that is invisible; for the five-paragraph reviews this channel
+# actually carries it is a silent loss of structure, and the workaround it
+# provoked was worse: an author types a literal `\n` into the shell string, it
+# is not whitespace, so it survives — and arrives at the reader as two
+# characters of noise in the middle of a sentence.
+#
+# So the line stays one line and the shape is kept as an ESCAPE: written
+# escaped, displayed unescaped. `\` doubles on the way in, without which the
+# mapping is not reversible — a note ABOUT the sequence (`grep for \n`) would
+# come back to the reader as a line break, which is the same class of defect one
+# level down.
+#
+# One asymmetry, deliberate and bounded: lines written BEFORE this carry an
+# unescaped `\n`, so they now display as a real break. For those lines that is
+# what the author meant (they typed it to get a paragraph), so the one direction
+# this can be wrong in is the harmless one.
+def escape_text(text):
+    """Text as one line, with the author's line breaks preserved as `\\n`."""
+    doubled = (text or "").replace("\\", "\\\\")
+    # splitlines() also catches CR and CRLF, so nothing that would break the
+    # line-per-note rule can reach the file by another spelling.
+    return "\\n".join(" ".join(part.split()) for part in doubled.splitlines())
+
+
+def unescape_text(text, inline=False):
+    """The author's text back.
+
+    `inline=True` renders a break as a space — for the session brief and the
+    watcher, where a note appears as a truncated one-line preview and a real
+    newline would break the surrounding layout.
+
+    Scanned left to right rather than by two `str.replace` calls: replacing
+    `\\\\`->`\\` first and `\\n`->newline second turns the escaped sequence
+    `\\\\n` into a line break, which is precisely the case the doubling exists
+    to protect.
+    """
+    break_as = " " if inline else "\n"
+    out, i, text = [], 0, text or ""
+    while i < len(text):
+        if text[i] == "\\" and i + 1 < len(text) and text[i + 1] in "n\\":
+            out.append(break_as if text[i + 1] == "n" else "\\")
+            i += 2
+            continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
 def format_note(stamp, who, to, answering, text):
     """One line: the fields first so they can be grepped, the text last."""
-    flat = " ".join((text or "").split())
-    return f"{stamp} from={who or '?'} to={to or 'all'} re={answering or '-'} {flat}"
+    return (f"{stamp} from={who or '?'} to={to or 'all'} "
+            f"re={answering or '-'} {escape_text(text)}")
 
 
 # The `re=` field carries the kind as well as the target, so the line format
@@ -303,6 +355,19 @@ def append(line, path=None, run=None):
         return False
 
 
+def render(note, label):
+    """A note as the author wrote it: header line, continuation lines indented.
+
+    The indent is what keeps a multi-paragraph note from reading as several
+    notes — without it, `list` on a channel carrying reviews is a wall of text
+    in which the boundary between two senders is invisible.
+    """
+    head, *rest = unescape_text(note["text"]).split("\n")
+    lines = [f"{label} {note['ts']}  from={note['from']}  {head}"]
+    lines += [("    " + line) if line else "" for line in rest]
+    return "\n".join(lines)
+
+
 def _now():
     """Milliseconds, because the timestamp IS the identifier.
 
@@ -371,9 +436,9 @@ def main():
             print("   format is:  <timestamp> from=X to=Y re=Z <text>   "
                   "— write with notes.py; do not hand-build the line")
         for note in recent(open_notes(lines), now, args.since):
-            print(f"question {note['ts']}  from={note['from']}  {note['text']}")
+            print(render(note, "question"))
         for note in recent(inbox_for(lines, WHO), now, args.since):
-            print(f"{note['kind']} {note['ts']}  from={note['from']}  {note['text']}")
+            print(render(note, note["kind"]))
         return 0
 
     if args.verb == "answer" and getattr(args, "to", None) is not None:
@@ -401,7 +466,8 @@ def main():
                 print("open questions you could answer:", file=sys.stderr)
                 for note in still_open:
                     print(f"  {note['ts']}  from={note['from']}  "
-                          f"{note['text'][:70]}", file=sys.stderr)
+                          f"{unescape_text(note['text'], inline=True)[:70]}",
+                          file=sys.stderr)
             else:
                 print("no open questions; use `notes.py note` to say something "
                       "that answers nothing.", file=sys.stderr)

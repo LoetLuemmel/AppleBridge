@@ -125,14 +125,20 @@ def note_lines():
                    "channel and delivered to nobody")
         for bad in broken[-2:]:
             out.append(f"  line {bad['lineno']}: {bad['raw'][:80]}")
+    # `inline=True`: the brief is a fixed-shape overview, so a note's paragraph
+    # breaks are rendered as spaces rather than as real newlines. The full shape
+    # is one `notes.py list` away; a brief whose height depends on how long the
+    # other session's last review was is a brief that gets skimmed past.
+    def preview(note, width=88):
+        return f"  [{note['ts']}] {note['from']}: " \
+               f"{notes.unescape_text(note['text'], inline=True)[:width]}"
+
     if pending:
         out.append(f"open questions     : {len(pending)} (notes.py answer <ts> \"…\")")
-        for note in pending[-5:]:
-            out.append(f"  [{note['ts']}] {note['from']}: {note['text'][:88]}")
+        out += [preview(note) for note in pending[-5:]]
     if replies:
         out.append(f"for you            : {len(replies)}")
-        for note in replies[-3:]:
-            out.append(f"  [{note['ts']}] {note['from']}: {note['text'][:88]}")
+        out += [preview(note) for note in replies[-3:]]
     if out and notes.WHO == "agent":
         # Only reachable when neither APPLEBRIDGE_WHO nor CLAUDE_CODE_SESSION_ID
         # is in the environment. It used to fire whenever nobody had configured
