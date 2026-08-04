@@ -112,6 +112,50 @@ class TheShapeTheAuthorTyped(unittest.TestCase):
         self.assertEqual(out[1], "    tail")
 
 
+class TwoSessionsCrossing(unittest.TestCase):
+    """Writing tells you what arrived while you were composing.
+
+    The real event, 2026-08-04: one side answered two questions at 10:45:41; the
+    other re-asked the same two at 10:46:29, 48 seconds later, because its turn
+    had already begun. Delivering into a turn already in flight is impossible
+    here and always will be. But the answer was ALREADY IN THE FILE when the
+    re-ask was written, and the tool that wrote it said nothing — that half is a
+    defect, and this is the fix for it.
+    """
+
+    def _lines(self):
+        return [
+            notes.format_note("2026-08-04T10:09:07.000", "B", "A", None, "q1"),
+            notes.format_note("2026-08-04T10:11:51.000", "B", "A", None, "q2"),
+            notes.format_note("2026-08-04T10:45:41.570", "A", "B",
+                              "2026-08-04T10:09:07.000", "answer to q1"),
+            notes.format_note("2026-08-04T10:45:41.642", "A", "B",
+                              "2026-08-04T10:11:51.000", "answer to q2"),
+        ]
+
+    def test_the_re_asker_is_shown_the_answers_that_crossed(self):
+        got = notes.crossed(self._lines(), "B")
+        self.assertEqual([n["text"] for n in got],
+                         ["answer to q1", "answer to q2"])
+
+    def test_your_own_messages_are_never_reported_back_to_you(self):
+        """A channel that reports your own writing as news is noise."""
+        for note in notes.crossed(self._lines(), "A"):
+            self.assertNotEqual(note["from"], "A")
+
+    def test_a_session_that_never_wrote_is_not_flooded_with_the_whole_inbox(self):
+        """The cold start belongs to the session brief. This is a crossing
+        signal, and a signal that fires on everything is not one."""
+        self.assertEqual(notes.crossed(self._lines(), "C"), [])
+
+    def test_nothing_older_than_your_last_message_is_reported(self):
+        """Otherwise every post re-announces the whole conversation."""
+        lines = self._lines() + [
+            notes.format_note("2026-08-04T10:46:29.000", "B", "A", None, "re-ask"),
+        ]
+        self.assertEqual(notes.crossed(lines, "B"), [])
+
+
 class WhatIsOpen(unittest.TestCase):
 
     def _lines(self):
