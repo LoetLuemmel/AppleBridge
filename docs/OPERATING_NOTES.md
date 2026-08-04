@@ -1201,3 +1201,18 @@ in its own 90-second timeout. Both would have been just as capable of returning
 a plausible wrong number as an obvious one. Read a control-port reply by its
 DECLARED LENGTH — the protocol carries it for exactly this reason — and never
 time anything across two processes.
+
+And the reason those two cost minutes rather than hours: **they failed
+visibly.** `-0.00s` is nonsense on its face and a hang cannot be mistaken for a
+result. Compare the expensive failures in this file — `Exists` answering true
+after a link that died, the converter reporting `[BIN]` and copying raw, a
+swallowed verb answering `STATUS:0` with empty output, counters that reproduced
+beautifully while the machine underneath them did not. Every one of those
+returned something plausible, and plausible is what gets written down and built
+on.
+
+So when choosing between two ways to measure something, prefer the one that
+cannot fail quietly, even if it is clumsier. A harness that crashes costs an
+afternoon at worst. A harness that returns a believable wrong number costs
+whatever gets decided on it, and the bill arrives much later and somewhere
+else.
