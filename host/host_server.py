@@ -1570,9 +1570,20 @@ def split_ctrl_deadline(request):
     only party that knows when it stops caring, so it says so.
 
     ABSOLUTE, not a TTL: the server cannot know when the request was sent, only
-    when it accepted it. Both ends share a clock here — the control port is
-    loopback-only — so an absolute instant is exact where a relative one would be
-    a guess. Absent or malformed, the deadline is None and behaviour is unchanged.
+    when it accepted it — and that interval is precisely the question. An
+    absolute instant is exact where a duration would be a guess.
+
+    The clock that counts is THIS machine's. The socket is always loopback, but
+    the caller need not be: the parallel session drives this port by ssh from
+    another host, so a deadline computed with ITS clock carries the skew between
+    them. It solved that correctly by computing the deadline Mac-side inside its
+    relay (measured skew Jetson-to-Mac: -0.24 s, most of it the round trip of
+    the measurement itself). The rule is therefore not "both ends share a clock"
+    — an earlier version of this note said that and it is false for any remote
+    driver — but: compute the deadline on the clock the SERVER reads, or accept
+    the skew knowingly.
+
+    Absent or malformed, the deadline is None and behaviour is unchanged.
     """
     if request.startswith("DEADLINE:"):
         nl = request.find("\n")

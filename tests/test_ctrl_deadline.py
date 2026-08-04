@@ -150,6 +150,20 @@ class TheClientSaysWhenItStopsCaring(unittest.TestCase):
                          "if this client grows a timeout it CAN give up, and "
                          "then it should send a deadline after all")
 
+    def test_the_rationale_does_not_claim_a_shared_clock(self):
+        """The first version justified the absolute deadline with "both ends
+        share a clock — the control port is loopback-only". The socket is
+        loopback; the CALLER need not be. The parallel session drives this port
+        by ssh from another host, and pointed that out after implementing its
+        side: it computes the deadline Mac-side inside its relay so the server
+        reads its own clock. A justification that is false for a real caller is
+        worse than none — it stops the next person from asking."""
+        src = open(host_server.__file__.replace(".pyc", ".py"),
+                   encoding="utf-8").read()
+        window = src[src.index("def split_ctrl_deadline"):][:2600]
+        self.assertNotIn("Both ends share a clock", window)
+        self.assertIn("the clock the SERVER reads", window)
+
     def test_the_client_imports_time(self):
         """It did not, at first — and that would have raised only at the moment
         a command was actually sent."""
