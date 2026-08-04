@@ -4,6 +4,8 @@ Design and on-device reconnaissance for Phase 2 of
 [INPUT_MODIFIERS_AND_MENUS.md](INPUT_MODIFIERS_AND_MENUS.md). See also
 [[applebridge-journaling-driver-feasibility]].
 
+The **read** counterpart — *perceiving* (not driving) a foreground app's menu bar, the foreign menu-list read this doc notes below is "not wired" — is designed in [MENUWALK_DESIGN.md](MENUWALK_DESIGN.md) and shipped as the `MENUTREE` verb over the shared jGNE walk-on-request.
+
 ## Goal
 
 Drive the front app's UI over the bridge in the two places posted events **cannot** reach:

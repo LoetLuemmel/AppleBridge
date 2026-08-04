@@ -55,7 +55,7 @@
 
         CASE    OBJ
         STRING  ASIS
-        IMPORT  DlgWalk
+        IMPORT  Walk
 
 kCurA5    EQU     $0904          ; low-mem CurrentA5 (Process Manager swaps per process)
 oDP_Up    EQU     14             ; DP block DialogUp
@@ -94,7 +94,7 @@ jGo
 jDo
         MOVE.W  #1,jBusy-jEntry(A0)       ; set local busy
         MOVE.L  jDPBlock-jEntry(A0),-(SP) ; arg: DP block ptr
-        BSR     DlgWalk                   ; PC-relative into the SAME walk (our own copy)
+        BSR     Walk                   ; PC-relative into the SAME walk (our own copy)
         ADDQ.L  #4,SP                     ; C caller cleans the arg
         LEA     jEntry(PC),A0
         MOVE.L  jDPBlock-jEntry(A0),A1

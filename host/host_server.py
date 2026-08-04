@@ -1998,6 +1998,7 @@ def run_control_server(server):
                           or cmd == "DLGINSTALL" or cmd == "DLGTREE" or cmd == "DLGUNINSTALL"
                           or cmd == "DLGSELFMODAL" or cmd == "DLGARM" or cmd == "DLGDISARM"
                           or cmd.startswith("DLGWALK") or cmd == "DLGWDISARM"
+                          or cmd.startswith("MENUARM") or cmd == "MENUTREE" or cmd == "MENUWDISARM"
                           or cmd == "PING" or cmd == "QUITDAEMON" or cmd == "REBOOT"
                           or cmd == "SWAPSELF" or cmd == "SHUTDOWN"
                           or cmd == "JGATE" or cmd == "JMENU" or cmd == "JABOUT"
