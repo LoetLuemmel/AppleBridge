@@ -717,7 +717,11 @@ class Delivery(unittest.TestCase):
         try:
             self.assertEqual(session_brief.note_lines(), [])
             self.assertEqual(notes.read(), [])
-            self.assertFalse(notes.append("x"))
+            # Was `assertFalse(append(...))`. A boolean is exactly what got
+            # ignored on 2026-08-04, so the failure is now a raise.
+            with self.assertRaises(notes.ChannelWriteError):
+                notes.append("x")
+            self.assertFalse(notes.append("x", raise_on_fail=False))
         finally:
             notes.NOTES = old
 
@@ -978,3 +982,78 @@ class AnAnswerReachesSomebody(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ALostNoteCannotBeIgnored(unittest.TestCase):
+    """`append` raises, because a return value can be ignored by omission.
+
+    On 2026-08-04 the parallel session printed "note appended OK" twice without
+    looking at what `append` returned. Both notes were lost. A third had already
+    failed VISIBLY with "could not write / exit 1" — so the mechanism worked and
+    the reporting did not, and the two silent losses stayed invisible for over
+    an hour while both sides believed the channel was quiet.
+
+    Confirmed from the other end before the sender said anything: the channel
+    file's last line was the OTHER session's, and `unreadable()` found ZERO bad
+    lines — so the notes were not mangled in transit, they were never written.
+    Nothing downstream could have detected that, which is the argument for
+    making it undetectable-proof upstream.
+    """
+
+    def setUp(self):
+        self.dead = "/nonexistent-dir-for-tests/notes.log"
+
+    def test_a_failed_local_write_raises(self):
+        with self.assertRaises(notes.ChannelWriteError):
+            notes.append("x", self.dead)
+
+    def test_the_message_says_the_note_is_LOST_not_that_a_call_failed(self):
+        """"could not write" reads like a retryable hiccup. The consequence is
+        that a person will never see the text — which is what must be said."""
+        try:
+            notes.append("x", self.dead)
+            self.fail("expected ChannelWriteError")
+        except notes.ChannelWriteError as exc:
+            self.assertIn("did NOT reach", str(exc))
+            self.assertIn(self.dead, str(exc))
+
+    def test_a_deliberate_caller_can_still_opt_out(self):
+        """Requested by the session it happened to: a caller who has genuinely
+        decided not to care keeps the boolean — but has to SAY so, so that
+        going back to silence is a visible act in a diff."""
+        self.assertFalse(notes.append("x", self.dead, raise_on_fail=False))
+
+    def test_a_failed_ssh_write_raises_too(self):
+        """The remote path is the one that actually lost the notes: the sender
+        was on another machine writing over ssh."""
+        with self.assertRaises(notes.ChannelWriteError):
+            notes.append("x", "jetson:/tmp/notes.log",
+                         run=lambda *a, **k: (False, "ssh: connect refused"))
+
+    def test_the_ssh_reason_survives_into_the_message(self):
+        """Without it the reader learns that something failed and not what, on
+        the exact path where the cause is remote and unguessable."""
+        try:
+            notes.append("x", "jetson:/tmp/notes.log",
+                         run=lambda *a, **k: (False, "Permission denied"))
+            self.fail("expected ChannelWriteError")
+        except notes.ChannelWriteError as exc:
+            self.assertIn("Permission denied", str(exc))
+
+    def test_a_successful_write_still_just_returns_true(self):
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(prefix="ab-append-"), "notes.log")
+        self.assertTrue(notes.append("2026-01-01T00:00:00.000 from=a to=b re=note x", path))
+
+    def test_rotation_reports_a_missing_marker_instead_of_raising_past_it(self):
+        """The move has already happened by then, so a failed marker is not a
+        failed rotation — but it is not nothing either, and this call ignored
+        its result entirely until now."""
+        import tempfile
+        d = tempfile.mkdtemp(prefix="ab-rot-")
+        path = os.path.join(d, "notes.log")
+        notes.append(notes.format_note("2026-01-01T00:00:00.000", "a", "all",
+                                       notes.NOTE_MARKER, "x"), path)
+        ok, msg = notes.rotate("2026-01-02T00:00:00.000", path,
+                               run=lambda *a, **k: (False, "nope"))
+        self.assertTrue(ok, msg)

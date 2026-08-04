@@ -446,21 +446,53 @@ def read(path=None, run=None):
         return []
 
 
-def append(line, path=None, run=None):
+class ChannelWriteError(RuntimeError):
+    """The note was NOT written — nobody will ever read it.
+
+    An exception rather than a return value, by request of the session it
+    happened to (2026-08-04). It reported "appended OK" twice without looking at
+    what `append` returned, and a third note had already failed VISIBLY with
+    "could not write / exit 1"; the two silent ones stayed lost for over an hour
+    while both sides believed the channel was quiet.
+
+    The tool was not wrong — it returned a clean boolean on both paths and the
+    CLI checked it. The gap is that **a return value can be ignored by
+    omission**, and a caller who forgets gets silence. That is the same shape as
+    the operating note written the same afternoon: *a send that cannot fail is
+    not a result*. Here it could fail and said so, and nobody was looking.
+
+    A raise cannot be ignored by omission. `raise_on_fail=False` keeps the old
+    boolean for a caller who has genuinely decided not to care — asked for
+    explicitly, so that switching back to silence is a visible act in a diff
+    rather than a forgotten line.
+    """
+
+
+def append(line, path=None, run=None, raise_on_fail=True):
     """Append one line. Local O_APPEND, or the identical single-write over ssh.
-    `run` is the ssh executor (default _ssh_run); tests inject a fake."""
+
+    Raises ChannelWriteError if the line did not land. `run` is the ssh executor
+    (default _ssh_run); tests inject a fake.
+    """
     spec = path or NOTES
     remote = _remote(spec)
     if remote:
         host, rpath = remote
-        ok, _ = (run or _ssh_run)(host, _REMOTE_APPEND + shlex.quote(rpath),
-                                  stdin=line + "\n")
-        return ok
+        ok, why = (run or _ssh_run)(host, _REMOTE_APPEND + shlex.quote(rpath),
+                                    stdin=line + "\n")
+        if ok:
+            return True
+        if raise_on_fail:
+            raise ChannelWriteError(
+                f"the note did NOT reach {spec} over ssh: {why or 'no reason given'}")
+        return False
     try:
         with open(spec, "a", encoding="utf-8") as handle:
             handle.write(line + "\n")
         return True
-    except OSError:
+    except OSError as exc:
+        if raise_on_fail:
+            raise ChannelWriteError(f"the note did NOT reach {spec}: {exc}")
         return False
 
 
@@ -531,7 +563,14 @@ def rotate(stamp, path=None, run=None):
     marker = format_note(stamp, WHO, "all", NOTE_MARKER,
                          f"Kanal rotiert: {count} Notizen liegen in {archive}. "
                          "Nichts geloescht — die Historie ist dort vollstaendig.")
-    append(marker, spec, run)
+    # The move has already happened here, so a failed MARKER is not a failed
+    # rotation — but it is not nothing either, and this line ignored the result
+    # entirely until 2026-08-04.
+    try:
+        append(marker, spec, run)
+    except ChannelWriteError as exc:
+        return True, (f"{count} Notizen nach {archive}, Kanal neu begonnen — "
+                      f"ABER der Rotationsvermerk fehlt: {exc}")
     return True, f"{count} Notizen nach {archive}, Kanal neu begonnen"
 
 
@@ -792,8 +831,11 @@ def main():
     answering = args.ts if args.verb == "answer" else (
         NOTE_MARKER if args.verb == "note" else None)
     line = format_note(stamp, args.who, recipient, answering, text)
-    if not append(line):
-        print(f"could not write {NOTES}", file=sys.stderr)
+    try:
+        append(line)
+    except ChannelWriteError as exc:
+        print(f"{exc}\nNothing was written; the recipient will never see it.",
+              file=sys.stderr)
         return 1
     print(line)
 
