@@ -36,6 +36,15 @@ TEXT_EXTENSIONS = {
     '.txt', '.md', '.doc',                  # Text files
     '.make', '.makefile',                   # Makefiles
     '.script', '.sh',                       # Scripts
+    '.emu',                                 # MPW build scripts run ON the guest.
+                                            # Missing here until 2026-08-04, and the
+                                            # omission is silent: the converter
+                                            # reports [BIN] and copies RAW, so a
+                                            # script full of MacRoman operators (>=
+                                            # for stderr, the option-d continuation)
+                                            # reaches MPW as UTF-8 and does not
+                                            # parse. Every build script in this
+                                            # project is a .emu.
     '.cfg', '.conf', '.ini',                # Config files
     '.html', '.htm', '.xml',                # Markup
     '.csv', '.tsv',                         # Data files

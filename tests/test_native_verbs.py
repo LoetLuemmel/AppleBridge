@@ -219,3 +219,31 @@ def test_the_hint_cannot_name_a_verb_the_dispatch_does_not_route():
         if verb.endswith(":") or "-via-" in verb:
             continue          # prefix forms and the documented mac_status alias
         assert f'"{verb}"' in block, f"hint names {verb}, dispatch does not route it"
+
+
+# --- the build recipe that was lost, and the converter gap that hid it -------
+def test_the_jgne_build_recipe_is_in_the_repo():
+    """AppleBridge_res.r names "BuildDlg.emu" for the sibling resource, and that
+    file is in no branch, no deleted-file history and no share folder — searched
+    2026-08-04, after its absence cost the parallel session about two hours. A
+    recipe that lives only in a session's memory is not a recipe."""
+    emu = open(os.path.join(os.path.dirname(__file__), "..", "mac", "journal",
+                            "BuildJGNE.emu")).read()
+    assert "-rt JGNE=128" in emu
+    assert "-m JgnePatch" in emu
+    assert "Export LIBS" in emu, "a Set-only LIBS expands to empty inside a script"
+    assert "Delete -i :bin:jgnepatch.rsrc" in emu, \
+        "the linker writes its output even when it fails; Exists proves nothing"
+    assert "Interface.o" not in emu.split("Set LIBS")[1], \
+        "the walk must stay A5-free: no library on this link"
+
+
+def test_the_encoding_converter_knows_mpw_build_scripts():
+    """Every build script in this project is a .emu, and the extension was
+    missing from TEXT_EXTENSIONS until 2026-08-04. The omission is SILENT: the
+    converter reports [BIN] and copies raw, so a script full of MacRoman
+    operators reaches MPW as UTF-8 and does not parse."""
+    conv = open(os.path.join(os.path.dirname(__file__), "..", "host",
+                             "encoding_convert.py")).read()
+    block = conv.split("TEXT_EXTENSIONS = {")[1].split("}")[0]
+    assert "'.emu'" in block
