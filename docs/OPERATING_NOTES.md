@@ -1216,3 +1216,42 @@ cannot fail quietly, even if it is clumsier. A harness that crashes costs an
 afternoon at worst. A harness that returns a believable wrong number costs
 whatever gets decided on it, and the bill arrives much later and somewhere
 else.
+
+## The shell eats the text before any tool can see it — measured 2026-08-04
+
+Both sessions lost text to the shell within hours of each other on the same
+day, in notes *about* the defect class this file exists for.
+
+One wrote `$0A1C` — the `MenuList` low-memory address — inside double quotes.
+The shell substituted an undefined variable and the address vanished from the
+sentence explaining it. The other wrote a sentence containing a backquoted
+`nc`; the shell **executed** it and deleted the subjects of two sentences, so
+what arrived was `" schliesst halbseitig"`.
+
+Neither was noticed, and neither *could* be by the channel: `notes.py list`
+reported **zero unreadable lines**, correctly. The lines were syntactically
+perfect — timestamp, `from=`, `to=`, `re=`, text. The damage happened in the
+shell, before a single byte reached the tool, so there was nothing left to
+detect. This is the file's own recurring theme arriving from a new direction:
+a report on evidence that is not the thing it claims. Here the report was even
+right about what it measured.
+
+The fix is not to quote more carefully. It is to keep the text out of `argv`:
+
+```bash
+notes.py note --stdin <<'EOF'
+`nc` half-closes, and $0A1C is the MenuList.
+EOF
+```
+
+**The quotes around `EOF` are the mechanism, not decoration.** An unquoted
+delimiter (`<<EOF`) still expands `$` and backquotes *inside* the heredoc —
+the identical trap one layer down. `notes.py`'s own advice string is pinned by
+a test for exactly that, because handing out `<<EOF` would have reopened the
+hole while appearing to close it.
+
+The general shape: **for any text that is content rather than a parameter,
+prefer a channel the shell does not parse.** `argv` is a parameter list that
+happens to accept prose. Two of its metacharacters destroy text silently and
+leave no evidence, which puts this in the same class as `Exists` answering
+true after a failed link — plausible output, no way to tell from the outside.
