@@ -3977,6 +3977,17 @@ msinstall_reply:
         return ok;
     }
 
+    /* PROCLIST: verb: the running processes via GetNextProcess (no ToolServer,
+     * no GUI). Checked BEFORE DISKINFO only for tidiness — the prefixes differ. */
+    if (strncmp(request, PROTO_PROCLIST, strlen(PROTO_PROCLIST)) == 0) {
+        Boolean ok;
+        SetActivity("PROCLIST");
+        ok = ProcListVerb(conn, request, requestLen);
+        gLastTX = TickCount();
+        gTXCount++;
+        return ok;
+    }
+
     /* DISKINFO: verb: volume totals via PBHGetVInfo (no ToolServer). */
     if (strncmp(request, PROTO_DISKINFO, strlen(PROTO_DISKINFO)) == 0) {
         Boolean ok;

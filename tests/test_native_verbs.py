@@ -165,3 +165,57 @@ if __name__ == "__main__":
             print(f"FAIL {t.__name__}: {e}")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")
     sys.exit(1 if failed else 0)
+
+
+# --- PROCLIST: the running processes, and the routing trap it must not repeat -
+def test_proclist_is_routed_before_the_mpw_fall_through():
+    """The trap this verb family keeps falling into, measured three times on
+    2026-08-04: an unrouted verb is sent to ToolServer as an MPW command. If
+    ToolServer is up it swallows it and answers STATUS:0 with empty output —
+    "it worked and did nothing". If it is down, the reply blames ToolServer for
+    what is a missing route. `STATUS`/`STAT` cost 237 daemon errors from one
+    polling loop, and `MENUTREE` cost an hour spent believing a fresh daemon
+    deploy had failed."""
+    assert HOST_SRC.index('cmd == "PROCLIST"') < _fallthrough_at()
+
+
+def test_daemon_dispatches_proclist_before_the_generic_parse():
+    parse_at = DAEMON_SRC.index("result = ParseCommand(request")
+    assert DAEMON_SRC.index("strncmp(request, PROTO_PROCLIST") < parse_at
+
+
+def test_proclist_is_implemented_where_it_is_declared():
+    """Routed + dispatched + DECLARED is still not implemented. The three-way
+    agreement is what makes the verb real."""
+    header = open(os.path.join(os.path.dirname(__file__), "..", "mac", "include",
+                               "applebridge.h")).read()
+    impl = open(os.path.join(os.path.dirname(__file__), "..", "mac", "src",
+                             "fileio.c")).read()
+    assert '#define PROTO_PROCLIST "PROCLIST"' in header
+    assert "Boolean ProcListVerb(" in header
+    assert "Boolean ProcListVerb(ABConn *conn" in impl
+
+
+# --- the fall-through says what happened ------------------------------------
+def test_an_mpw_command_line_is_never_mistaken_for_a_verb():
+    """The hint must not fire on real MPW work — a false hint on every compile
+    is noise, and noise gets a hint switched off."""
+    for line in ("Files -l :bin:", "SC main.c -o :obj:main.c.o", "Directory",
+                 "Catenate :bld.err", "Duplicate -y a b"):
+        assert not host_server.looks_like_verb(line), line
+
+
+def test_a_verb_shaped_token_is_recognised():
+    for verb in ("MENUTREE", "STAT", "STATUS", "PROCLIST", "LAUNCH:MeinMac:x"):
+        assert host_server.looks_like_verb(verb), verb
+
+
+def test_the_hint_cannot_name_a_verb_the_dispatch_does_not_route():
+    """A hint listing the wrong verbs is worse than none: it reads as
+    authoritative and sends the caller somewhere else again. So every name it
+    offers must actually appear in the routing block above it."""
+    block = HOST_SRC[:_fallthrough_at()]
+    for verb in host_server.ROUTED_VERBS:
+        if verb.endswith(":") or "-via-" in verb:
+            continue          # prefix forms and the documented mac_status alias
+        assert f'"{verb}"' in block, f"hint names {verb}, dispatch does not route it"

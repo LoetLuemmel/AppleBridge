@@ -762,3 +762,155 @@ Boolean DiskInfoVerb(ABConn *conn, char *request, long requestLen)
     DisposeHandle(h);
     return true;
 }
+
+/* ---- PROCLIST: the running processes (no ToolServer, no GUI) -------------- */
+
+/*
+ * PROCLIST — one line per running process, straight from the Process Manager.
+ *
+ * It lives beside LISTDIR and DISKINFO because it is the same KIND of verb, not
+ * because it touches files: a question the daemon can answer entirely by itself,
+ * on a machine with no ToolServer and without disturbing the front application.
+ *
+ * Three things asked for this on 2026-08-04, and it answers all three:
+ *
+ *  - The system's own "what is running" view is the Application menu, the
+ *    rightmost menu in the System 7 menu bar. Over the bridge it is effectively
+ *    unreadable: it is a PULL-DOWN, so a click opens and closes it in one
+ *    gesture, and a menu held open across two screenshots starves the daemon
+ *    (OTSnd err=-3158, then a 30 s reconnect). `mac_host_menu` needs the item
+ *    position IN ADVANCE, which for a process list is circular — the content is
+ *    exactly what one wants to know. The operator hit this the same day.
+ *
+ *  - The parallel session could not tell whether SimpleText was still running
+ *    and resolved it by double-clicking an icon.
+ *
+ *  - The fast poller in the counter probe was identified as ToolServer by a
+ *    DIFFERENTIAL (quit it, the rate collapses 41x) rather than by a binding of
+ *    a NAME to an A5. `processLocation` and `processSize` close that: a process
+ *    partition is a contiguous range, and the A5 world sits inside it, so an
+ *    observed `LastA5` falls within exactly one process's
+ *    [location, location+size). The binding needs no extra Toolbox call and no
+ *    change to the 68k stub — which is why those two fields are reported even
+ *    though nothing else asks for them.
+ *
+ * One line per process:
+ *   name<TAB>type<TAB>signature<TAB>psnHi<TAB>psnLo<TAB>location<TAB>size<TAB>free<TAB>front<LF>
+ * LF (0x0A), because classic-Mac C maps '\r' to LF while the framing around it
+ * stays CR — the same rule as LISTDIR and DISKINFO above.
+ *
+ * Addresses and sizes are UNSIGNED: a partition above 2 GB would print negative
+ * and a negative address is worse than no answer. `front` is 1 for the process
+ * `GetFrontProcess` names, which is the one synthetic input reaches.
+ *
+ * Bounded at 64 processes. System 7 does not get near that, but an unbounded
+ * loop building a reply is not something to leave to chance — and if the bound
+ * is ever hit it is REPORTED (last line `…truncated`), never silently dropped.
+ */
+Boolean ProcListVerb(ABConn *conn, char *request, long requestLen)
+{
+    ProcessSerialNumber psn, front;
+    ProcessInfoRec      info;
+    Str31               nm;
+    FSSpec              spec;
+    Handle              h;
+    CommandResult       res;
+    short               count = 0;
+    Boolean             more  = false;
+
+    (void)request; (void)requestLen;          /* the verb takes no argument */
+
+    res.exitCode   = -1;
+    res.outData    = NULL;
+    res.outLen     = 0;
+    res.errData[0] = '\0';
+
+    h = NewHandle(0);
+    if (h == NULL) {
+        LD_cpy(res.errData, "out of memory");
+        SendCommandResult(conn, &res);
+        return true;
+    }
+
+    if (GetFrontProcess(&front) != noErr) {
+        front.highLongOfPSN = 0;
+        front.lowLongOfPSN  = kNoProcess;
+    }
+
+    psn.highLongOfPSN = 0;
+    psn.lowLongOfPSN  = kNoProcess;
+    while (GetNextProcess(&psn) == noErr) {
+        char  line[240];
+        short p = 0, k, len;
+
+        if (count >= 64) { more = true; break; }
+
+        LD_zero(&info, sizeof(info));
+        info.processInfoLength = sizeof(ProcessInfoRec);
+        info.processName       = nm;
+        info.processAppSpec    = &spec;
+        nm[0] = 0;
+        if (GetProcessInformation(&psn, &info) != noErr) continue;
+
+        len = nm[0];
+        if (len > 31) len = 31;
+        for (k = 0; k < len; k++) line[p++] = (char)nm[k + 1];
+        line[p++] = '\t';
+        for (k = 0; k < 4; k++) line[p++] = ((char *)&info.processType)[k];
+        line[p++] = '\t';
+        for (k = 0; k < 4; k++) line[p++] = ((char *)&info.processSignature)[k];
+        line[p++] = '\t';
+        LD_unum(line, &p, (unsigned long)psn.highLongOfPSN);
+        line[p++] = '\t';
+        LD_unum(line, &p, (unsigned long)psn.lowLongOfPSN);
+        line[p++] = '\t';
+        LD_unum(line, &p, (unsigned long)info.processLocation);
+        line[p++] = '\t';
+        LD_unum(line, &p, (unsigned long)info.processSize);
+        line[p++] = '\t';
+        LD_unum(line, &p, (unsigned long)info.processFreeMem);
+        line[p++] = '\t';
+        line[p++] = (char)((psn.highLongOfPSN == front.highLongOfPSN &&
+                            psn.lowLongOfPSN  == front.lowLongOfPSN) ? '1' : '0');
+        line[p++] = '\r';
+
+        {
+            long oldSize = GetHandleSize(h);
+            SetHandleSize(h, oldSize + p);
+            if (MemError() == noErr) {
+                HLock(h);
+                BlockMoveData(line, *h + oldSize, p);
+                HUnlock(h);
+            }
+        }
+        count++;
+    }
+
+    if (more) {
+        const char *cut = "...truncated\r";
+        long        oldSize = GetHandleSize(h);
+        short       n = 0;
+        while (cut[n]) n++;
+        SetHandleSize(h, oldSize + n);
+        if (MemError() == noErr) {
+            HLock(h);
+            BlockMoveData((Ptr)cut, *h + oldSize, (Size)n);
+            HUnlock(h);
+        }
+    }
+
+    if (GetHandleSize(h) == 0) {
+        DisposeHandle(h);
+        LD_cpy(res.errData, "no processes");   /* cannot happen: we are one */
+        SendCommandResult(conn, &res);
+        return true;
+    }
+
+    res.exitCode   = 0;
+    res.outData    = h;
+    res.outLen     = GetHandleSize(h);
+    res.errData[0] = '\0';
+    SendCommandResult(conn, &res);
+    DisposeHandle(h);
+    return true;
+}
