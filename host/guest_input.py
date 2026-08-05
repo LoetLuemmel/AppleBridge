@@ -193,8 +193,19 @@ def parse_region(text):
 # --------------------------------------------------------------------------
 # host interaction
 # --------------------------------------------------------------------------
-def _run(argv, check=True):
-    p = subprocess.run(argv, capture_output=True, text=True)
+# How long any single gesture step may take before it is abandoned. It exists
+# for one case: `hold_and_capture` leaves the real mouse button DOWN across a
+# screencapture, and the release waits for that capture to return. Unbounded,
+# a hung capture leaves the button held — and a held button is a stuck machine
+# for the person sitting in front of it, not just for us.
+STEP_TIMEOUT = 10
+
+
+def _run(argv, check=True, timeout=None):
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise InputError(f"{argv[0]} did not finish within {timeout}s")
     if check and p.returncode != 0:
         raise InputError(f"{argv[0]} failed: {(p.stderr or p.stdout).strip()}")
     return (p.stdout or "").strip()
@@ -320,11 +331,11 @@ class Session:
                        f'process "{self.previous_front}" to true')
         return False
 
-    def cliclick(self, args):
+    def cliclick(self, args, timeout=None):
         if self.dry_run:
             print("cliclick " + " ".join(args))
             return ""
-        return _run(["cliclick"] + args)
+        return _run(["cliclick"] + args, timeout=timeout)
 
     def point(self, gx, gy):
         g = self.geometry()
@@ -387,6 +398,42 @@ def cmd_front(args):
     return 0
 
 
+def to_guest_scale(out_path, want_w, want_h, run=None):
+    """Resample a host capture down to the size it was ASKED for. -> (w, h) or None.
+
+    A capture of a 1024x768 guest area on a 2x display comes back 2048x1536.
+    Those extra pixels carry no extra information — the emulator maps one guest
+    pixel to a 2x2 block — so they are four times the bytes for the same
+    picture, and 4.2 MB of them travelled over the control port in one reply.
+
+    The size is not the main reason, though. This surface's whole convention is
+    that **the pixels of a capture ARE guest coordinates, 1:1** — that is what
+    lets a caller read a target off an image and pass it straight back. A 2x
+    capture quietly breaks that for every host-side picture while `mac_screenshot`
+    keeps it, so the two sources of "a picture of the guest" would disagree
+    about what a coordinate means. Resampling restores one rule for both.
+
+    Conditional on the measurement, never on an assumption about Retina: if the
+    file already has the requested size (a 1x display), nothing is resampled.
+    """
+    runner = run or _run
+    try:
+        got = runner(["sips", "-g", "pixelWidth", "-g", "pixelHeight", out_path])
+        nums = [int(n) for n in re.findall(r"pixel(?:Width|Height):\s*(\d+)", got)]
+        if len(nums) < 2:
+            return None
+        have_w, have_h = nums[0], nums[1]
+        if (have_w, have_h) == (want_w, want_h):
+            return (have_w, have_h)
+        runner(["sips", "--resampleHeightWidth", str(want_h), str(want_w), out_path])
+        return (want_w, want_h)
+    except InputError:
+        # A failed resample is not a failed capture: the picture is still there,
+        # just bigger than asked for. Losing it over a cosmetic step would be
+        # the worse trade.
+        return None
+
+
 def capture(out_path, region=None, app=None, dry_run=False):
     """Capture the guest screen HOST-side into out_path; returns the path.
 
@@ -397,11 +444,23 @@ def capture(out_path, region=None, app=None, dry_run=False):
     g = Session(app, activate=False, dry_run=dry_run).geometry()
     x, y, w, h = build_capture_region(g["origin"], g["title_h"],
                                       g["guest_size"], region)
+    _capture_rect(x, y, w, h, out_path, dry_run)
+    return out_path
+
+
+def _capture_rect(x, y, w, h, out_path, dry_run=False, timeout=None):
+    """screencapture of one rect in POINTS, brought back to that size in PIXELS.
+
+    `-R` is measured to take points and return pixels (2026-08-04, both ways on
+    a 2x display), which is why the resample target is the requested w/h and not
+    something read back off the screen.
+    """
     argv = ["screencapture", "-x", f"-R{x},{y},{w},{h}", out_path]
     if dry_run:
         print(" ".join(argv))
         return out_path
-    _run(argv)
+    _run(argv, timeout=timeout)
+    to_guest_scale(out_path, w, h)
     return out_path
 
 
@@ -430,12 +489,14 @@ def hold_and_capture(session, title_pt, out_path, region=None, dwell_ms=250):
         g = session.geometry()
         x, y, w, h = build_capture_region(g["origin"], g["title_h"],
                                           g["guest_size"], region)
-        if session.dry_run:
-            print("screencapture -x -R%d,%d,%d,%d %s" % (x, y, w, h, out_path))
-        else:
-            _run(["screencapture", "-x", "-R%d,%d,%d,%d" % (x, y, w, h), out_path])
+        # Bounded: the release below waits for this to return, so an unbounded
+        # capture would hold the mouse button for as long as it hangs. The
+        # `finally` guarantees the release RUNS; the timeout is what guarantees
+        # it runs SOON. Same helper as `capture`, so a held-menu picture obeys
+        # the same 1:1 guest-coordinate rule as every other picture here.
+        _capture_rect(x, y, w, h, out_path, session.dry_run, STEP_TIMEOUT)
     finally:
-        session.cliclick(["du:%d,%d" % (tx, ty)])
+        session.cliclick(["du:%d,%d" % (tx, ty)], timeout=STEP_TIMEOUT)
     return out_path
 
 

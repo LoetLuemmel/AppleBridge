@@ -168,6 +168,7 @@ BASELINE = {
     ("guest_input.py", "cmd_click"): "argparse entry point, not a decision",
     ("guest_input.py", "cmd_menu"): "argparse entry point, not a decision",
     ("guest_input.py", "cmd_shot"): "argparse entry point, not a decision",
+    ("guest_input.py", "cmd_menushot"): "argparse entry point, not a decision",
     ("macbinary.py", "_selftest"): "is itself a test",
 }
 # A LITERAL, deliberately. Written first as `len(BASELINE)`, which makes
@@ -175,7 +176,9 @@ BASELINE = {
 # that examines nothing, in the file whose whole subject is checks that
 # examine nothing. Caught 2026-07-28 while taking get_file_list off the list.
 # Lower it when an entry leaves; raising it is the change that needs an argument.
-HIGH_WATER = 6   # 9 -> 8 with get_file_list (PR #117); 8 -> 6 when the
+HIGH_WATER = 7   # 6 -> 7 with cmd_menushot (an argparse entry point like
+                 # its four siblings; hold_and_capture, the part that decides, IS tested).
+                 # 9 -> 8 with get_file_list (PR #117); 8 -> 6 when the
                  # gesture-cost work put a recording stub in front of _run,
                  # which reaches _osascript and frontmost_app for real. Both
                  # entries claimed they needed "a live desktop"; they needed a
