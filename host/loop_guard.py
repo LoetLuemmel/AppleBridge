@@ -175,3 +175,88 @@ class StepBudget:
             return ""
         return (f"step budget exhausted after {self.used} step(s): the loop was "
                 f"stopped by its bound, not by the model deciding it was done")
+
+
+class AttemptLog:
+    """One line per distinct action, not one per step — what has been TRIED.
+
+    The perception contract gives the model the last three actions, because a
+    longer window costs context that a 2 GB node does not have. But three steps
+    is exactly how a model comes to try the same thing a fourth time: the shell
+    sees the cycle, the model does not, and the new rule *never argue from
+    memory, perceive again* removes the only other place that knowledge lived.
+
+    The way out is not a longer window. It is a register that grows per distinct
+    ACTION rather than per step: ten steps that repeat two actions are two lines.
+    Proposed by an outside comment on the loop draft, 2026-08-05.
+
+    Monotone on purpose — entries are never removed, only their counts rise.
+    A register that forgets is a window with extra machinery, and the whole
+    point is to remember what a window cannot afford to.
+
+    Fed from outside (a conductor calls `record`), so the same register serves a
+    loop this repository does not contain.
+    """
+
+    def __init__(self):
+        self._rows = {}          # key -> dict
+        self._order = []         # first-seen order, so the summary is stable
+
+    def record(self, name, args, outcome):
+        """Note that an action was tried and how it came out.
+
+        `outcome` is the caller's word for what happened — "ok", "failed",
+        "not_read", a short reason. It is stored VERBATIM: a register that
+        normalises outcomes into its own vocabulary hands the model a
+        translation of its own history, and the translation is where the detail
+        that mattered gets lost.
+        """
+        k = RepeatWatch.key(name, args)
+        row = self._rows.get(k)
+        if row is None:
+            row = {"tool": name, "args": dict(args or {}), "tries": 0,
+                   "outcomes": []}
+            self._rows[k] = row
+            self._order.append(k)
+        row["tries"] += 1
+        # Last outcome first, and only distinct ones: "failed, failed, failed"
+        # says no more than "failed" and costs three times the context.
+        if not row["outcomes"] or row["outcomes"][-1] != outcome:
+            row["outcomes"].append(outcome)
+        return row
+
+    def tried(self, name, args):
+        """Has this exact action been tried before? -> the row, or None."""
+        return self._rows.get(RepeatWatch.key(name, args))
+
+    def __len__(self):
+        return len(self._rows)
+
+    def lines(self, limit=None):
+        """Compact lines for a prompt, newest-first, plus what was left out.
+
+        The omission is REPORTED rather than silently applied. A register that
+        quietly drops rows tells the model it has tried less than it has, which
+        is precisely the belief that produces another attempt.
+        """
+        rows = [self._rows[k] for k in reversed(self._order)]
+        shown = rows if limit is None else rows[:limit]
+        out = [f"{r['tool']}({_brief_args(r['args'])}) x{r['tries']} "
+               f"-> {', '.join(r['outcomes'])}" for r in shown]
+        if limit is not None and len(rows) > limit:
+            out.append(f"… and {len(rows) - limit} earlier action(s) not shown")
+        return out
+
+
+def _brief_args(args):
+    """Arguments as `k=v`, values shortened but never in the middle.
+
+    A value cut in the middle reads as a different value; cut at the end with a
+    visible marker it reads as a shortened one. The distinction is the whole
+    difference between a hint and a lie.
+    """
+    parts = []
+    for k, v in sorted((args or {}).items()):
+        s = str(v)
+        parts.append(f"{k}={s[:40] + '…' if len(s) > 40 else s}")
+    return ", ".join(parts)
