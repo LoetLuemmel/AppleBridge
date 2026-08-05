@@ -7,6 +7,7 @@ import base64
 import os
 import re
 import sys
+import time
 from typing import Any, Dict, List, Optional
 
 from .mac_connection import get_connection
@@ -21,6 +22,7 @@ import bridge_doctor  # noqa: E402  (stdlib-only host-side stack probes)
 import guest_input  # noqa: E402  (real-mouse driving in guest coordinates)
 import mpw  # noqa: E402  (build-step verification: the artefact is the oracle)
 import loop_guard  # noqa: E402  (repetition made visible for a model-driven loop)
+import pump_probe  # noqa: E402  (is the target reading, before a no-reply send)
 
 
 def _ostype(value, default="????") -> bytes:
@@ -1622,7 +1624,8 @@ AE_WAIT_MAX_SECONDS = 180.0        # the daemon clamps here too — see applebri
 def mac_send_apple_event(target_creator: str, event_class: str, event_id: str,
                          direct_object: Optional[str] = None,
                          expect_reply: bool = True,
-                         wait_seconds: float = AE_WAIT_DEFAULT_SECONDS) -> Dict[str, Any]:
+                         wait_seconds: float = AE_WAIT_DEFAULT_SECONDS,
+                         skip_pump_probe: bool = False) -> Dict[str, Any]:
     """Send an arbitrary Apple Event to a scriptable app and return its reply.
 
     The wait is bounded and stated, because on a cooperative scheduler blocking
@@ -1648,6 +1651,34 @@ def mac_send_apple_event(target_creator: str, event_class: str, event_id: str,
         else:
             secs = 0.0
         ticks = int(secs * 60)
+
+        # A no-reply send cannot learn anything: `status == 0` means the Apple
+        # Event Manager accepted it for DELIVERY. So ask first whether the
+        # target is reading at all — the one place where "delivered" gets
+        # mistaken for "done". See host/pump_probe.py for why this is narrow.
+        probe_info = None
+        want, ptarget, why = pump_probe.should_probe(
+            "mac_send_apple_event",
+            {"expect_reply": expect_reply, "skip_pump_probe": skip_pump_probe,
+             "target_creator": target_creator})
+        if want:
+            t0 = time.monotonic()
+            pstatus, _pout, _perr = conn.send_command(
+                pump_probe.probe_verb(_ostype_hex(ptarget)), timeout=8.0)
+            probe_info = pump_probe.read_probe(pstatus, time.monotonic() - t0)
+            # Blocked ONLY when the target is running and not reading. A
+            # target that is not running at all fails loudly on the send
+            # itself (-600), and swallowing that into "not read" would hide a
+            # plain error behind a subtle one.
+            if not probe_info["pumping"] and probe_info["target_running"]:
+                return pump_probe.pending_result(
+                    "mac_send_apple_event",
+                    {"target_creator": target_creator}, probe_info)
+        elif skip_pump_probe or not expect_reply:
+            # A skip that leaves no trace is a check nobody can tell was not
+            # made. Recorded so a later reader sees WHY nothing was probed.
+            probe_info = {"skipped": True, "why": why}
+
         verb = (f"AESEND:{_ostype_hex(target_creator)}:{_ostype_hex(event_class)}:"
                 f"{_ostype_hex(event_id)}:{do_b64}:{ticks}")
         # Our own read has to outlast the daemon's bound, or we would report a
@@ -1663,6 +1694,7 @@ def mac_send_apple_event(target_creator: str, event_class: str, event_id: str,
             "wait_seconds": secs if expect_reply else 0,
             "reply": stdout if stdout else None,
             "error": stderr if stderr else None,
+            "probe": probe_info,
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
