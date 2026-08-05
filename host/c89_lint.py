@@ -40,11 +40,15 @@ RULES = (
      re.compile(r"\bfor\s*\(\s*(?:const\s+|unsigned\s+|signed\s+|static\s+)*"
                 r"(?:int|long|short|char|float|double|size_t)\b"),
      "declaration in the for initialiser is C99",
-     "declare the counter before the loop: `int i; for (i = 0; …)`"),
+     # No template and no placeholder in the fix text. An earlier version read
+     # "`int i; for (i = 0; …)`" -- and a model that copies a suggestion
+     # literally would then write an ellipsis into its source. The remedy is
+     # read by the thing that has to act on it, so it must be copy-safe.
+     "put `int i;` before the loop and drop the type from the for-head"),
     ("line_comment",
      re.compile(r"//"),
      "`//` line comments are C99",
-     "use `/* … */`"),
+     "replace it with a block comment: `/*` before the text, `*/` after"),
     ("bool_type",
      re.compile(r"\b(?:bool|stdbool\.h|true|false)\b"),
      "`bool`/`true`/`false` need <stdbool.h>, which is C99",

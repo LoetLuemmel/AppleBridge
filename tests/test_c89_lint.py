@@ -54,6 +54,15 @@ def test_the_finding_says_what_to_write_instead():
     assert "int i;" in r and "C99" in r
 
 
+def test_the_fix_text_is_copy_safe():
+    """The remedy is read by the thing that has to act on it. An earlier
+    version suggested "`int i; for (i = 0; …)`" — and a model that copies a
+    suggestion literally would write an ellipsis into its source. No
+    placeholders, no templates."""
+    for _, _, _, fix in L.RULES:
+        assert "…" not in fix and "..." not in fix, fix
+
+
 def test_two_loops_are_one_lesson():
     """Ten `//` comments are one lesson, not ten — repeating it costs context
     on a node with 2 GB free and teaches nothing the first line did not."""
