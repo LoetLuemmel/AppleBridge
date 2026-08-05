@@ -7,6 +7,7 @@
 #define APPLEBRIDGE_H
 
 #include <Types.h>
+#include <Files.h>      /* FSSpec — FindAppFileBySignature hands one back */
 #include <transport.h>     /* the transport seam: opaque ABConn + kABNoData.
                             * No <OpenTransport.h> here any more — OT is now just
                             * one backend (transport_ot.c); nothing above the seam
@@ -201,6 +202,8 @@ Boolean MonitorVerb(ABConn *conn, char *request, long requestLen);
 short KeyProbeMaskFix(void);
 void KeyProbeRead(short *kdTries, short *kuTries, short *kdErr, short *kuErr,
                   long *ticks, long *count, short *sysEvtMask);
+/* Locate an application by creator via the Desktop Database (no path assumed). */
+OSErr FindAppFileBySignature(OSType creator, FSSpec *spec);
 OSErr InjectKey(short charCode, short keyCode);
 OSErr InjectKeyMod(short charCode, short keyCode, short modifiers);
 OSErr InjectType(const char *text, long len);

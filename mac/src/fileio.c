@@ -914,3 +914,58 @@ Boolean ProcListVerb(ABConn *conn, char *request, long requestLen)
     DisposeHandle(h);
     return true;
 }
+
+/* Find an application FILE by its creator signature, using the Desktop Database
+ * -- the same mapping the Finder uses when you double-click a document and it
+ * opens the right program. No path, no volume name, no configuration.
+ *
+ * Why this exists (2026-08-05): the daemon chain-launches its helpers from
+ * `APP=` lines in the prefs, and `PrefsDefaults` sets `appCount = 0`. So EVERY
+ * fresh install came up without ToolServer, and every command that needs it
+ * failed with "no-ToolServer/MPW" until somebody worked out that a line was
+ * missing from a file they had never opened. The mechanism was never broken;
+ * the list was simply empty, and an empty list is indistinguishable from a
+ * deliberate one.
+ *
+ * A default PATH would have been the obvious fix and the wrong one: this
+ * project's guests keep ToolServer in different places on different volumes
+ * (MPW folder here, a copied-local folder on the OS 9 machine, absent on the
+ * 2013 MacBook's guest). Same lesson as the System Folder that turned out to be
+ * called `Systemordner`: find it, do not name it.
+ *
+ * -> noErr and *spec filled, or an error. Searches every mounted volume,
+ * because the answer is usually not on the boot disk on a machine that has been
+ * reorganised. */
+OSErr FindAppFileBySignature(OSType creator, FSSpec *spec)
+{
+    DTPBRec   dt;
+    HParamBlockRec hp;
+    Str63     name;
+    short     vIndex;
+    OSErr     err;
+
+    for (vIndex = 1; ; vIndex++) {
+        /* Walk mounted volumes by index; ioResult != noErr ends the walk. */
+        hp.volumeParam.ioNamePtr   = name;
+        hp.volumeParam.ioVRefNum   = 0;
+        hp.volumeParam.ioVolIndex  = vIndex;
+        if (PBHGetVInfoSync(&hp) != noErr) break;
+
+        dt.ioNamePtr  = name;
+        dt.ioVRefNum  = hp.volumeParam.ioVRefNum;
+        dt.ioDTRefNum = 0;
+        if (PBDTGetPath(&dt) != noErr) continue;      /* no desktop database here */
+
+        dt.ioNamePtr     = spec->name;
+        dt.ioFileCreator = creator;
+        dt.ioIndex       = 0;                          /* highest-version copy */
+        dt.ioCompletion  = NULL;
+        err = PBDTGetAPPLSync(&dt);
+        if (err == noErr) {
+            spec->vRefNum = hp.volumeParam.ioVRefNum;
+            spec->parID   = dt.ioAPPLParID;
+            return noErr;
+        }
+    }
+    return fnfErr;
+}
