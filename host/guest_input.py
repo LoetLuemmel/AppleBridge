@@ -37,6 +37,7 @@ Usage
     guest_input.py menu  <titleX> <titleY> <itemX> <itemY>
     guest_input.py shot  [out.png] [--region gx,gy,w,h]
     guest_input.py menushot <titleX> <titleY> [out.png] [--dwell ms] [--region ...]
+                            [--over gx,gy]   # reveal a hierarchical submenu
 
     --app NAME      emulator process (default: auto-detect Basilisk/SheepShaver)
     --no-activate   never bring the emulator forward; abort if it is not front
@@ -464,9 +465,20 @@ def _capture_rect(x, y, w, h, out_path, dry_run=False, timeout=None):
     return out_path
 
 
-def hold_and_capture(session, title_pt, out_path, region=None, dwell_ms=250):
+def hold_and_capture(session, title_pt, out_path, region=None, dwell_ms=250,
+                     over_pt=None):
     """Press-and-HOLD the real mouse on a menu title, capture the open menu
     HOST-side, then ALWAYS release.
+
+    `over_pt` drags to a further point WHILE HELD before capturing. That is what
+    a HIERARCHICAL item needs: a submenu is not drawn when its parent menu opens,
+    only once the pointer rests on the parent item, so holding at the title alone
+    photographs a submenu that is never there — and reads exactly like a submenu
+    that is empty. (THINK's `Switch To Project` is the case that motivated it:
+    the resource says it is hierarchical, submenu 104, and 104 exists only at
+    runtime.) The release still happens at the TITLE, never at `over_pt`: coming
+    back to the title selects nothing, whereas releasing on the item would pick
+    it — a measurement must not also be a click.
 
     This is the one place the module deliberately does what `menu` refuses to:
     it leaves the button DOWN across a screencapture. That is required to READ a
@@ -483,8 +495,15 @@ def hold_and_capture(session, title_pt, out_path, region=None, dwell_ms=250):
     # cliclick leaves the button DOWN when it exits after `dd` (the difference
     # from `c`), so the menu stays open for the capture below. The trailing wait
     # is the menu's render time, paid inside this one invocation.
-    session.cliclick(["m:%d,%d" % (tx, ty), "w:150",
-                      "dd:%d,%d" % (tx, ty), "w:%d" % max(0, int(dwell_ms))])
+    steps = ["m:%d,%d" % (tx, ty), "w:150",
+             "dd:%d,%d" % (tx, ty), "w:%d" % max(0, int(dwell_ms))]
+    if over_pt is not None:
+        # One invocation, still: the drag and the dwell must not be split across
+        # two cliclick calls, because every gap is time the guest spends inside a
+        # tracking loop with the daemon starved.
+        steps += ["m:%d,%d" % (over_pt[0], over_pt[1]),
+                  "w:%d" % max(0, int(dwell_ms))]
+    session.cliclick(steps)
     try:
         g = session.geometry()
         x, y, w, h = build_capture_region(g["origin"], g["title_h"],
@@ -513,7 +532,12 @@ def cmd_menushot(args):
     with Session(args.app, not args.no_activate, args.dry_run,
                  keep_front=args.keep_front) as s:
         title = s.point(args.title_x, args.title_y)
-        out = hold_and_capture(s, title, args.out or "menu.png", region, args.dwell)
+        over = None
+        if args.over:
+            ox, oy = (int(v) for v in args.over.split(","))
+            over = s.point(ox, oy)
+        out = hold_and_capture(s, title, args.out or "menu.png", region,
+                               args.dwell, over)
     if not args.dry_run:
         print(out)
     return 0
@@ -564,6 +588,11 @@ def main(argv=None):
     ms.add_argument("--region", help="guest sub-rect 'gx,gy,w,h' to capture")
     ms.add_argument("--dwell", type=int, default=250,
                     help="ms to hold before capturing (menu render time)")
+    ms.add_argument("--over", metavar="GX,GY",
+                    help="drag onto this guest point while held, before "
+                         "capturing — required to reveal a HIERARCHICAL item's "
+                         "submenu, which is not drawn until the pointer rests "
+                         "on the parent item")
     ms.set_defaults(func=cmd_menushot)
 
     args = p.parse_args(argv)
