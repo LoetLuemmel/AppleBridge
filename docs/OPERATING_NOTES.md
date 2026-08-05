@@ -2247,3 +2247,53 @@ sondern dadurch, dass das Modal weggeräumt wurde — vier Sekunden später baut
 das Ereignis. Das ist eine **untere Schranke, keine Frist**. Sie ändert die Regel
 nicht, aber ohne Zahl nimmt jeder Leser später seine eigene an, und die fällt
 erfahrungsgemäß zu klein aus.
+
+## Eine LISTDIR-Antwort ist kein Text zum Grepen — 2026-08-05
+
+`grep tpmmenu` über eine `LISTDIR`-Antwort fand nichts. Die Datei war da, 10855
+Bytes, und ich war im Begriff zu melden, `DeRez` sei still gescheitert — also
+einen **Werkzeugfehler**, wo ein **Lesefehler** war.
+
+Der Grund ist die Nutzlast: Dateinamen auf einem klassischen Mac enthalten
+MacRoman-Bytes (`ƒ` = `$C4`, `π` = `$B9`). Damit gilt der Strom für `grep` als
+binär, und `grep` **schwiegt** statt zu melden — kein Treffer, keine Warnung,
+Rückgabewert wie bei „nicht gefunden". `file` auf dieselbe Datei sagt `data`,
+nicht `text`.
+
+```
+grep -c 'vers.r' dir.txt      # nichts   <- sieht aus wie "nicht vorhanden"
+grep -ac 'vers.r' dir.txt     # 1
+```
+
+Also: `grep -a`, oder gleich in Python dekodieren und über die Namensspalte
+gehen. Und wenn geprüft wird, dass etwas **weg** ist, gehört eine
+Positivkontrolle dazu — ein Muster, von dem feststeht, dass es dastehen *muss*.
+Sonst ist „nicht gefunden" wieder nur eine Aussage über den Suchbefehl.
+
+## Ein Untermenü wird erst gezeichnet, wenn der Zeiger darauf ruht — 2026-08-05
+
+`guest_input.py menushot` hielt die Maus auf dem **Titel** und fotografierte das
+aufgeklappte Menü. Für einen **hierarchischen** Eintrag reicht das nicht: sein
+Untermenü entsteht erst, wenn der Zeiger auf dem Elterneintrag verweilt. Das
+Foto zeigt dann ein Untermenü, das nie offen war — und das ist von einem leeren
+nicht zu unterscheiden.
+
+Neu ist `--over gx,gy`: während gedrückt auf den Eintrag ziehen, verweilen,
+fotografieren. Losgelassen wird am **Titel**, nie auf dem Eintrag — Loslassen
+über dem Eintrag wäre eine Auswahl, und eine Messung darf nicht zugleich ein
+Klick sein. Drag und Verweilzeit bleiben in *einer* `cliclick`-Invokation, weil
+jede Lücke Zeit ist, in der der Gast in einer Tracking-Schleife steht und der
+Daemon verhungert.
+
+**Und die Ungültigkeitsbedingung dazu muss genauer sein, als sie zuerst war.**
+„Ungültig, wenn der Eintrag nicht hervorgehoben ist" trifft daneben: *nicht
+hervorgehoben, weil deaktiviert* ist kein Fehlschlag, sondern der Befund. Die
+Bedingung lautet: ungültig, wenn der **Zeiger nicht auf dem Eintrag steht** — und
+genau das ist am Bild prüfbar, weil der Cursor mitfotografiert wird.
+
+**Ein Foto schlägt einen Walk.** Der Menü-Walk liest die Struktur, das Foto liest
+den Bildschirm. Wo beide sich widersprachen — ein Menüeintrag, dessen Text nicht
+zu seinem Verhalten passte — hatte der Walk unrecht, und der Widerspruch war
+keiner. Der Walk kann zudem nur die **Menüleiste** aufzählen; ein hierarchisches
+Untermenü hängt nicht darin, seine Abwesenheit dort belegt nichts über seinen
+Inhalt.

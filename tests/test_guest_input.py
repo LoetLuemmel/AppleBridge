@@ -490,6 +490,49 @@ def test_both_capture_paths_go_through_the_same_helper():
     assert not calls, f"hold_and_capture still calls screencapture directly: {calls}"
 
 
+# --- --over: revealing a HIERARCHICAL submenu -------------------------------
+def test_holding_at_the_title_alone_never_reaches_a_submenu():
+    """Without --over the gesture never leaves the title, so a hierarchical
+    item's submenu is not drawn — and the picture of a submenu that was never
+    opened is indistinguishable from a picture of an empty one. That confusion
+    is the reason the flag exists."""
+    spy = _HoldSpy()
+    _hold(spy)
+    moves = [a for c in spy.calls if c[0] == "cliclick"
+             for a in c[1] if a.startswith("m:")]
+    assert moves == ["m:1454,165"], moves
+
+
+def test_the_drag_onto_the_item_happens_while_the_button_is_down():
+    """A submenu opens on HOVER during tracking. Moving before the press, or
+    after the release, photographs the parent menu and nothing else."""
+    spy = _HoldSpy()
+    _hold(spy, over_pt=(1500, 220))
+    args = [a for c in spy.calls if c[0] == "cliclick" for a in c[1]]
+    assert args.index("dd:1454,165") < args.index("m:1500,220")
+
+
+def test_the_release_returns_to_the_title_not_the_item():
+    """Releasing over the item would SELECT it. A measurement must not also be
+    a click — and `Switch To Project` is exactly the item one would be reading."""
+    spy = _HoldSpy()
+    _hold(spy, over_pt=(1500, 220))
+    ups = [a for c in spy.calls if c[0] == "cliclick"
+           for a in c[1] if a.startswith("du:")]
+    assert ups == ["du:1454,165"], ups
+
+
+def test_the_drag_and_the_dwell_stay_in_one_invocation():
+    """Every gap between cliclick calls is time the guest spends inside a
+    tracking loop with the daemon starved — the 30 s bridge drop of 2026-07-25."""
+    spy = _HoldSpy()
+    _hold(spy, over_pt=(1500, 220))
+    downs = [c for c in spy.calls if c[0] == "cliclick"
+             and any(a.startswith("dd:") for a in c[1])]
+    assert len(downs) == 1
+    assert any(a == "m:1500,220" for a in downs[0][1]), downs[0][1]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
