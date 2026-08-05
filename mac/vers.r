@@ -107,16 +107,16 @@
 
 resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
-    development, 0x35,   /* development stage, non-release revision 38 (BCD) */
+    development, 0x36,   /* development stage, non-release revision 38 (BCD) */
     verUS,
-    "0.8d44",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d44 - title_point pointed at the neighbouring menu"  /* long -> Get Info */
+    "0.8d45",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d45 - a refused Apple Event can finally fail"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
-    development, 0x35,
+    development, 0x36,
     verUS,
-    "0.8d44",
+    "0.8d45",
     "AppleBridge"        /* the shared/suite version line */
 };

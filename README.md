@@ -466,7 +466,7 @@ AppleBridge/
 
 ## Status
 
-**Current daemon:** 0.8d44 ("title_point pointed at the neighbouring menu") — the version the
+**Current daemon:** 0.8d45 ("a refused Apple Event can finally fail") — the version the
 daemon itself reports, from `mac/vers.r`.
 
 - TCP bridge, NAT-reversed (the guest dials OUT), with an asynchronous connect

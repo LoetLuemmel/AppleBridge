@@ -2239,3 +2239,56 @@ und nicht über die Geste.
 Der Reflex, den das ersetzt, ist billig und falsch: die Wiederholung. Eine
 Handlung, die aus demselben Grund zum zweiten Mal nicht stattfindet, sieht
 genauso aus wie eine Handlung, die nichts bewirkt.
+
+## Ein abgelehntes Apple Event meldete Erfolg — 2026-08-05
+
+`AESend` liefert `noErr`, sobald das Ereignis **zugestellt** ist und eine Antwort
+zurückkam. Ob der Handler es angenommen hat, steht woanders: in `keyErrorNumber`
+in eben dieser Antwort. Der Daemon las das Feld nicht. Er holte
+`keyDirectObject`, ersatzweise `'----'`, und fand er beides nicht, schrieb er
+`err = noErr` mit dem Kommentar *"event sent, no reply parameter"*.
+
+Also meldete **jedes abgelehnte Ereignis `STATUS:0`** — nicht unterscheidbar von
+einem erfolgreichen.
+
+Gemessen an einem Ereignis, das keine Anwendung kennt (Klasse/ID `'ZZZZ'`):
+`STATUS:0` nach 0,34 s. Der Apple Event Manager hatte `errAEEventNotHandled`
+(−1708) in genau diese Antwort gelegt.
+
+Seit 0.8d45 wird `keyErrorNumber` gelesen und wird zum `exitCode`,
+`keyErrorString` geht nach `STDERR`; die Antwort selbst bleibt erhalten, weil ein
+Handler beides zurückgeben kann. **Die Positivkontrolle für den Fix** ist dieselbe
+Sonde in beiden Zuständen: ohne Modal muss jetzt −1708 kommen, mit Modal weiter
+−1712. Kommt weiter 0, hat der Fix nicht gegriffen — und ein Feld, das wieder
+schweigt, sieht aus wie eins, das nichts zu sagen hat.
+
+**Gemessen an 0.8d45, beide Richtungen** (2026-08-05, gegen ToolServer):
+`'ZZZZ'` mit `wait=120` → `STATUS:-1708`, *"target refused the event: -1708"*,
+in 0,17 und 0,26 s. Und die Gegenprobe, die genauso wichtig ist: ein Ereignis,
+das ToolServer **kennt** (`misc/dosc`, `Echo`), antwortet weiter `STATUS:0` mit
+seiner Ausgabe. Ein Fix, der Ablehnungen sichtbar macht und dabei Erfolge in
+Fehler verwandelt, wäre kein Fortschritt, sondern ein Tausch.
+
+### Die Sonde selbst
+
+Das ist auch der Weg, vor einem Apple Event zu prüfen, ob das Ziel seine Queue
+überhaupt bedient (siehe *Ein Apple Event an eine fremde Anwendung bleibt
+liegen*): ein Ereignis schicken, **das das Ziel nicht kennt**, mit `waitTicks > 0`.
+Eine Antwort kann nur entstehen, wenn das Ziel `AEProcessAppleEvent` gerufen hat.
+Nebenwirkungsfrei, und es braucht keine Zeile Daemon-Code — `AESEND` nimmt
+`waitTicks` bereits.
+
+Die Sonde ist ein **Rennen, keine Sperre**: zwischen Sonde und echtem Ereignis
+kann das Ziel ins Modal gehen. Sie verkleinert das Fenster, sie schließt es
+nicht. Und für das *echte* Ereignis bleibt `kAENoReply` richtig, wo die `aete`
+keine Antwort deklariert — ein `kAEWaitReply` darauf läuft in −1712 und
+verkleidet einen Erfolg als Fehler. Zwei Ereignisse, zwei Rollen.
+
+### Die gemessene Liegezeit
+
+**905 Sekunden** (15,1 Minuten), über 30-Sekunden-Stichproben, die Brücke
+durchgehend antwortbereit. Beendet wurde die Liegezeit nicht durch Ablauf,
+sondern dadurch, dass das Modal weggeräumt wurde — vier Sekunden später baute
+das Ereignis. Das ist eine **untere Schranke, keine Frist**. Sie ändert die Regel
+nicht, aber ohne Zahl nimmt jeder Leser später seine eigene an, und die fällt
+erfahrungsgemäß zu klein aus.
