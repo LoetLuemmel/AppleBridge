@@ -466,7 +466,7 @@ AppleBridge/
 
 ## Status
 
-**Current daemon:** 0.8d40 ("keyUp was masked out of SysEvtMask; a refusal is not congestion") — the version the
+**Current daemon:** 0.8d41 ("an empty helper list is a silence, not a decision: find ToolServer") — the version the
 daemon itself reports, from `mac/vers.r`.
 
 - TCP bridge, NAT-reversed (the guest dials OUT), with an asynchronous connect

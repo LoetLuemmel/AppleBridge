@@ -1737,3 +1737,34 @@ substructure. Conversely `PROCLIST` says nothing about what a *user* would see.
 For driving a UI, the menu is the right question. For an inventory, `PROCLIST`
 is. Reaching for whichever is easier gives a plausible answer to a question
 nobody asked.
+
+## An empty helper list is a silence, not a decision — 2026-08-05
+
+The daemon chain-launches its helpers from `APP=` lines in the prefs, and
+`PrefsDefaults` sets `appCount = 0`. So **every fresh install came up without
+ToolServer** — and every command that needs it failed with `no-ToolServer/MPW`
+until somebody worked out that a line was missing from a file they had never
+opened. Found after starting it by hand twice in one morning and finally
+reading the prefs instead of assuming they were configured.
+
+The mechanism was never broken. The list was simply empty, and **an empty list
+is indistinguishable from a deliberate one** — which is why nothing reported
+anything.
+
+A default *path* would have been the obvious fix and the wrong one: the guests
+here keep ToolServer in different places (the MPW folder on this one, a
+copied-local folder on the OS 9 machine, absent entirely on the 2013 MacBook's
+guest). So the daemon now **finds** it by creator `'MPSX'` in the **Desktop
+Database** — the same mapping the Finder uses when a double-clicked document
+opens the right program — across every mounted volume. No path, no volume name,
+no configuration. Same lesson as the System Folder that turned out to be called
+`Systemordner`: *find it, do not name it.*
+
+An explicit `APP=` list still wins; the lookup only fills a silence, and only
+when ToolServer is not already running.
+
+Verified in the state that matters — the `APP=` line **removed** so the prefs
+look like a fresh install, ToolServer quit first so nothing left over could
+help, then a reboot: `toolserver=1` twenty-three seconds later, `PROCLIST`
+shows it, `Echo` round-trips, and the prefs file is still exactly as written
+with no `APP=` line added behind anyone's back.

@@ -4799,13 +4799,37 @@ int main(void)
      * the faceless service brings up its own dependencies — the daemon needs
      * ToolServer running to return command output. Errors are non-fatal. */
     {
-        short ai;
+        short   ai;
+        Boolean launched = false;
         for (ai = 0; ai < gPrefs.appCount; ai++) {
-            LaunchAppAtPath(gPrefs.apps[ai]);
+            if (LaunchAppAtPath(gPrefs.apps[ai]) == noErr) launched = true;
+        }
+        /* An EMPTY list is not a decision, it is the default -- PrefsDefaults
+         * sets appCount = 0, so every fresh install came up without ToolServer
+         * and every command that needs it failed with "no-ToolServer/MPW" until
+         * somebody worked out that a line was missing from a file they had never
+         * opened (found 2026-08-05, after starting it by hand twice in one
+         * morning). So: if nobody has said what to launch, FIND ToolServer by
+         * its creator in the Desktop Database rather than assume a path -- the
+         * guests here keep it in different places, and a default path would be
+         * wrong on most of them. An explicit list still wins; this only fills a
+         * silence. */
+        if (gPrefs.appCount == 0 && !IsAppRunning('MPSX')) {
+            FSSpec ts;
+            if (FindAppFileBySignature('MPSX', &ts) == noErr) {
+                LaunchParamBlockRec lpb;
+                lpb.launchBlockID      = extendedBlock;
+                lpb.launchEPBLength    = extendedBlockLen;
+                lpb.launchFileFlags    = 0;
+                lpb.launchControlFlags = launchContinue | launchNoFileFlags;
+                lpb.launchAppSpec      = &ts;
+                lpb.launchAppParameters = NULL;
+                if (LaunchApplication(&lpb) == noErr) launched = true;
+            }
         }
         /* Let a freshly-launched ToolServer register before commands arrive.
          * (The connect + first-command lag usually covers this too.) */
-        if (gPrefs.appCount > 0) {
+        if (launched) {
             long until = TickCount() + 180L;   /* ~3s settle */
             while (TickCount() < until) { SystemTask(); }
         }
