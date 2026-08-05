@@ -742,6 +742,44 @@ def text_from_stdin_or_argv(args, verb):
     return args.text, None
 
 
+# Capability markers: a short name -> a string that is present in this file only
+# when that fix is in. Compared by CONTENT rather than by a version number,
+# because a version number is a claim somebody has to remember to update, and
+# the whole point here is to stop trusting claims about copies.
+_CAPABILITIES = (
+    ("stdin", "def text_from_stdin_or_argv"),
+    ("raises", "class ChannelWriteError"),
+    ("ssh-devnull", "subprocess.DEVNULL"),
+    ("stdin-first", "piped = None if sys.stdin.isatty()"),
+    ("persistent", "_DEFAULT_NOTES"),
+    ("ask-hint", "kein Fragezeichen"),
+)
+
+
+def fingerprint(path=None):
+    """What this copy of notes.py is, in one line.
+
+    Exists because two copies of this file are in play — one in the repo, one on
+    the machine at the other end of the ssh channel — and on 2026-08-05 a fix
+    landed in one while the other kept failing **with a word-for-word identical
+    error message**. Nothing in the setup said which copy was speaking.
+
+    So: a content hash and the list of fixes actually present. Run it on both
+    sides and compare one line. `repariert` on one side is not `repariert` on
+    the other, and no amount of goodwill substitutes for looking.
+    """
+    import hashlib
+    src = pathlib.Path(path or __file__).read_text(encoding="utf-8",
+                                                   errors="replace") \
+        if False else open(path or os.path.abspath(__file__), encoding="utf-8",
+                           errors="replace").read()
+    digest = hashlib.sha256(src.encode("utf-8")).hexdigest()[:12]
+    have = [name for name, marker in _CAPABILITIES if marker in src]
+    missing = [name for name, marker in _CAPABILITIES if marker not in src]
+    return {"sha": digest, "bytes": len(src.encode("utf-8")),
+            "has": have, "missing": missing}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="verb", required=True)
@@ -783,6 +821,10 @@ def main():
     f = sub.add_parser("find", help="search the live channel AND the archives")
     f.add_argument("text")
 
+    sub.add_parser("version", help="what THIS copy of notes.py is "
+                                   "(hash + which fixes are in) — run it on "
+                                   "both sides and compare")
+
     sub.add_parser("rotate", help="archive the channel and start a fresh one "
                                   "(refused while a question is open)")
 
@@ -796,6 +838,17 @@ def main():
                           "(what the PostToolUse hook uses, so it announces a "
                           "note once instead of after every tool call)")
     args = parser.parse_args()
+
+    if args.verb == "version":
+        fp = fingerprint()
+        print(f"notes.py {fp['sha']}  {fp['bytes']} bytes")
+        print(f"  hat    : {', '.join(fp['has']) or '(nichts)'}")
+        if fp["missing"]:
+            print(f"  FEHLT  : {', '.join(fp['missing'])}")
+            print("  -> diese Kopie ist aelter als das Repo; ziehe "
+                  "host/tools/notes.py nach, bevor du etwas ueber den Kanal "
+                  "behauptest")
+        return 0
 
     if args.verb == "find":
         hits = find(args.text)
