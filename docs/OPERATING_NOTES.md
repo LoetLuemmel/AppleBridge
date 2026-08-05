@@ -2269,6 +2269,22 @@ das ToolServer **kennt** (`misc/dosc`, `Echo`), antwortet weiter `STATUS:0` mit
 seiner Ausgabe. Ein Fix, der Ablehnungen sichtbar macht und dabei Erfolge in
 Fehler verwandelt, wäre kein Fortschritt, sondern ein Tausch.
 
+**Und die Modal-Hälfte, unabhängig gemessen** (gegen TPM, nicht gegen
+ToolServer):
+
+| Zustand | Sonde `'ZZZZ'`, `wait=120` | Zeit |
+|---|---|---|
+| Startdialog steht, kein Projekt | `-1712` *"target did not reply"* | 2,55 / 2,42 s |
+| Projekt offen, kein Modal | `-1708` *"target refused the event"* | 0,42 / 0,42 s |
+
+Die beiden Gegenproben teilen sich nichts außer dem geänderten Code — hier
+`misc/dosc` an ToolServer, dort `KAHL/RUN` an TPM mit sichtbarer Wirkung
+(Prozess erscheint in `PROCLIST`). Übereinstimmung über zwei Ziele und zwei
+Verben ist etwas wert; zweimal derselbe Weg wäre es nicht.
+
+Bemerkenswert am Nebenbefund: **vorher war die Zeit das einzige Signal** — ein
+Merkmal, das nur so lange existierte, wie das richtige fehlte.
+
 ### Die Sonde selbst
 
 Das ist auch der Weg, vor einem Apple Event zu prüfen, ob das Ziel seine Queue
