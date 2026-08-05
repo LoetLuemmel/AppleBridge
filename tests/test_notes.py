@@ -1057,3 +1057,90 @@ class ALostNoteCannotBeIgnored(unittest.TestCase):
         ok, msg = notes.rotate("2026-01-02T00:00:00.000", path,
                                run=lambda *a, **k: (False, "nope"))
         self.assertTrue(ok, msg)
+
+
+class TheChannelSurvivesARestart(unittest.TestCase):
+    """It lived in /tmp, and on 2026-08-05 a reboot took 130 notes.
+
+    Two days of correspondence — both sides' measurements, the corrections, the
+    findings — gone, and nothing said a word. Every guard this tool has was one
+    level too high to help: `rotate` archives rather than deletes, `find`
+    searches the archives, an open question blocks rotation. Then the operating
+    system removed the file underneath all of it.
+
+    What saved the content was the separation the process rests on: the channel
+    is CORRESPONDENCE, not memory. The findings were already in the operating
+    notes, the ledger and the pull requests, so a data loss became an
+    inconvenience. That is an argument for keeping the separation, not for
+    leaving the mailbox where it gets emptied.
+    """
+
+    def test_the_default_is_not_in_tmp(self):
+        self.assertNotIn("/tmp", notes._DEFAULT_NOTES)
+        self.assertTrue(notes._DEFAULT_NOTES.endswith("notes.log"))
+
+    def test_the_directory_is_created_on_demand(self):
+        import tempfile
+        base = os.path.join(tempfile.mkdtemp(prefix="ab-chan-"), "deep", "notes.log")
+        notes.ensure_channel_dir(base)
+        self.assertTrue(os.path.isdir(os.path.dirname(base)))
+
+    def test_a_remote_spec_is_left_alone(self):
+        """`user@host:/path` is somebody else's filesystem. Creating a local
+        directory called `jetson` would be a silent second channel that neither
+        side reads."""
+        spec = "pit@jetson:/home/pit/notes.log"
+        self.assertEqual(notes.ensure_channel_dir(spec), spec)
+        self.assertFalse(os.path.exists("pit@jetson"))
+
+    def test_a_legacy_tmp_channel_is_carried_over_once(self):
+        """Migration, not a flag day: the two sides are on different machines and
+        cannot be updated in the same breath, so whichever moves first must not
+        lose what the other has already written."""
+        import tempfile
+        legacy = os.path.join(tempfile.mkdtemp(prefix="ab-legacy-"), "old.log")
+        with open(legacy, "w", encoding="utf-8") as fh:
+            fh.write(notes.format_note("2026-01-01T00:00:00.000", "a", "all",
+                                       notes.NOTE_MARKER, "vom alten Kanal") + "\n")
+        new = os.path.join(tempfile.mkdtemp(prefix="ab-new-"), "notes.log")
+        old_legacy, notes._LEGACY_NOTES = notes._LEGACY_NOTES, legacy
+        old_default, notes._DEFAULT_NOTES = notes._DEFAULT_NOTES, new
+        try:
+            notes.ensure_channel_dir(new)
+            self.assertIn("vom alten Kanal", open(new, encoding="utf-8").read())
+            # ...and only once: a second call must not append it again.
+            notes.ensure_channel_dir(new)
+            self.assertEqual(open(new, encoding="utf-8").read().count("alten Kanal"), 1)
+        finally:
+            notes._LEGACY_NOTES = old_legacy
+            notes._DEFAULT_NOTES = old_default
+
+    def test_a_custom_path_gets_no_uninvited_migration(self):
+        """The first version migrated into ANY new path and pulled the live
+        channel into every test's temp file. A caller who names a path wants
+        that channel, not a copy of another one."""
+        import tempfile
+        legacy = os.path.join(tempfile.mkdtemp(prefix="ab-legacy2-"), "old.log")
+        with open(legacy, "w", encoding="utf-8") as fh:
+            fh.write("2026-01-01T00:00:00.000 from=a to=all re=note alt\n")
+        mine = os.path.join(tempfile.mkdtemp(prefix="ab-mine-"), "notes.log")
+        old_legacy, notes._LEGACY_NOTES = notes._LEGACY_NOTES, legacy
+        try:
+            notes.ensure_channel_dir(mine)
+            self.assertFalse(os.path.exists(mine), "an uninvited copy appeared")
+        finally:
+            notes._LEGACY_NOTES = old_legacy
+
+    def test_an_append_creates_the_directory_it_needs(self):
+        """The failure this closes is not hypothetical: `append` now RAISES, so a
+        missing directory would turn every note into a visible crash instead of
+        a working channel."""
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(prefix="ab-mk-"), "sub", "notes.log")
+        old_legacy, notes._LEGACY_NOTES = notes._LEGACY_NOTES, "/nonexistent-legacy"
+        try:
+            self.assertTrue(notes.append(
+                notes.format_note("2026-01-01T00:00:00.000", "a", "all",
+                                  notes.NOTE_MARKER, "x"), path))
+        finally:
+            notes._LEGACY_NOTES = old_legacy
