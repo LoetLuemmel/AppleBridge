@@ -1391,3 +1391,70 @@ So the two capture paths are not redundant, they answer different questions.
 anything that happens to the host's window. When one returns nothing, try the
 other before concluding the guest is in trouble — here it was in no trouble at
 all.
+
+## An ssh session can ACT on this desktop but not SEE it — measured 2026-08-04
+
+> **CONFOUNDED, 2026-08-05 07:26 — read this first.** The next morning the same
+> query failed from the **console** session too, and a plain `screencapture`
+> showed why: the Mac was sitting at the **login window**. With the display
+> locked, `BasiliskII` has no composited windows for anybody — System Events
+> reports zero from every session, and a capture returns the login screen. That
+> is a simpler explanation than session context and it covers the same
+> observations, including the "transient" 15 hours earlier that resolved without
+> anyone doing anything.
+>
+> What the ssh measurement actually established is narrower than what was
+> written: `cliclick` acted and `screencapture` returned an image without
+> windows, **at one moment, with the screen's lock state unrecorded**. The
+> conclusion may still be right — it is the textbook WindowServer-session
+> behaviour — but it is not established, and the counter-test (`launchctl
+> asuser`) never ran because `sudo` wanted a password.
+>
+> **To settle it:** unlock the screen, confirm a console capture contains the
+> emulator window, and only then repeat the ssh capture. Until that is done,
+> treat the section below as a hypothesis with supporting evidence, not as a
+> measurement. The `screencapture -R` points-vs-pixels finding at the end is
+> unaffected — that one was measured twice, both ways, on an unlocked screen.
+
+The parallel session drives this Mac over ssh. Both halves were tested from
+that session, and they do not behave the same way:
+
+| from an ssh session | result |
+|---|---|
+| `cliclick` moving/clicking the real mouse | **works** (Accessibility granted) |
+| `screencapture -x` full screen | exit 0, 11 MB — **and no windows in it** |
+
+The capture is not empty and not an error: it contains the wallpaper and the
+host menu bar, and nothing else. Windows belong to the WindowServer session an
+ssh process is not attached to, and **granting TCC does not change this**,
+because it is not a permission question. From the console session on the same
+machine, at the same moment, the identical command captured the emulator window
+perfectly.
+
+So a remote driver can **open** a menu and cannot **read** it. That asymmetry
+decides who does what: the acting half can live anywhere, the seeing half must
+run in the GUI session — or come from the guest instead, over the bridge, where
+`mac_screenshot` is indifferent to all of this.
+
+`guest_input.py shot` and `mac_host_screenshot` inherit the limitation exactly,
+because both are thin wrappers around the same `screencapture`. Reaching for
+them does not route around it.
+
+The counter-test needs `sudo launchctl asuser <uid> screencapture …`, and on
+this host `sudo` wants a password the remote session does not have — so the
+last step of the diagnosis goes to the person sitting in front of the machine.
+That is not a gap in the tooling; it is the cheapest available move, and this
+file already says so under *instruct rather than automate*.
+
+**`screencapture -R` takes POINTS and returns PIXELS.** Measured on a 3840×2160
+panel running a 1920×1080 UI (2×):
+
+    -R448,128,1024,796    -> a 2048x1592 image   (exactly 2x the rect)
+    -R896,256,2048,1592   -> a 2048x1648 image   (clipped at the screen edge)
+
+The second line is the proof, not the first: 896…1920 points is 1024 points =
+2048 px, and 256…1080 points is 824 points = 1648 px. A rect given in pixels on
+a 2× display therefore runs off the screen and comes back as *"does not
+intersect any displays"* — which reads like a broken display list and is
+nothing of the kind. `guest_input.py` already works in points throughout,
+because its origin comes from System Events, which reports points.

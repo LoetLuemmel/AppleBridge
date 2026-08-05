@@ -56,12 +56,33 @@ def test_append_remote_is_one_atomic_write():
     assert stdin == "hello\n"
 
 
-def test_ssh_error_degrades_to_nothing():
+def test_a_failed_ssh_READ_degrades_to_nothing():
+    """Silence is the right answer for a read: an unreachable channel has no
+    notes, and a reader that raised would take the session brief down with it."""
     def dead(host, cmd, stdin=None):
         return False, ""
 
     assert notes.read("h:/p", run=dead) == []
-    assert notes.append("x", "h:/p", run=dead) is False
+
+
+def test_a_failed_ssh_WRITE_does_NOT_degrade_to_nothing():
+    """The mirror image, and the asymmetry is the point. A lost READ costs a
+    view that can be asked for again; a lost WRITE costs a message nobody knows
+    was sent. On 2026-08-04 this returned False, a caller did not look, and two
+    notes stayed lost for over an hour while both sides thought the channel was
+    quiet. This test used to assert exactly that False — under the name
+    "degrades to nothing", which for a write is the defect, not the design."""
+    def dead(host, cmd, stdin=None):
+        return False, "ssh: connect to host jetson port 22: No route to host"
+
+    try:
+        notes.append("x", "h:/p", run=dead)
+        raise AssertionError("a lost note must not be reported as anything but lost")
+    except notes.ChannelWriteError as exc:
+        assert "No route to host" in str(exc), exc
+
+    # Still available to a caller who has explicitly decided not to care.
+    assert notes.append("x", "h:/p", run=dead, raise_on_fail=False) is False
 
 
 def test_local_path_never_calls_run():

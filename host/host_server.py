@@ -224,7 +224,57 @@ def _framed_failure(text):
 # The control-port verbs, derived ONCE so the hint below cannot drift from the
 # dispatch above it. A hint that lists the wrong verbs is worse than none: it
 # reads as authoritative and sends the caller somewhere else again.
+def hostshot_reply(region=None, capture=None, read=None):
+    """The host screen as a framed base64 PNG, or a framed refusal.
+
+    Split out of the dispatch so it can be tested without a socket, and so the
+    ONE thing that must never happen here is visible in one place: a capture
+    that produced nothing must not come back as an empty success. `screencapture`
+    exits 0 and writes a perfectly valid file even when it saw no windows, so
+    "the command worked" is not evidence — the same class as `Exists` answering
+    true after a failed link.
+
+    `region` is in GUEST coordinates; guest_input maps it. Both injectable, so
+    the tests never touch the real screen.
+    """
+    import tempfile
+    if guest_input is None:
+        msg = "guest_input is not importable on this host"
+        return f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(msg)}\r{msg}\r\r"
+    path = os.path.join(tempfile.gettempdir(), "applebridge_hostshot.png")
+    try:
+        (capture or guest_input.capture)(path, region)
+        png = (read or _read_bytes)(path)
+    except Exception as exc:                       # refusal or capture failure
+        msg = f"host screenshot failed: {exc}"
+        log(f"HOSTSHOT failed: {exc}")
+        return f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(msg)}\r{msg}\r\r"
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    if not png:
+        # Nothing on disk is not "an empty screen", it is a failed capture.
+        msg = "host screenshot produced no bytes"
+        log("HOSTSHOT: capture produced no bytes")
+        return f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(msg)}\r{msg}\r\r"
+    b64 = base64.b64encode(png).decode("ascii")
+    log(f"HOSTSHOT -> {len(png)}B PNG ({len(b64)}B base64)"
+        + (f" region={region}" if region else ""))
+    return f"STATUS:0\rSTDOUT:{len(b64)}\r{b64}\rSTDERR:0\r\r"
+
+
+def _read_bytes(path):
+    try:
+        with open(path, "rb") as handle:
+            return handle.read()
+    except OSError:
+        return b""
+
+
 ROUTED_VERBS = ("PING", "STATUS-via-mac_status", "DISKINFO", "LISTDIR", "MONITOR",
+                "HOSTSHOT",
                 "PROCLIST", "SCREENSHOT", "NBPLOOK", "AFPMOUNT", "AFPUNMOUNT",
                 "CLIPGET", "CLIPSET", "LAUNCH:", "QUIT:", "KEY:", "TYPE:",
                 "CLICK:", "REBOOT", "SHUTDOWN", "SWAPSELF", "QUITDAEMON")
@@ -1789,7 +1839,14 @@ def run_control_server(server):
                     # below needs it, and a bare "No response" tells the user
                     # nothing about which layer broke. MACSTATUS is exempt — it is
                     # answered host-side precisely so it can report that.
-                    if not server.connected and cmd not in ("MACSTATUS", "DOCTOR"):
+                    # HOSTSHOT joins the exemption for a stronger reason than
+                    # MACSTATUS: it photographs the HOST's screen and never
+                    # touches the daemon, and the moment it is most needed is
+                    # exactly the moment the daemon cannot answer — a menu or a
+                    # modal tracking loop owning the guest.
+                    if not server.connected and cmd not in ("MACSTATUS", "DOCTOR",
+                                                            "HOSTSHOT") \
+                            and not cmd.startswith("HOSTSHOT:"):
                         # Name the layer that is ACTUALLY broken. The old fixed
                         # paragraph always blamed the Ethernet adapter, which
                         # misleads whenever the cause is a disabled launchd job,
@@ -1814,7 +1871,36 @@ def run_control_server(server):
                             f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(msg)}\r{msg}\r\r".encode(
                                 "utf-8"))
                         continue          # finally: closes the conn
-                    if cmd.lower() == "screenshot" or cmd.lower().startswith("screenshot:"):
+                    if cmd == "HOSTSHOT" or cmd.startswith("HOSTSHOT:"):
+                        # The HOST's screen, captured in THIS process — which is
+                        # the whole point of putting it here rather than leaving
+                        # it to the caller.
+                        #
+                        # Measured 2026-08-04: `screencapture` run from an ssh
+                        # session returns exit 0 and a full-size image with NO
+                        # WINDOWS in it — wallpaper and menu bar only. Windows
+                        # belong to the WindowServer session an ssh process is
+                        # not attached to, and granting TCC does not change that,
+                        # because it is not a permission question. So the remote
+                        # session driving this Mac could OPEN a menu with
+                        # cliclick and had no way to READ it.
+                        #
+                        # This server is a LaunchAgent in `gui/501`, type login —
+                        # the Aqua session. Moving the capture here moves it into
+                        # a session that can see windows, and costs the caller
+                        # nothing but a verb. `mac_host_screenshot` cannot do
+                        # this job: MCP is stdio, one server per session, running
+                        # wherever its session runs — there is no way for another
+                        # machine's session to reach this one's.
+                        region = None
+                        if ":" in cmd:
+                            try:
+                                rx, ry, rw, rh = (int(v) for v in cmd.split(":")[1:5])
+                                region = (rx, ry, rw, rh)
+                            except (ValueError, IndexError):
+                                region = None
+                        out = hostshot_reply(region)
+                    elif cmd.lower() == "screenshot" or cmd.lower().startswith("screenshot:"):
                         # Optional crop: "screenshot:x:y:w:h" decodes only that region.
                         region = None
                         if ":" in cmd:
