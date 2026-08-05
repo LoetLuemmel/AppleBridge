@@ -2402,3 +2402,41 @@ entstanden ist. Deshalb liefert `message()` einen Satz und nicht nur ein `False`
 Dateien (`git ls-files`). Ein neues Modul, das noch nicht in git liegt, fehlt in
 der Kopie und lässt die Kontrolle fehlschlagen — was aussieht wie ein kaputter
 Test und heißt: *stage die Datei*.
+
+## Eine Regel hat drei Stationen, und gehalten hat sie erst in der dritten — 2026-08-05
+
+An einem Tag mit zwei parallel arbeitenden Sitzungen entstanden zwei Listen von
+je vier Fällen, und ihr Vergleich sagt mehr als jeder einzelne Fall.
+
+**Dreimal fing eine Wache ihren eigenen Erbauer.** Eine Negativkontrolle, die
+selbst kaputt war und es meldete. Ein Ratchet, der vier Tests fand, die hinter
+ihrem eigenen Runner hingen. Ein Test, der den Fehlerzeiger eines Fixes einforderte,
+den derselbe Fix gerade weggeworfen hatte (`stderr or <hinweis>`, wo der Daemon
+tatsächlich `stderr` liefert).
+
+**Und dreimal brach jemand seine eigene, aufgeschriebene Regel.** `MONITOR:0`
+nicht angesagt. Aus einem angekündigten *„ich räume ab"* wortlos eine Messreihe
+mit vier Programmneustarts gemacht — im Messfenster der anderen Sitzung. Einen
+Walk als Beleg geführt, ohne den Zustand belegt zu haben, in dem er lief.
+
+Der Unterschied zwischen den beiden Listen ist **nicht Sorgfalt**. Beide
+Sitzungen hatten vollen Kontext, die Regeln geladen und den ausdrücklichen
+Vorsatz, es besser zu machen. Der Unterschied ist, **ob die Regel zu diesem
+Zeitpunkt schon Code war**.
+
+Daraus folgt der Weg, und er hat drei Stationen:
+
+1. **Absicht** — jemand nimmt sich etwas vor. Hält bis zur ersten Müdigkeit.
+2. **Notiz** — es steht geschrieben. Hält, solange jemand im richtigen Moment
+   nachsieht, und das ist der Moment, in dem niemand nachsieht.
+3. **Code** — ein Test, eine Wache, ein Werkzeug, das verweigert. Hält.
+
+**Wer eine Regel aufschreibt, hat sie nicht eingeführt, sondern die zweite von
+drei Stationen erreicht.** Diese Datei ist Station zwei; sie ist nützlich, aber
+sie ist nicht die Stelle, an der eine Regel wirkt. Jeder Eintrag hier, der sich
+in eine Prüfung verwandeln lässt, gehört dorthin verwandelt.
+
+*Und der Befund, der beide Listen zusammenhält:* **keiner der acht Fälle wurde
+durch Nachdenken gefunden.** Jeder fiel bei einer Messung an, die etwas anderes
+wollte. Das ist ein Argument dafür, mehr zu messen, als eine Aufgabe verlangt —
+und keines dafür, vorsichtiger nachzudenken.
