@@ -1394,6 +1394,28 @@ all.
 
 ## An ssh session can ACT on this desktop but not SEE it — measured 2026-08-04
 
+> **CONFOUNDED, 2026-08-05 07:26 — read this first.** The next morning the same
+> query failed from the **console** session too, and a plain `screencapture`
+> showed why: the Mac was sitting at the **login window**. With the display
+> locked, `BasiliskII` has no composited windows for anybody — System Events
+> reports zero from every session, and a capture returns the login screen. That
+> is a simpler explanation than session context and it covers the same
+> observations, including the "transient" 15 hours earlier that resolved without
+> anyone doing anything.
+>
+> What the ssh measurement actually established is narrower than what was
+> written: `cliclick` acted and `screencapture` returned an image without
+> windows, **at one moment, with the screen's lock state unrecorded**. The
+> conclusion may still be right — it is the textbook WindowServer-session
+> behaviour — but it is not established, and the counter-test (`launchctl
+> asuser`) never ran because `sudo` wanted a password.
+>
+> **To settle it:** unlock the screen, confirm a console capture contains the
+> emulator window, and only then repeat the ssh capture. Until that is done,
+> treat the section below as a hypothesis with supporting evidence, not as a
+> measurement. The `screencapture -R` points-vs-pixels finding at the end is
+> unaffected — that one was measured twice, both ways, on an unlocked screen.
+
 The parallel session drives this Mac over ssh. Both halves were tested from
 that session, and they do not behave the same way:
 
