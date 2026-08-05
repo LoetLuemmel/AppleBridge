@@ -1807,3 +1807,51 @@ the guest over the bridge, where `mac_screenshot` is indifferent to all of this.
 *Cost of not running this experiment first: an evening of inference, four rounds
 of an operator clicking through System Settings, and one nearly-built app
 bundle. Cost of running it: one logout and two commands.*
+
+## MENUTREE sees the Application menu — the whole hold-and-photograph branch was unnecessary — 2026-08-05
+
+Measured, after an evening spent building the other way round. `MENUTREE`
+returns the front application's **entire** menu bar as structured JSON, and that
+includes the **Application menu at the right end**, menu id **−16489**:
+
+    {"id":-16489,"title_x":985,"items":[
+      {"index":1,"text":"Hide ToolServer"},
+      {"index":2,"text":"Hide Others"},
+      {"index":3,"text":"Show All","enabled":false},
+      {"index":4,"text":"-","separator":true},
+      {"index":5,"text":"AppleBridge"},
+      {"index":6,"text":"Finder"},
+      {"index":7,"text":"ToolServer"}]}
+
+**No mouse, no hold, no screenshot, no host session, no permission.** The task
+that morning — *read which programs are running from the Application menu* — was
+solvable over the bridge the whole time, and the answer arrives richer than a
+picture: menu id, title x, per-item coordinates, separators, and which entries
+are greyed out. From pixels all of that has to be inferred.
+
+Two mistakes, and the second is the one worth carrying:
+
+**The task was confused with the capability.** The brief was "operate the
+Application menu"; that became "with the real mouse" because that was how it had
+been proposed, and an evening went into the consequences. The brief was *read
+which programs are running*.
+
+**An existing capability was never held against the new task.** `MENUWALK` had
+been in the repo since the previous day and was verified against the Finder's
+menu bar. Nobody asked whether it also sees the menu at the far right. That
+question took thirty seconds and would have skipped the entire branch — the
+host capture, the four rounds of System Settings, the near-built app bundle.
+
+So the host-side hold is not worthless, but it is much narrower than it looked:
+it is for menus that must be **seen rendered**. For **reading menu contents**,
+`MENUTREE` is better in every respect — headless, no starvation, no session
+question, and structure instead of an image.
+
+**The general form:** before building a way to observe something, ask what
+already reads it. A capability list is not a shelf you take from when a task
+arrives; it is something to hold *against* the task, deliberately, before
+deciding the task needs anything new.
+
+*(Cross-check that survives: the menu lists three applications where `PROCLIST`
+reports four. The watchdog is faceless and never appears there — the two views
+answer different questions, see the note above.)*
