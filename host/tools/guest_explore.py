@@ -150,6 +150,26 @@ class _Cur:
         return s.decode("mac_roman", "replace")
 
 
+# The one flag bit that decides whether an event can be built at all.
+#
+# An `aete` parameter carries a flags word, and bit 15 (0x8000) means OPTIONAL.
+# Read off the THINK Project Manager's own terminology by the parallel session
+# on 2026-08-05 and cross-checked at four independent places in the same
+# resource: `create` has file mandatory and at/with/model optional, `set` has
+# `to` mandatory. That is what makes it a reading rather than a guess.
+#
+# It matters because AESEND can only build a `typeChar` direct object. An event
+# whose direct parameter is MANDATORY and of some other type therefore cannot be
+# constructed with the tools here — which is a fact worth having BEFORE spending
+# an afternoon trying.
+AETE_OPTIONAL = 0x8000
+
+
+def _param(kind, ptype, desc, flags):
+    return {"kind": kind, "type": ptype, "desc": desc, "flags": flags,
+            "optional": bool(flags & AETE_OPTIONAL)}
+
+
 def parse_aete(buf, align):
     """-> [(suite, [(name, class, id, description)])] or None if it looks wrong.
 
@@ -183,11 +203,24 @@ def _parse_aete(buf, align):
                 cls, eid = c.ostype(), c.ostype()
                 if not (cls.isprintable() and eid.isprintable()):
                     raise ValueError("implausible event code")
-                c.ostype(); c.pstr(align); c.u16()   # reply type, desc, flags
-                c.ostype(); c.pstr(align); c.u16()   # direct parameter
-                for _ in range(c.u16()):             # named parameters
-                    c.pstr(align); c.ostype(); c.ostype(); c.pstr(align); c.u16()
-                events.append((ev, cls, eid, ed))
+                # These three were READ AND DISCARDED until 2026-08-05, and
+                # they are the fields that carry the answer: the reply type, the
+                # direct parameter's type and flags, and the named parameters.
+                # Everything above them says what an application UNDERSTANDS;
+                # only these say what a caller must be able to BUILD.
+                rt, rd, rf = c.ostype(), c.pstr(align), c.u16()
+                dt, dd, df = c.ostype(), c.pstr(align), c.u16()
+                named = []
+                for _ in range(c.u16()):
+                    pn = c.pstr(align); pk = c.ostype()
+                    pt = c.ostype(); pd = c.pstr(align); pf = c.u16()
+                    named.append(dict(_param("named", pt, pd, pf),
+                                      name=pn, keyword=pk))
+                events.append((ev, cls, eid, ed, {
+                    "reply": _param("reply", rt, rd, rf),
+                    "direct": _param("direct", dt, dd, df),
+                    "named": named,
+                }))
         except (EOFError, IndexError, ValueError):
             suites.append((name, desc, events, declared))
             break
@@ -243,9 +276,49 @@ def cmd_aete(args):
         print(f"\n  suite: {name}  —  {desc[:60]}")
         shown = f"{len(events)} of {declared}" if len(events) != declared else f"{declared}"
         print(f"  {shown} events:")
-        for ev, cls, eid, ed in events:
+        for ev, cls, eid, ed, sig in events:
             print(f"    {cls}/{eid}  {ev:<22} {ed[:44]}")
+            if not args.full:
+                continue
+            d = sig["direct"]
+            need = "optional" if d["optional"] else "REQUIRED"
+            if d["type"] == "null":
+                print(f"        direct : none")
+            else:
+                print(f"        direct : {d['type']}  ({need})")
+            if sig["reply"]["type"] != "null":
+                print(f"        reply  : {sig['reply']['type']}")
+            for prm in sig["named"]:
+                mark = "optional" if prm["optional"] else "REQUIRED"
+                print(f"        {prm['keyword']}    {prm['name'][:18]:<18} "
+                      f"{prm['type']}  ({mark})")
+            print(f"        -> {verdict(sig)}")
     return 0
+
+
+def verdict(sig):
+    """Can this event be built with the tools in this repo? -> one sentence.
+
+    `AESEND` sends a `typeChar` direct object and nothing else. So an event is
+    reachable when it needs no direct parameter, or when the one it declares is
+    optional — and unreachable when a direct parameter of another type is
+    mandatory. Stated as a judgement rather than left to the reader, because the
+    whole point of printing these fields is to answer the question they raise.
+
+    Honest limit, measured the same day: this reads the DECLARATION. A THINK C
+    `KAHL/MAKE` whose direct parameter is declared mandatory built a project
+    anyway when sent without one. So a "no" here means "not according to the
+    terminology", which is a reason to be careful and not a proof of refusal.
+    """
+    d = sig["direct"]
+    if d["type"] == "null":
+        return "AESEND-reachable (no direct parameter)"
+    if d["optional"]:
+        return f"AESEND-reachable (direct {d['type']} is optional)"
+    if d["type"] in ("TEXT", "ctxt", "cstr"):
+        return f"AESEND-reachable (direct {d['type']} is text)"
+    return (f"NOT constructible with AESEND: direct {d['type']} is required "
+            "and AESEND sends only typeChar")
 
 
 # --- verbs -------------------------------------------------------------------
@@ -343,6 +416,10 @@ def main():
     p_pr = sub.add_parser("probe", help="fork sizes + resource types; is it scriptable?")
     p_pr.add_argument("path")
     p_ae = sub.add_parser("aete", help="the Apple Event vocabulary an app accepts")
+    p_ae.add_argument("--full", action="store_true",
+                      help="also the PARAMETER TYPES — reply, direct object and "
+                           "named parameters with their optional flag, plus a "
+                           "verdict on whether AESEND can build the event")
     p_ae.add_argument("path")
     p_gt = sub.add_parser("get", help="save a file's forks locally")
     p_gt.add_argument("path"); p_gt.add_argument("local")
