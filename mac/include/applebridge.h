@@ -73,6 +73,7 @@
 #define PROTO_PROCLIST "PROCLIST"      /* host->daemon: running processes (Process Manager, no ToolServer) */
 #define PROTO_DISKINFO "DISKINFO"      /* host->daemon: volume totals/free (PBHGetVInfo, no ToolServer) */
 #define PROTO_MONITOR "MONITOR"        /* host->daemon: hide/show the Verbose window (it covers the desktop) */
+#define PROTO_KEYSTAT "KEYSTAT"        /* host->daemon: what the last keystroke cost and why (retry counts, PostEvent errors, SysEvtMask) */
 #define PROTO_MACUITREE "MACUITREE"    /* host->daemon: dump the live window/dialog UI tree (Toolbox ground truth) as JSON — read-only, no ToolServer */
 
 /* Wire protocol version advertised in the HELLO reply (see docs/PROTOCOL_v0.2.md). */
@@ -195,6 +196,11 @@ Boolean ProcListVerb(ABConn *conn, char *request, long requestLen);
 Boolean MonitorVerb(ABConn *conn, char *request, long requestLen);
 
 /* events.c -- synthetic input injection (drive the front GUI app). */
+/* Keystroke instrument: what the last injected keystroke actually cost, and
+ * what PostEvent answered for each half of it. See events.c. */
+short KeyProbeMaskFix(void);
+void KeyProbeRead(short *kdTries, short *kuTries, short *kdErr, short *kuErr,
+                  long *ticks, long *count, short *sysEvtMask);
 OSErr InjectKey(short charCode, short keyCode);
 OSErr InjectKeyMod(short charCode, short keyCode, short modifiers);
 OSErr InjectType(const char *text, long len);

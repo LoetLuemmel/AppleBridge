@@ -3308,14 +3308,83 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         return true;
     }
 
+    /* KEYSTAT verb: what the last keystroke actually cost, and what PostEvent
+     * answered for each half of it. Built 2026-08-05 because a stopwatch said a
+     * keystroke costs 1.69 s against a CLICK's 0.102 s on an idle freshly
+     * booted guest, and the arithmetic that explained the gap had already
+     * pointed at a wrong cause once that morning. This states facts instead:
+     * attempts used, the OSErr, and SysEvtMask -- because PostEvent answers
+     * evtNotEnb (1) for an event type whose bit is clear there, every time, and
+     * a retry loop against that can only burn its budget. */
+    if (strncmp(request, PROTO_KEYSTAT, strlen(PROTO_KEYSTAT)) == 0) {
+        short kd = 0, ku = 0, kde = 0, kue = 0, mask = 0;
+        long  ticks = 0, count = 0;
+        char  body[200];
+        char *b = body;
+        KeyProbeRead(&kd, &ku, &kde, &kue, &ticks, &count, &mask);
+        b = StatStr(b, "keydownTries="); b = StatDec(b, (long)kd);
+        b = StatStr(b, ";keydownErr=");  b = StatDec(b, (long)kde);
+        b = StatStr(b, ";keyupTries=");  b = StatDec(b, (long)ku);
+        b = StatStr(b, ";keyupErr=");    b = StatDec(b, (long)kue);
+        b = StatStr(b, ";ticks=");       b = StatDec(b, ticks);
+        b = StatStr(b, ";keystrokes=");  b = StatDec(b, count);
+        b = StatStr(b, ";sysEvtMask=");  b = StatDec(b, (long)mask);
+        b = StatStr(b, ";maskPatched="); b = StatDec(b, (long)KeyProbeMaskFix());
+        b = StatStr(b, ";retryBudget=48");
+        *b = '\0';
+        {
+            /* Framed by hand, like STAT. `sprintf` here drags _doprnt and
+             * fwrite out of StdCLib and the link dies with a page of undefined
+             * stdio entries — which is why this file has StatStr/StatDec at
+             * all. Cost of learning that: one failed link that still left a
+             * plausible 33 KB APPL behind. */
+            char frame[288];
+            char *f = frame;
+            f = StatStr(f, "STATUS:0\rSTDOUT:");
+            f = StatDec(f, (long)(b - body));
+            *f++ = '\r';
+            f = StatStr(f, body);
+            f = StatStr(f, "\rSTDERR:0\r\r");
+            ABSend(conn, frame, (long)(f - frame));
+        }
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
     /* TYPE:<text> verb: inject a run of characters into the front app. */
     if (strncmp(request, PROTO_TYPE, strlen(PROTO_TYPE)) == 0) {
         long base = (long)strlen(PROTO_TYPE), n = 0;
         while (request[base + n] && request[base + n] != '\r' &&
                request[base + n] != '\n' && (base + n) < requestLen) n++;
         SetActivity("TYPE");
-        InjectType(request + base, n);
-        strcpy(responseBuffer, "STATUS:0\rSTDOUT:5\rTyped\rSTDERR:0\r\r");
+        {
+            /* The return value was DISCARDED here, and the verb answered
+             * "Typed" unconditionally -- so a keystroke that never reached the
+             * event queue was reported as success. Third instance of one shape
+             * in two days, after QUIT's "Quit OK" for a merely-delivered event
+             * and append()'s ignored False: a return value that can be ignored
+             * by omission, and was. */
+            OSErr tErr = InjectType(request + base, n);
+            if (tErr == noErr) {
+                strcpy(responseBuffer, "STATUS:0\rSTDOUT:5\rTyped\rSTDERR:0\r\r");
+            } else {
+                char  msg[96];
+                char *m = msg;
+                char *r = responseBuffer;
+                m = StatStr(m, "PostEvent refused a keystroke (err ");
+                m = StatDec(m, (long)tErr);
+                m = StatStr(m, ") - see KEYSTAT");
+                *m = '\0';
+                r = StatStr(r, "STATUS:-1\rSTDOUT:0\rSTDERR:");
+                r = StatDec(r, (long)(m - msg));
+                *r++ = '\r';
+                r = StatStr(r, msg);
+                r = StatStr(r, "\r\r");
+                *r = '\0';
+                NoteErrCode("TYPE", (long)tErr);
+            }
+        }
         ABSend(conn, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();
         gTXCount++;

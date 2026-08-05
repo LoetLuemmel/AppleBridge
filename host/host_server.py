@@ -274,7 +274,7 @@ def _read_bytes(path):
 
 
 ROUTED_VERBS = ("PING", "STATUS-via-mac_status", "DISKINFO", "LISTDIR", "MONITOR",
-                "HOSTSHOT",
+                "HOSTSHOT", "KEYSTAT",
                 "PROCLIST", "SCREENSHOT", "NBPLOOK", "AFPMOUNT", "AFPUNMOUNT",
                 "CLIPGET", "CLIPSET", "LAUNCH:", "QUIT:", "KEY:", "TYPE:",
                 "CLICK:", "REBOOT", "SHUTDOWN", "SWAPSELF", "QUITDAEMON")
@@ -2203,7 +2203,7 @@ def run_control_server(server):
                           or cmd == "CPINSTALL" or cmd == "CPARM" or cmd == "CPDISARM"
                           or cmd == "CPREAD" or cmd == "CPUNINSTALL"
                           or cmd == "CPJINSTALL" or cmd == "CPJUNINSTALL"
-                          or cmd == "PROCLIST"
+                          or cmd == "PROCLIST" or cmd == "KEYSTAT"
                           or cmd.startswith("LAUNCH:") or cmd.startswith("QUIT:")
                           or cmd.startswith("KEY:") or cmd.startswith("TYPE:")
                           or cmd.startswith("CLICK:")):

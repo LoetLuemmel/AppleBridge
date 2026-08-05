@@ -47,6 +47,38 @@
 #define LM_KeyMap    ((volatile unsigned char *)0x0174L)
 
 /* Modifier virtual key codes (Inside Macintosh: Toolbox/keyboard). */
+/* System event mask -- which event types PostEvent is allowed to queue at all.
+ * PostEvent answers evtNotEnb (1) for a type whose bit is clear here, and it
+ * does so EVERY time, so a retry loop against it can only burn its budget. Read
+ * rather than assumed: this is the first candidate the KEYSTAT verb reports. */
+#define LM_SysEvtMask (*(volatile short *)0x0144L)
+
+/* --- keystroke instrument -------------------------------------------------
+ * Measured 2026-08-05: a keystroke costs 1.69 s while a CLICK costs 0.102 s,
+ * on an idle freshly booted guest, and the difference is almost exactly ONE
+ * exhausted retry budget. The arithmetic said as much and the arithmetic had
+ * already pointed at a wrong cause once that morning ("the queue is full",
+ * refuted by a reboot). So this counts instead of inferring: how many attempts
+ * each half of a keystroke really used, and what PostEvent actually answered. */
+static short gKD_Tries = -1;     /* attempts used by the last keyDown  */
+static short gKU_Tries = -1;     /* attempts used by the last keyUp    */
+static OSErr gKD_Err   = 0;      /* what PostEvent last answered for keyDown */
+static OSErr gKU_Err   = 0;      /* ...and for keyUp */
+static long  gKeyTicks = 0;      /* wall-clock ticks of the last keystroke */
+static long  gKeyCount = 0;      /* keystrokes injected since launch */
+static short gKeyMaskFix = 0;    /* 1 if the last post had to enable its own event type */
+
+short KeyProbeMaskFix(void) { return gKeyMaskFix; }
+
+void KeyProbeRead(short *kdTries, short *kuTries, short *kdErr, short *kuErr,
+                  long *ticks, long *count, short *sysEvtMask)
+{
+    *kdTries = gKD_Tries;  *kuTries = gKU_Tries;
+    *kdErr   = (short)gKD_Err;  *kuErr = (short)gKU_Err;
+    *ticks   = gKeyTicks;  *count = gKeyCount;
+    *sysEvtMask = LM_SysEvtMask;
+}
+
 #define VK_CMD       0x37
 #define VK_SHIFT     0x38
 #define VK_CAPS      0x39
@@ -91,20 +123,50 @@ static void ApplyModifierKeys(short mods, Boolean down)
  * that PostEvent's (what,message)-only interface can't express. */
 static OSErr PPostEventRetry(short what, long msg, short modifiers)
 {
-    OSErr     e;
+    OSErr     e = noErr;
     short     tries;
     EvQElPtr  qEl;
+    /* MEASURED 2026-08-05, by the instrument two functions up, after three
+     * wrong explanations from arithmetic alone:
+     *
+     *     keydownTries=0  keydownErr=0     <- keyDown lands first try
+     *     keyupTries=48   keyupErr=1       <- keyUp refused 48 times, evtNotEnb
+     *     sysEvtMask=-17  == 0xFFEF        <- every bit set EXCEPT bit 4 = keyUpMask
+     *
+     * System 7 ships with keyUp disabled in the system event mask, because
+     * almost no classic application wants keyUp events. So PostEvent refused
+     * every keyUp this daemon ever sent, the retry loop burned its whole budget
+     * against a wall, and the verb answered "Typed". 1.69 s per keystroke, since
+     * the feature was written.
+     *
+     * Two fixes, and the second is the one that generalises. Enable the type
+     * for the duration of the post and put the mask back; and STOP RETRYING an
+     * error that retrying cannot fix — evtNotEnb is a statement about
+     * configuration, not about congestion, and 48 attempts at it only convert a
+     * refusal into a delay. */
+    short     bit       = (short)(1 << what);
+    short     savedMask = LM_SysEvtMask;
+    Boolean   patched   = (Boolean)((savedMask & bit) == 0);
+    if (patched) SetEventMask((short)(savedMask | bit));
     for (tries = 0; tries < 48; tries++) {
         qEl = 0L;
         e = PPostEvent((EventKind)what, (unsigned long)msg, &qEl);
         if (e == noErr) {
             if (qEl) qEl->evtQModifiers = (EventModifiers)modifiers;
-            return noErr;                /* queued (modifiers stamped) */
+            break;                       /* queued (modifiers stamped) */
         }
+        if (e == evtNotEnb) break;       /* a disabled type stays disabled */
         SystemTask();                    /* give the front app a slice to drain */
         ShortDelay(2L);                  /* ...then retry the same event */
     }
-    return e;                            /* still full after the retry budget */
+    if (patched) SetEventMask(savedMask);
+    gKeyMaskFix = patched ? 1 : 0;
+    /* Record BOTH halves separately. "One of the two posts burns its budget"
+     * was an inference from a stopwatch; which one, and with what error, is a
+     * fact the daemon can simply state. */
+    if (what == keyDown) { gKD_Tries = tries; gKD_Err = e; }
+    else if (what == keyUp) { gKU_Tries = tries; gKU_Err = e; }
+    return e;                            /* noErr, or the last refusal */
 }
 
 /* Post one keystroke (keyDown then keyUp) with modifiers to the front app.
@@ -117,6 +179,7 @@ static OSErr PPostEventRetry(short what, long msg, short modifiers)
  * the modifier keys down in the KeyMap across the app's read, then release. */
 OSErr InjectKeyMod(short charCode, short keyCode, short modifiers)
 {
+    long  t0  = (long)TickCount();
     long  msg = (((long)(keyCode & 0x7F)) << 8) | (long)(charCode & 0xFF);
     short m   = (short)(modifiers | btnState);   /* btnState = mouse up, as real key events carry */
     OSErr e1, e2;
@@ -129,6 +192,8 @@ OSErr InjectKeyMod(short charCode, short keyCode, short modifiers)
     ShortDelay(2L);
     ApplyModifierKeys(modifiers, false);         /* release: restore keyboard state */
 
+    gKeyTicks = (long)TickCount() - t0;
+    gKeyCount++;
     return (e1 != noErr) ? e1 : e2;
 }
 
