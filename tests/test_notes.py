@@ -1144,3 +1144,63 @@ class TheChannelSurvivesARestart(unittest.TestCase):
                                   notes.NOTE_MARKER, "x"), path))
         finally:
             notes._LEGACY_NOTES = old_legacy
+
+
+class SshMustNotDrinkTheCallersStdin(unittest.TestCase):
+    """`answer --stdin` lost its text, and the cause was one line away.
+
+    Found by the session on the other end, 2026-08-05, with 6905 bytes at stdin
+    and the message "stdin was empty; nothing was written" — twice, once through
+    a shell redirect and once through subprocess `input=`. **ssh reads stdin by
+    default.** `answer` looks its recipient up IN THE CHANNEL before parsing the
+    text; on a host:path channel that lookup runs ssh, and ssh emptied stdin on
+    the way past. `note --stdin` was unaffected because it reads the text first
+    — both were run side by side in one setup and only `answer` lost its payload.
+
+    The bitter part: `--stdin` exists precisely so that text stops disappearing
+    silently, and the one path the shell cannot touch was the one ssh drank.
+    A guard is only as good as the layer it guards.
+    """
+
+    def test_a_read_gives_ssh_no_stdin_to_drink(self):
+        seen = {}
+
+        def fake_run(argv, **kw):
+            seen.update(kw)
+            class R:
+                returncode, stdout = 0, ""
+            return R()
+        real, notes.subprocess.run = notes.subprocess.run, fake_run
+        try:
+            notes._ssh_run("host", "cat /x")
+        finally:
+            notes.subprocess.run = real
+        self.assertIs(seen.get("stdin"), notes.subprocess.DEVNULL,
+                      "ssh was left free to read the caller's stdin")
+
+    def test_a_write_still_gets_its_payload(self):
+        """The fix must not close the channel it was built for."""
+        seen = {}
+
+        def fake_run(argv, **kw):
+            seen.update(kw)
+            class R:
+                returncode, stdout = 0, ""
+            return R()
+        real, notes.subprocess.run = notes.subprocess.run, fake_run
+        try:
+            notes._ssh_run("host", "cat > /x", stdin="the note\n")
+        finally:
+            notes.subprocess.run = real
+        self.assertEqual(seen.get("input"), "the note\n")
+        self.assertIsNone(seen.get("stdin"), "input= and a real stdin= collide")
+
+    def test_the_text_is_taken_before_any_channel_access(self):
+        """Removes the SHAPE as well as the cause: any future channel read
+        placed before the text parse would drink stdin the same way."""
+        src = open(notes.__file__.replace(".pyc", ".py"), encoding="utf-8").read()
+        body = src[src.index("def main("):]
+        take = body.index('piped = None if sys.stdin.isatty()')
+        lookup = body.index("known = {n[\"ts\"]: n for n in all_notes(read())")
+        self.assertLess(take, lookup,
+                        "stdin must be read before the recipient is looked up")
