@@ -2356,3 +2356,49 @@ zu geben: mehr, worüber es sich irren kann, und nicht mehr, was es kann.
 Der Schnitt für `--brief` liegt an der ersten Leerzeile, nicht bei einer
 Zeichenzahl — sonst würde mitten im Satz getrennt und das Modell bekäme eine
 halbe Warnung, was schlimmer ist als keine.
+
+## Zwei Wachen für eine modellgetriebene Schleife — 2026-08-05
+
+Beim ersten Lauf eines lokalen Modells über diese Brücke (`qwen2.5-coder:7b`)
+passierten zwei Dinge, für die niemand vorgesorgt hatte — und keines davon war
+ein Fehler des Modells.
+
+**Es rief dasselbe Werkzeug mit identischen Argumenten mehrfach auf**, dreimal im
+einen Lauf, zweimal im anderen, bevor es antwortete. Bei `mac_compile` harmlos.
+Und es war nicht einmal ein Leerlauf: im `commands`-Feld steht `Delete -i` vor
+jedem Compile, jeder Aufruf hat das Objekt also gelöscht und neu gebaut. Bei
+`mac_key`, `mac_click`, `launch_app`, `SWAPSELF` oder `REBOOT` wäre dieselbe Form
+ein Problem gewesen, und nichts hätte es gezeigt.
+
+**Und es hörte nach drei bzw. vier Schritten von selbst auf.** Das sah aus wie
+eine Schleife, die endet, und war ein Modell, das zufällig fertig war. Nichts
+hat es begrenzt.
+
+`host/loop_guard.py` enthält beides, und beide folgen derselben Regel:
+**sichtbar machen, nicht raten, was gemeint war.**
+
+`RepeatWatch` meldet einen identischen Aufruf **im Werkzeugergebnis** — ein
+Signal auf einem Seitenkanal ist eines, an das jemand denken muss. Es blockiert
+nie: eine Wache, die einen wiederholten Aufruf verweigert, entscheidet, dass der
+Fahrer nicht gemeint hat, was er zweimal verlangt hat, und das kann sie nicht
+wissen. Verdrahtet ist es in `call_tool`, weil die Wiederholung eine Eigenschaft
+des **Verkehrs** ist und nicht eines Fahrers — so sieht sie jeder Aufrufer.
+
+Zwei Entwurfsdetails, die je einen Test tragen: die Identität eines Aufrufs wird
+über **sortierte** Argumente gebildet, nicht über `repr(dict)` — zwei Dicts mit
+gleichem Inhalt und anderer Einfügereihenfolge sind derselbe Aufruf, und sie zu
+trennen hätte genau die Wiederholungen verloren, die zu melden sich lohnt. Und
+das Feld `consecutive` erscheint nur bei einer **ununterbrochenen** Kette: ein
+Aufruf, der zweimal mit Arbeit dazwischen vorkommt, ist keine steckengebliebene
+Schleife, und ihn als eine zu melden macht das Feld bedeutungslos. Die erste
+Fassung tat genau das, und der Test hat es gefangen.
+
+`StepBudget` begrenzt die Schritte und **sagt, warum es endete**. Das ist der
+ganze Punkt: eine Schleife, die still gestoppt wird, ist von einem Modell, das
+fertig war, nicht zu unterscheiden — genau der Zustand, aus dem diese Wache
+entstanden ist. Deshalb liefert `message()` einen Satz und nicht nur ein `False`.
+
+*Randnotiz zum Testlauf:* die Mutationskontrolle kopiert nur **getrackte**
+Dateien (`git ls-files`). Ein neues Modul, das noch nicht in git liegt, fehlt in
+der Kopie und lässt die Kontrolle fehlschlagen — was aussieht wie ein kaputter
+Test und heißt: *stage die Datei*.
