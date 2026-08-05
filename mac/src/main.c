@@ -80,6 +80,14 @@ static char    gDaemonNonceHex[17] = "";  /* nonce we handed the host; AUTH2 pro
 #define QUIT_ITEM       1
 #define COPY_ITEM       1
 #define DETAILS_ITEM    3      /* Edit: Copy(1), (divider 2), Show details(3) */
+#define CONSOLE_ITEM    4      /* Edit: Console(4) — show/hide the Verbose window */
+
+/* Declared here, not beside the definitions: HandleMenuCommand calls them ~900
+ * lines earlier, and MPW C takes an undeclared call as `int f()` — so the real
+ * definition then collides with a phantom the compiler invented. The error names
+ * the DEFINITION, which is 900 lines from the cause. */
+static void    SetMonitorVisible(Boolean show);
+static Boolean MonitorVisible(void);
 
 static Boolean gRunning = true;
 /* The on-demand "Mitlesen" live-traffic monitor window. The daemon is faceless;
@@ -709,6 +717,12 @@ void HandleMenuCommand(long menuResult)
         case EDIT_MENU_ID:
             if (menuItem == COPY_ITEM) {
                 DoCopyLog();
+            } else if (menuItem == CONSOLE_ITEM) {
+                /* The way back from MONITOR:0 without a socket — and the way to
+                 * get the console OUT OF THE WAY without one either. Both
+                 * directions, because a user who can only hide via the control
+                 * port is as stuck as one who can only show. */
+                SetMonitorVisible(!MonitorVisible());
             } else if (menuItem == DETAILS_ITEM) {
                 gShowDetails = !gShowDetails;
                 CheckItem(gEditMenu, DETAILS_ITEM, gShowDetails);
@@ -972,7 +986,7 @@ void OpenMonitor(void)
         /* Edit menu so Copy (Cmd-C) is discoverable; the system also routes the
          * standard Cut/Copy/Paste keys here. We only act on Copy. */
         gEditMenu = NewMenu(EDIT_MENU_ID, "\pEdit");
-        AppendMenu(gEditMenu, "\pCopy/C;(-;Show details/D");
+        AppendMenu(gEditMenu, "\pCopy/C;(-;Show details/D;Console/K");
         CheckItem(gEditMenu, DETAILS_ITEM, gShowDetails);
         InsertMenu(gEditMenu, 0);
         DrawMenuBar();
@@ -1559,6 +1573,67 @@ static OSType ParseHexType(const char *s)
 /* Returns true if the connection is still healthy, false if a response send
  * failed partway (the wire is then desynced and the caller must reconnect). */
 
+/* Show or hide the Verbose window. ONE path, called by the MONITOR verb and by
+ * the Edit menu item — because a second copy of this sequence would drift from
+ * the first, and the sequence is not obvious: see the HiliteWindow/SetWTitle
+ * ordering below, which took seven attempts to get right.
+ *
+ * The menu item exists because MONITOR:0 was a ONE-WAY DOOR for anybody without
+ * the control port (found 2026-08-05, by the operator, the hard way). HideWindow
+ * hides the WINDOW, not the application, so bringing the daemon forward from the
+ * Application menu brought nothing back — and a hidden console is indistinguishable
+ * from a dead daemon. Now: Application menu -> AppleBridge -> Edit -> Console.
+ *
+ * It toggles in BOTH directions on purpose. Hiding by hand is a real need — the
+ * console covers the desktop while somebody drives another program or takes a
+ * screenshot — and a user who can only hide via a socket is as stuck as one who
+ * can only show. */
+static void SetMonitorVisible(Boolean show)
+{
+    if (show) {
+        if (gStatusWindow == NULL) {
+            OpenMonitor();                 /* was closed outright: build a new one */
+        } else {
+            ShowWindow(gStatusWindow);
+            SelectWindow(gStatusWindow);
+            /* ShowHide brings the window back but leaves its title bar
+             * unpainted, so it returns blank. Two calls finish the job, in this
+             * order: HiliteWindow paints the bar — with false, because a
+             * background application's window is legitimately INACTIVE and
+             * painting the active state left a hybrid the Window Manager never
+             * completed (stripes but no text) — and SetWTitle then fills in the
+             * title, which must come second or the hilite overpaints it.
+             *
+             * Do NOT repaint by moving the window instead: MoveWindow takes the
+             * STRUCTURE origin while the port gives the CONTENT origin, so a
+             * "move it back where it already is" nudge walks the window UP by a
+             * title-bar height each time until the bar vanishes under the menu
+             * bar. That was the actual cause of the disappearing title bar
+             * (diagnosed 2026-07-25), not a missing frame. */
+            HiliteWindow(gStatusWindow, false);
+            SetWTitle(gStatusWindow, "\pAppleBridge - Verbose");
+            SetPort(gStatusWindow);
+            InvalRect(&gStatusWindow->portRect);
+            gLogDirty = true;
+            gTickCounter = 0;              /* force the next ShowAlive to redraw */
+        }
+    } else {
+        if (gStatusWindow != NULL) HideWindow(gStatusWindow);
+    }
+    if (gEditMenu != NULL) CheckItem(gEditMenu, CONSOLE_ITEM, MonitorVisible());
+}
+
+
+/* Is the Verbose window on screen right now? Asked of the window, not of a flag
+ * we keep beside it — a flag is a second copy of the truth and this file has
+ * spent a day on what those cost. */
+static Boolean MonitorVisible(void)
+{
+    return (Boolean)(gStatusWindow != NULL
+                     && ((WindowPeek)gStatusWindow)->visible);
+}
+
+
 /*
  * MONITOR:0|1 — hide or show the Verbose console over the bridge.
  *
@@ -1590,38 +1665,10 @@ Boolean MonitorVerb(ABConn *conn, char *request, long requestLen)
     if (i < requestLen && (request[i] == '0' || request[i] == 'h' || request[i] == 'H'))
         show = false;
 
-    if (show) {
-        if (gStatusWindow == NULL) {
-            OpenMonitor();                 /* was closed outright: build a new one */
-        } else {
-            ShowWindow(gStatusWindow);
-            SelectWindow(gStatusWindow);
-            /* ShowHide brings the window back but leaves its title bar
-             * unpainted, so it returns blank. Two calls finish the job, in this
-             * order: HiliteWindow paints the bar — with false, because a
-             * background application's window is legitimately INACTIVE and
-             * painting the active state left a hybrid the Window Manager never
-             * completed (stripes but no text) — and SetWTitle then fills in the
-             * title, which must come second or the hilite overpaints it.
-             *
-             * Do NOT repaint by moving the window instead: MoveWindow takes the
-             * STRUCTURE origin while the port gives the CONTENT origin, so a
-             * "move it back where it already is" nudge walks the window UP by a
-             * title-bar height each time until the bar vanishes under the menu
-             * bar. That was the actual cause of the disappearing title bar
-             * (diagnosed 2026-07-25), not a missing frame. */
-            HiliteWindow(gStatusWindow, false);
-            SetWTitle(gStatusWindow, "\pAppleBridge - Verbose");
-            SetPort(gStatusWindow);
-            InvalRect(&gStatusWindow->portRect);
-            gLogDirty = true;
-            gTickCounter = 0;              /* force the next ShowAlive to redraw */
-        }
-        state = (gStatusWindow != NULL) ? "shown" : "could not open";
-    } else {
-        if (gStatusWindow != NULL) HideWindow(gStatusWindow);
-        state = "hidden";
-    }
+    SetMonitorVisible(show);
+    state = show ? ((gStatusWindow != NULL) ? "shown" : "could not open")
+                 : "hidden";
+
 
     len = (short)strlen(state);
     h = NewHandle(len + 1);
@@ -2894,6 +2941,16 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
                 short titleX    = *(short *)(mrec + 2);
                 short titleW    = *(short *)(mrec + 4);
                 short itemFirst = *(short *)(mrec + 8);
+                /* MENU_REC offset 6. The walk has always written it — it uses
+                 * menuHeight for the points_valid bound — and the host has
+                 * always skipped it. Reading it is what makes h_sep, the true
+                 * height of a SEPARATOR, derivable from a real menu instead of
+                 * assumed:
+                 *     menuH = 16*(n - sep) + h_sep*sep
+                 * Measured 2026-08-05 after the uniform 16px model put an item
+                 * ten pixels low in a menu with one separator, and the gesture
+                 * landed on the wrong entry. */
+                short menuH     = *(short *)(mrec + 6);
                 short itemN     = *(short *)(mrec + 10);
                 short mflags    = *(short *)(mrec + 12);
                 short tl        = *(short *)(mrec + 14);
@@ -2909,6 +2966,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
                 JStr(jh, ",\"width\":");         JNum(jh, (long)titleW);
                 JStr(jh, ",\"enabled\":");       JStr(jh, (mflags & kMBM_Enabled) ? "true" : "false");
                 JStr(jh, ",\"points_valid\":");  JStr(jh, (mflags & kMBM_PtsValid) ? "true" : "false");
+                JStr(jh, ",\"menu_height\":");   JNum(jh, (long)menuH);
                 JStr(jh, ",\"title_point\":[");  JNum(jh, (long)titleXc); JStr(jh, ",");
                 JNum(jh, (long)(mbarH / 2));     JStr(jh, "]");
                 JStr(jh, ",\"items\":[");
@@ -2918,6 +2976,14 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
                     short iIdx   = *(short *)(irec + 2);
                     short iflags = *(short *)(irec + 4);
                     short itl    = *(short *)(irec + 6);
+                    /* Uniform 16px per item, separators counted as full
+                     * items. That is a MODEL, not a measurement — and it is the
+                     * same model that put a gesture on the wrong entry, because
+                     * a separator is shorter than an item. It stays as `point`
+                     * for callers that already use it; `menu_height` now travels
+                     * with the menu so a caller can check the model against the
+                     * real height instead of trusting it. When h_sep is measured
+                     * this becomes the separator-adjusted form. */
                     short iy     = (short)(mbarH + 16 * (iIdx - 1) + 8);
                     Str255 itxt; short kk;
                     if (itl > 24) itl = 24;

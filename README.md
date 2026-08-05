@@ -466,7 +466,7 @@ AppleBridge/
 
 ## Status
 
-**Current daemon:** 0.8d41 ("an empty helper list is a silence, not a decision: find ToolServer") — the version the
+**Current daemon:** 0.8d43 ("the console can be shown and hidden from its own menu") — the version the
 daemon itself reports, from `mac/vers.r`.
 
 - TCP bridge, NAT-reversed (the guest dials OUT), with an asynchronous connect

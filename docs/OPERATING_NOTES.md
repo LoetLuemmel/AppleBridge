@@ -2113,3 +2113,66 @@ no-op. (Same shape as the two `AESEND` dialects in the note above.)
 version returned a bare `None` and the refusal named no cause. It now logs the
 reply it could not parse, which is how the sender bug was found in one attempt
 instead of by reasoning.
+
+## Separators are full-height, and the uniform menu model is right — 2026-08-05
+
+`MENUTREE` computes an item's y as `mbarHeight + 16*(index-1) + 8` — a uniform
+16 px per item, **separators counted as full items**. That looked like the cause
+of a gesture landing on the wrong entry, since a separator is drawn as a thin
+line and might reasonably be shorter.
+
+**Measured, and the hypothesis is refuted.** `menuHeight` was already in the
+walk's record at `MENU_REC` offset 6 — the walk reads it for the `points_valid`
+bound — and the host simply never read that offset. Exposing it (0.8d42) makes
+the separator height derivable from any real menu:
+
+    h_sep = (menuH - 16*(n - sep)) / sep
+
+| menu | items | separators | menuHeight | h_sep |
+|---|---|---|---|---|
+| File | 5 | 1 | 80 | **16.00** |
+| Edit | 7 | 1 | 112 | **16.00** |
+| (a third) | 3 | 1 | 48 | **16.00** |
+
+Three menus, three identical values: **a separator occupies a full 16 px** in
+the standard MDEF. The uniform model is correct, and the earlier miss had
+another cause — the gesture went to the *Finder's* File menu, not the intended
+application's.
+
+Two things worth keeping beyond the number:
+
+**`points_valid: true` does not mean the points are right.** It checks
+`menuH <= 16*n + 8`, an upper bound — a plausibility test wearing the name of a
+guarantee. Now that `menu_height` travels with each menu, a caller can compare
+the model against the real height instead of trusting the flag. Two menus in the
+same dump reported `menu_height: -1`: unknown, and those are exactly the ones
+whose points must not be used.
+
+**A tool can hand you your own assumption back.** The session driving the menus
+had built a `21 + n*16` grid model by hand, and our tool computed the same thing
+internally — so "read the coordinates instead of guessing" returned the guess,
+wearing the authority of a measurement. That is worse than no tool, because it
+is confirmable.
+
+## MONITOR:0 was a one-way door — 2026-08-05
+
+Hiding the Verbose console needed the control port, and so did showing it again.
+`HideWindow` hides the **window**, not the application, so bringing the daemon
+forward from the Application menu brought nothing back — and a hidden console is
+indistinguishable from a dead daemon. Found by the operator, who went looking
+for a window that was never gone.
+
+0.8d43 puts **Console** in the daemon's own Edit menu, and it toggles **both**
+ways on purpose: hiding by hand is a real need — the console covers the desktop
+while somebody drives another program or takes a screenshot — and a user who can
+only hide via a socket is as stuck as one who can only show. Reachable as
+Application menu → AppleBridge → Edit → Console, and checked to show the current
+state.
+
+One path, not two: the verb and the menu item call the same
+`SetMonitorVisible`. The show sequence is not obvious — `HiliteWindow(false)`
+then `SetWTitle`, in that order — and a second copy would drift from the first.
+
+*Correction while writing this: an older note here said the title bar stays blank
+after showing. It does not, and has not since that ordering was found. The stale
+sentence was nearly passed on as current.*
