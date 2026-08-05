@@ -227,6 +227,106 @@ def test_whitespace_and_case_are_NOT_normalised():
     assert w.note("t", {"path": "MeinMac:X "}) is None
 
 
+# --- AttemptLog: what has been tried, not what happened last ---------------
+def test_ten_steps_over_two_actions_are_two_lines():
+    """The whole point against a longer history window: the register grows per
+    distinct ACTION, not per step, so it stays affordable on a 2 GB node."""
+    a = lg.AttemptLog()
+    for _ in range(5):
+        a.record("t1", {"p": "x"}, "failed")
+        a.record("t2", {"p": "y"}, "ok")
+    assert len(a) == 2
+    assert len(a.lines()) == 2
+
+
+def test_the_try_count_survives_where_a_window_would_have_forgotten():
+    a = lg.AttemptLog()
+    for _ in range(4):
+        a.record("t", {"p": "x"}, "failed")
+    assert a.tried("t", {"p": "x"})["tries"] == 4
+
+
+def test_an_untried_action_is_not_claimed_as_tried():
+    a = lg.AttemptLog()
+    a.record("t", {"p": "x"}, "ok")
+    assert a.tried("t", {"p": "y"}) is None
+
+
+def test_outcomes_are_stored_verbatim():
+    """A register that normalises outcomes into its own vocabulary hands the
+    model a translation of its own history — and the translation is where the
+    detail that mattered gets lost. "line 4" is that detail."""
+    a = lg.AttemptLog()
+    a.record("t", {}, "failed: line 4 #Error: ';' expected")
+    assert "line 4" in a.lines()[0]
+
+
+def test_a_repeated_outcome_is_not_repeated_in_the_line():
+    """"failed, failed, failed" says no more than "failed" and costs three
+    times the context."""
+    a = lg.AttemptLog()
+    for _ in range(3):
+        a.record("t", {}, "failed")
+    assert a.lines()[0].count("failed") == 1
+
+
+def test_a_changed_outcome_is_kept_alongside_the_old_one():
+    """That an action failed and then worked is the interesting shape; keeping
+    only the last would erase it."""
+    a = lg.AttemptLog()
+    a.record("t", {}, "failed")
+    a.record("t", {}, "ok")
+    line = a.lines()[0]
+    assert "failed" in line and "ok" in line
+
+
+def test_the_newest_action_comes_first():
+    a = lg.AttemptLog()
+    a.record("old", {}, "ok")
+    a.record("new", {}, "ok")
+    assert a.lines()[0].startswith("new")
+
+
+def test_an_omitted_row_is_reported_not_dropped():
+    """A register that quietly drops rows tells the model it has tried less
+    than it has — precisely the belief that produces another attempt."""
+    a = lg.AttemptLog()
+    for i in range(4):
+        a.record(f"t{i}", {}, "ok")
+    out = a.lines(limit=2)
+    assert len(out) == 3 and "2 earlier action(s) not shown" in out[-1]
+
+
+def test_a_long_argument_is_cut_at_the_end_with_a_marker():
+    """A value cut in the middle reads as a DIFFERENT value; cut at the end
+    with a marker it reads as a shortened one."""
+    a = lg.AttemptLog()
+    a.record("t", {"path": "MeinMac:" + "x" * 80}, "ok")
+    line = a.lines()[0]
+    assert "…" in line and line.index("MeinMac:") < line.index("…")
+
+
+def test_the_register_shares_the_watch_s_notion_of_identity():
+    """Two components disagreeing about what "the same call" means is how a
+    loop ends up guarded against one thing and reported on another."""
+    a = lg.AttemptLog()
+    a.record("t", {"p": "x"}, "ok")
+    assert a.tried("t", {"p": "x", "opt": None}) is not None
+
+
+def test_brief_args_sorts_so_one_call_reads_the_same_every_time():
+    """`_brief_args` renders what the model sees. Insertion order would make the
+    same action look like two different lines across steps — the identity is
+    already order-free, and the rendering has to agree with it."""
+    assert lg._brief_args({"b": 2, "a": 1}) == "a=1, b=2"
+
+
+def test_brief_args_leaves_a_short_value_alone():
+    """No marker where nothing was cut: a "…" on an untouched value would make
+    a reader look for a rest that does not exist."""
+    assert lg._brief_args({"p": "x.c"}) == "p=x.c"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
