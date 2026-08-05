@@ -1572,3 +1572,69 @@ than the bytes.
 The resample is conditional on the measured size, never on an assumption about
 Retina, and a failed resample keeps the picture: an oversized capture is still
 the capture.
+
+## Every synthetic keystroke costs 1.7 s on this guest — measured 2026-08-05
+
+"Nine characters take fifteen seconds" was an exact observation with the wrong
+subject. Measured against the live bridge, a clean straight line:
+
+| characters | 1 | 2 | 3 | 4 | 6 | 8 | 9 |
+|---|---|---|---|---|---|---|---|
+| seconds | 1.738 | 3.394 | 5.094 | 6.757 | 10.105 | 13.494 | **15.003** |
+
+**~1.69 s per keystroke.** There is nothing special about nine — it is simply
+the first count whose burst exceeds the host's 15 s timeout, after which the
+reply is discarded as stale and the *next* command times out too. That
+secondary desync is what makes it look like the bridge has fallen over.
+
+The arithmetic in `mac/src/events.c` accounts for it to within half a percent:
+
+    InjectKeyMod  ShortDelay(2) + ShortDelay(2)      =   4 ticks
+    InjectType    ShortDelay(1) per character        =   1 tick
+    PPostEventRetry   48 attempts x ShortDelay(2)    =  96 ticks
+                                                       ---------
+                                                        101 ticks = 1.683 s
+
+So `PPostEvent` fails on nearly every attempt and each keystroke spends almost
+its entire retry budget waiting for a slot: **the guest's OS event queue has no
+room.** Controlled — after 30 s of complete quiet a single character still costs
+1.715 s, so the jam is the standing state and not an artefact of the burst that
+found it. `KEY:` costs the same 1.735 s, so it is per-KEYSTROKE, not per-verb.
+
+Two consequences worth acting on, and one open question:
+
+- **`mac_type` chunks at 12 characters, which cannot fit a 15 s timeout** at
+  this cost (12 × 1.68 s = 20 s). The chunk size was chosen for losslessness and
+  the timeout for round-trip sanity; nobody related them, so the default path is
+  guaranteed to time out whenever the queue is jammed. Three constants in three
+  languages — `CHUNK` in `mcp/tools.py`, `DEFAULT_TIMEOUT` in `host_server.py`,
+  the retry budget in `events.c` — and nothing checked them against each other
+  until `tests/test_typing_budget.py`.
+- **The daemon answers `STATUS:0`** for a keystroke that needed 47 attempts, and
+  `err=` does not move. A cost of this size that reports success is this file's
+  recurring subject; a counter on retry exhaustion would make it visible.
+- **Why the queue is permanently full is NOT established.** It needs a guest
+  with a fresh event queue — a reboot — to separate "this guest, after 7 hours"
+  from "always". Measure that before believing either.
+
+## The Application menu and PROCLIST are not the same question — 2026-08-05
+
+The Application menu, held open and photographed, on a guest where `PROCLIST`
+reports three processes:
+
+    Hide Finder / Hide Others / Show All
+    ────────────
+       AppleBridge
+    ✓  Finder
+
+`AppleBridgeWatchdog` is missing, because it is a faceless background
+application and never appears there. So the two views are **not**
+interchangeable, and the difference is the information: `PROCLIST` reads the
+Process Manager and sees everything; the menu shows only what has a user
+interface. Answering "what is running" from the menu systematically omits every
+faceless process — which on this machine is precisely our own daemon
+substructure. Conversely `PROCLIST` says nothing about what a *user* would see.
+
+For driving a UI, the menu is the right question. For an inventory, `PROCLIST`
+is. Reaching for whichever is easier gives a plausible answer to a question
+nobody asked.
