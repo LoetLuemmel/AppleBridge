@@ -1160,6 +1160,62 @@ class TheChannelSurvivesARestart(unittest.TestCase):
             notes._LEGACY_NOTES = old_legacy
 
 
+class TwoCopiesOfOneFile(unittest.TestCase):
+    """`repariert` on one side is not `repariert` on the other.
+
+    Both sessions run notes.py — one from the repo, one from a copy on the
+    machine at the far end of the ssh channel. On 2026-08-05 a fix landed in the
+    repo and the other side kept failing **with a word-for-word identical error
+    message**. Nothing in the setup said which copy was speaking, so the obvious
+    reading — "the fix does not work" — was available and wrong.
+
+    The session it happened to had written, in the same message, that two copies
+    of one thing are one that will eventually diverge — and had not applied it to
+    itself. That is why this is a command rather than a habit: run it on both
+    sides, compare one line.
+
+    Content, not a version number: a number is a claim somebody must remember to
+    update, and the whole point is to stop trusting claims about copies.
+    """
+
+    def test_this_copy_reports_the_fixes_it_has(self):
+        fp = notes.fingerprint()
+        self.assertIn("ssh-devnull", fp["has"])
+        self.assertIn("stdin-first", fp["has"])
+        self.assertEqual(fp["missing"], [])
+
+    def test_a_stale_copy_names_exactly_what_it_lacks(self):
+        """Verified against the real predecessor: it reported ssh-devnull and
+        stdin-first missing — the two fixes the other side was running without."""
+        import tempfile
+        src = open(notes.__file__.replace(".pyc", ".py"), encoding="utf-8").read()
+        stale = src.replace("subprocess.DEVNULL", "None")
+        path = os.path.join(tempfile.mkdtemp(prefix="ab-stale-"), "notes.py")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(stale)
+        fp = notes.fingerprint(path)
+        self.assertIn("ssh-devnull", fp["missing"])
+        self.assertNotIn("ssh-devnull", fp["has"])
+
+    def test_the_hash_differs_when_the_file_does(self):
+        """A capability list can only see the fixes somebody thought to mark.
+        The hash catches the rest — including a copy that is merely OLDER."""
+        import tempfile
+        src = open(notes.__file__.replace(".pyc", ".py"), encoding="utf-8").read()
+        path = os.path.join(tempfile.mkdtemp(prefix="ab-hash-"), "notes.py")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(src + "\n# a harmless edit\n")
+        self.assertNotEqual(notes.fingerprint(path)["sha"], notes.fingerprint()["sha"])
+
+    def test_the_command_is_reachable(self):
+        import subprocess
+        run = subprocess.run([sys.executable, notes.__file__, "version"],
+                             capture_output=True, text=True, timeout=30)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("notes.py", run.stdout)
+
+
+
 class SshMustNotDrinkTheCallersStdin(unittest.TestCase):
     """`answer --stdin` lost its text, and the cause was one line away.
 

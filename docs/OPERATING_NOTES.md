@@ -2048,3 +2048,35 @@ the guard was fine and the layer beneath it leaked; here the layer is fine and
 its *reporting* discards the distinction that matters. Both are cheap to get
 wrong: a bare `except OSError: return []` is one line, reads as robustness, and
 converts every future permission problem into a shrug.
+
+## "Repariert" on one side is not "repariert" on the other — 2026-08-05
+
+A fix landed in `host/tools/notes.py` in the repo. The session at the other end
+of the channel kept failing — **with a word-for-word identical error message** —
+because it runs its own copy of the file. Nothing in the setup said which copy
+was speaking, so the obvious reading ("the fix does not work") was available and
+wrong.
+
+It is the third instance of one shape in a single day:
+
+- the **launchd** host server runs a *separate* copy under
+  `~/Library/Application Support/AppleBridge/`; a repo edit reaches it only
+  after `cp` + `kickstart`, and this cost a measurement that showed the old
+  behaviour after the new code was written
+- the parallel session's **`notes.py`** copy, above
+- its **`tc.py`**, a thin second implementation of things `mcp/tools.py`
+  already does
+
+And the sharpest part is not the bug. That session had written, *in the same
+message*, that **two copies of one thing are one that will eventually diverge** —
+as its reason for throwing its own client away — and had not applied it to
+itself. Knowing the rule and being subject to it are different states.
+
+**`notes.py version`** answers it now: a content hash plus the list of fixes
+actually present in that file. Run it on both sides, compare one line. Deliberately
+content and not a version number — a number is a claim somebody has to remember
+to update, and the point is to stop trusting claims about copies. A stale copy
+that predates the command says so by not having it, which is also an answer.
+
+The general rule: **when a fix crosses a machine boundary, say so, and give the
+other side a way to check rather than a promise to believe.**
