@@ -23,6 +23,7 @@ import guest_input  # noqa: E402  (real-mouse driving in guest coordinates)
 import mpw  # noqa: E402  (build-step verification: the artefact is the oracle)
 import loop_guard  # noqa: E402  (repetition made visible for a model-driven loop)
 import pump_probe  # noqa: E402  (is the target reading, before a no-reply send)
+import c89_lint  # noqa: E402  (name the C99 habits MPW's 1994 compiler rejects)
 
 
 def _ostype(value, default="????") -> bytes:
@@ -1142,6 +1143,24 @@ def mac_compile(source_path: str, output_path: Optional[str] = None,
                             "here and nothing was verified. Pass output_path to get "
                             "a verified result."}
 
+        # Read the source and name the C99 habits BEFORE compiling. Not a
+        # gate: the compiler stays the verdict, and a regex over C has false
+        # positives. What this adds is the REASON — `expression expected` does
+        # not tell anyone to move a declaration out of a for-head, and the
+        # rewrite is the part a caller can act on. Measured 2026-08-05: a local
+        # model wrote exactly that, and a prompt naming the rule did not fix it.
+        c89 = []
+        if source_path.lower().endswith((".c", ".cp", ".cpp")):
+            try:
+                st, out, _ = conn.send_command("READFILE:" + source_path,
+                                               timeout=60.0)
+                if st == 0 and out:
+                    text = macbinary.decode(base64.b64decode(out))["data"] \
+                        .decode("mac_roman", errors="replace")
+                    c89 = c89_lint.check(text)
+            except Exception:                                  # noqa: BLE001
+                c89 = []          # a lint that breaks a compile is worse than none
+
         step = mpw.run_step(send, command, obj_path,
                             f"{obj_path}.err", timeout=120.0)
         return {
@@ -1151,7 +1170,8 @@ def mac_compile(source_path: str, output_path: Optional[str] = None,
             "object": obj_path,
             "errors": step["errors"],
             "warnings": step["warnings"],
-            "remedies": step["remedies"],
+            "remedies": step["remedies"] + c89_lint.remedies(c89),
+            "c89": c89 or None,
             "toolserver_alive": step.get("toolserver_alive"),
             "commands": step["commands"],
             "output": "\n".join(step["errors"] + step["warnings"]) or None,
