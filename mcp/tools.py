@@ -911,32 +911,57 @@ def mac_write_file(path: str, content: str, type: str = "TEXT",
 
 
 def mac_read_file(path: str) -> Dict[str, Any]:
-    """Read file from Mac filesystem using Catenate command."""
+    """Read a text file from the Mac through the daemon's native READFILE verb.
+
+    It used to run `Catenate '<path>'` and trust `status == 0` — which says only
+    that the Apple Event was delivered. `Catenate` on a file that does not exist
+    writes its complaint to stderr, where it stays inside ToolServer, and answers
+    with nothing. So a MISSING file came back as
+
+        {"success": true, "content": ""}
+
+    A false POSITIVE, and worse than the false negative found in `mac_compile`
+    the same day: "I read it, it is empty" for something that is not there.
+    Measured 2026-08-05 by the parallel session, and the distinction it destroys
+    is exactly the one a caller needs — "nothing to do" versus "wrong path". Its
+    local model then invented a filename its OWN previous tool result had ruled
+    out, read the invention, and reported on it. No prompt prevents that; only a
+    tool that says "not there" instead of "empty".
+
+    READFILE fails cleanly (the daemon answers a non-zero status), needs no
+    ToolServer at all, and returns the bytes rather than ToolServer's rendering
+    of them. Text is decoded from MacRoman and CR is normalised to LF, mirroring
+    what `mac_write_file` does on the way in.
+    """
     try:
         conn = get_connection()
         if not conn.is_connected():
             return {"success": False, "path": path, "error": "Mac not connected"}
 
-        command = f"Catenate '{path}'"
-        status, stdout, stderr = conn.send_command(command, timeout=30.0)
-
-        if status == 0:
-            return {
-                "success": True,
-                "path": path,
-                "content": stdout
-            }
-        else:
+        status, stdout, stderr = conn.send_command("READFILE:" + path, timeout=120.0)
+        if status != 0:
+            # The hint is APPENDED, not used as a fallback. The daemon really
+            # does answer "READFILE failed", so `stderr or <hint>` would drop
+            # the pointer in exactly the case it is needed — which is how the
+            # first version of this repair was written, and what its own test
+            # caught.
+            said = stderr or f"READFILE failed (status {status})"
             return {
                 "success": False,
                 "path": path,
                 "content": None,
-                "error": stderr or f"Failed to read file (status {status})"
+                "error": f"{said} — the file may not exist; check with "
+                         f"mac_list_files",
             }
+
+        data = macbinary.decode(base64.b64decode(stdout))["data"]
+        text = data.decode("mac_roman", errors="replace").replace("\r", "\n")
+        return {"success": True, "path": path, "content": text, "bytes": len(data)}
     except Exception as e:
         return {
             "success": False,
             "path": path,
+            "content": None,
             "error": str(e)
         }
 
