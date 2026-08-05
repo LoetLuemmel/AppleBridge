@@ -858,6 +858,11 @@ def main():
     if getattr(args, "stdin", False) and args.text is None:
         piped = None if sys.stdin.isatty() else sys.stdin.read()
         args.text = piped.rstrip("\n") if piped is not None else None
+        # Remember WHERE it came from. Clearing `stdin` was enough to make the
+        # text resolve, and it also made the argv warning below fire on text the
+        # shell never saw. A warning that cries wolf teaches people to ignore
+        # the one that matters.
+        args.came_from_stdin = args.text is not None
         args.stdin = False if args.text else args.stdin
         if args.text == "":
             args.text = None
@@ -902,7 +907,8 @@ def main():
     if complaint:
         print(complaint, file=sys.stderr)
         return 2
-    if not getattr(args, "stdin", False) and len(text) > 400:
+    if not getattr(args, "stdin", False) \
+            and not getattr(args, "came_from_stdin", False) and len(text) > 400:
         # Not a refusal: a long argv text is legal and may be perfectly intact.
         # But every character of it passed through the shell, and the two
         # constructs that eat text leave NO trace once they have — so the only

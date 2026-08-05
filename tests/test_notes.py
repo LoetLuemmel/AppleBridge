@@ -845,6 +845,20 @@ class TheShellNeverSeesTheText(unittest.TestCase):
         self.assertIn("<<'EOF'", run.stderr)
         self.assertIn("x" * 500, open(self.path, encoding="utf-8").read())
 
+    def test_a_long_stdin_text_does_not_trigger_the_argv_warning(self):
+        """A regression from the fix above: reading stdin early cleared the
+        `--stdin` flag, so the "the shell saw every character" hint fired on
+        text the shell never saw. A warning that cries wolf teaches people to
+        ignore the one that matters."""
+        run = self.run_cli(["note", "--stdin", "--from", "t"], stdin="x" * 600)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertNotIn("Kommandozeile", run.stderr)
+
+    def test_a_long_argv_text_still_does(self):
+        run = self.run_cli(["note", "y" * 600, "--from", "t"])
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("Kommandozeile", run.stderr)
+
 
 class NothingIsLostQuietly(unittest.TestCase):
     """A channel may fail to read a line. It may not fail SILENTLY.
