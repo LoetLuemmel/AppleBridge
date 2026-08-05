@@ -46,7 +46,11 @@
 #define MAX_ITEMS      128
 /* total block bytes = oMB_Items + MAX_ITEMS*ITEM_REC = 670 + 4096 = 4766 */
 
-/* MENU_REC (40): menuID(2) titleLeft(2) titleWidth(2) menuHeight(2) itemFirst(2)
+/* MENU_REC (40): menuID(2) titleLeft(2) menuWidth(2) menuHeight(2) itemFirst(2)
+ *   NOTE: field 3 is menuWidth from MenuInfo — the width of the DROPPED-DOWN
+ *   BODY, not of the title in the menu bar. It was labelled titleWidth here,
+ *   the host believed the label, and computed a title centre as
+ *   titleLeft + width/2 — which for TPM's File menu lands on SEARCH.
  *                itemN(2) flags(2) titleLen(2) title[24]
  *   flags bit0 = menu enabled, bit1 = item points valid (menuHeight matched) */
 /* ITEM_REC (32): menuIdx(2) itemIndex(2) flags(2) textLen(2) text[24]

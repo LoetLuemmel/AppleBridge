@@ -2176,3 +2176,66 @@ then `SetWTitle`, in that order — and a second copy would drift from the first
 *Correction while writing this: an older note here said the title bar stays blank
 after showing. It does not, and has not since that ordering was found. The stale
 sentence was nearly passed on as current.*
+
+## `title_point` zeigte auf das Nachbarmenü — 2026-08-05
+
+`MENUTREE` liefert zu jedem Menü einen `title_point`, den ein Aufrufer benutzt,
+um den Titel in der Menüleiste zu greifen. Er wurde als `title_x + width/2`
+gerechnet, mit einem Rückfall auf `title_x + 12` für schmale Menüs — in der
+Annahme, `width` sei die Breite des **Titels**.
+
+`width` kommt aber aus `menuWidth` in `MenuInfo` und ist die Breite des
+**aufgeklappten Körpers**. Für das File-Menü des THINK Project Managers ergab
+das `34 + 146/2 = 107`; der Titel *Search* beginnt bei 108. Der Punkt lag also
+im Nachbarmenü, und ein Aufrufer zog verlässlich das falsche Menü herunter.
+
+Die Menüleiste kennt ihre Titel-Rechtecke nicht: in `MenuInfo` stehen sie nicht,
+der Titelmittelpunkt ist daraus **nicht berechenbar**. Es bleibt ein fester
+Einzug — `title_x + 12` liegt in jedem Titel, der breit genug zum Anklicken ist,
+und es war genau der Zweig, der vorher funktioniert hat. Seit 0.8d44 ist er der
+einzige; `width` heißt jetzt auch im Record `menuWidth`.
+
+Der Auslöser war ein **falscher Kommentar**, nicht eine veraltete Notiz. Er
+stand am Ort der Benutzung, wurde dort gelesen und geglaubt, und die Rechnung
+darüber war in sich schlüssig. Eine Notiz, der man nicht glaubt, kostet eine
+Nachfrage; ein Feldname, dem man glauben muss, kostet einen Tag.
+
+## Ein Apple Event an eine fremde Anwendung bleibt liegen — 2026-08-05
+
+Gemessen an TPM im modalen Projekt-Auswahldialog: `AESEND KAHL/MAKE` mit
+`kAENoReply` liefert `STATUS:0`, und fünfzehn Sekunden lang passiert nichts.
+Wird danach ein Projekt geöffnet, baut TPM fünf Sekunden später — **ohne ein
+zweites MAKE**. Das Ereignis lag die ganze Zeit in der Warteschlange des
+Zielprozesses und traf am Ende das Projekt, das *dann* offen war.
+
+Das ist nicht die `:9001`-Falle, die ein abgebrochener Client aufmacht. Dort
+hält der Kernel-Backlog ein Kommando fest, und die `DEADLINE`-Zeile löst es,
+weil der Server, der später entscheidet, **unserer** ist. Hier hält die
+Apple-Event-Queue eines **fremden** Programms es fest, über einen unbestimmten
+Zeitraum, und zwischen Zustellung und Ausführung kommt niemand von uns.
+
+Der Daemon kann den Zustand nicht sehen: unter MultiFinder ist die `WindowList`
+prozesslokal, deshalb sieht `MACUITREE` nur die Fenster des Daemons selbst. Ein
+Modal in einer fremden Anwendung ist von hier aus unsichtbar.
+
+Praktisch: **vorher** per Screenshot prüfen, ob ein Modal steht, und **hinterher
+am Artefakt** prüfen, was tatsächlich passiert ist — nicht am Status. `STATUS:0`
+heißt hier "zugestellt", nicht "ausgeführt", und diesmal auch nicht "jetzt".
+
+## Ein Ausbleiben ist erst dann ein Ergebnis, wenn die Handlung belegt ist — 2026-08-05
+
+Dreimal an einem Tag wurde aus "ich habe X ausgelöst und nichts geschah" der
+Schluss "X tut nichts" — und dreimal war offen, ob X überhaupt stattgefunden
+hatte. Einmal lag es am kaputten `title_point` oben, der die Geste ins falsche
+Menü schickte; einmal daran, dass das Ereignis nur noch nicht gefeuert hatte.
+
+Was das auflöst, ist die **Positivkontrolle**: dieselbe Mechanik, derselbe
+Punkt, ein anderer erwarteter Effekt. *Bring Up To Date* bei `[210,140]` ließ
+das Projekt dreißig Sekunden unverändert; *Remove Objects* bei `[210,108]`
+setzte es auf 7374 zurück, und danach baute derselbe Punkt `[210,140]` es voll
+neu auf 53236. Erst damit ist "tut nichts" ein Befund über *Bring Up To Date*
+und nicht über die Geste.
+
+Der Reflex, den das ersetzt, ist billig und falsch: die Wiederholung. Eine
+Handlung, die aus demselben Grund zum zweiten Mal nicht stattfindet, sieht
+genauso aus wie eine Handlung, die nichts bewirkt.

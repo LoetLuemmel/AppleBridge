@@ -2954,7 +2954,25 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
                 short itemN     = *(short *)(mrec + 10);
                 short mflags    = *(short *)(mrec + 12);
                 short tl        = *(short *)(mrec + 14);
-                short titleXc   = (short)(titleX + (titleW > 24 ? titleW / 2 : 12));
+                /* A point INSIDE the title, not its centre — the centre is not
+                 * computable from what we have.
+                 *
+                 * This read `titleX + titleW/2` when titleW > 24, on the belief
+                 * that field 3 of MENU_REC is the title's width. It is
+                 * `menuWidth` from MenuInfo: the width of the DROPPED-DOWN
+                 * BODY. For TPM's File menu that gave 34 + 146/2 = 107, and
+                 * Search's title starts at 108 — so a caller using title_point
+                 * pulled down the NEIGHBOURING menu (found 2026-08-05 by the
+                 * session that had blamed its own item arithmetic for it).
+                 *
+                 * The menu bar's title rectangles are not in MenuInfo at all,
+                 * so the honest answer is a small fixed inset: 12 px is inside
+                 * every title wide enough to be clicked, and it is exactly the
+                 * branch that WORKED for that session's Project menu while the
+                 * width/2 branch missed. `width` in the JSON stays what it
+                 * always was — the body width — and is now named as such in the
+                 * record it comes from. */
+                short titleXc   = (short)(titleX + 12);
                 Str255 title;   short k;
                 if (tl > 24) tl = 24;
                 title[0] = (unsigned char)tl;
