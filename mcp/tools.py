@@ -20,6 +20,7 @@ import macbinary  # noqa: E402
 import bridge_doctor  # noqa: E402  (stdlib-only host-side stack probes)
 import guest_input  # noqa: E402  (real-mouse driving in guest coordinates)
 import mpw  # noqa: E402  (build-step verification: the artefact is the oracle)
+import loop_guard  # noqa: E402  (repetition made visible for a model-driven loop)
 
 
 def _ostype(value, default="????") -> bytes:
@@ -2289,13 +2290,31 @@ TOOL_HANDLERS = {
 }
 
 
+# One watch for every caller, because the repetition is a property of the
+# TRAFFIC, not of one driver. Measured 2026-08-05 on the first run of a local
+# model through this bridge: it called mac_compile three times with identical
+# arguments before answering. Idempotent there, and `Delete -i` in the command
+# list means each repeat really did delete and rebuild the object — so it was
+# not even a no-op. On mac_key, mac_click, launch_app, SWAPSELF or REBOOT the
+# same shape is a problem, and nothing would have shown it.
+_REPEATS = loop_guard.RepeatWatch()
+
+
 def call_tool(name: str, arguments: Dict[str, Any]) -> Any:
     """Call a tool by name with arguments."""
     if name not in TOOL_HANDLERS:
         raise ValueError(f"Unknown tool: {name}")
 
     handler = TOOL_HANDLERS[name]
+    repeat = _REPEATS.note(name, arguments)
     result = handler(**arguments)
+
+    # Reported, never blocked. Refusing a repeated call would be a guard
+    # deciding the caller did not mean what it asked for twice — which it
+    # cannot know. The field is absent on an ordinary call, so nothing that
+    # reads these results has to change.
+    if repeat and isinstance(result, dict) and "repeated_call" not in result:
+        result["repeated_call"] = repeat
 
     # One place, so every tool carries it and no tool has to remember to.
     # The host server appends a NOTES field to the control-port reply when the
