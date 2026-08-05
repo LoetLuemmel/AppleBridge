@@ -137,3 +137,4 @@ The same three gestures are exposed as MCP tools — **`mac_host_click`**, **`ma
 - `ARCHITECTURE.md` — full design
 - `TROUBLESHOOTING.md` — failure modes & fixes
 - Build recipes, trap defs, encoding tables: the user's global `~/.claude/CLAUDE.md`
+- **[Macintosh C Programming — Best Practise](https://pit.390er.de/macintosh-c-programming-best-practise/)** — the *craft* of writing and building C for the classic Mac: MPW and THINK C invocations, `-model far`, the StdCLib link trap, QuickDraw init, the yield obligation, `SysEvtMask`, encoding and file types. Each entry carries the date it was measured. It owns the **toolchain**, not the bridge: what an agent must verify mid-build stays in `docs/OPERATING_NOTES.md`, because a CMS page cannot be grepped (D-020). The page is the teaching version; the repo is the reference you search while something is broken.
