@@ -107,16 +107,16 @@
 
 resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
-    development, 0x29,   /* development stage, non-release revision 38 (BCD) */
+    development, 0x31,   /* development stage, non-release revision 38 (BCD) */
     verUS,
-    "0.8d38",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d38 - QUIT reports whether the app went away, not whether the event was sent"  /* long -> Get Info */
+    "0.8d40",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d40 - keyUp was masked out of SysEvtMask; a refusal is not congestion"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
-    development, 0x29,
+    development, 0x31,
     verUS,
-    "0.8d38",
+    "0.8d40",
     "AppleBridge"        /* the shared/suite version line */
 };

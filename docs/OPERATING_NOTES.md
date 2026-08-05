@@ -1573,7 +1573,52 @@ The resample is conditional on the measured size, never on an assumption about
 Retina, and a failed resample keeps the picture: an oversized capture is still
 the capture.
 
-## The keystroke cost is not a full queue — it is one post that always fails — 2026-08-05
+## keyUp is masked out of SysEvtMask, and a refusal is not congestion — 2026-08-05
+
+**Resolved.** Three explanations were reasoned out from a stopwatch and all
+three were wrong. A guest-side instrument answered it in one call:
+
+    keydownTries=0   keydownErr=0     <- keyDown lands on the first attempt
+    keyupTries=48    keyupErr=1       <- keyUp refused 48 times, evtNotEnb
+    ticks=100                         <- the guest's own measurement, 1.667 s
+    sysEvtMask=-17   == 0xFFEF        <- every bit set EXCEPT bit 4 = keyUpMask
+
+System 7 ships with **keyUp disabled in the system event mask** — the
+documented default, because almost no classic application wants keyUp events.
+So `PostEvent` refused every keyUp this daemon ever sent, the retry loop burned
+its whole budget against a wall, and the verb answered `Typed`. **1.69 s per
+keystroke, since the feature was written.**
+
+Measured after the repair:
+
+| | before | after |
+|---|---|---|
+| one keystroke | 1.694 s | **0.121 s** |
+| nine characters | 15.003 s (timeout) | **0.825 s** |
+| `keyupTries` / `keyupErr` | 48 / 1 | **0 / 0** |
+| guest-measured ticks | 100 | **4** |
+
+Two changes, and the second is the one that generalises. The event type is
+enabled for the duration of the post and the mask is **put back** — it is a
+global low-memory value, and a fix that quietly alters every other
+application's world is not a fix. And the loop now **stops on `evtNotEnb`**:
+that error is a statement about configuration, not about congestion, and
+retrying it only converts a refusal into a delay.
+
+**The general rule, which is the part worth carrying:** *a retry loop must know
+which errors it can fix.* Retrying a "not allowed" is indistinguishable, from
+the outside, from a slow machine — and it presents as a performance problem
+rather than a configuration one, which is where three explanations came from.
+
+*Method note. The arithmetic matched the stopwatch to half a percent and
+pointed at the wrong cause twice — first a full queue (refuted by a reboot),
+then a jammed posting path (refuted by CLICK costing 0.102 s). 101 ticks is
+what you get from a retry loop exhausting for ANY reason. **An arithmetic
+agreement is evidence about a magnitude, never about a mechanism.** What
+settled it was building something that reads the value instead of deriving it —
+about forty lines of C and one rebuild, against an evening of inference.*
+
+## Superseded: "the keystroke cost is one post that always fails" — 2026-08-05
 
 > **Correction to the note below, same morning.** It attributed the 1.69 s to a
 > guest event queue with no room. **A reboot refuted that.** On a freshly booted
@@ -1601,7 +1646,12 @@ freshly booted machine.
 
 ```c
 InjectType(request + base, n);
-strcpy(responseBuffer, "STATUS:0STDOUT:5TypedSTDERR:0");
+strcpy(responseBuffer, "STATUS:0
+STDOUT:5
+Typed
+STDERR:0
+
+");
 ```
 
 `InjectType` returns the error from the exhausted retry and nothing reads it.

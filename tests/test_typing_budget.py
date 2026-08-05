@@ -62,7 +62,7 @@ TICK = 1.0 / 60.0
 def retry_budget():
     """(attempts, ticks_per_attempt) from PPostEventRetry."""
     m = re.search(r"for \(tries = 0; tries < (\d+); tries\+\+\)", EVENTS_C)
-    body = EVENTS_C[m.end():m.end() + 400]
+    body = EVENTS_C[m.end():m.end() + 900]
     d = re.search(r"ShortDelay\((\d+)L\)", body)
     return int(m.group(1)), int(d.group(1))
 
@@ -97,15 +97,34 @@ def test_the_arithmetic_matches_the_stopwatch():
         f"source now predicts {predicted:.3f}s per keystroke, measured was 1.69s"
 
 
-def test_a_full_chunk_cannot_fit_the_host_timeout():
-    """THE defect, stated as arithmetic rather than as a war story. Both numbers
-    are defensible alone; together they guarantee a timeout on the default path
-    whenever the guest's event queue is jammed — which is its standing state on
-    this guest, measured after 30 s of quiet."""
-    worst = chunk_size() * per_keystroke_ticks() * TICK
-    assert worst > host_server.DEFAULT_TIMEOUT, (
-        "this test encodes a KNOWN mismatch; if it now fits, the fix landed — "
-        "delete the test and say which constant moved")
+def test_a_refusal_stops_the_loop_instead_of_being_retried():
+    """THE fix. `evtNotEnb` is a statement about configuration, not about
+    congestion — 48 attempts at it convert a refusal into a 1.6 s delay and
+    change nothing else. Measured after: 1.694 s -> 0.121 s per keystroke."""
+    retry = EVENTS_C[EVENTS_C.index("static OSErr PPostEventRetry"):]
+    retry = retry[:retry.index("\n}")]
+    assert "if (e == evtNotEnb) break;" in retry, \
+        "a disabled event type is being retried again"
+
+
+def test_the_event_mask_is_restored():
+    """It is a GLOBAL low-memory value. Enabling keyUp and leaving it enabled
+    would change the behaviour of every application on the machine — a fix that
+    quietly alters somebody else's world is not a fix."""
+    retry = EVENTS_C[EVENTS_C.index("static OSErr PPostEventRetry"):]
+    retry = retry[:retry.index("\n}")]
+    sets = [l for l in retry.splitlines() if "SetEventMask" in l]
+    assert len(sets) == 2, f"expected enable + restore, found {len(sets)}: {sets}"
+    assert "savedMask)" in sets[1], "the second call must put the ORIGINAL mask back"
+
+
+def test_a_full_chunk_now_fits_the_host_timeout():
+    """The arithmetic that used to guarantee a timeout. It still describes the
+    WORST case the budget allows, but that case is now unreachable for the error
+    that actually occurred, so the measured cost is the deliberate delays alone:
+    9 characters went from 15.003 s (timeout) to 0.825 s."""
+    deliberate = per_keystroke_ticks() - retry_budget()[0] * retry_budget()[1]
+    assert chunk_size() * deliberate * TICK < host_server.DEFAULT_TIMEOUT
 
 
 def test_how_many_characters_actually_fit():
@@ -117,15 +136,30 @@ def test_how_many_characters_actually_fit():
     assert fits == 8, f"{fits} characters fit, so the {fits + 1}th is the one that times out"
 
 
-def test_an_exhausted_retry_is_not_counted_anywhere():
-    """The daemon answers STATUS:0 for a keystroke that needed 47 attempts, and
-    err= does not move — verified live across every measurement above. Pinned as
-    a KNOWN GAP so that closing it is a deliberate act: if a counter appears,
-    this test fails and its docstring is the changelog entry."""
-    retry = EVENTS_C[EVENTS_C.index("static OSErr PPostEventRetry"):]
-    retry = retry[:retry.index("\n}")]
-    assert "NoteErr" not in retry and "gErrCount" not in retry, \
-        "a retry counter appeared — good; update this test and the operating note"
+def test_a_failed_injection_is_no_longer_reported_as_success():
+    """`InjectType`'s return value was DISCARDED and the verb answered "Typed"
+    unconditionally — so every keystroke that never reached the queue was
+    reported as success, for as long as the feature existed. Third instance of
+    one shape in two days, after QUIT's "Quit OK" and append()'s ignored False."""
+    src = open(os.path.join(_ROOT, "mac", "src", "main.c"), encoding="utf-8",
+               errors="replace").read()
+    verb = src[src.index('if (strncmp(request, PROTO_TYPE'):][:1800]
+    assert "OSErr tErr = InjectType(" in verb, "the result is being discarded again"
+    assert "STATUS:-1" in verb, "a failed injection must not answer STATUS:0"
+    assert "NoteErrCode" in verb, "and it must move the error counter"
+
+
+def test_the_instrument_reports_what_it_measured_not_what_it_inferred():
+    """KEYSTAT exists because three explanations from arithmetic alone were all
+    wrong. It states attempts, the OSErr and SysEvtMask — the reading that
+    settled it in one call: keyupTries=48, keyupErr=1, sysEvtMask=-17 (0xFFEF,
+    every bit but keyUpMask)."""
+    src = open(os.path.join(_ROOT, "mac", "src", "main.c"), encoding="utf-8",
+               errors="replace").read()
+    verb = src[src.index('PROTO_KEYSTAT'):][:1500]
+    for field in ("keydownTries", "keyupTries", "keyupErr", "sysEvtMask",
+                  "maskPatched"):
+        assert field in verb, f"KEYSTAT no longer reports {field}"
 
 
 if __name__ == "__main__":
