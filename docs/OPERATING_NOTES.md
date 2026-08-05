@@ -1768,3 +1768,42 @@ look like a fresh install, ToolServer quit first so nothing left over could
 help, then a reboot: `toolserver=1` twenty-three seconds later, `PROCLIST`
 shows it, `Echo` round-trips, and the prefs file is still exactly as written
 with no `APP=` line added behind anyone's back.
+
+## Settled: a background process cannot photograph windows, and no grant fixes it — 2026-08-05
+
+The question that survived a whole evening — *is it TCC identity or window-server
+attachment?* — is decided, and it decides against building an app bundle.
+
+Conditions, all arranged deliberately: **a fresh logout/login** (so nothing was
+stale), **three grants verified in the TCC database itself** (`com.apple.Terminal`,
+`com.apple.python3` as a bundle, and the Xcode framework Python by full path —
+all `auth_value 2`), the emulator window **demonstrably present** at 448,128
+1024×796, and both captures taken **at the same moment on the same rect**:
+
+| capturing process | Screen Recording | bytes | content |
+|---|---|---|---|
+| Terminal session (a GUI app) | granted | 188,008 | **the guest desktop, sharp** |
+| launchd agent (Python, path *and* bundle) | granted | 973,654 | wallpaper only |
+
+A logout changed nothing. So the cause is **not** identity, and **not** a stale
+authorisation — the two things a bundle would fix. What remains is the
+explanation the parallel session offered first: a process with no window server
+connection sees the desktop and not the windows, whatever it is permitted to do.
+
+**The decision this buys, which is the point of running it:** do not build the
+app bundle. Its only advantage is a stable TCC identity, and identity is now
+measured not to be the constraint. If a host-side capture service is ever built,
+it has to be a **real GUI application** — one that actually connects to the
+window server (an `NSApplication`, `LSUIElement` if it should stay invisible) —
+which is a different and larger thing than wrapping a script in a bundle. That
+distinction is the whole finding: *bundling is about identity, and this was
+never an identity problem.*
+
+Until then the split of hands stands and works: the acting half can live
+anywhere (the control port's `HOSTCLICK`/`HOSTMENU`/`HOSTHOLDSHOT` reach the
+visible session), and the seeing half must run in a GUI session — or come from
+the guest over the bridge, where `mac_screenshot` is indifferent to all of this.
+
+*Cost of not running this experiment first: an evening of inference, four rounds
+of an operator clicking through System Settings, and one nearly-built app
+bundle. Cost of running it: one logout and two commands.*
