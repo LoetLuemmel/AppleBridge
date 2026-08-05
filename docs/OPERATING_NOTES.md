@@ -2291,6 +2291,26 @@ hervorgehoben, weil deaktiviert* ist kein Fehlschlag, sondern der Befund. Die
 Bedingung lautet: ungültig, wenn der **Zeiger nicht auf dem Eintrag steht** — und
 genau das ist am Bild prüfbar, weil der Cursor mitfotografiert wird.
 
+### Der Walk liefert `enabled` mit — und `text`, wie er gezeichnet ist
+
+`MENUTREE` gibt zu jedem Eintrag `text`, `enabled`, `separator` und `point`.
+**Ob ein Eintrag ausgegraut ist, steht also da** — und ich habe es fotografiert,
+statt es zu lesen. Der Befund „`Switch To Project` ist deaktiviert" kostete eine
+gehaltene Maus, eine Bildschirmaufnahme und eine Ungültigkeitsbedingung; er stand
+als `enabled: false` in einer Antwort, die ich schon hatte.
+
+Und `text` ist der **gezeichnete** Text, nicht der Grundtext der Ressource.
+Nachgemessen in *einer* Instanz, ohne Zustandswechsel, mit `PSN` vor und nach
+jedem Schritt: Foto und Walk stimmten Zeichen für Zeichen überein, bis hin zu den
+Graustufen. Eine Anwendung, die ihre Menütexte zur Laufzeit umschreibt — der
+THINK Project Manager tut das —, wird vom Walk korrekt wiedergegeben. Der
+Verdacht, er liefere die Ressource, ist damit ausgeräumt; er wäre ein
+gefährliches Werkzeug gewesen, weil sein Ergebnis richtig *aussieht*.
+
+Also: erst `MENUTREE` lesen, dann fotografieren. Das Foto bleibt nötig für das,
+was **nicht** in der Leiste hängt — ein hierarchisches Untermenü — und als
+Beleg des Zustands, wenn ein Fenster mit im Bild sein soll.
+
 **Ein Foto schlägt einen Walk.** Der Menü-Walk liest die Struktur, das Foto liest
 den Bildschirm. Wo beide sich widersprachen — ein Menüeintrag, dessen Text nicht
 zu seinem Verhalten passte — hatte der Walk unrecht, und der Widerspruch war
