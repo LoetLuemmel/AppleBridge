@@ -1459,7 +1459,61 @@ intersect any displays"* — which reads like a broken display list and is
 nothing of the kind. `guest_input.py` already works in points throughout,
 because its origin comes from System Events, which reports points.
 
-## A capture without Screen Recording consent is wallpaper, exit code 0 — 2026-08-05
+## A background process cannot photograph windows, however it is permitted — 2026-08-05
+
+Three explanations were tried for the same observation: `screencapture` returns
+the desktop picture and the menu bar with **every window missing**, exit code 0,
+correct dimensions, a valid PNG. In order: a lost emulator window (wrong — see
+the correction above), a WindowServer session the process is not attached to,
+and a missing Screen Recording grant.
+
+**The permission explanation was tested and is refuted.** Grants were added and
+verified in the TCC database itself, not inferred from the Settings UI:
+
+    /Applications/Xcode.app/…/Python.app/Contents/MacOS/Python | 2 | path
+    com.apple.python3                                          | 2 | bundle
+
+Both allowed, path form *and* bundle form, matching the binary the launchd agent
+really executes (`/usr/bin/python3` is a shim; the process is Xcode's framework
+Python — that part was worth learning). After each change the agent was
+restarted and the capture repeated. **All four captures were byte-identical:
+974,762 bytes of wallpaper.** A cause that is fully satisfied and changes
+nothing is not the cause.
+
+What survives is the session explanation, and it covers every case measured:
+
+| process | window server connection | windows in the capture |
+|---|---|---|
+| Terminal (a GUI app) | yes | **yes** |
+| launchd agent in `gui/501` | no | no |
+| an ssh session | no | no |
+
+The tell that separates this from "there is no window": the image has **exactly
+the right dimensions** for the requested rect. The capture found the area and
+photographed the desktop behind it. A missing window does not produce a
+correctly sized picture of the desk.
+
+**Consequences, which are practical rather than theoretical.** A remote or
+background half can *act* — `cliclick` drives the mouse from the control-port
+agent, verified — and cannot *see*. Adding permissions will not change that; the
+capture has to be issued by a process with a window server connection, or come
+from the guest over the bridge, where `mac_screenshot` is indifferent to all of
+this and works while a menu holds the guest… except that a held menu also
+starves the daemon, which is the whole reason a host capture was wanted.
+
+So for a menu that must be *held and read*, the seeing half belongs to a GUI
+session. Two ways out, neither of them a permission: a helper that is a real
+signed `.app` (`de.sealog.MacintoshBridgeHost` sits in that same TCC table with
+a grant that works), or a deliberate split of hands — one side holds, the other
+photographs. The split costs a sentence between two sessions and works today;
+the app bundle is the durable answer.
+
+*Cost of getting here: four rounds of an operator clicking through System
+Settings on a theory that four byte-identical measurements had already refuted.
+The measurements were right each time and were read as "not yet" instead of as
+"no". A repeated identical result IS an answer.*
+
+## Superseded: "a capture without Screen Recording consent is wallpaper" — 2026-08-05
 
 Chased for an evening as a session-context problem, and it is simpler than
 that. Since macOS 10.15, `screencapture` run by a process that has **not** been
