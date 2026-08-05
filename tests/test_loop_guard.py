@@ -152,15 +152,96 @@ def test_the_dispatcher_reports_a_repeat_in_the_result():
     assert len(calls) == 2, "the repeat must still have been EXECUTED"
 
 
+# --- cycles: the shape `consecutive` is blind to -----------------------------
+def test_a_b_a_b_is_reported_as_a_cycle():
+    """The case the outside comment named: alternation resets the consecutive
+    chain every time, so the guard saw nothing at all."""
+    c = Clock()
+    w = lg.RepeatWatch(clock=c)
+    out = None
+    for name in ("a", "b", "a", "b"):
+        c.advance(1)
+        out = w.note(name, {})
+    assert out["cycle_length"] == 2, out
+    assert "consecutive" not in out
+
+
+def test_a_longer_cycle_is_found_too():
+    c = Clock()
+    w = lg.RepeatWatch(clock=c)
+    out = None
+    for name in ("a", "b", "c", "a", "b", "c"):
+        c.advance(1)
+        out = w.note(name, {})
+    assert out["cycle_length"] == 3, out
+
+
+def test_ordinary_work_is_not_a_cycle():
+    """A guard that fires on ordinary sequences is one that gets switched off,
+    and then it is worth less than none."""
+    c = Clock()
+    w = lg.RepeatWatch(clock=c)
+    for name in ("a", "b", "c", "d"):
+        c.advance(1)
+        out = w.note(name, {})
+    assert out is None
+
+
+def test_a_cycle_is_reported_and_not_blocked():
+    """Legitimate alternation exists — list, read, list, read is a real pattern.
+    So `cycle_length` is a REPORT, and the shell must weigh it against whether
+    anything progressed. Blocking here would be the guard deciding that for it."""
+    c = Clock()
+    w = lg.RepeatWatch(clock=c)
+    for name in ("a", "b", "a", "b"):
+        c.advance(1)
+        out = w.note(name, {})
+    assert out["cycle_length"] == 2      # reported...
+    c.advance(1)
+    assert w.note("a", {}) is not None   # ...and the call still went through
+
+
+# --- normalisation, and its deliberate limits -------------------------------
+def test_an_omitted_optional_equals_a_null_one():
+    """`{"path": "x"}` and `{"path": "x", "options": None}` are the same call,
+    and a model re-sending one as the other is repeating itself."""
+    w = lg.RepeatWatch(clock=Clock())
+    w.note("t", {"path": "x"})
+    assert w.note("t", {"path": "x", "options": None}) is not None
+
+
+def test_an_empty_string_folds_like_an_absent_key():
+    w = lg.RepeatWatch(clock=Clock())
+    w.note("t", {"path": "x"})
+    assert w.note("t", {"path": "x", "options": ""}) is not None
+
+
+def test_whitespace_and_case_are_NOT_normalised():
+    """Deliberate, and the reason is the guest: a classic-Mac filename may
+    legitimately differ in exactly those ways. Folding two distinct calls into
+    one costs a false alarm on real work — the way a signal earns being
+    ignored."""
+    w = lg.RepeatWatch(clock=Clock())
+    w.note("t", {"path": "MeinMac:X"})
+    assert w.note("t", {"path": "meinmac:x"}) is None
+    assert w.note("t", {"path": "MeinMac:X "}) is None
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
     for t in tests:
+        # Exception, not AssertionError. A test that raises anything else --
+        # KeyError on a field the code does not produce yet is the obvious one --
+        # used to kill the whole run at that point, and a reader grepping for
+        # "FAIL" then saw none. Measured while running THIS file against the
+        # pre-cycle code: the negative control reported zero failures because
+        # the runner had died on the first one.
         try:
             t()
             print(f"ok   {t.__name__}")
-        except AssertionError as e:
+        except Exception as e:                                  # noqa: BLE001
             failed += 1
-            print(f"FAIL {t.__name__}: {e}")
+            print(f"FAIL {t.__name__}: {type(e).__name__}: {e}")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")
     sys.exit(1 if failed else 0)

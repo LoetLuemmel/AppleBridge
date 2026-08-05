@@ -25,12 +25,20 @@ stdlib only, no framework: this is meant to be imported by a conductor that
 lives outside this repository, or copied into one.
 """
 
+import collections
 import time
 
 # How long a call stays "recent" for repetition purposes. A repeat three hours
 # later is not a stuck loop, it is a second job — counting it would turn a
 # useful signal into noise that gets ignored, which is how signals die.
 DEFAULT_WINDOW_S = 120.0
+
+# How far back a cycle may reach. A-B-A-B is the shape small models fall into;
+# consecutive repetition is only its shortest case. Six covers a three-step
+# cycle seen twice, which is where a loop stops being a coincidence — longer
+# would find "cycles" in ordinary work, and a signal that fires on ordinary work
+# is one that gets switched off.
+DEFAULT_HISTORY = 6
 
 
 class RepeatWatch:
@@ -42,12 +50,14 @@ class RepeatWatch:
     a signal somebody has to remember to look at.
     """
 
-    def __init__(self, window_s=DEFAULT_WINDOW_S, clock=time.monotonic):
+    def __init__(self, window_s=DEFAULT_WINDOW_S, clock=time.monotonic,
+                 history=DEFAULT_HISTORY):
         self.window_s = window_s
         self._clock = clock
         self._last_key = None
         self._consecutive = 0
         self._seen = {}          # key -> (count, last_time)
+        self._recent = collections.deque(maxlen=history)
 
     @staticmethod
     def key(name, args):
@@ -56,8 +66,19 @@ class RepeatWatch:
         Sorted items, not `repr(dict)`: two dicts with the same content and a
         different insertion order are the same call, and treating them as
         different would silently lose exactly the repeats worth reporting.
+
+        Absent and empty are folded together — `{"path": "x"}` and
+        `{"path": "x", "options": None}` are the same call, and a model that
+        re-sends one as the other is repeating itself. This is deliberately the
+        ONLY normalisation: stripping whitespace or case would look tidier and
+        would be wrong, because a classic-Mac filename may legitimately differ
+        in exactly those ways. Folding two distinct calls into one costs a
+        false alarm on real work, which is how a signal earns its way to being
+        ignored.
         """
-        items = tuple(sorted((args or {}).items(), key=lambda kv: kv[0]))
+        items = tuple(sorted(((k, v) for k, v in (args or {}).items()
+                              if v is not None and v != ""),
+                             key=lambda kv: kv[0]))
         return (name, repr(items))
 
     def note(self, name, args):
@@ -79,16 +100,45 @@ class RepeatWatch:
         else:
             self._consecutive = 0
         self._last_key = k
+        self._recent.append((k, now))
+        cycle = self._cycle_length(now)
 
-        if count <= 1:
+        if count <= 1 and cycle is None:
             return None
-        out = {"identical_calls": count,
-               "seconds_since_previous": round(now - last_t, 2)}
+        out = {}
+        if count > 1:
+            out["identical_calls"] = count
+            out["seconds_since_previous"] = round(now - last_t, 2)
         if self._consecutive:
             # Back-to-back is the shape that means "stuck"; the same call twice
             # with other work in between usually means something else entirely.
             out["consecutive"] = self._consecutive + 1
-        return out
+        if cycle is not None:
+            # A-B-A-B is the shape small models actually fall into, and the
+            # consecutive counter is blind to it — B resets the chain every
+            # time. Reported separately rather than folded in, because the two
+            # need different answers: a repeated call may be idempotent, a cycle
+            # never is progress.
+            out["cycle_length"] = cycle
+        return out or None
+
+    def _cycle_length(self, now):
+        """Shortest p for which the last 2p calls are two identical halves.
+
+        Length 1 is the consecutive case and is reported anyway; it is included
+        here so a caller that only reads `cycle_length` is not blind to the
+        simplest cycle of all.
+
+        The window applies here too, and it was not obvious: without it a call
+        repeated two hours later reported `cycle_length: 1`, because the deque
+        remembers what the clock has long forgotten. A cycle spread over hours
+        is not a stuck loop. Caught by the window test that already existed.
+        """
+        seq = [key for key, t in self._recent if (now - t) <= self.window_s]
+        for p in range(1, len(seq) // 2 + 1):
+            if seq[-p:] == seq[-2 * p:-p]:
+                return p
+        return None
 
 
 class StepBudget:
