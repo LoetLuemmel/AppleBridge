@@ -280,6 +280,46 @@ def test_every_seeded_defect_is_caught():
     assert not problems, "mutation run:\n  " + "\n  ".join(problems)
 
 
+def test_no_test_hides_behind_its_own_runner():
+    """A test defined AFTER the `if __name__ == "__main__"` block never runs.
+
+    The runner collects `globals()` at the moment it executes, so anything
+    defined below it is invisible to `python3 tests/<file>.py` — which is
+    exactly how run_all.sh invokes every suite. pytest still collects them, so
+    the file looks fully green one way and silently runs fewer checks the other.
+
+    Found 2026-08-05 by noticing a file reported 8/8 right after two tests had
+    been appended to it. Four files were affected and THIRTY tests were not
+    running — half of test_guest_input.py, including every one added that day.
+    run_all.sh had been printing ALL SUITES PASSED over them.
+
+    Appending to a test file is the normal way to add a case here, so this is
+    not an exotic mistake; it is the default one. And an ad-hoc scan for it
+    missed one of the four files, which is why the check belongs in the suite
+    rather than in somebody's memory.
+    """
+    import re
+    offenders = []
+    tests_dir = os.path.join(_ROOT, "tests")
+    for name in sorted(os.listdir(tests_dir)):
+        if not (name.startswith("test_") and name.endswith(".py")):
+            continue
+        src = open(os.path.join(tests_dir, name), encoding="utf-8").read()
+        marker = 'if __name__ == "__main__":'
+        if marker not in src:
+            continue
+        after = src[src.index(marker):]
+        hidden = re.findall(r"^def (test_[A-Za-z0-9_]+)", after, re.M)
+        hidden += re.findall(r"^class ([A-Za-z0-9_]*[Tt]est[A-Za-z0-9_]*)", after, re.M)
+        if hidden:
+            shown = ", ".join(hidden[:3])
+            if len(hidden) > 3:
+                shown += f" (+{len(hidden) - 3} weitere)"
+            offenders.append(f"{name}: {shown}")
+    assert not offenders, ("tests defined after their own runner never execute "
+                           "via run_all.sh:\n  " + "\n  ".join(offenders))
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

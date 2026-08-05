@@ -1890,3 +1890,76 @@ things the move itself taught, both caught by tests or by looking:
 **The general form:** ask where a thing lives before trusting that it persists.
 A path is a decision, and `/tmp` is a decision that something may be thrown
 away — one made here by nobody, inherited from a first sketch and never re-read.
+
+## Ask the system for the screenshot instead of taking it — 2026-08-05
+
+A background process cannot photograph windows and no grant changes that (see
+above). The way past it is not to gain the right but to stop needing it: **the
+system hotkey Cmd-Shift-3 is served by macOS's own screenshot component**, which
+has the rights we lack — and a background process *can* post that keystroke.
+Input reaches the visible session even though capture does not.
+
+So `HOSTSHOT` no longer photographs anything. It presses the key, waits for the
+file, crops it to the emulator window and copies it into the shared folder,
+where the guest reads it as `Unix:Screenshots:<name>` — a remote session fetches
+the picture over the bridge and needs nothing host-side at all.
+
+Three measured asymmetries hold the design up, and every one was guessed wrong
+first:
+
+| | from the launchd agent |
+|---|---|
+| `screencapture` itself | wallpaper, no windows |
+| posting the system hotkey | **works** |
+| **listing** `~/Desktop` | `[Errno 1] Operation not permitted` |
+| **writing into** `~/Desktop` | **allowed** |
+
+The third and fourth are why the capture lands in `~/.applebridge/shots` and is
+then *copied* into the shared folder. And the third one cost an hour on its own,
+because the first version of the directory listing swallowed `OSError` and
+returned an empty set — turning *"I am not allowed to read this folder"* into
+*"the folder is empty"*, so the caller reported no screenshot twelve seconds
+after one had appeared. **The handler written to close this class of bug
+contained it.**
+
+**Why not macOS's window mode**, which would photograph the emulator window even
+when something covers it: it returns the window *with* title bar and shadow, so
+the picture is no longer the guest's 1024×768. This surface's rule is that the
+pixels of a capture ARE guest coordinates 1:1, and `mac_screenshot` keeps it —
+two ways of photographing one guest must not disagree about what a coordinate
+means. Instead the verb **refuses when the emulator is not frontmost**: nothing
+can lie on top of a frontmost window, so the guard buys the same robustness and
+costs one `osascript`. Verified both ways — front: `STATUS:0`; Terminal front:
+`STATUS:-1` naming who is in front.
+
+## Thirty tests were not running, and the suite said ALL PASSED — 2026-08-05
+
+A test defined **after** a file's `if __name__ == "__main__":` block never runs.
+The runner collects `globals()` at the moment it executes, so anything below it
+is invisible to `python3 tests/<file>.py` — which is exactly how `run_all.sh`
+invokes every suite. pytest still collects them, so the file is fully green one
+way and silently smaller the other.
+
+Noticed because a file reported **8/8 right after two tests had been appended**
+to it. Four files were affected:
+
+| file | not running |
+|---|---|
+| `test_guest_input.py` | 20 of 40 |
+| `test_native_verbs.py` | 8 of 22 |
+| `test_host_input_tools.py` | 2 of 18 |
+| `test_process_mutations.py` | 1 |
+
+**Half of `test_guest_input.py`** — including every test written that day for
+the gesture cost, the hold primitive and the guest-scale rule. `run_all.sh` had
+been printing `ALL SUITES PASSED` over all of it.
+
+Appending to a test file is the normal way to add a case here, so this is not an
+exotic mistake; it is the **default** one. And an ad-hoc grep for it found three
+of the four files — the fourth turned up only once the check was written as a
+test. That is the argument for putting it in the suite rather than in a habit:
+`test_no_test_hides_behind_its_own_runner`.
+
+The shape, one more time: **a green result is a claim about what ran, not about
+what exists.** The suite was honest about every test it executed. Nothing
+anywhere said how many it had skipped.
