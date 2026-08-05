@@ -1855,3 +1855,38 @@ deciding the task needs anything new.
 *(Cross-check that survives: the menu lists three applications where `PROCLIST`
 reports four. The watchdog is faceless and never appears there — the two views
 answer different questions, see the note above.)*
+
+## The channel lived in /tmp, and a restart emptied it — 2026-08-05
+
+130 notes: two days of correspondence, both sides' measurements, the
+corrections that made them right. Gone at a reboot, and nothing said a word.
+
+Every guard the tool has was one level too high to help. `rotate` archives
+rather than deletes. `find` searches the archives. An open question refuses
+rotation, because an archived question can never be closed. All of that is
+careful, and all of it was about *the tool deleting things* — while the
+operating system removed the file underneath it, for the ordinary reason that
+`/tmp` is not storage.
+
+**What kept it from mattering is the separation the process rests on: the
+channel is correspondence, not memory.** The findings were already in the
+operating notes, the ledger and the pull requests, so a data loss became an
+inconvenience. That is the argument for keeping the separation — and not an
+argument for leaving the mailbox where it gets emptied.
+
+Now `~/.applebridge/notes.log`, with a one-time carry-over from `/tmp`. Two
+things the move itself taught, both caught by tests or by looking:
+
+- **The migration first fired for ANY new path**, which pulled the live channel
+  into every test's temp file. It now runs only for the default path: a caller
+  who names a path wants *that* channel, not a copy of another one. A helpful
+  step nobody asked for, taken silently — this file's own subject.
+- **Migrating on `append` alone was not enough.** The first `list` after the
+  move reported *"0 Notizen im Kanal"* — the tool saying "nothing" when it meant
+  "I am looking somewhere else". Every entry point that touches the channel now
+  resolves it the same way, or a reader can be silently right about the wrong
+  file.
+
+**The general form:** ask where a thing lives before trusting that it persists.
+A path is a decision, and `/tmp` is a decision that something may be thrown
+away — one made here by nobody, inherited from a first sketch and never re-read.
