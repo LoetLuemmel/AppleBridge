@@ -2080,3 +2080,36 @@ that predates the command says so by not having it, which is also an answer.
 
 The general rule: **when a fix crosses a machine boundary, say so, and give the
 other side a way to check rather than a promise to believe.**
+
+## The guest's front application is a different question from the host's — 2026-08-05
+
+`HOSTMENU` brings the **emulator** forward before it acts, so the host side is
+handled. Inside the guest, the front application is whatever it happens to be —
+and on 2026-08-05 that was the **Finder**, not the THINK Project Manager. The
+gesture hit the correct window and the wrong program's menu bar, and opened a
+Finder window on MeinMac instead of a project dialog.
+
+The session it happened to summed it up: *check the foreground before every
+mouse gesture, do not assume it.* That check has to be asked of the **guest**,
+and `PROCLIST` already answers it — the last column is the front flag.
+
+`HOSTMENU:tx:ty:ix:iy[:expect]` takes an optional fifth field naming the guest
+application that must own the menu bar, and refuses when it does not. Optional
+because every existing caller predates it; and the reply now carries
+`guest_front` **even when nobody asked**, so a caller that did not think to
+check can still notice afterwards. One field is cheaper than a wrong gesture.
+
+Two things the build itself taught, both of the day's own shape:
+
+**`send_raw`, not `send_command`.** A native daemon verb goes raw;
+`send_command` wraps it in `COMMAND:` — the MPW path — so `PROCLIST` was handed
+to ToolServer, which swallowed it and answered `STATUS:0` with an empty body.
+The guard then said *"(None does)"* and would have refused a **correct**
+expectation just as readily. One string, two senders, two meanings, and the
+wrong one fails **quietly**, because an unrouted verb is a perfectly good MPW
+no-op. (Same shape as the two `AESEND` dialects in the note above.)
+
+**A guard that cannot say what it saw is a guard nobody can debug.** The first
+version returned a bare `None` and the refusal named no cause. It now logs the
+reply it could not parse, which is how the sender bug was found in one attempt
+instead of by reasoning.
