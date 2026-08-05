@@ -229,6 +229,46 @@ def _framed_failure(text):
 # The control-port verbs, derived ONCE so the hint below cannot drift from the
 # dispatch above it. A hint that lists the wrong verbs is worse than none: it
 # reads as authoritative and sends the caller somewhere else again.
+def guest_front_app(server, ask=None):
+    """Which application owns the GUEST's menu bar right now. -> name or None.
+
+    A different question from the host's frontmost app, and confusing the two
+    cost the parallel session a measurement on 2026-08-05: `HOSTMENU` brings the
+    EMULATOR forward (so the host side was right), but inside the guest the
+    front application was the Finder, not the THINK Project Manager. The gesture
+    hit the correct window and the wrong program's menu bar — and opened a Finder
+    window on MeinMac instead of a project.
+
+    Its own summary: *check the foreground before every mouse gesture, do not
+    assume it*. That check has to be asked of the guest, and `PROCLIST` already
+    answers it — the last column is the front flag.
+    """
+    # send_RAW, not send_command. A native daemon verb goes raw; send_command
+    # wraps it in `COMMAND:`, which is the MPW path — so "PROCLIST" was handed
+    # to ToolServer, which swallowed it and answered STATUS:0 with an empty
+    # body. The guard then reported "(None does)" and would have refused a
+    # CORRECT expectation just as readily.
+    #
+    # Same shape as the two AESEND dialects the parallel session hit the same
+    # day: one string, two senders, two meanings — and the wrong one fails
+    # QUIETLY, because an unrouted verb is a perfectly good MPW no-op.
+    reply = (ask or server.send_raw)("PROCLIST")
+    if not reply:
+        log("guest_front_app: PROCLIST returned nothing")
+        return None
+    body = reply.replace("\r", "\n")
+    for line in body.split("\n"):
+        parts = line.split("\t")
+        if len(parts) >= 9 and parts[8].strip() == "1":
+            return parts[0].strip()
+    # Say WHY nothing was found. The first version returned a bare None, and the
+    # refusal it produced read "(None does)" — which names no cause and would
+    # reject a CORRECT expectation just as readily. A guard that cannot say what
+    # it saw is a guard nobody can debug.
+    log(f"guest_front_app: no front flag in {len(reply)}B reply: {reply[:120]!r}")
+    return None
+
+
 def hostshot_reply(region=None, capture=None, read=None):
     """The host screen as a framed base64 PNG, or a framed refusal.
 
@@ -2090,12 +2130,29 @@ def run_control_server(server):
                             try:
                                 p = cmd[len("HOSTMENU:"):].split(":")
                                 tx, ty, ix, iy = int(p[0]), int(p[1]), int(p[2]), int(p[3])
+                                # Optional 5th field: the GUEST application that
+                                # must own the menu bar. Optional because every
+                                # existing caller predates it; named because a
+                                # menu gesture is the one place where hitting the
+                                # right window and the wrong program looks like
+                                # success (see guest_front_app).
+                                expect = p[4].strip() if len(p) > 4 and p[4].strip() else None
+                                front = guest_front_app(server)
+                                if expect and (front or "") != expect:
+                                    raise RuntimeError(
+                                        f"{expect!r} does not own the guest menu bar "
+                                        f"({front!r} does) — refusing, because the "
+                                        "gesture would drive the wrong program's menu")
                                 with guest_input.Session() as s:
                                     tp = s.point(tx, ty)
                                     ip = s.point(ix, iy)
                                     s.cliclick(guest_input.build_menu_gesture(tp, ip))
+                                # Report who WAS front even when nobody asked:
+                                # a caller that did not think to check can still
+                                # notice afterwards, and the cost is one field.
                                 payload = json.dumps({"ok": True, "title": [tx, ty],
-                                                      "item": [ix, iy]})
+                                                      "item": [ix, iy],
+                                                      "guest_front": front})
                                 out = (f"STATUS:0\rSTDOUT:{len(payload)}\r{payload}"
                                        f"\rSTDERR:0\r\r")
                                 log(f"hostmenu title=({tx},{ty}) item=({ix},{iy})")
