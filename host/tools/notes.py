@@ -34,7 +34,57 @@ import shlex
 import subprocess
 import sys
 
-NOTES = os.environ.get("APPLEBRIDGE_NOTES", "/tmp/applebridge_notes.log")
+# Where the channel lives. NOT /tmp any more: macOS clears it on restart, and on
+# 2026-08-05 a reboot took 130 notes -- two days of correspondence, both sides'
+# measurements and corrections -- without a word from anything. Every guard this
+# tool has was one level too high: `rotate` archives rather than deletes, `find`
+# searches the archives, an open question blocks rotation. Then the operating
+# system removed the file underneath all of it.
+#
+# The content was not lost, because the channel is correspondence and not memory
+# -- the findings were already in the operating notes, the ledger and the PRs.
+# That separation is what turned a data loss into an inconvenience, and it is
+# the reason to keep it. But a mailbox that empties itself on reboot is still a
+# defect, and it hid behind a directory name nobody re-read.
+_DEFAULT_NOTES = os.path.join(os.path.expanduser("~"), ".applebridge", "notes.log")
+_LEGACY_NOTES = "/tmp/applebridge_notes.log"
+NOTES = os.environ.get("APPLEBRIDGE_NOTES", _DEFAULT_NOTES)
+
+
+def ensure_channel_dir(path=None):
+    """Create the channel's directory, and carry a legacy /tmp channel across ONCE.
+
+    Migration rather than a flag day, because the two sides of this channel are
+    on different machines and cannot be updated in the same breath: whichever
+    moves first must not lose what the other has already written.
+    """
+    spec = path or NOTES
+    if ":" in spec and not os.path.isabs(spec):
+        return spec                      # remote (user@host:/path) -- not ours
+    directory = os.path.dirname(spec)
+    if directory:
+        try:
+            os.makedirs(directory, exist_ok=True)
+        except OSError:
+            return spec
+    # ONLY for the default path. A caller who points APPLEBRIDGE_NOTES somewhere
+    # else is asking for a separate channel, not for a copy of the old one — and
+    # the first version of this migrated into ANY new path, which pulled the live
+    # channel into every test's temp file. Caught by the tests, and the shape is
+    # this project's own: a helpful step nobody asked for, taken silently.
+    if spec == _DEFAULT_NOTES and not os.path.exists(spec) \
+            and os.path.exists(_LEGACY_NOTES):
+        try:
+            with open(_LEGACY_NOTES, encoding="utf-8", errors="replace") as src:
+                carried = src.read()
+            with open(spec, "w", encoding="utf-8") as dst:
+                dst.write(carried)
+            print(f"channel moved: {_LEGACY_NOTES} -> {spec} "
+                  f"({carried.count(chr(10))} lines carried over; /tmp does not "
+                  "survive a restart)", file=sys.stderr)
+        except OSError:
+            pass
+    return spec
 
 # Remote channel support (Jetson-side). The channel file lives on the Mac; a
 # session driving the Mac by ssh from another host points APPLEBRIDGE_NOTES at
@@ -432,8 +482,15 @@ def preview(text, width=220):
 
 def read(path=None, run=None):
     """Lines of the channel. Local file, or over ssh when the spec is host:/path.
-    `run` is the ssh executor (default _ssh_run); tests inject a fake."""
-    spec = path or NOTES
+    `run` is the ssh executor (default _ssh_run); tests inject a fake.
+
+    Migrates too, and that is not tidiness: with the move done only on APPEND,
+    the first `list` after it reported "0 Notizen im Kanal" — the tool saying
+    "nothing" when it meant "I am looking somewhere else". Every entry point
+    that touches the channel resolves it the same way, or a reader can be
+    silently right about the wrong file.
+    """
+    spec = ensure_channel_dir(path or NOTES)
     remote = _remote(spec)
     if remote:
         host, rpath = remote
@@ -474,7 +531,7 @@ def append(line, path=None, run=None, raise_on_fail=True):
     Raises ChannelWriteError if the line did not land. `run` is the ssh executor
     (default _ssh_run); tests inject a fake.
     """
-    spec = path or NOTES
+    spec = ensure_channel_dir(path or NOTES)
     remote = _remote(spec)
     if remote:
         host, rpath = remote

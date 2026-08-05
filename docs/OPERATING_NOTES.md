@@ -1768,3 +1768,125 @@ look like a fresh install, ToolServer quit first so nothing left over could
 help, then a reboot: `toolserver=1` twenty-three seconds later, `PROCLIST`
 shows it, `Echo` round-trips, and the prefs file is still exactly as written
 with no `APP=` line added behind anyone's back.
+
+## Settled: a background process cannot photograph windows, and no grant fixes it — 2026-08-05
+
+The question that survived a whole evening — *is it TCC identity or window-server
+attachment?* — is decided, and it decides against building an app bundle.
+
+Conditions, all arranged deliberately: **a fresh logout/login** (so nothing was
+stale), **three grants verified in the TCC database itself** (`com.apple.Terminal`,
+`com.apple.python3` as a bundle, and the Xcode framework Python by full path —
+all `auth_value 2`), the emulator window **demonstrably present** at 448,128
+1024×796, and both captures taken **at the same moment on the same rect**:
+
+| capturing process | Screen Recording | bytes | content |
+|---|---|---|---|
+| Terminal session (a GUI app) | granted | 188,008 | **the guest desktop, sharp** |
+| launchd agent (Python, path *and* bundle) | granted | 973,654 | wallpaper only |
+
+A logout changed nothing. So the cause is **not** identity, and **not** a stale
+authorisation — the two things a bundle would fix. What remains is the
+explanation the parallel session offered first: a process with no window server
+connection sees the desktop and not the windows, whatever it is permitted to do.
+
+**The decision this buys, which is the point of running it:** do not build the
+app bundle. Its only advantage is a stable TCC identity, and identity is now
+measured not to be the constraint. If a host-side capture service is ever built,
+it has to be a **real GUI application** — one that actually connects to the
+window server (an `NSApplication`, `LSUIElement` if it should stay invisible) —
+which is a different and larger thing than wrapping a script in a bundle. That
+distinction is the whole finding: *bundling is about identity, and this was
+never an identity problem.*
+
+Until then the split of hands stands and works: the acting half can live
+anywhere (the control port's `HOSTCLICK`/`HOSTMENU`/`HOSTHOLDSHOT` reach the
+visible session), and the seeing half must run in a GUI session — or come from
+the guest over the bridge, where `mac_screenshot` is indifferent to all of this.
+
+*Cost of not running this experiment first: an evening of inference, four rounds
+of an operator clicking through System Settings, and one nearly-built app
+bundle. Cost of running it: one logout and two commands.*
+
+## MENUTREE sees the Application menu — the whole hold-and-photograph branch was unnecessary — 2026-08-05
+
+Measured, after an evening spent building the other way round. `MENUTREE`
+returns the front application's **entire** menu bar as structured JSON, and that
+includes the **Application menu at the right end**, menu id **−16489**:
+
+    {"id":-16489,"title_x":985,"items":[
+      {"index":1,"text":"Hide ToolServer"},
+      {"index":2,"text":"Hide Others"},
+      {"index":3,"text":"Show All","enabled":false},
+      {"index":4,"text":"-","separator":true},
+      {"index":5,"text":"AppleBridge"},
+      {"index":6,"text":"Finder"},
+      {"index":7,"text":"ToolServer"}]}
+
+**No mouse, no hold, no screenshot, no host session, no permission.** The task
+that morning — *read which programs are running from the Application menu* — was
+solvable over the bridge the whole time, and the answer arrives richer than a
+picture: menu id, title x, per-item coordinates, separators, and which entries
+are greyed out. From pixels all of that has to be inferred.
+
+Two mistakes, and the second is the one worth carrying:
+
+**The task was confused with the capability.** The brief was "operate the
+Application menu"; that became "with the real mouse" because that was how it had
+been proposed, and an evening went into the consequences. The brief was *read
+which programs are running*.
+
+**An existing capability was never held against the new task.** `MENUWALK` had
+been in the repo since the previous day and was verified against the Finder's
+menu bar. Nobody asked whether it also sees the menu at the far right. That
+question took thirty seconds and would have skipped the entire branch — the
+host capture, the four rounds of System Settings, the near-built app bundle.
+
+So the host-side hold is not worthless, but it is much narrower than it looked:
+it is for menus that must be **seen rendered**. For **reading menu contents**,
+`MENUTREE` is better in every respect — headless, no starvation, no session
+question, and structure instead of an image.
+
+**The general form:** before building a way to observe something, ask what
+already reads it. A capability list is not a shelf you take from when a task
+arrives; it is something to hold *against* the task, deliberately, before
+deciding the task needs anything new.
+
+*(Cross-check that survives: the menu lists three applications where `PROCLIST`
+reports four. The watchdog is faceless and never appears there — the two views
+answer different questions, see the note above.)*
+
+## The channel lived in /tmp, and a restart emptied it — 2026-08-05
+
+130 notes: two days of correspondence, both sides' measurements, the
+corrections that made them right. Gone at a reboot, and nothing said a word.
+
+Every guard the tool has was one level too high to help. `rotate` archives
+rather than deletes. `find` searches the archives. An open question refuses
+rotation, because an archived question can never be closed. All of that is
+careful, and all of it was about *the tool deleting things* — while the
+operating system removed the file underneath it, for the ordinary reason that
+`/tmp` is not storage.
+
+**What kept it from mattering is the separation the process rests on: the
+channel is correspondence, not memory.** The findings were already in the
+operating notes, the ledger and the pull requests, so a data loss became an
+inconvenience. That is the argument for keeping the separation — and not an
+argument for leaving the mailbox where it gets emptied.
+
+Now `~/.applebridge/notes.log`, with a one-time carry-over from `/tmp`. Two
+things the move itself taught, both caught by tests or by looking:
+
+- **The migration first fired for ANY new path**, which pulled the live channel
+  into every test's temp file. It now runs only for the default path: a caller
+  who names a path wants *that* channel, not a copy of another one. A helpful
+  step nobody asked for, taken silently — this file's own subject.
+- **Migrating on `append` alone was not enough.** The first `list` after the
+  move reported *"0 Notizen im Kanal"* — the tool saying "nothing" when it meant
+  "I am looking somewhere else". Every entry point that touches the channel now
+  resolves it the same way, or a reader can be silently right about the wrong
+  file.
+
+**The general form:** ask where a thing lives before trusting that it persists.
+A path is a decision, and `/tmp` is a decision that something may be thrown
+away — one made here by nobody, inherited from a first sketch and never re-read.
