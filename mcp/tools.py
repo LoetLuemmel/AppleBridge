@@ -2201,12 +2201,27 @@ def mac_verbose_log(max_bytes: int = 0) -> Dict[str, Any]:
 
 
 def mac_reboot() -> Dict[str, Any]:
-    """Restart the emulated Mac via the daemon's REBOOT verb."""
+    """Restart the emulated Mac via the daemon's REBOOT verb.
+
+    A dropped connection IS the evidence here — the guest is going down, so the
+    socket must die. What is NOT evidence is a REPLY with a non-zero status: the
+    daemon answered, and it said no. That case used to read `status` and throw it
+    away, so a refused reboot reported success.
+
+    Found 2026-08-05 by an outside comment on the loop draft, which asked one
+    searchable question of the whole surface — *where does a `success: true`
+    arise from the absence of an exception rather than from the lower layer's
+    answer?* Three instances of that class had turned up that day by accident;
+    this is the fourth, and the first found by looking.
+    """
     try:
         conn = get_connection()
         if not conn.is_connected():
             return {"success": False, "error": "Mac not connected"}
         status, stdout, stderr = conn.send_command("REBOOT", timeout=15.0)
+        if status != 0:
+            return {"success": False, "status": status,
+                    "error": stderr or f"the daemon refused REBOOT (status {status})"}
         return {
             "success": True,
             "message": stdout or "reboot triggered",
@@ -2229,6 +2244,10 @@ def mac_shutdown() -> Dict[str, Any]:
         if not conn.is_connected():
             return {"success": False, "error": "Mac not connected"}
         status, stdout, stderr = conn.send_command("SHUTDOWN", timeout=15.0)
+        # Same rule as mac_reboot: a dead socket is evidence, a refusal is not.
+        if status != 0:
+            return {"success": False, "status": status,
+                    "error": stderr or f"the daemon refused SHUTDOWN (status {status})"}
         return {
             "success": True,
             "message": stdout or "shutdown triggered",
