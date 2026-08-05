@@ -2200,7 +2200,7 @@ stand am Ort der Benutzung, wurde dort gelesen und geglaubt, und die Rechnung
 darüber war in sich schlüssig. Eine Notiz, der man nicht glaubt, kostet eine
 Nachfrage; ein Feldname, dem man glauben muss, kostet einen Tag.
 
-## Ein Apple Event an eine fremde Anwendung bleibt liegen — 2026-08-05
+## Ein Apple Event wird ausgeführt, wenn das Ziel es liest — 2026-08-05
 
 Gemessen an TPM im modalen Projekt-Auswahldialog: `AESEND KAHL/MAKE` mit
 `kAENoReply` liefert `STATUS:0`, und fünfzehn Sekunden lang passiert nichts.
@@ -2218,9 +2218,41 @@ Der Daemon kann den Zustand nicht sehen: unter MultiFinder ist die `WindowList`
 prozesslokal, deshalb sieht `MACUITREE` nur die Fenster des Daemons selbst. Ein
 Modal in einer fremden Anwendung ist von hier aus unsichtbar.
 
-Praktisch: **vorher** per Screenshot prüfen, ob ein Modal steht, und **hinterher
-am Artefakt** prüfen, was tatsächlich passiert ist — nicht am Status. `STATUS:0`
-heißt hier "zugestellt", nicht "ausgeführt", und diesmal auch nicht "jetzt".
+Praktisch: **vorher** prüfen, ob das Ziel überhaupt gerade bedient (die Sonde in
+*Ein abgelehntes Apple Event meldete Erfolg*), und **hinterher am Artefakt**
+prüfen, was tatsächlich passiert ist — nicht am Status. `STATUS:0` heißt hier
+"zugestellt", nicht "ausgeführt", und auch nicht "jetzt".
+
+### Es geht nicht um modale Dialoge
+
+Die Regel wurde an einem Modal hergeleitet und gilt breiter. Gemessen gegen
+**ToolServer**, das kein Modal hatte, sondern nur rechnete (24 Runden `Files -r`
+über das Volume): zwei nachgeschickte `dosc`-Ereignisse blieben genauso liegen.
+Ein *beschäftigtes* Ziel schiebt auf wie ein modales — und der Fall trifft
+häufiger, weil ein langer Bau normal ist und ein Modal die Ausnahme.
+
+Deshalb heißt die Regel nicht "Vorsicht bei modalen Dialogen", sondern: **ein
+Apple Event wird ausgeführt, wenn die Zielanwendung es liest, nicht wenn du es
+sendest.** Die Sonde beantwortet genau diesen breiteren Fall, weil sie nie nach
+einem Modal gefragt hat, sondern danach, ob gepumpt wird.
+
+### Die Warteschlange ist FIFO
+
+Aufgeschobene Ereignisse kommen **in der Sendereihenfolge** an, keines geht
+verloren. Gemessen, indem die Ereignisse ihre Reihenfolge selbst aufschrieben
+(`Echo A >> order.txt`, dann `Echo B`) und die Datei mit `READFILE` gelesen
+wurde — nicht über ToolServer, das sich sonst in genau die Warteschlange
+gestellt hätte, die es messen soll. Ergebnis nach 27,5 s: `A\rB\r`.
+
+Die **Kontrolle** ist hier das Wertvollere: vier Stichproben über 22 Sekunden
+zeigten die Datei *nicht*. Ohne sie wären zwei ganz normal nacheinander
+ausgeführte Ereignisse gemessen worden, und die Reihenfolge wäre trivial gewesen
+statt aussagekräftig.
+
+Was das für die Planung taugt: `MAKE` und dann `RUN` an ein beschäftigtes Ziel
+ist eine **Sequenz**, keine Würfelei. Was es *nicht* rettet: **wogegen** die
+beiden dann laufen. Sie treffen den Zustand, der beim Aufwachen da ist — und das
+kann ein anderes Projekt sein als beim Senden.
 
 ## Ein Ausbleiben ist erst dann ein Ergebnis, wenn die Handlung belegt ist — 2026-08-05
 
