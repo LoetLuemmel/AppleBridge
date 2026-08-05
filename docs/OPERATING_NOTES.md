@@ -2020,3 +2020,31 @@ foreign folders, noticed only because a screenshot was taken after every step.
 What holds: **one letter per level** when it is unambiguous, Command-Up to go
 up, and look after every step. The cost of looking is one capture; the cost of
 not looking is a build in the wrong directory that reports success.
+
+## "Nothing happened" instead of "I could not" — 2026-08-05
+
+Formulated by the parallel session after the same sentence pattern struck three
+times in one day:
+
+> **A layer that translates an error into an empty result is more dangerous than
+> one that lets it through.**
+
+The three, all on 2026-08-05:
+
+- `notes.py` reported *"0 Notizen im Kanal"* when the ssh key was missing — and
+  again after the channel moved, when it was reading a file that did not exist
+  yet.
+- THINK C's `KAHL/MAKE` answered `status=0` and built nothing, because the source
+  change it was meant to pick up needed the object code removed first.
+- The control port answered `status=0` for a path whose `π` had become a `?` on
+  the way, so the file was never found.
+
+Three different layers, one grammar: **"nothing happened" where the truth was
+"I could not"**. The first is a fact about the world and invites no action; the
+second is a fact about the tool and demands one.
+
+It is the same shape as the guard note above, seen from the other side — there
+the guard was fine and the layer beneath it leaked; here the layer is fine and
+its *reporting* discards the distinction that matters. Both are cheap to get
+wrong: a bare `except OSError: return []` is one line, reads as robustness, and
+converts every future permission problem into a shrug.
