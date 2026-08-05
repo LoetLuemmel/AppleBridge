@@ -14,7 +14,7 @@ files=(test_macbinary.py test_screenshot_decode.py test_encoding_convert.py
        test_framing.py test_parse_response.py test_protocol_v02.py test_serial.py
        test_input_modifiers.py test_self_update.py test_ctrl_auth.py test_ctrl_deadline.py
        test_bridge_doctor.py test_nbp_lookup.py
-       test_ether_backend.py test_guest_input.py test_guest_paths.py test_quit_verb_contract.py test_hostshot_verb.py test_system_shot.py test_aete_parameters.py test_guest_front_guard.py test_menu_title_point.py test_ae_handler_error.py test_tool_schema.py test_loop_guard.py test_typing_budget.py
+       test_ether_backend.py test_guest_input.py test_guest_paths.py test_quit_verb_contract.py test_hostshot_verb.py test_system_shot.py test_aete_parameters.py test_guest_front_guard.py test_menu_title_point.py test_ae_handler_error.py test_tool_schema.py test_loop_guard.py test_read_file_contract.py test_typing_budget.py
        test_host_input_tools.py test_afp_mount.py
        test_native_verbs.py test_doc_claims.py test_hardware_findings.py
        test_process_mutations.py
