@@ -145,22 +145,6 @@ def test_region_parsing_rejects_malformed_input():
             assert False, f"expected InputError for {bad!r}"
         except gi.InputError:
             pass
-
-
-if __name__ == "__main__":
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for t in tests:
-        try:
-            t()
-            print(f"ok   {t.__name__}")
-        except AssertionError as e:
-            failed += 1
-            print(f"FAIL {t.__name__}: {e}")
-    print(f"\n{len(tests) - failed}/{len(tests)} passed")
-    sys.exit(1 if failed else 0)
-
-
 # --- the cost of a gesture, and what was done about it ---------------------
 # Measured 2026-08-04 by timing every subprocess a click makes: 1.851 s total,
 # subprocesses 1.885 s, unaccounted -0.034 s. Nothing was missing — the time was
@@ -504,3 +488,17 @@ def test_both_capture_paths_go_through_the_same_helper():
     calls = [l for l in body.splitlines()
              if "_run(" in l and "screencapture" in l]
     assert not calls, f"hold_and_capture still calls screencapture directly: {calls}"
+
+
+if __name__ == "__main__":
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    failed = 0
+    for t in tests:
+        try:
+            t()
+            print(f"ok   {t.__name__}")
+        except AssertionError as e:
+            failed += 1
+            print(f"FAIL {t.__name__}: {e}")
+    print(f"\n{len(tests) - failed}/{len(tests)} passed")
+    sys.exit(1 if failed else 0)

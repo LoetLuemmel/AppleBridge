@@ -46,6 +46,11 @@ try:
     import guest_input    # drive the guest's REAL mouse (HOSTCLICK/HOSTMENU verbs)
 except ImportError:       # deployed copy predating the module: degrade, don't die
     guest_input = None
+try:                      # ask the SYSTEM for a screenshot (we may not take one)
+    import system_shot
+except Exception:         # pragma: no cover
+    system_shot = None
+
 try:                      # session-to-session channel, for the MACSTATUS counters
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools"))
     import notes
@@ -243,7 +248,28 @@ def hostshot_reply(region=None, capture=None, read=None):
         return f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(msg)}\r{msg}\r\r"
     path = os.path.join(tempfile.gettempdir(), "applebridge_hostshot.png")
     try:
-        (capture or guest_input.capture)(path, region)
+        if capture is not None:
+            capture(path, region)
+        elif system_shot is not None:
+            # THE point of this verb, and the reason it works at all now.
+            # `guest_input.capture` runs screencapture in THIS process, and a
+            # background process has no window server connection: measured
+            # 2026-08-05, it returns the desktop picture with every window
+            # missing, exit 0, right dimensions, and no permission fixes it.
+            # `system_shot` posts the system hotkey instead and lets macOS's own
+            # screenshot component do the work — input reaches the visible
+            # session from here even though capture does not.
+            shot, shared, share_why = system_shot.capture("applebridge_hostshot.png")
+            log(f"HOSTSHOT share: {shared or ('NOT written — ' + str(share_why))}")
+            png = (read or _read_bytes)(shot)
+            log(f"HOSTSHOT via system hotkey -> {shot}")
+            b64 = base64.b64encode(png).decode("ascii") if png else ""
+            if not png:
+                m = "the system screenshot produced no bytes"
+                return f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(m)}\r{m}\r\r"
+            return f"STATUS:0\rSTDOUT:{len(b64)}\r{b64}\rSTDERR:0\r\r"
+        else:
+            guest_input.capture(path, region)
         png = (read or _read_bytes)(path)
     except Exception as exc:                       # refusal or capture failure
         msg = f"host screenshot failed: {exc}"
@@ -274,7 +300,7 @@ def _read_bytes(path):
 
 
 ROUTED_VERBS = ("PING", "STATUS-via-mac_status", "DISKINFO", "LISTDIR", "MONITOR",
-                "HOSTSHOT", "KEYSTAT",
+                "HOSTSHOT", "HOSTKEY:", "KEYSTAT",
                 "PROCLIST", "SCREENSHOT", "NBPLOOK", "AFPMOUNT", "AFPUNMOUNT",
                 "CLIPGET", "CLIPSET", "LAUNCH:", "QUIT:", "KEY:", "TYPE:",
                 "CLICK:", "REBOOT", "SHUTDOWN", "SWAPSELF", "QUITDAEMON")
@@ -1846,7 +1872,8 @@ def run_control_server(server):
                     # modal tracking loop owning the guest.
                     if not server.connected and cmd not in ("MACSTATUS", "DOCTOR",
                                                             "HOSTSHOT") \
-                            and not cmd.startswith("HOSTSHOT:"):
+                            and not cmd.startswith("HOSTSHOT:") \
+                            and not cmd.startswith("HOSTKEY:"):
                         # Name the layer that is ACTUALLY broken. The old fixed
                         # paragraph always blamed the Ethernet adapter, which
                         # misleads whenever the cause is a disabled launchd job,
@@ -1871,7 +1898,49 @@ def run_control_server(server):
                             f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(msg)}\r{msg}\r\r".encode(
                                 "utf-8"))
                         continue          # finally: closes the conn
-                    if cmd == "HOSTSHOT" or cmd.startswith("HOSTSHOT:"):
+                    if cmd.startswith("HOSTKEY:"):
+                        # Post a keystroke to the HOST (not the guest), so a
+                        # remote session can reach macOS itself.
+                        #
+                        # The one use that justifies it: a screenshot taken by
+                        # the SYSTEM rather than by us. Measured 2026-08-05 —
+                        # our own screencapture returns wallpaper from here
+                        # (a background process has no window server
+                        # connection, and no TCC grant changes that), while the
+                        # system hotkey Cmd-Shift-3 is served by macOS's own
+                        # screenshot component, which has the rights we lack.
+                        # So we do not photograph; we ask the system to.
+                        #
+                        # HOSTKEY:<text>[:<modifiers>] — e.g. HOSTKEY:3:cmd,shift.
+                        # This goes to whatever is frontmost ON THE MAC, so it
+                        # is deliberately a separate verb from KEY: (the guest)
+                        # and reads as host-global at the call site.
+                        if guest_input is None:
+                            m = "guest_input is not importable on this host"
+                            out = f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(m)}\r{m}\r\r"
+                        else:
+                            try:
+                                parts = cmd[len("HOSTKEY:"):].split(":")
+                                text = parts[0]
+                                mods = parts[1] if len(parts) > 1 and parts[1] else None
+                                if not text:
+                                    raise ValueError("no key given")
+                                argv = []
+                                if mods:
+                                    argv += guest_input.modifier_args(mods)[0]
+                                argv += [f"t:{text}"]
+                                if mods:
+                                    argv += guest_input.modifier_args(mods)[1]
+                                guest_input._run(["cliclick"] + argv,
+                                                 timeout=guest_input.STEP_TIMEOUT)
+                                body = f"hostkey {text}" + (f" +{mods}" if mods else "")
+                                out = (f"STATUS:0\rSTDOUT:{len(body)}\r{body}"
+                                       f"\rSTDERR:0\r\r")
+                                log(f"hostkey {text!r} mods={mods}")
+                            except Exception as e:
+                                m = f"hostkey failed: {e}"
+                                out = f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(m)}\r{m}\r\r"
+                    elif cmd == "HOSTSHOT" or cmd.startswith("HOSTSHOT:"):
                         # The HOST's screen, captured in THIS process — which is
                         # the whole point of putting it here rather than leaving
                         # it to the caller.

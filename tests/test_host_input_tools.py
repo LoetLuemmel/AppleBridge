@@ -240,22 +240,6 @@ def test_all_three_tools_are_registered():
 
 def test_schemas_and_handlers_stay_in_sync():
     assert set(t["name"] for t in tools.TOOLS) == set(tools.TOOL_HANDLERS)
-
-
-if __name__ == "__main__":
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for t in tests:
-        try:
-            t()
-            print(f"ok   {t.__name__}")
-        except AssertionError as e:
-            failed += 1
-            print(f"FAIL {t.__name__}: {e}")
-    print(f"\n{len(tests) - failed}/{len(tests)} passed")
-    sys.exit(1 if failed else 0)
-
-
 def test_the_fake_session_takes_what_the_real_one_takes():
     """The fake claims "same surface". It stopped being true once, silently:
     keep_front was added to the real Session and every tool raised TypeError
@@ -276,3 +260,17 @@ def test_keep_front_reaches_the_driver():
     setup()
     tools.mac_host_menu(18, 9, 70, 112, keep_front=True)
     assert ("session", None, True, True) in CALLS, CALLS
+
+
+if __name__ == "__main__":
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    failed = 0
+    for t in tests:
+        try:
+            t()
+            print(f"ok   {t.__name__}")
+        except AssertionError as e:
+            failed += 1
+            print(f"FAIL {t.__name__}: {e}")
+    print(f"\n{len(tests) - failed}/{len(tests)} passed")
+    sys.exit(1 if failed else 0)

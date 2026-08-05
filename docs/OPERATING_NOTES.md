@@ -1890,3 +1890,133 @@ things the move itself taught, both caught by tests or by looking:
 **The general form:** ask where a thing lives before trusting that it persists.
 A path is a decision, and `/tmp` is a decision that something may be thrown
 away — one made here by nobody, inherited from a first sketch and never re-read.
+
+## Ask the system for the screenshot instead of taking it — 2026-08-05
+
+A background process cannot photograph windows and no grant changes that (see
+above). The way past it is not to gain the right but to stop needing it: **the
+system hotkey Cmd-Shift-3 is served by macOS's own screenshot component**, which
+has the rights we lack — and a background process *can* post that keystroke.
+Input reaches the visible session even though capture does not.
+
+So `HOSTSHOT` no longer photographs anything. It presses the key, waits for the
+file, crops it to the emulator window and copies it into the shared folder,
+where the guest reads it as `Unix:Screenshots:<name>` — a remote session fetches
+the picture over the bridge and needs nothing host-side at all.
+
+Three measured asymmetries hold the design up, and every one was guessed wrong
+first:
+
+| | from the launchd agent |
+|---|---|
+| `screencapture` itself | wallpaper, no windows |
+| posting the system hotkey | **works** |
+| **listing** `~/Desktop` | `[Errno 1] Operation not permitted` |
+| **writing into** `~/Desktop` | **allowed** |
+
+The third and fourth are why the capture lands in `~/.applebridge/shots` and is
+then *copied* into the shared folder. And the third one cost an hour on its own,
+because the first version of the directory listing swallowed `OSError` and
+returned an empty set — turning *"I am not allowed to read this folder"* into
+*"the folder is empty"*, so the caller reported no screenshot twelve seconds
+after one had appeared. **The handler written to close this class of bug
+contained it.**
+
+**Why not macOS's window mode**, which would photograph the emulator window even
+when something covers it: it returns the window *with* title bar and shadow, so
+the picture is no longer the guest's 1024×768. This surface's rule is that the
+pixels of a capture ARE guest coordinates 1:1, and `mac_screenshot` keeps it —
+two ways of photographing one guest must not disagree about what a coordinate
+means. Instead the verb **refuses when the emulator is not frontmost**: nothing
+can lie on top of a frontmost window, so the guard buys the same robustness and
+costs one `osascript`. Verified both ways — front: `STATUS:0`; Terminal front:
+`STATUS:-1` naming who is in front.
+
+## Thirty tests were not running, and the suite said ALL PASSED — 2026-08-05
+
+A test defined **after** a file's `if __name__ == "__main__":` block never runs.
+The runner collects `globals()` at the moment it executes, so anything below it
+is invisible to `python3 tests/<file>.py` — which is exactly how `run_all.sh`
+invokes every suite. pytest still collects them, so the file is fully green one
+way and silently smaller the other.
+
+Noticed because a file reported **8/8 right after two tests had been appended**
+to it. Four files were affected:
+
+| file | not running |
+|---|---|
+| `test_guest_input.py` | 20 of 40 |
+| `test_native_verbs.py` | 8 of 22 |
+| `test_host_input_tools.py` | 2 of 18 |
+| `test_process_mutations.py` | 1 |
+
+**Half of `test_guest_input.py`** — including every test written that day for
+the gesture cost, the hold primitive and the guest-scale rule. `run_all.sh` had
+been printing `ALL SUITES PASSED` over all of it.
+
+Appending to a test file is the normal way to add a case here, so this is not an
+exotic mistake; it is the **default** one. And an ad-hoc grep for it found three
+of the four files — the fourth turned up only once the check was written as a
+test. That is the argument for putting it in the suite rather than in a habit:
+`test_no_test_hides_behind_its_own_runner`.
+
+The shape, one more time: **a green result is a claim about what ran, not about
+what exists.** The suite was honest about every test it executed. Nothing
+anywhere said how many it had skipped.
+
+## ssh drinks the caller's stdin — 2026-08-05
+
+`notes.py answer --stdin` lost its text. Twice, with 6905 bytes at stdin, once
+through a shell redirect and once through subprocess `input=`, and both times
+the tool said *"stdin was empty; nothing was written"*.
+
+**ssh reads stdin by default.** The `answer` branch looks its recipient up in
+the channel *before* parsing the text; on a `host:path` channel that lookup runs
+ssh, and ssh emptied stdin on the way past. `note --stdin` was unaffected
+because it reads the text first — both were run side by side in one setup and
+only `answer` lost its payload. Diagnosed by the session on the other end, which
+also named both fixes.
+
+Both are in: `stdin=DEVNULL` when nothing is being fed (the cause — and the
+right default for any ssh call that does not mean to push something in), and the
+text is now taken **before** anything touches the channel (the shape, so a
+future read placed in front cannot do it again).
+
+The bitter part is worth keeping: **`--stdin` exists precisely so that text
+stops disappearing silently** — it was built the day before, after both sessions
+lost sentences to the shell. The one path the shell cannot touch was the one ssh
+drank. *A guard is only as good as the layer it guards.*
+
+## Three wire facts about the control port — 2026-08-05
+
+Measured by the parallel session while driving THINK C, each after it had cost
+an hour:
+
+**`AESEND` has two dialects.** The daemon wants `:<length>[:<ticks>]` followed
+by raw bytes; `host_server` wants `:<direct-object-base64>[:<ticks>]` on one
+line. Sending the daemon's form to the host produced *"Invalid base64-encoded
+string: number of data characters (1) cannot be 1 more than a multiple of 4"* —
+a Python message a 68k daemon cannot produce. **An error message in the wrong
+dialect tells you WHO you are talking to**, which is often the faster question.
+
+**The wire is UTF-8 in both directions**; the daemon converts. Assuming MacRoman
+and encoding a client accordingly gives `?` for a π in an `Echo`, and a path
+containing π that does not find its file — *at `status=0`*. The counter-check
+was a `LISTDIR`: `@1.π` arrives as two MacRoman characters, i.e. UTF-8 seen
+through a MacRoman lens. **Only inside a base64 field** (a `WRITEFILE` path, a
+file's contents) must the bytes be MacRoman.
+
+**`WRITEFILE` frames its reply with LF where every other verb uses CR.** A
+parser that knows only CR reports *"malformed reply"* on the first write. Read
+both — but keep reading by declared LENGTH, or a CR inside the payload passes
+for a frame.
+
+## Blind multi-step navigation in a Standard File dialog is a bet — 2026-08-05
+
+A long typed word is slow enough over the bridge that type-select resets
+mid-word, and the selection lands somewhere else entirely. Twice, in completely
+foreign folders, noticed only because a screenshot was taken after every step.
+
+What holds: **one letter per level** when it is unambiguous, Command-Up to go
+up, and look after every step. The cost of looking is one capture; the cost of
+not looking is a build in the wrong directory that reports success.

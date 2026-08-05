@@ -151,22 +151,6 @@ def test_the_mcp_tool_exposes_a_single_comparable_id():
                                   "tools.py"), encoding="utf-8").read()
     assert '"link_id"' in tools_src
     assert '"link_generation": _int("link_generation")' in tools_src
-
-
-if __name__ == "__main__":
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for t in tests:
-        try:
-            t()
-            print(f"ok   {t.__name__}")
-        except AssertionError as e:
-            failed += 1
-            print(f"FAIL {t.__name__}: {e}")
-    print(f"\n{len(tests) - failed}/{len(tests)} passed")
-    sys.exit(1 if failed else 0)
-
-
 # --- PROCLIST: the running processes, and the routing trap it must not repeat -
 def test_proclist_is_routed_before_the_mpw_fall_through():
     """The trap this verb family keeps falling into, measured three times on
@@ -247,3 +231,17 @@ def test_the_encoding_converter_knows_mpw_build_scripts():
                              "encoding_convert.py")).read()
     block = conv.split("TEXT_EXTENSIONS = {")[1].split("}")[0]
     assert "'.emu'" in block
+
+
+if __name__ == "__main__":
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    failed = 0
+    for t in tests:
+        try:
+            t()
+            print(f"ok   {t.__name__}")
+        except AssertionError as e:
+            failed += 1
+            print(f"FAIL {t.__name__}: {e}")
+    print(f"\n{len(tests) - failed}/{len(tests)} passed")
+    sys.exit(1 if failed else 0)

@@ -139,7 +139,25 @@ def _ssh_run(host, remote_cmd, stdin=None):
         argv += ["-i", _SSH_KEY]
     argv += ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, remote_cmd]
     try:
-        p = subprocess.run(argv, input=stdin, capture_output=True, text=True,
+        # `-n` / DEVNULL when we are not feeding it: **ssh reads stdin by
+        # default**, and on a read it therefore DRINKS THE CALLER'S stdin.
+        #
+        # Found by the session on the other end, 2026-08-05, with 6905 bytes at
+        # stdin and the message "stdin was empty; nothing was written" — twice,
+        # once through a shell redirect and once through subprocess `input=`.
+        # `answer --stdin` looks the recipient up IN THE CHANNEL before it reads
+        # the text, that lookup goes over ssh on a host:path channel, and ssh
+        # emptied stdin on the way past. `note --stdin` was unaffected because
+        # it reads the text first — the two were run side by side in one setup
+        # and only `answer` lost its payload.
+        #
+        # The bitter part, and the reason it is written down here rather than
+        # quietly fixed: `--stdin` exists precisely so that text stops
+        # disappearing silently, and the one path the shell cannot touch was the
+        # one ssh drank. A guard is only as good as the layer it guards.
+        p = subprocess.run(argv, input=stdin,
+                           stdin=None if stdin is not None else subprocess.DEVNULL,
+                           capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=_SSH_TIMEOUT)
         return p.returncode == 0, p.stdout
     except Exception:          # a channel that kills the hook is worse than one
@@ -831,6 +849,24 @@ def main():
                 print(f"({hidden} bereits erledigte Nachricht(en) verborgen — --all)")
         return 0
 
+    # Read stdin BEFORE anything touches the channel. Belt and braces with the
+    # DEVNULL fix in _ssh_run: that removes the cause, this removes the shape.
+    # `answer` looked its recipient up in the channel first, and on a host:path
+    # channel that lookup runs ssh — which drank the caller's stdin on the way
+    # past. Any future channel read placed before the text parse would do the
+    # same, so the text is now taken first and nothing can get in front of it.
+    if getattr(args, "stdin", False) and args.text is None:
+        piped = None if sys.stdin.isatty() else sys.stdin.read()
+        args.text = piped.rstrip("\n") if piped is not None else None
+        # Remember WHERE it came from. Clearing `stdin` was enough to make the
+        # text resolve, and it also made the argv warning below fire on text the
+        # shell never saw. A warning that cries wolf teaches people to ignore
+        # the one that matters.
+        args.came_from_stdin = args.text is not None
+        args.stdin = False if args.text else args.stdin
+        if args.text == "":
+            args.text = None
+
     if args.verb == "answer" and getattr(args, "to", None) is not None:
         print("`answer` takes no --to: the answer goes back to whoever asked "
               f"{args.ts}, which the timestamp already says.\n"
@@ -871,7 +907,8 @@ def main():
     if complaint:
         print(complaint, file=sys.stderr)
         return 2
-    if not getattr(args, "stdin", False) and len(text) > 400:
+    if not getattr(args, "stdin", False) \
+            and not getattr(args, "came_from_stdin", False) and len(text) > 400:
         # Not a refusal: a long argv text is legal and may be perfectly intact.
         # But every character of it passed through the shell, and the two
         # constructs that eat text leave NO trace once they have — so the only
