@@ -143,6 +143,29 @@ class CompileVerification(unittest.TestCase):
         self.assertTrue(deletes, conn.sent)
         self.assertIn(".err", deletes[0])
 
+    def test_the_object_we_verify_is_the_object_we_told_sc_to_write(self):
+        """The invariant, not a literal name.
+
+        Without `output_path` the object path was DERIVED (`x.c` -> `x.o`) and
+        `-o` was never passed. `SC x.c` writes `x.c.o`, so `Exists` looked for a
+        file SC does not create and a successful compile answered
+        `success: false`. A false negative — and the kind that sends a caller
+        off to repair a source that is not broken.
+
+        Asserting the two paths AGREE catches it however the naming changes;
+        asserting a literal would only pin today's spelling.
+        """
+        result, conn = compile_with([("Exists", "MeinMac:MPW:P:src:x.o")])
+        sc = [c for c in conn.sent if c.startswith("SC ")]
+        self.assertEqual(len(sc), 1, conn.sent)
+        self.assertIn(f"-o '{result['object']}'", sc[0])
+
+    def test_a_derived_object_path_is_still_verified(self):
+        """The caller passing nothing must not silently lose the check."""
+        result, _ = compile_with([("Exists", "MeinMac:MPW:P:src:x.o")])
+        self.assertTrue(result["verified"])
+        self.assertTrue(result["success"])
+
     def test_an_output_path_hidden_in_options_is_reported_unverified(self):
         """Guessing the artefact path and then checking the guess would be a new
         lie, not a check."""

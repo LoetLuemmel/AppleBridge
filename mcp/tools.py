@@ -1088,9 +1088,17 @@ def mac_compile(source_path: str, output_path: Optional[str] = None,
             obj_path = (source_path[:-2] + ".o") if source_path.endswith(".c") \
                 else (source_path + ".o")
 
+        # -o is passed for the path we are going to CHECK, synthesised or not.
+        # Deriving a name and then not telling SC about it was the defect this
+        # replaces: `SC x.c` without -o writes `x.c.o`, while the derivation
+        # produced `x.o`, so `Exists` looked for a file SC never creates and a
+        # successful compile came back `success: false`. A false negative, so
+        # the harmless direction — and exactly the kind that sends a caller off
+        # to repair a source that is not broken. Found 2026-08-05 by the
+        # parallel session, on the first run of a local model through this tool.
         command = f"SC '{source_path}'"
-        if output_path:
-            command += f" -o '{output_path}'"
+        if obj_path:
+            command += f" -o '{obj_path}'"
         if options:
             command += f" {options}"
 
