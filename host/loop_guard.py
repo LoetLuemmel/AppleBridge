@@ -260,3 +260,112 @@ def _brief_args(args):
         s = str(v)
         parts.append(f"{k}={s[:40] + '…' if len(s) > 40 else s}")
     return ", ".join(parts)
+
+
+# Which arguments NAME something that must already exist, and which name
+# something being created. Written out per tool rather than guessed from the
+# parameter name: `path` is a reference for mac_read_file and a new value for
+# mac_write_file, and a rule that could not tell those apart would either refuse
+# every write or wave through every read.
+#
+# A tool that appears in neither is UNCHECKED, and says so. Waving it through
+# silently is the hole the outside comment named: an unproven argument that
+# passes marked, with nobody named to act on the mark.
+REFERENCE_ARGS = {
+    "mac_read_file": ("path",),
+    "mac_list_files": ("path",),
+    "mac_compile": ("source_path",),
+    "launch_app": ("path",),
+    "mac_get_file": ("mac_path",),
+}
+NEW_VALUE_ARGS = {
+    "mac_write_file": ("path",),
+    "mac_put_file": ("mac_path",),
+    "mac_compile": ("output_path",),
+}
+
+
+class TurnScope:
+    """What the shell knew when the model formed its request.
+
+    A naming argument must resolve against a structure the shell HOLDS — and the
+    clock matters more than it looks. Measured 2026-08-05: a model called
+    `mac_list_files` and `mac_read_file` in ONE turn and put the literal
+    `<filename>` in the second, because the listing did not exist yet. A check
+    run at execution time would have had the listing by then and could have
+    passed a *guessed* name that happens to be in it — resolved correctly, and
+    still not taken from the result.
+
+    So the snapshot is taken when the turn OPENS, and results produced during
+    the turn deliberately do not enter it. Anything a model can only have known
+    from this turn's results is, at turn start, unknown — which is exactly the
+    property worth checking, and it catches an invented name and a placeholder
+    without having to tell them apart.
+
+    Fed from outside, like the rest of this module: the shell calls
+    `open_turn` with whatever it just showed the model.
+    """
+
+    def __init__(self):
+        self._known = {}         # source -> frozenset of names
+        self._turn = 0
+
+    def open_turn(self, structures=None):
+        """Begin a turn with the structures the model was shown. -> turn number.
+
+        Replaces rather than accumulates. A scope that kept every structure ever
+        delivered would slowly become "anything ever seen", and then it answers
+        yes to everything — the way a check stops being one.
+        """
+        self._turn += 1
+        self._known = {src: frozenset(str(n) for n in names)
+                       for src, names in (structures or {}).items()}
+        return self._turn
+
+    def sources_for(self, value):
+        """Which structures contain this exact name."""
+        v = str(value)
+        return sorted(src for src, names in self._known.items() if v in names)
+
+    def candidates(self, limit=12):
+        """Everything known at turn start — the list a refusal hands back.
+
+        Measured: a refusal WITH the list let the model correct itself in the
+        next step; a refusal alone had it invent again. The limit is reported
+        when it bites, for the same reason as everywhere else here.
+        """
+        names = sorted({n for names in self._known.values() for n in names})
+        if len(names) <= limit:
+            return names
+        return names[:limit] + [f"… and {len(names) - limit} more"]
+
+    def check(self, tool, args):
+        """-> {"verdict": allow|refuse|unchecked, "why": str, ...}.
+
+        Three verdicts, and `unchecked` is a real answer rather than a quiet
+        pass: it says the tool has no rule here, which a reader can act on.
+        """
+        refs = REFERENCE_ARGS.get(tool)
+        news = NEW_VALUE_ARGS.get(tool, ())
+        if refs is None and not news:
+            return {"verdict": "unchecked", "tool": tool,
+                    "why": f"no naming rule for {tool}; nothing was verified"}
+        for key in (refs or ()):
+            value = (args or {}).get(key)
+            if value is None:
+                continue
+            if not self._known:
+                return {"verdict": "refuse", "tool": tool, "argument": key,
+                        "value": value, "candidates": [],
+                        "why": ("nothing was known when this turn opened, so a "
+                                "name that must already exist cannot have come "
+                                "from anywhere — list first, then name")}
+            if not self.sources_for(value):
+                return {"verdict": "refuse", "tool": tool, "argument": key,
+                        "value": value, "candidates": self.candidates(),
+                        "why": (f"{value!r} was not in anything known when this "
+                                f"turn opened; if it appeared in a result of "
+                                f"THIS turn, it was not read from there")}
+        return {"verdict": "allow", "tool": tool,
+                "why": ("every naming argument resolved against what was known "
+                        "when the turn opened")}

@@ -327,6 +327,111 @@ def test_brief_args_leaves_a_short_value_alone():
     assert lg._brief_args({"p": "x.c"}) == "p=x.c"
 
 
+# --- TurnScope: the clock is the whole point --------------------------------
+def test_a_name_that_could_only_come_from_this_turn_is_refused():
+    """The measured case. A model called mac_list_files and mac_read_file in ONE
+    turn and put the literal `<filename>` in the second — the listing did not
+    exist yet."""
+    t = lg.TurnScope()
+    t.open_turn({})
+    r = t.check("mac_read_file", {"path": "<filename>"})
+    assert r["verdict"] == "refuse"
+
+
+def test_a_guessed_but_later_valid_name_is_refused_too():
+    """THE gap this closes. A check run at execution time would have had the
+    listing by then and passed a guess that happens to be in it — resolved
+    correctly, and still not taken from the result."""
+    t = lg.TurnScope()
+    t.open_turn({})                      # nothing known when the turn opened
+    assert t.check("mac_read_file", {"path": "AppleBridge"})["verdict"] == "refuse"
+
+
+def test_a_name_from_the_previous_turn_passes():
+    """Two independent calls in one turn are fine; the guard must not tax them."""
+    t = lg.TurnScope()
+    t.open_turn({"dir": ["AppleBridge", "loadtest.txt"]})
+    assert t.check("mac_read_file", {"path": "AppleBridge"})["verdict"] == "allow"
+
+
+def test_a_refusal_hands_back_what_was_known():
+    """Measured: a refusal WITH the list let the model correct itself; a refusal
+    alone had it invent again."""
+    t = lg.TurnScope()
+    t.open_turn({"dir": ["AppleBridge", "loadtest.txt"]})
+    r = t.check("mac_read_file", {"path": "Prefs.txt"})
+    assert r["verdict"] == "refuse"
+    assert "AppleBridge" in r["candidates"]
+
+
+def test_an_empty_scope_refuses_with_its_own_reason():
+    """"nothing was known" and "known, but not this" send a reader to different
+    places: list first, versus you named the wrong one."""
+    t = lg.TurnScope()
+    t.open_turn({})
+    assert "list first" in t.check("mac_read_file", {"path": "x"})["why"]
+
+
+# --- reference versus new value ---------------------------------------------
+def test_a_new_value_is_not_required_to_exist():
+    """Writing to a path that does not exist yet is the normal case; refusing it
+    would make the guard forbid creation."""
+    t = lg.TurnScope()
+    t.open_turn({})
+    assert t.check("mac_write_file", {"path": "MeinMac:neu.txt"})["verdict"] == "allow"
+
+
+def test_the_same_parameter_name_is_read_per_tool():
+    """`path` is a reference for mac_read_file and a new value for
+    mac_write_file. A rule guessing from the name would either refuse every
+    write or wave through every read."""
+    t = lg.TurnScope()
+    t.open_turn({})
+    assert t.check("mac_read_file", {"path": "x"})["verdict"] == "refuse"
+    assert t.check("mac_write_file", {"path": "x"})["verdict"] == "allow"
+
+
+def test_a_tool_with_no_rule_says_unchecked_not_allowed():
+    """Waving it through silently is the hole the outside comment named: an
+    unproven argument passes marked, with nobody named to act on the mark."""
+    r = lg.TurnScope().check("mac_screenshot", {})
+    assert r["verdict"] == "unchecked" and "nothing was verified" in r["why"]
+
+
+# --- the snapshot ------------------------------------------------------------
+def test_opening_a_turn_replaces_rather_than_accumulates():
+    """A scope that kept every structure ever delivered slowly becomes "anything
+    ever seen", and then it answers yes to everything."""
+    t = lg.TurnScope()
+    t.open_turn({"a": ["one"]})
+    t.open_turn({"b": ["two"]})
+    assert t.check("mac_read_file", {"path": "one"})["verdict"] == "refuse"
+    assert t.check("mac_read_file", {"path": "two"})["verdict"] == "allow"
+
+
+def test_the_candidate_list_reports_what_it_left_out():
+    t = lg.TurnScope()
+    t.open_turn({"dir": [f"f{i}" for i in range(20)]})
+    c = t.candidates(limit=5)
+    assert len(c) == 6 and "15 more" in c[-1]
+
+
+def test_sources_for_names_where_it_was_seen():
+    """Which listing a name came from is what lets a caller re-read the right
+    one instead of guessing."""
+    t = lg.TurnScope()
+    t.open_turn({"dirA": ["x"], "dirB": ["x", "y"]})
+    assert t.sources_for("x") == ["dirA", "dirB"]
+
+
+def test_a_missing_optional_reference_is_not_invented():
+    """An argument the caller did not pass is not a name that failed to
+    resolve — checking it would refuse every call that omits an optional."""
+    t = lg.TurnScope()
+    t.open_turn({})
+    assert t.check("mac_compile", {"source_path": None})["verdict"] == "allow"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
