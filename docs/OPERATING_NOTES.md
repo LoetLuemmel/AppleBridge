@@ -1573,7 +1573,56 @@ The resample is conditional on the measured size, never on an assumption about
 Retina, and a failed resample keeps the picture: an oversized capture is still
 the capture.
 
-## Every synthetic keystroke costs 1.7 s on this guest — measured 2026-08-05
+## The keystroke cost is not a full queue — it is one post that always fails — 2026-08-05
+
+> **Correction to the note below, same morning.** It attributed the 1.69 s to a
+> guest event queue with no room. **A reboot refuted that.** On a freshly booted
+> guest — `uptime=0`, three processes, nothing typed yet — a single keystroke
+> still costs **1.731 s**, and nine characters still hit the 15 s timeout. An
+> empty queue cannot be full, so the cost is not waiting for a slot.
+
+What the measurement actually separates, once a comparison exists:
+
+| verb | cost | arithmetic |
+|---|---|---|
+| `CLICK` | **0.102 s** | `ShortDelay(4)` = 67 ms + round trip. Matches. |
+| `KEY` (no modifiers) | 1.694 s | 67 ms deliberate + **1.58 s unexplained** |
+| `KEY` (with modifiers) | 1.695 s | identical — so not the modifier handling |
+| `TYPE:a` | 1.731 s | one keystroke, same cost |
+
+A click posts events through the same Event Manager and is **sixteen times
+faster**, so this is not a posting problem in general and not modifiers. And
+1.58 s is almost exactly **one** exhausted retry budget: `PPostEventRetry` gives
+up after 48 × `ShortDelay(2)` = 96 ticks = 1.60 s. Each keystroke posts twice
+(keyDown, keyUp); one of the two burns its entire budget, every time, on an idle
+freshly booted machine.
+
+**And the daemon throws the answer away.** `main.c`:
+
+```c
+InjectType(request + base, n);
+strcpy(responseBuffer, "STATUS:0STDOUT:5TypedSTDERR:0");
+```
+
+`InjectType` returns the error from the exhausted retry and nothing reads it.
+The verb answers `Typed` unconditionally. That is the third instance of one
+shape in two days — after `QUIT` answering *Quit OK* for an event that was
+merely delivered, and `append()` returning a False nobody looked at: **a return
+value that can be ignored by omission, and was.**
+
+So the open question moved rather than closed. Not *"why is the queue full"* —
+it is not — but *"why does one of the two posts fail 48 times running on an idle
+system"*. What is measured and can be built on: the cost is constant, is per
+keystroke, is independent of guest uptime, does not affect clicks, and is
+reported as success.
+
+*Method note, since this is the second time in one morning: the arithmetic that
+"matched to within half a percent" matched a wrong cause. 101 ticks is also what
+you get from a retry loop exhausting for any other reason. An arithmetic
+agreement is evidence about a MAGNITUDE, not about a mechanism — the reboot,
+which cost one minute, is what actually decided it.*
+
+## Superseded: "every synthetic keystroke costs 1.7 s on this guest" — 2026-08-05
 
 "Nine characters take fifteen seconds" was an exact observation with the wrong
 subject. Measured against the live bridge, a clean straight line:
