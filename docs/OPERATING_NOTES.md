@@ -2317,3 +2317,42 @@ zu seinem Verhalten passte — hatte der Walk unrecht, und der Widerspruch war
 keiner. Der Walk kann zudem nur die **Menüleiste** aufzählen; ein hierarchisches
 Untermenü hängt nicht darin, seine Abwesenheit dort belegt nichts über seinen
 Inhalt.
+
+## Werkzeugschemata werden exportiert, nicht abgeschrieben — 2026-08-05
+
+Ein lokales Modell auf dem Jetson spricht kein MCP. Es bekommt seine Werkzeuge
+über Ollamas `tools`-Block — dieselben dreißig, dieselben Parameter, nur eine
+andere Hülle. Die naheliegende Abkürzung ist, die Handvoll Schemata, die der
+erste Lauf braucht, von Hand zu schreiben. Sie ist falsch: **zwei Definitionen
+eines Werkzeugs driften, sobald eine Seite sich ändert**, und die Drift zeigt
+sich als Modell, das einen Parameter aufruft, den es nicht mehr gibt — was die
+Brücke sachlich beantwortet und was nach einem Fehler des Modells aussieht.
+
+`host/tool_schema.py` konvertiert deshalb, statt zu definieren. Drei Dinge tut es
+über das Kopieren hinaus, jedes aus einem gemessenen Grund:
+
+**Es prüft, dass jeder exportierte Name auch zustellbar ist.** Namen kommen aus
+`TOOLS`, Handler aus `TOOL_HANDLERS`, und nichts erzwang bisher, dass die beiden
+übereinstimmen. Ein Name in der einen und nicht in der anderen Tabelle ist ein
+Werkzeug, das das Modell aufrufen kann und die Brücke nicht ausführen. Die
+naheliegende Prüfung wäre hier **falsch** gewesen: `getattr(tools,
+"bridge_doctor")` liefert das importierte **Modul**, nicht den Handler. Die
+Dispatch-Tabelle ist die einzige Wahrheit.
+
+**Es kann die Beschreibungen kürzen.** Sie sind Aufsätze — 19,6 kB zusammen,
+geschrieben für ein Modell mit großem Kontext, dem die ganze Falle nützt. Der
+Entscheider, um den es geht, ist `qwen2.5-coder:7b` mit 4,7 GB Gewichten auf
+einem Knoten mit **2 GB frei** (gemessen 2026-08-05). `--brief` behält den ersten
+Absatz — *was das Werkzeug tut* — und lässt die Betriebslehre weg, die ohnehin
+nicht dorthin gehört: eine Regel, die ein kleines Modell im Systemprompt liest,
+ist im dritten Schritt vergessen. **Die Werkzeuge müssen sie erzwingen, nicht der
+Text.**
+
+**Es bietet Profile.** Der kleinste Beweis braucht sieben Werkzeuge, nicht
+dreißig. `--profile build --brief` sind **357 Zeichen** gegen 19 597. Einem
+kleinen Modell alles zu geben ist derselbe Fehler wie ihm den ganzen Bildschirm
+zu geben: mehr, worüber es sich irren kann, und nicht mehr, was es kann.
+
+Der Schnitt für `--brief` liegt an der ersten Leerzeile, nicht bei einer
+Zeichenzahl — sonst würde mitten im Satz getrennt und das Modell bekäme eine
+halbe Warnung, was schlimmer ist als keine.
