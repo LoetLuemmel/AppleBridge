@@ -352,17 +352,23 @@ void CleanupCommandResult(CommandResult *result)
  */
 static OSErr SendGenericAE(ProcessSerialNumber *psn, OSType evtClass, OSType evtID,
 						   const char *directObj, long doLen, long waitTicks,
-						   Handle *outH, long *outLen, Boolean *capped)
+						   Handle *outH, long *outLen, Boolean *capped,
+						   long *handlerErr, char *handlerMsg)
 {
 	OSErr err;
 	AppleEvent event, reply;
 	AEAddressDesc target;
 	AEDesc dataDesc;
 	long size;
+	DescType gotType;
+	Size gotSize;
+	long code;
 
 	*outH = NULL;
 	*outLen = 0;
 	*capped = false;
+	*handlerErr = 0;
+	handlerMsg[0] = '\0';
 
 	err = AECreateDesc(typeProcessSerialNumber, psn, sizeof(*psn), &target);
 	if (err != noErr) return err;
@@ -392,6 +398,38 @@ static OSErr SendGenericAE(ProcessSerialNumber *psn, OSType evtClass, OSType evt
 				 kAENormalPriority, waitTicks, NULL, NULL);
 	AEDisposeDesc(&event);
 	if (err != noErr) return err;
+
+	/* The reply's OWN error field, BEFORE the direct object.
+	 *
+	 * noErr from AESend means the event was delivered and a reply came back —
+	 * NOT that the handler accepted it. A target that refuses puts its reason in
+	 * keyErrorNumber, and until 0.8d45 nobody read it: the harvest below looks
+	 * for keyDirectObject, falls back to '----', and on finding neither sets
+	 * err = noErr with the comment "event sent, no reply parameter". So every
+	 * REFUSED event reported STATUS:0 — indistinguishable from a successful one.
+	 *
+	 * Measured 2026-08-05 by the parallel session, which sent an event no
+	 * application handles (class/ID 'ZZZZ') and got STATUS:0 back in 0.34 s. The
+	 * Apple Event Manager had answered errAEEventNotHandled (-1708) in that very
+	 * reply; the daemon dropped it on the floor. Same shape as menuHeight at
+	 * offset 6 and the last column of PROCLIST: the answer was already in hand
+	 * and simply not read.
+	 *
+	 * typeLongInteger and not typeShortInteger: the AEM coerces, and an app that
+	 * returns a short would otherwise be read as errAECoercionFail here — which
+	 * would invent a failure where the target reported none. */
+	code = 0;
+	if (AEGetParamPtr(&reply, keyErrorNumber, typeLongInteger, &gotType,
+					  (Ptr)&code, sizeof(code), &gotSize) == noErr && code != 0) {
+		*handlerErr = code;
+		gotSize = 0;
+		if (AEGetParamPtr(&reply, keyErrorString, typeChar, &gotType,
+						  (Ptr)handlerMsg, (Size)(AE_HANDLER_MSG_MAX - 1),
+						  &gotSize) != noErr)
+			gotSize = 0;
+		if (gotSize < 0) gotSize = 0;
+		handlerMsg[gotSize] = '\0';
+	}
 
 	dataDesc.descriptorType = typeNull;
 	dataDesc.dataHandle = NULL;
@@ -435,6 +473,8 @@ BridgeResult ExecuteAppleEvent(OSType targetSig, OSType evtClass, OSType evtID,
 	Handle h;
 	long len;
 	Boolean capped;
+	long handlerErr;
+	char handlerMsg[AE_HANDLER_MSG_MAX];
 
 	result->exitCode = 0;
 	result->outData = NULL;
@@ -459,7 +499,7 @@ BridgeResult ExecuteAppleEvent(OSType targetSig, OSType evtClass, OSType evtID,
 	if (waitTicks < 0) waitTicks = AE_SEND_DEFAULT_TIMEOUT;
 
 	err = SendGenericAE(&psn, evtClass, evtID, directObj, doLen, waitTicks,
-						&h, &len, &capped);
+						&h, &len, &capped, &handlerErr, handlerMsg);
 	if (err != noErr) {
 		/* -1712 here is the guard doing its job, not a fault: the target did not
 		 * answer inside the bound. Say which, so the caller can tell a timeout
@@ -481,5 +521,24 @@ BridgeResult ExecuteAppleEvent(OSType targetSig, OSType evtClass, OSType evtID,
 	result->outLen = len;
 	if (capped)
 		strcpy(result->errData, "output capped at 4194304 bytes (4 MB daemon limit)");
+
+	/* The target answered, and said no. Report THAT, not the delivery.
+	 *
+	 * The reply is kept: a handler may return both an error and output, and
+	 * throwing the output away would take the only description of the failure
+	 * with it. The exitCode is what a caller branches on, so it carries the
+	 * target's code — a -1708 now looks like a -1708 instead of like success. */
+	if (handlerErr != 0) {
+		char nb[16];
+		IntToStr(handlerErr, nb);
+		result->exitCode = handlerErr;
+		strcpy(result->errData, "target refused the event: ");
+		StrAppend(result->errData, nb);
+		if (handlerMsg[0] != '\0') {
+			StrAppend(result->errData, " - ");
+			StrAppend(result->errData, handlerMsg);
+		}
+		return kBridgeCommandErr;
+	}
 	return kBridgeNoErr;
 }

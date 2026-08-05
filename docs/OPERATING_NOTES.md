@@ -2176,3 +2176,167 @@ then `SetWTitle`, in that order — and a second copy would drift from the first
 *Correction while writing this: an older note here said the title bar stays blank
 after showing. It does not, and has not since that ordering was found. The stale
 sentence was nearly passed on as current.*
+
+## `title_point` zeigte auf das Nachbarmenü — 2026-08-05
+
+`MENUTREE` liefert zu jedem Menü einen `title_point`, den ein Aufrufer benutzt,
+um den Titel in der Menüleiste zu greifen. Er wurde als `title_x + width/2`
+gerechnet, mit einem Rückfall auf `title_x + 12` für schmale Menüs — in der
+Annahme, `width` sei die Breite des **Titels**.
+
+`width` kommt aber aus `menuWidth` in `MenuInfo` und ist die Breite des
+**aufgeklappten Körpers**. Für das File-Menü des THINK Project Managers ergab
+das `34 + 146/2 = 107`; der Titel *Search* beginnt bei 108. Der Punkt lag also
+im Nachbarmenü, und ein Aufrufer zog verlässlich das falsche Menü herunter.
+
+Die Menüleiste kennt ihre Titel-Rechtecke nicht: in `MenuInfo` stehen sie nicht,
+der Titelmittelpunkt ist daraus **nicht berechenbar**. Es bleibt ein fester
+Einzug — `title_x + 12` liegt in jedem Titel, der breit genug zum Anklicken ist,
+und es war genau der Zweig, der vorher funktioniert hat. Seit 0.8d44 ist er der
+einzige; `width` heißt jetzt auch im Record `menuWidth`.
+
+Der Auslöser war ein **falscher Kommentar**, nicht eine veraltete Notiz. Er
+stand am Ort der Benutzung, wurde dort gelesen und geglaubt, und die Rechnung
+darüber war in sich schlüssig. Eine Notiz, der man nicht glaubt, kostet eine
+Nachfrage; ein Feldname, dem man glauben muss, kostet einen Tag.
+
+## Ein Apple Event wird ausgeführt, wenn das Ziel es liest — 2026-08-05
+
+Gemessen an TPM im modalen Projekt-Auswahldialog: `AESEND KAHL/MAKE` mit
+`kAENoReply` liefert `STATUS:0`, und fünfzehn Sekunden lang passiert nichts.
+Wird danach ein Projekt geöffnet, baut TPM fünf Sekunden später — **ohne ein
+zweites MAKE**. Das Ereignis lag die ganze Zeit in der Warteschlange des
+Zielprozesses und traf am Ende das Projekt, das *dann* offen war.
+
+Das ist nicht die `:9001`-Falle, die ein abgebrochener Client aufmacht. Dort
+hält der Kernel-Backlog ein Kommando fest, und die `DEADLINE`-Zeile löst es,
+weil der Server, der später entscheidet, **unserer** ist. Hier hält die
+Apple-Event-Queue eines **fremden** Programms es fest, über einen unbestimmten
+Zeitraum, und zwischen Zustellung und Ausführung kommt niemand von uns.
+
+Der Daemon kann den Zustand nicht sehen: unter MultiFinder ist die `WindowList`
+prozesslokal, deshalb sieht `MACUITREE` nur die Fenster des Daemons selbst. Ein
+Modal in einer fremden Anwendung ist von hier aus unsichtbar.
+
+Praktisch: **vorher** prüfen, ob das Ziel überhaupt gerade bedient (die Sonde in
+*Ein abgelehntes Apple Event meldete Erfolg*), und **hinterher am Artefakt**
+prüfen, was tatsächlich passiert ist — nicht am Status. `STATUS:0` heißt hier
+"zugestellt", nicht "ausgeführt", und auch nicht "jetzt".
+
+### Es geht nicht um modale Dialoge
+
+Die Regel wurde an einem Modal hergeleitet und gilt breiter. Gemessen gegen
+**ToolServer**, das kein Modal hatte, sondern nur rechnete (24 Runden `Files -r`
+über das Volume): zwei nachgeschickte `dosc`-Ereignisse blieben genauso liegen.
+Ein *beschäftigtes* Ziel schiebt auf wie ein modales — und der Fall trifft
+häufiger, weil ein langer Bau normal ist und ein Modal die Ausnahme.
+
+Deshalb heißt die Regel nicht "Vorsicht bei modalen Dialogen", sondern: **ein
+Apple Event wird ausgeführt, wenn die Zielanwendung es liest, nicht wenn du es
+sendest.** Die Sonde beantwortet genau diesen breiteren Fall, weil sie nie nach
+einem Modal gefragt hat, sondern danach, ob gepumpt wird.
+
+### Die Warteschlange ist FIFO
+
+Aufgeschobene Ereignisse kommen **in der Sendereihenfolge** an, keines geht
+verloren. Gemessen, indem die Ereignisse ihre Reihenfolge selbst aufschrieben
+(`Echo A >> order.txt`, dann `Echo B`) und die Datei mit `READFILE` gelesen
+wurde — nicht über ToolServer, das sich sonst in genau die Warteschlange
+gestellt hätte, die es messen soll. Ergebnis nach 27,5 s: `A\rB\r`.
+
+Die **Kontrolle** ist hier das Wertvollere: vier Stichproben über 22 Sekunden
+zeigten die Datei *nicht*. Ohne sie wären zwei ganz normal nacheinander
+ausgeführte Ereignisse gemessen worden, und die Reihenfolge wäre trivial gewesen
+statt aussagekräftig.
+
+Was das für die Planung taugt: `MAKE` und dann `RUN` an ein beschäftigtes Ziel
+ist eine **Sequenz**, keine Würfelei. Was es *nicht* rettet: **wogegen** die
+beiden dann laufen. Sie treffen den Zustand, der beim Aufwachen da ist — und das
+kann ein anderes Projekt sein als beim Senden.
+
+## Ein Ausbleiben ist erst dann ein Ergebnis, wenn die Handlung belegt ist — 2026-08-05
+
+Dreimal an einem Tag wurde aus "ich habe X ausgelöst und nichts geschah" der
+Schluss "X tut nichts" — und dreimal war offen, ob X überhaupt stattgefunden
+hatte. Einmal lag es am kaputten `title_point` oben, der die Geste ins falsche
+Menü schickte; einmal daran, dass das Ereignis nur noch nicht gefeuert hatte.
+
+Was das auflöst, ist die **Positivkontrolle**: dieselbe Mechanik, derselbe
+Punkt, ein anderer erwarteter Effekt. *Bring Up To Date* bei `[210,140]` ließ
+das Projekt dreißig Sekunden unverändert; *Remove Objects* bei `[210,108]`
+setzte es auf 7374 zurück, und danach baute derselbe Punkt `[210,140]` es voll
+neu auf 53236. Erst damit ist "tut nichts" ein Befund über *Bring Up To Date*
+und nicht über die Geste.
+
+Der Reflex, den das ersetzt, ist billig und falsch: die Wiederholung. Eine
+Handlung, die aus demselben Grund zum zweiten Mal nicht stattfindet, sieht
+genauso aus wie eine Handlung, die nichts bewirkt.
+
+## Ein abgelehntes Apple Event meldete Erfolg — 2026-08-05
+
+`AESend` liefert `noErr`, sobald das Ereignis **zugestellt** ist und eine Antwort
+zurückkam. Ob der Handler es angenommen hat, steht woanders: in `keyErrorNumber`
+in eben dieser Antwort. Der Daemon las das Feld nicht. Er holte
+`keyDirectObject`, ersatzweise `'----'`, und fand er beides nicht, schrieb er
+`err = noErr` mit dem Kommentar *"event sent, no reply parameter"*.
+
+Also meldete **jedes abgelehnte Ereignis `STATUS:0`** — nicht unterscheidbar von
+einem erfolgreichen.
+
+Gemessen an einem Ereignis, das keine Anwendung kennt (Klasse/ID `'ZZZZ'`):
+`STATUS:0` nach 0,34 s. Der Apple Event Manager hatte `errAEEventNotHandled`
+(−1708) in genau diese Antwort gelegt.
+
+Seit 0.8d45 wird `keyErrorNumber` gelesen und wird zum `exitCode`,
+`keyErrorString` geht nach `STDERR`; die Antwort selbst bleibt erhalten, weil ein
+Handler beides zurückgeben kann. **Die Positivkontrolle für den Fix** ist dieselbe
+Sonde in beiden Zuständen: ohne Modal muss jetzt −1708 kommen, mit Modal weiter
+−1712. Kommt weiter 0, hat der Fix nicht gegriffen — und ein Feld, das wieder
+schweigt, sieht aus wie eins, das nichts zu sagen hat.
+
+**Gemessen an 0.8d45, beide Richtungen** (2026-08-05, gegen ToolServer):
+`'ZZZZ'` mit `wait=120` → `STATUS:-1708`, *"target refused the event: -1708"*,
+in 0,17 und 0,26 s. Und die Gegenprobe, die genauso wichtig ist: ein Ereignis,
+das ToolServer **kennt** (`misc/dosc`, `Echo`), antwortet weiter `STATUS:0` mit
+seiner Ausgabe. Ein Fix, der Ablehnungen sichtbar macht und dabei Erfolge in
+Fehler verwandelt, wäre kein Fortschritt, sondern ein Tausch.
+
+**Und die Modal-Hälfte, unabhängig gemessen** (gegen TPM, nicht gegen
+ToolServer):
+
+| Zustand | Sonde `'ZZZZ'`, `wait=120` | Zeit |
+|---|---|---|
+| Startdialog steht, kein Projekt | `-1712` *"target did not reply"* | 2,55 / 2,42 s |
+| Projekt offen, kein Modal | `-1708` *"target refused the event"* | 0,42 / 0,42 s |
+
+Die beiden Gegenproben teilen sich nichts außer dem geänderten Code — hier
+`misc/dosc` an ToolServer, dort `KAHL/RUN` an TPM mit sichtbarer Wirkung
+(Prozess erscheint in `PROCLIST`). Übereinstimmung über zwei Ziele und zwei
+Verben ist etwas wert; zweimal derselbe Weg wäre es nicht.
+
+Bemerkenswert am Nebenbefund: **vorher war die Zeit das einzige Signal** — ein
+Merkmal, das nur so lange existierte, wie das richtige fehlte.
+
+### Die Sonde selbst
+
+Das ist auch der Weg, vor einem Apple Event zu prüfen, ob das Ziel seine Queue
+überhaupt bedient (siehe *Ein Apple Event an eine fremde Anwendung bleibt
+liegen*): ein Ereignis schicken, **das das Ziel nicht kennt**, mit `waitTicks > 0`.
+Eine Antwort kann nur entstehen, wenn das Ziel `AEProcessAppleEvent` gerufen hat.
+Nebenwirkungsfrei, und es braucht keine Zeile Daemon-Code — `AESEND` nimmt
+`waitTicks` bereits.
+
+Die Sonde ist ein **Rennen, keine Sperre**: zwischen Sonde und echtem Ereignis
+kann das Ziel ins Modal gehen. Sie verkleinert das Fenster, sie schließt es
+nicht. Und für das *echte* Ereignis bleibt `kAENoReply` richtig, wo die `aete`
+keine Antwort deklariert — ein `kAEWaitReply` darauf läuft in −1712 und
+verkleidet einen Erfolg als Fehler. Zwei Ereignisse, zwei Rollen.
+
+### Die gemessene Liegezeit
+
+**905 Sekunden** (15,1 Minuten), über 30-Sekunden-Stichproben, die Brücke
+durchgehend antwortbereit. Beendet wurde die Liegezeit nicht durch Ablauf,
+sondern dadurch, dass das Modal weggeräumt wurde — vier Sekunden später baute
+das Ereignis. Das ist eine **untere Schranke, keine Frist**. Sie ändert die Regel
+nicht, aber ohne Zahl nimmt jeder Leser später seine eigene an, und die fällt
+erfahrungsgemäß zu klein aus.

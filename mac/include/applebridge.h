@@ -45,6 +45,10 @@
  * kAENoReply, the right choice for an event whose 'aete' declares reply 'null'. */
 #define AE_SEND_DEFAULT_TIMEOUT (1800L)    /* ticks (30 s) — the interactive default for AESEND */
 #define AE_SEND_MAX_TIMEOUT (10800L)       /* ticks (180 s) — hard ceiling, under the host's 240 s */
+/* Room for keyErrorString out of a reply. Well under errData[256], because the
+ * daemon prefixes it with the numeric code — the code is the part a caller can
+ * act on, so it must not be the part that gets truncated away. */
+#define AE_HANDLER_MSG_MAX (160)
 
 /* Protocol constants */
 #define PROTO_COMMAND "COMMAND:"
