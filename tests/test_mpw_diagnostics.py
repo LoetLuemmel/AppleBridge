@@ -112,6 +112,53 @@ class WhatMustNotChange(unittest.TestCase):
         self.assertEqual(got["errors"], ["Fatal error: unable to open file 'x.c'"])
 
 
+class EveryDiagnosticClassSurvivesTheFilter(unittest.TestCase):
+    """`SC` writes more than `#Error`, and a filter that forgets that lies.
+
+    Measured 2026-08-06 on the parallel session's data, and it cost seven hours:
+    their count matched the marker `#Error`, so `#Lexical error` never appeared
+    in it. 152 "error lines" were really 193 diagnosis lines — and the two lines
+    it dropped were the ones naming the actual cause (`ILLEGAL CHARACTER, ASCII
+    8 DECIMAL`, from a `'\\b'` that a shell had turned into a raw control
+    character before the file ever reached the guest). The tally looked complete
+    the whole time.
+
+    `classify_diagnostics` does not have that defect — it matches on the WORD,
+    not on `#Error`. That is currently true by way of one regex alternation, and
+    a single edit narrowing it to the marker would reintroduce the exact failure
+    without breaking anything else. Hence this test: the breadth is a decision,
+    not an accident."""
+
+    LEXICAL_AND_FATAL = (
+        '        else if (c == \x08) printf("\\bbackspace");\r'
+        "        ^\r"
+        'File "t06.c"; line 7 #Lexical error: ILLEGAL CHARACTER, ASCII 8 DECIMAL\r'
+        "#-----------------------\r"
+        'File "t06.c"; line 8 #Lexical error: unrecognized token\r'
+        "#-----------------------\r"
+        "### SC - Fatal error: too many errors\r"
+    )
+
+    def test_a_lexical_error_is_an_error(self):
+        got = mpw.classify_diagnostics(self.LEXICAL_AND_FATAL)
+        self.assertTrue(any("ILLEGAL CHARACTER" in e for e in got["errors"]),
+                        got["errors"])
+        self.assertTrue(any("unrecognized token" in e for e in got["errors"]),
+                        got["errors"])
+
+    def test_a_fatal_error_is_an_error(self):
+        got = mpw.classify_diagnostics(self.LEXICAL_AND_FATAL)
+        self.assertTrue(any("Fatal error" in e for e in got["errors"]),
+                        got["errors"])
+
+    def test_none_of_the_three_is_silently_dropped(self):
+        """The count is the point. A classifier that returns two of three
+        diagnostics is worse than one that returns none: it looks like an
+        answer."""
+        got = mpw.classify_diagnostics(self.LEXICAL_AND_FATAL)
+        self.assertEqual(len(got["errors"]), 3, got["errors"])
+
+
 class TheRemedyThatNeedsTheSourceLine(unittest.TestCase):
     """`expression expected` names nothing. The source line names the defect.
 
