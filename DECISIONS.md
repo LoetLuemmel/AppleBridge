@@ -203,3 +203,53 @@ Format — every entry carries all five fields, checked by
 - **Precondition, checked and not assumed:** the ruling holds only while the bound is **purely terminal**. Were the model told how many attempts remained, the miscount would have changed the prefix from attempt one and no back-computation would be admissible. Verified from both sides with different patterns over 302 tool results across both arms: no key relating to the count, no occurrence of the word in any result, and the single hit in model output was `"remaining problems"` — a false positive of the wider pattern, reported by the side that found it rather than rounded away.
 - **Cost, stated rather than buried:** the affected runs are scored as the runs they would have been and not as the runs that happened, so their tails exist in the trace and in no figure. The rule is also *harder* than the one it replaces in one direction: a wrong remedy text would forbid back-computation entirely, however harmless it looked — and that is the class of defect which demonstrably flipped a run on the morning this was decided. A criterion that never bites is none.
 - **Revisit if:** a bound is ever built that reports its own state to the model, or a defect appears that is neither prefix nor suffix but both — then the three-way split is short a case, the same way "defect found" was short one before this entry existed.
+
+## D-022 — where a training run computes, and what the project is actually for
+
+- **Date:** 2026-08-06
+- **Status:** active
+- **Decided by:** the operator, in the article
+  [*Wie die Optimierung weitergeht*](https://pit.390er.de/nvidia/wie-die-optimierung-weitergeht-klassen-entfernen-statt-quoten/),
+  section *Der Trainingsort*. That wording is the source; this entry mirrors it
+  because decisions of record live here (D-006), not because it restates them
+  better.
+- **Decision:**
+  - **The project's purpose is Phase 5, and it is a question, not a metric:** *can
+    a system be taught and optimised to drive an MPW or THINK C development
+    environment over AppleBridge?* Everything upstream of that — gate, rewriter,
+    fixed chain, bank — is preparation for it.
+  - **The training runs on a 7B.** A smaller base model is **explicitly not an
+    alternative**: the question is what a *fine-tuned 7B* can do for this purpose,
+    and substituting a 3B answers a different one.
+  - **Order of places:** preprocessing on the Xavier where technically possible,
+    further steps on an **M4 Pro with 24 GB**. The Xavier alone looks limited or
+    unsuitable for the training itself; the Orin's shared memory is too small.
+  - **A rented 24 GB card stays in scope as a fallback**, should Apple's Metal
+    turn out incompatible or unsuitable. This is a deliberate reversal of the
+    reading proposed by this session, which would have ruled rented compute out
+    altogether.
+  - **The location is therefore no longer a blocker.** Training begins once the
+    preparations for it are made.
+- **Evidence:** on 2026-08-06 a published instruction proposed a rented 24 GB card
+  for Phase 5. Three instances read that text and **none objected** — one of them
+  had checked its denominators, found two errors in its rewriter rules and run its
+  acceptance condition, and had even written a section headed *"what is expressly
+  not disputed"* with four points, without noticing the fifth. The reason is
+  checkable and was checked: a search of `DECISIONS.md` (21 entries at the time),
+  `CLAUDE.md`, `README.md`, `ARCHITECTURE.md` and `docs/*.md` for any wording of
+  the condition returned **nothing**. It lived in the project's name and in every
+  prior decision, and therefore in no text a review could be held against. That is
+  the same class as the day's wrong denominators, one level up: **not a number
+  without its basis, but a basis without its sentence.** A condition nobody ever
+  had to say out loud is invisible to every review, and the more self-evident it
+  is, the more certainly it is missing.
+- **What this entry is not:** a prohibition. This session drafted one — *"computation
+  stays in-house, rented compute is excluded"* — and asked the operator to pick the
+  boundary. The answer was narrower in one direction and wider in the other: the
+  purpose fixes the **model size**, and the place is ordered by preference with an
+  external fallback rather than closed. A rule written from the assumption instead
+  of from the answer would have forbidden the fallback the operator wants to keep.
+- **Revisit if:** the M4 Pro path proves workable end to end (then the fallback is
+  dead weight and should be struck), or a 7B turns out not to fit anywhere
+  available (then the model-size question reopens — but as a *finding*, not as a
+  substitution made for convenience).
