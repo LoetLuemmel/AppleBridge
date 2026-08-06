@@ -152,6 +152,10 @@ def admit(run, guard_commit=None, list_hash=None):
     if list_hash and head.get("list_hash") not in (None, list_hash):
         return f"task list {head.get('list_hash')!r} is not {list_hash!r}"
 
+    disagreement = arm_disagreement(run)
+    if disagreement:
+        return disagreement
+
     kinds = [r.get("kind") for r in run]
     if "tool" not in kinds:
         return "no tool record: nothing was attempted"
@@ -369,13 +373,58 @@ def _numeric_claim(text, counters):
 # report
 # --------------------------------------------------------------------------
 
-def run_arm(run):
-    """-> "lint" / "nolint" / None, from the compiles the run actually made."""
+def declared_arm(run):
+    """-> the arm the run_start CLAIMS, or None if it claims none."""
+    head = run[0] if run else {}
+    arm = head.get("arm")
+    if isinstance(arm, bool):
+        return "lint" if arm else "nolint"
+    return arm if arm in ("lint", "nolint") else None
+
+
+def observed_arms(run):
+    """-> the set of arms the executed compiles actually RAN under."""
+    out = set()
     for rec in compiles(run):
-        arm = (rec.get("result") or {}).get("lint")
-        if arm is not None:
-            return "lint" if arm else "nolint"
+        lint = (rec.get("result") or {}).get("lint")
+        if lint is not None:
+            out.add("lint" if lint else "nolint")
+    return out
+
+
+def arm_disagreement(run):
+    """-> None, or why the declared arm and the compiles do not agree.
+
+    The case this exists for was real and was caught by a person: the conductor
+    attached the arm to the arguments AFTER writing the record, so the trace read
+    `lint: None` while the arm was already in force. Nothing would have separated
+    the arms, and the evaluator would have produced numbers anyway. It was found
+    because somebody happened to look at one field — and a finding that depends
+    on where a glance fell is one that will be missed next time.
+
+    Both directions matter. A run whose compiles disagree with each other is
+    broken even where nothing was declared: an arm that changes mid-run belongs
+    to neither.
+    """
+    observed = observed_arms(run)
+    if len(observed) > 1:
+        return (f"the arm changed mid-run: compiles ran under "
+                f"{sorted(observed)}")
+    declared = declared_arm(run)
+    if declared and observed and declared not in observed:
+        return (f"run_start declares arm {declared!r} but the compiles ran "
+                f"under {sorted(observed)[0]!r}")
     return None
+
+
+def run_arm(run):
+    """-> "lint" / "nolint" / None.
+
+    The DECLARED arm wins, because it is what the conductor set out to do; the
+    observed one is the check on it (`arm_disagreement`), and a run where the two
+    part company never reaches this function — it is rejected at admission.
+    """
+    return declared_arm(run) or (sorted(observed_arms(run)) or [None])[0]
 
 
 def paired(counted):

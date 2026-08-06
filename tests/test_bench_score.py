@@ -358,6 +358,60 @@ class TheForcedVerdict(unittest.TestCase):
             self.assertIn(word, d["instruction"], word)
 
 
+
+class TheArmMustAgreeWithItself(unittest.TestCase):
+    """The declared arm against the arm the compiles actually ran under.
+
+    Measured 2026-08-06: the conductor attached the arm to the arguments AFTER
+    writing the record, so the trace read `lint: None` while the arm was already
+    in force. Nothing would have separated the arms and the evaluator would have
+    produced numbers anyway. It was caught by a person who happened to look at
+    one field — and a finding that depends on where a glance fell is one that
+    will be missed next time."""
+
+    def test_a_declared_arm_that_the_compiles_contradict_is_rejected(self):
+        head = dict(HEAD, arm="lint")
+        s = score.score(run(compile_rec(True, lint=False), ANSWER_OK, head=head))
+        self.assertEqual(s["runs_counted"], 0)
+        self.assertIn("declares arm", s["runs_rejected"][0]["reason"])
+
+    def test_an_arm_that_changes_mid_run_is_rejected_even_undeclared(self):
+        """A run whose compiles disagree with each other belongs to neither
+        arm, whatever the header says or fails to say."""
+        r = run(compile_rec(False, lint=True), WRITE,
+                compile_rec(True, lint=False), ANSWER_OK)
+        s = score.score(r)
+        self.assertEqual(s["runs_counted"], 0)
+        self.assertIn("changed mid-run", s["runs_rejected"][0]["reason"])
+
+    def test_agreement_passes(self):
+        head = dict(HEAD, arm="nolint")
+        s = score.score(run(compile_rec(True, lint=False), ANSWER_OK, head=head))
+        self.assertEqual(s["runs_counted"], 1, s["runs_rejected"])
+        self.assertEqual(score.run_arm(run(compile_rec(True, lint=False),
+                                           ANSWER_OK, head=head)), "nolint")
+
+    def test_a_declared_arm_with_no_compiles_is_not_a_contradiction(self):
+        """A read-only run declares an arm and never exercises it. Rejecting it
+        would throw away runs for having nothing to disagree about."""
+        head = dict(HEAD, arm="lint")
+        r = run({"kind": "tool", "name": "mac_list_files", "refused": False,
+                 "result": {"success": True}}, ANSWER_OK, head=head)
+        self.assertIsNone(score.arm_disagreement(r))
+        self.assertEqual(score.score(r)["runs_counted"], 1)
+
+    def test_a_trace_without_a_declared_arm_still_works(self):
+        """Traces taken before the field existed must keep scoring — the
+        observed arm carries them."""
+        s = score.score(run(compile_rec(True, lint=True), ANSWER_OK))
+        self.assertEqual(s["runs_counted"], 1)
+        self.assertEqual(s["compiles_by_arm"], {"lint": 1})
+
+    def test_a_boolean_arm_is_read_the_same_as_a_word(self):
+        self.assertEqual(score.declared_arm([{"arm": True}]), "lint")
+        self.assertEqual(score.declared_arm([{"arm": False}]), "nolint")
+
+
 class TheTaskList(unittest.TestCase):
     """The list is the measurement's other half, and its defects are silent.
 
