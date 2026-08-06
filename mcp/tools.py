@@ -2428,6 +2428,14 @@ TOOL_HANDLERS = {
 # same shape is a problem, and nothing would have shown it.
 _REPEATS = loop_guard.RepeatWatch()
 
+# Says, in the result, that the last write has not been compiled. The strategy's
+# rule for what deserves training is "train only what a tool can DETECT but not
+# ENFORCE" — detection was proved on 2026-08-06 (sixteen of eighty runs never
+# compiled), and the enforcing half had never been tried. This is that attempt.
+# It reports; whether a conductor turns it into a refusal is the conductor's
+# decision, and it can, because the flag is in the result.
+_UNCOMPILED = loop_guard.UncompiledWrite()
+
 
 def call_tool(name: str, arguments: Dict[str, Any]) -> Any:
     """Call a tool by name with arguments."""
@@ -2444,6 +2452,13 @@ def call_tool(name: str, arguments: Dict[str, Any]) -> Any:
     # reads these results has to change.
     if repeat and isinstance(result, dict) and "repeated_call" not in result:
         result["repeated_call"] = repeat
+
+    # Same route, same reason: the rule arrives at the moment its case is true,
+    # in the place the caller is already reading. Fed AFTER the handler, so a
+    # write that failed does not claim an uncompiled change.
+    hint = _UNCOMPILED.note(name, arguments, result if isinstance(result, dict) else None)
+    if hint and isinstance(result, dict) and "uncompiled_write" not in result:
+        result["uncompiled_write"] = hint
 
     # One place, so every tool carries it and no tool has to remember to.
     # The host server appends a NOTES field to the control-port reply when the

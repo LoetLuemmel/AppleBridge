@@ -560,3 +560,67 @@ class CompileBudget:
         return (f"compile budget exhausted after {self.used} compile "
                 f"attempt(s): the loop was stopped by its bound, not by the "
                 f"model deciding it was done")
+
+
+class UncompiledWrite:
+    """Says, IN the tool result, that the last write was never compiled.
+
+    `TerminationWatch` already works this out — but only afterwards, for whoever
+    reads the transcript. This says it at the moment its case is true, which is
+    the one delivery route measured to work: 2026-08-05, the same sentence was
+    ignored in a prompt and obeyed in a tool result.
+
+    **Why it exists at all.** The strategy's own rule for what deserves training
+    is: *train only what a tool can DETECT but not ENFORCE.* Detection was proved
+    on 2026-08-06 — sixteen of eighty runs never compiled at all, and nineteen
+    did not compile after their last change. The other half of the rule was never
+    tested: nobody had tried a tool that says so while the loop is still running.
+    Until that has been tried and has failed, the case is an open stage-1 job and
+    not a training candidate. Named by the third party, and neither session had
+    seen it, because both had reasoned from the result backwards.
+
+    It REPORTS. It does not block, and the hint carries no instruction to stop —
+    a guard that refuses here would be deciding that a caller who wrote a file
+    did not mean to write it. Whether a conductor turns this into a refusal is
+    the conductor's decision, and it can, because the flag is in the result.
+    """
+
+    def __init__(self, write_tools=WRITE_TOOLS, compile_tools=COMPILE_TOOLS):
+        self.write_tools = tuple(write_tools)
+        self.compile_tools = tuple(compile_tools)
+        self._pending = None          # path of the write not yet compiled
+
+    def note(self, name, args=None, result=None):
+        """Record an executed call. -> a hint dict for the NEXT result, or None.
+
+        Refused calls are ignored on the same reasoning as `TerminationWatch`:
+        a call that never reached a tool neither wrote nor compiled.
+        """
+        if isinstance(result, dict) and (result.get("refused_by_hull")
+                                         or result.get("refused")):
+            return None
+        if name in self.write_tools:
+            self._pending = (args or {}).get("path") or "the source"
+        elif name in self.compile_tools:
+            self._pending = None
+        return self.hint()
+
+    def hint(self):
+        """The sentence to travel in the result, or None when nothing is due.
+
+        Phrased as a STATE and not as an order. "You have not compiled" is a
+        reproach and invites agreement; naming what is true of the file is the
+        form that produced a repair when it arrived in a tool result.
+        """
+        if not self._pending:
+            return None
+        return {
+            "uncompiled_write": self._pending,
+            "note": (f"{self._pending} has been written since the last compile. "
+                     f"Nothing on disk reflects that change yet — an artefact "
+                     f"found now is the one from before it."),
+        }
+
+    @property
+    def pending(self):
+        return self._pending

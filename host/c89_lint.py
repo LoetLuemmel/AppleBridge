@@ -52,8 +52,20 @@ RULES = (
      # 'sum'. A remedy that says what to write and not what to keep leaves the
      # keeping to be guessed, and the thing guessing has no memory of the file
      # it is editing.
-     "put `int i;` before the loop as an additional line, keeping the "
-     "declarations that are already there, and drop the type from the for-head"),
+     #
+     # "at the start of the block" replaces "before the loop", measured
+     # 2026-08-06 over forty tasks. Two runs followed this remedy; ONE of them
+     # failed on it. t01 put `int i;` after a `printf(...)` — before the loop,
+     # exactly as the text said, and C89 wants declarations before the first
+     # STATEMENT. t35 put it among the other declarations and compiled.
+     #
+     # The morning's version had already been widened once, from what to write
+     # to what to keep. The place stayed wrong, and this is the same defect one
+     # step further along in the same sentence: an instruction that says what to
+     # add and not where it belongs.
+     "put `int i;` at the start of the block, before the first statement, as an "
+     "additional line, keeping the declarations that are already there, and "
+     "drop the type from the for-head"),
     ("line_comment",
      re.compile(r"//"),
      "`//` line comments are C99",

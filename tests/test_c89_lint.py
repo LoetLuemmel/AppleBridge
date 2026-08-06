@@ -74,6 +74,21 @@ def test_the_fix_text_says_what_to_KEEP_not_only_what_to_write():
     assert "keeping" in r, r
 
 
+def test_the_fix_text_says_WHERE_and_not_only_what():
+    """Measured 2026-08-06 over forty tasks: two runs followed this remedy and
+    ONE of them failed on it. t01 put `int i;` after a printf — before the loop,
+    exactly as the text said — and C89 wants declarations before the first
+    STATEMENT. t35 put it among the other declarations and compiled.
+
+    The text had already been widened once, from what to write to what to keep.
+    The place stayed wrong: the same defect one step further along in the same
+    sentence."""
+    r = L.remedies(L.check(MODEL_SOURCE))[0]
+    assert "start of the block" in r, r
+    assert "before the first statement" in r, r
+    assert "before the loop" not in r, r
+
+
 def test_two_loops_are_one_lesson():
     """Ten `//` comments are one lesson, not ten — repeating it costs context
     on a node with 2 GB free and teaches nothing the first line did not."""

@@ -57,6 +57,69 @@ _REMEDIES = (
      "completes. Judge by the artefact, not by this status."),
 )
 
+# Remedies keyed on a DIAGNOSTIC GROUP: the compiler's message plus the source
+# line it points at. Only possible since the group travels together (see
+# `_SEPARATOR`) — before that, the source line was dropped and there was nothing
+# to key on.
+#
+# **Why this is not a lint rule.** `c89_lint`'s docstring has said since day one
+# that "a declaration appearing after a statement inside a block" is deliberately
+# NOT detected: finding it reliably needs a parser, and a wrong flag is worse
+# than a missing one. That reasoning still holds for a rule that runs BEFORE the
+# compiler — it would fire on correct code.
+#
+# It does not hold here. This fires only on a line the compiler has ALREADY
+# rejected, so a false positive on correct code is impossible by construction.
+# The trade-off the docstring names disappears rather than being re-decided.
+#
+# Measured 2026-08-06 over eighty runs: `expression expected` is SC's message for
+# several distinct C89 violations. Of 135 such lines, 84 were a declaration in a
+# for-head (which the lint does catch) and 46 were a declaration after a
+# statement — the second-largest cause in the whole measurement, and until now
+# the model was told only "expression expected", which names nothing.
+#
+# **What keeps the two classes apart is the `^` anchor**, and it is worth naming
+# because the other 84 lines look like declarations too: `for (int i = 0; …)`
+# contains `int i` and would match an unanchored pattern. It begins with `for`,
+# so it cannot match an anchored one — the for-head belongs to `c89_lint`, this
+# belongs to what the lint deliberately does not detect, and the anchor is the
+# whole border between them. Pinned by a test, because widening the pattern
+# without the anchor would trade a gap for a MISDIRECTION: the remedy would point
+# at the loop line and say "move it above the first statement", which is exactly
+# the wrong instruction and exactly how one of two applications of our own remedy
+# failed on 2026-08-06. Named by the parallel session before it could bite twice.
+_GROUP_REMEDIES = (
+    (re.compile(r"expression expected", re.I),
+     re.compile(r"^\s*(?:const\s+|static\s+|register\s+|volatile\s+|"
+                r"unsigned\s+|signed\s+)*"
+                r"(?:int|char|long|short|float|double|size_t|FILE)\b"
+                r"[\s*]+[A-Za-z_]"),
+     "C89 wants every declaration at the START of its block, before the first "
+     "statement. This line declares something after a statement — move it up, "
+     "above the first statement of the enclosing block, and keep the "
+     "declarations that are already there."),
+)
+
+
+def group_remedies(errors):
+    """Remedies that need the source line, not just the message.
+
+    Reads the grouped entries `classify_diagnostics` produces: the last line is
+    the compiler's message, the ones before it are the source and the caret.
+    """
+    out = []
+    for entry in errors:
+        lines = [l for l in entry.split("\n") if l.strip()]
+        if len(lines) < 2:
+            continue
+        message, source = lines[-1], lines[0]
+        for msg_pat, src_pat, remedy in _GROUP_REMEDIES:
+            if msg_pat.search(message) and src_pat.match(source) \
+                    and remedy not in out:
+                out.append(remedy)
+    return out
+
+
 # Benign: the linker reporting that a library it was handed was not needed.
 _BENIGN = re.compile(r"\bError 52\b")
 
@@ -151,6 +214,7 @@ def classify_diagnostics(text):
             continue
         pending = []                # a classified line ends the group
     remedies = [remedy for pattern, remedy in _REMEDIES if pattern.search(text or "")]
+    remedies += group_remedies(errors)
     return {"errors": errors, "warnings": warnings, "remedies": remedies}
 
 

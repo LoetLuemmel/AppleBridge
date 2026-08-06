@@ -112,5 +112,88 @@ class WhatMustNotChange(unittest.TestCase):
         self.assertEqual(got["errors"], ["Fatal error: unable to open file 'x.c'"])
 
 
+class TheRemedyThatNeedsTheSourceLine(unittest.TestCase):
+    """`expression expected` names nothing. The source line names the defect.
+
+    Measured 2026-08-06 over eighty runs: of 135 lines carrying that message, 84
+    were a declaration in a for-head — which the lint catches — and 46 were a
+    declaration after a statement, the second-largest cause in the measurement.
+    Until the diagnostic group travelled together, there was nothing to tell them
+    apart by, and the model was told only the message.
+
+    This is NOT the lint rule c89_lint deliberately does not have. That one would
+    run before the compiler and could fire on correct code. This fires only on a
+    line the compiler has already rejected, so a false positive on correct code
+    is impossible by construction."""
+
+    DECL_AFTER_STATEMENT = (
+        '    printf("Fahrenheit\\tCelsius\\n");\r'
+        "    int i;\r"
+        "    ^\r"
+        'File "MeinMac:Bench:t01.c"; line 5 #Error: expression expected\r'
+        "#-----------------------\r"
+    )
+
+    def test_the_declaration_after_a_statement_gets_named(self):
+        got = mpw.classify_diagnostics(self.DECL_AFTER_STATEMENT)
+        self.assertTrue(any("START of its block" in r for r in got["remedies"]),
+                        got["remedies"])
+
+    def test_it_says_where_and_not_only_what(self):
+        """The whole lesson of the day: an instruction that names the addition
+        and not the place sends the model to the wrong line."""
+        r = next(r for r in mpw.classify_diagnostics(self.DECL_AFTER_STATEMENT)["remedies"]
+                 if "START of its block" in r)
+        self.assertIn("before the first statement", r)
+        self.assertIn("keep the declarations that are already there", r)
+
+    C99_FOR_HEAD = (
+        '    for (int i = 2; i < 10; i++) {\r'
+        "    ^\r"
+        'File "MeinMac:Bench:t07.c"; line 5 #Error: expression expected\r'
+        "#-----------------------\r"
+    )
+
+    def test_a_c99_for_head_is_NOT_called_a_declaration_after_a_statement(self):
+        """The one that would have cost a session. Of the 135 `expression
+        expected` lines measured over both arms, 84 are C99 for-heads and 46 are
+        declarations after a statement — SC gives them the SAME message, and
+        `for (int i = 0; …)` contains `int i`, so an unanchored pattern matches
+        both.
+
+        Firing here would not leave a gap, it would MISDIRECT: it would tell the
+        model to move the loop line above the first statement. That is precisely
+        the wrong instruction, and a wrong instruction from this remedy is what
+        broke one of the two runs that followed it. The for-head is `c89_lint`'s
+        rule; the `^` anchor is the entire border between the two."""
+        got = mpw.classify_diagnostics(self.C99_FOR_HEAD)
+        self.assertTrue(got["errors"], got)          # still reported as an error
+        self.assertEqual(got["remedies"], [], got["remedies"])
+
+    def test_the_same_message_without_a_declaration_says_nothing(self):
+        """`expression expected` alone must not trigger it — that is the whole
+        difference between this and a rule that guesses."""
+        other = ('    x = = 3;\r'
+                 '    ^\r'
+                 'File "a.c"; line 4 #Error: expression expected\r')
+        got = mpw.classify_diagnostics(other)
+        self.assertFalse(any("START of its block" in r for r in got["remedies"]),
+                         got["remedies"])
+
+    def test_a_bare_message_with_no_group_says_nothing(self):
+        """Traces from before the grouping repair have no source line. They must
+        degrade to silence, not to a guess."""
+        self.assertEqual(
+            mpw.group_remedies(["File \"a.c\"; line 5 #Error: expression expected"]),
+            [])
+
+    def test_the_remedy_appears_once_however_often_the_error_does(self):
+        """Ten identical violations are one lesson — the same rule c89_lint
+        follows, for the same reason: repetition costs context and teaches
+        nothing the first line did not."""
+        got = mpw.classify_diagnostics(self.DECL_AFTER_STATEMENT * 3)
+        self.assertEqual(sum("START of its block" in r for r in got["remedies"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

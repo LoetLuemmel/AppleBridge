@@ -554,6 +554,68 @@ def test_the_compile_budget_names_its_unit():
     assert "compile attempt" not in lg.StepBudget(1).message()
 
 
+
+# --- UncompiledWrite: the enforcing half nobody had tried ------------------
+def test_a_write_says_so_in_the_next_result():
+    """The strategy's rule for what deserves training is "train only what a tool
+    can DETECT but not ENFORCE". Detection was proved on 2026-08-06 — sixteen of
+    eighty runs never compiled at all. The enforcing half had never been tried,
+    and until it has been tried and failed, the case is an open stage-1 job and
+    not a training candidate. Named by a third party; neither session saw it,
+    because both reasoned from the result backwards."""
+    w = lg.UncompiledWrite()
+    assert w.note("mac_list_files", {}, {"success": True}) is None
+    hint = w.note("mac_write_file", {"path": "MeinMac:Bench:t01.c"}, {"success": True})
+    assert hint["uncompiled_write"] == "MeinMac:Bench:t01.c"
+    assert "since the last compile" in hint["note"]
+
+
+def test_a_compile_clears_it():
+    w = lg.UncompiledWrite()
+    w.note("mac_write_file", {"path": "x.c"}, {"success": True})
+    assert w.note("mac_compile", {}, {"success": False, "verified": True}) is None
+    assert w.pending is None
+
+
+def test_a_failed_compile_still_clears_it():
+    """It reports that nothing was compiled, not that nothing succeeded. A
+    failed compile is still a compile, and claiming otherwise would make the
+    hint fire through every repair round."""
+    w = lg.UncompiledWrite()
+    w.note("mac_write_file", {"path": "x.c"}, {"success": True})
+    w.note("mac_compile", {}, {"success": False, "verified": True})
+    assert w.hint() is None
+
+
+def test_a_refused_write_does_not_arm_it():
+    """Same reasoning as TerminationWatch: a call that never reached a tool
+    neither wrote nor compiled."""
+    w = lg.UncompiledWrite()
+    assert w.note("mac_write_file", {"path": "x.c"},
+                  {"success": False, "refused_by_hull": True}) is None
+    assert w.pending is None
+
+
+def test_the_hint_names_a_state_and_not_a_reproach():
+    """"You have not compiled" is a reproach and invites agreement. Naming what
+    is true of the FILE is the form that produced a repair when it arrived in a
+    tool result — the one delivery route measured to work."""
+    w = lg.UncompiledWrite()
+    note = w.note("mac_write_file", {"path": "x.c"}, {"success": True})["note"]
+    assert "you have not" not in note.lower()
+    assert "must" not in note.lower()
+    assert "artefact found now is the one from before it" in note
+
+
+def test_it_reports_and_does_not_block():
+    """A guard that refused here would decide that a caller who wrote a file did
+    not mean to write it. Whether a conductor turns the flag into a refusal is
+    the conductor's decision — and it can, because the flag is in the result."""
+    w = lg.UncompiledWrite()
+    for _ in range(3):
+        assert w.note("mac_write_file", {"path": "x.c"}, {"success": True}) is not None
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
