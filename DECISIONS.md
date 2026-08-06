@@ -228,6 +228,12 @@ Format — every entry carries all five fields, checked by
     turn out incompatible or unsuitable. This is a deliberate reversal of the
     reading proposed by this session, which would have ruled rented compute out
     altogether.
+  - **But taking that fallback counts as a narrow failure, not as a neutral
+    option** (operator, 2026-08-06): *the goal is to be reached with our own
+    means.* The card is permitted so that the project cannot be blocked outright
+    — it is not permitted as a shortcut. The practical consequence is a weighting,
+    not a prohibition: work spent on making the M4 Pro path succeed buys more than
+    the hours it costs, because taking the fallback costs the goal itself.
   - **The location is therefore no longer a blocker.** Training begins once the
     preparations for it are made.
 - **Evidence:** on 2026-08-06 a published instruction proposed a rented 24 GB card
@@ -252,4 +258,6 @@ Format — every entry carries all five fields, checked by
 - **Revisit if:** the M4 Pro path proves workable end to end (then the fallback is
   dead weight and should be struck), or a 7B turns out not to fit anywhere
   available (then the model-size question reopens — but as a *finding*, not as a
-  substitution made for convenience).
+  substitution made for convenience). **Not** a reason to revisit: that the rented
+  card would be faster or cheaper on a given afternoon. That is precisely the
+  trade the "narrow failure" clause exists to refuse.
