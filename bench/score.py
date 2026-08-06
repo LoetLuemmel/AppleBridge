@@ -351,6 +351,63 @@ def _numeric_claim(text, counters):
 # report
 # --------------------------------------------------------------------------
 
+def run_arm(run):
+    """-> "lint" / "nolint" / None, from the compiles the run actually made."""
+    for rec in compiles(run):
+        arm = (rec.get("result") or {}).get("lint")
+        if arm is not None:
+            return "lint" if arm else "nolint"
+    return None
+
+
+def paired(counted):
+    """The 2x2 table, and the tasks that CHANGE SIDES — by name.
+
+    Both arms run the same forty tasks, so this is a paired experiment and two
+    separate rates throw the pairing away. The claim sits in the tasks that
+    switch: "three tasks flip" is honest, "72 % against 65 %" is the same
+    observation dressed as a rate, and the dress hides how few observations
+    carry it. Named by the operator in a third proofread of the article,
+    2026-08-06, against exactly this function's absence.
+
+    `only_without_lint` is reported **even when it is empty**, because it is the
+    one cell in which a HARMFUL lint would become visible, and a cell that
+    disappears when it is zero is a cell nobody can check.
+    """
+    by_task = {}
+    for run in counted:
+        task = (run[0] or {}).get("task_id") or (run[0] or {}).get("task")
+        arm = run_arm(run)
+        if task is None or arm is None:
+            continue
+        by_task.setdefault(task, {})[arm] = first_attempt_ok(run)
+
+    cells = {"both": [], "only_with_lint": [], "only_without_lint": [],
+             "neither": [], "incomplete": []}
+    for task, arms in sorted(by_task.items()):
+        with_lint, without = arms.get("lint"), arms.get("nolint")
+        if with_lint is None or without is None:
+            cells["incomplete"].append(task)
+        elif with_lint and without:
+            cells["both"].append(task)
+        elif with_lint:
+            cells["only_with_lint"].append(task)
+        elif without:
+            cells["only_without_lint"].append(task)
+        else:
+            cells["neither"].append(task)
+
+    switchers = cells["only_with_lint"] + cells["only_without_lint"]
+    return {
+        "pairs": len(by_task) - len(cells["incomplete"]),
+        "cells": cells,
+        "switchers": sorted(switchers),
+        "net_gain": len(cells["only_with_lint"]) - len(cells["only_without_lint"]),
+        "note": ("the result is the switchers, not the two rates: with N pairs "
+                 "a difference of k tasks is carried by k observations"),
+    }
+
+
 def rate(hits, total):
     """-> {"hits", "of", "pct"} — never a bare percentage.
 
@@ -389,6 +446,7 @@ def score(records, guard_commit=None, list_hash=None, k=3, malformed=()):
             arms[key] = arms.get(key, 0) + 1
 
     return {
+        "paired": paired(counted),
         "label": LABEL,
         "runs_total": len(runs),
         "runs_counted": len(counted),
@@ -429,6 +487,22 @@ def render(s):
             r = s[key]
             out.append(f"Reparaturquote   {r['hits']}/{r['of']}"
                        + (f" = {r['pct']} %" if r["pct"] is not None else " = —"))
+    pr = s["paired"]
+    out.append("")
+    out.append(f"VERBUNDEN        {pr['pairs']} Paare — das Ergebnis sind die "
+               f"Wechsler, nicht die zwei Quoten")
+    out.append(f"  beide bestanden   {len(pr['cells']['both'])}")
+    out.append(f"  NUR mit Lint      {len(pr['cells']['only_with_lint'])}  "
+               f"{pr['cells']['only_with_lint']}")
+    out.append(f"  NUR ohne Lint     {len(pr['cells']['only_without_lint'])}  "
+               f"{pr['cells']['only_without_lint']}"
+               + ("   <- leer, und trotzdem ausgewiesen"
+                  if not pr['cells']['only_without_lint'] else "   <- ein Lint, der schadet"))
+    out.append(f"  keiner bestanden  {len(pr['cells']['neither'])}")
+    if pr["cells"]["incomplete"]:
+        out.append(f"  unvollstaendig    {pr['cells']['incomplete']}")
+    out.append(f"  Nettogewinn       {pr['net_gain']} Aufgabe(n)")
+    out.append("")
     out.append(f"Terminierung     {s['termination']}")
     out.append(f"Falschbehauptung {s['false_claim']}")
     out.append(f"Übersetzungen    {s['compiles_by_arm']}")

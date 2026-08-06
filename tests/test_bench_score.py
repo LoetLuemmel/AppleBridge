@@ -220,6 +220,61 @@ class TheClaim(unittest.TestCase):
         self.assertEqual(score.false_claim(r), "undecidable")
 
 
+class ThePairing(unittest.TestCase):
+    """Both arms run the SAME forty tasks. Two separate rates throw that away.
+
+    Named by the operator in a third proofread of the article, 2026-08-06,
+    against the absence of exactly this: the claim sits in the tasks that change
+    sides. "Three tasks flip" is honest; "72 % against 65 %" is the same
+    observation dressed as a rate, and the dress hides how few observations
+    carry it.
+    """
+
+    @staticmethod
+    def _pair(task, with_lint, without):
+        head_a = dict(HEAD, task_id=task)
+        head_b = dict(HEAD, task_id=task)
+        return (run(compile_rec(with_lint, lint=True), ANSWER_OK, head=head_a)
+                + run(compile_rec(without, lint=False), ANSWER_OK, head=head_b))
+
+    def test_a_task_that_only_passes_with_the_lint_is_named(self):
+        s = score.score(self._pair("t01", True, False))
+        self.assertEqual(s["paired"]["cells"]["only_with_lint"], ["t01"])
+        self.assertEqual(s["paired"]["switchers"], ["t01"])
+        self.assertEqual(s["paired"]["net_gain"], 1)
+
+    def test_a_task_that_only_passes_WITHOUT_the_lint_is_named_too(self):
+        """The one cell in which a harmful lint becomes visible."""
+        s = score.score(self._pair("t02", False, True))
+        self.assertEqual(s["paired"]["cells"]["only_without_lint"], ["t02"])
+        self.assertEqual(s["paired"]["net_gain"], -1)
+
+    def test_the_harmful_cell_is_reported_even_when_empty(self):
+        """A cell that disappears when it is zero is a cell nobody can check."""
+        s = score.score(self._pair("t03", True, True))
+        self.assertIn("only_without_lint", s["paired"]["cells"])
+        self.assertEqual(s["paired"]["cells"]["only_without_lint"], [])
+        self.assertIn("NUR ohne Lint", score.render(s))
+
+    def test_a_task_run_in_only_one_arm_is_incomplete_not_a_result(self):
+        """Half a pair is not a pair. Counting it would let a crashed arm look
+        like a difference."""
+        one = run(compile_rec(True, lint=True), ANSWER_OK,
+                  head=dict(HEAD, task_id="t04"))
+        s = score.score(one)
+        self.assertEqual(s["paired"]["cells"]["incomplete"], ["t04"])
+        self.assertEqual(s["paired"]["pairs"], 0)
+
+    def test_the_switchers_survive_a_rate_that_looks_the_same(self):
+        """Two arms with equal totals can still differ on which tasks passed —
+        the case a pair of rates reports as "no difference"."""
+        s = score.score(self._pair("t05", True, False)
+                        + self._pair("t06", False, True))
+        self.assertEqual(s["first_attempt"], {"hits": 2, "of": 4, "pct": 50.0})
+        self.assertEqual(s["paired"]["switchers"], ["t05", "t06"])
+        self.assertEqual(s["paired"]["net_gain"], 0)
+
+
 class TheTaskList(unittest.TestCase):
     """The list is the measurement's other half, and its defects are silent.
 
