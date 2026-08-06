@@ -286,6 +286,42 @@ def passed_within(run, k):
     return False
 
 
+def artefact_evidence(run):
+    """-> "independent" / "tool_only" / "none". HOW the artefact is attested.
+
+    Two values where one would stand, for the fourth time in one day. A run that
+    ended at the compile budget has no `verify` record: the conductor checks the
+    artefact after the loop returns, and a bound exit skips that. Three of arm
+    1's eight budget runs demonstrably compiled — one of them on its very first
+    attempt — and for those the only evidence is the tool that made the claim.
+
+    That is precisely the evidence this project refuses everywhere else, so it
+    is reported as its own tier rather than folded into "passed". The measurement
+    keeps it: the gap is symmetric across the arms, and the only repair that
+    preserves symmetry is running both arms again.
+    """
+    if any(r.get("kind") == "verify" and r.get("present") is not None
+           for r in run):
+        return "independent"
+    return "tool_only" if compiles(run) else "none"
+
+
+def tool_mix(run):
+    """Which compiling tools this run actually used, and how often.
+
+    Not bookkeeping: the compile budget bounds `mac_compile` calls, and
+    `mac_build` compiles too. A model that reaches for the other tool is granted
+    extra attempts — measured in arm 1 at t20 (four plus two) and t28 (four plus
+    one). Whether the two arms reach for it equally is a question about the
+    BEHAVIOUR under measurement, not about the harness, so it is counted rather
+    than assumed.
+    """
+    mix = {}
+    for rec in compiles(run):
+        mix[rec.get("name")] = mix.get(rec.get("name"), 0) + 1
+    return mix
+
+
 def termination(run):
     """-> one of loop_guard.TerminationWatch's outcomes, replayed from the trace.
 
@@ -654,6 +690,16 @@ def score(records, guard_commit=None, list_hash=None, k=3, malformed=(),
         c = false_claim(run)
         claims[c] = claims.get(c, 0) + 1
 
+    evidence, tools_used, refused_compiles = {}, {}, 0
+    for run in counted:
+        ev = artefact_evidence(run)
+        evidence[ev] = evidence.get(ev, 0) + 1
+        for name, n in tool_mix(run).items():
+            tools_used[name] = tools_used.get(name, 0) + n
+        refused_compiles += sum(
+            1 for r in run if r.get("kind") == "tool"
+            and r.get("name") in COMPILE_TOOLS and r.get("refused"))
+
     arms = {}
     for run in counted:
         for rec in compiles(run):
@@ -684,6 +730,9 @@ def score(records, guard_commit=None, list_hash=None, k=3, malformed=(),
         "first_attempt_undecided": len(first) - len(first_decided),
         **horizons,
         "endings": endings,
+        "artefact_evidence": evidence,
+        "compile_tools_used": tools_used,
+        "refused_compiles": refused_compiles,
         "termination": terms,
         "false_claim": claims,
         "compiles_by_arm": arms,
@@ -758,6 +807,11 @@ def render(s):
     out.append(f"Endungen         {s['endings']}"
                "   (budget = gemessener Ausgang, kein Absturz)")
     out.append(f"Terminierung     {s['termination']}")
+    out.append(f"Artefaktbeleg    {s['artefact_evidence']}")
+    out.append("                 (tool_only = nur vom Werkzeug behauptet, "
+               "keine unabhaengige Pruefung)")
+    out.append(f"Werkzeugwahl     {s['compile_tools_used']}   "
+               f"verweigerte Compiles: {s['refused_compiles']}")
     out.append(f"Falschbehauptung {s['false_claim']}")
     out.append(f"Übersetzungen    {s['compiles_by_arm']}")
     out.append("")
