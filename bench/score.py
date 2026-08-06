@@ -252,11 +252,19 @@ def first_attempt_ok(run):
 
 
 def repaired_within(run, k):
-    """-> True/False/None. Among runs that failed first: success within k compiles."""
+    """-> True/False/None. Among runs that failed first: success within k
+    COMPILE ATTEMPTS in total — the first one included.
+
+    The unit is attempts and not repairs-after-the-first, and the difference is
+    not cosmetic: the compile budget allows 4 attempts, so under the other
+    reading k=3 and k=4 would name the same thing and reporting both would look
+    satisfied while measuring one horizon twice. Caught by a probe built to tell
+    the two apart, which did not.
+    """
     cs = compiles(run)
-    if len(cs) < 2 or _verdict(cs[0]) is not False:
+    if k < 2 or len(cs) < 2 or _verdict(cs[0]) is not False:
         return None
-    for rec in cs[1:1 + k]:
+    for rec in cs[1:k]:
         if _verdict(rec) is True:
             return True
     return False
@@ -592,7 +600,15 @@ def rate(hits, total):
             "pct": None if not total else round(100.0 * hits / total, 1)}
 
 
-def score(records, guard_commit=None, list_hash=None, k=3, malformed=()):
+def score(records, guard_commit=None, list_hash=None, k=3, malformed=(),
+          also_k=()):
+    """`k` is the predicted horizon; `also_k` are further ones to report.
+
+    Both are printed, never one. The prediction was fixed at k=3 before the run
+    and the compile budget allowed 4 — reporting only whichever came out better
+    is exactly the after-the-fact adjustment this whole apparatus exists to
+    prevent. Asked for by the measured side, about its own prediction.
+    """
     runs = split_runs(records)
     counted, rejected = [], []
     for run in runs:
@@ -602,8 +618,12 @@ def score(records, guard_commit=None, list_hash=None, k=3, malformed=()):
 
     first = [first_attempt_ok(r) for r in counted]
     first_decided = [v for v in first if v is not None]
-    rep = [repaired_within(r, k) for r in counted]
-    rep_decided = [v for v in rep if v is not None]
+    horizons = {}
+    for kk in (k,) + tuple(also_k):
+        vals = [repaired_within(r, kk) for r in counted]
+        decided = [v for v in vals if v is not None]
+        horizons[f"repaired_within_{kk}"] = rate(
+            sum(1 for v in decided if v), len(decided))
 
     terms, claims, endings = {}, {}, {}
     for run in counted:
@@ -634,8 +654,7 @@ def score(records, guard_commit=None, list_hash=None, k=3, malformed=()):
         "first_attempt": rate(sum(1 for v in first_decided if v),
                               len(first_decided)),
         "first_attempt_undecided": len(first) - len(first_decided),
-        f"repaired_within_{k}": rate(sum(1 for v in rep_decided if v),
-                                     len(rep_decided)),
+        **horizons,
         "endings": endings,
         "termination": terms,
         "false_claim": claims,
@@ -715,7 +734,13 @@ def main(argv=None):
                    help="print the SHA-256 of a task list and exit")
     p.add_argument("--guard-commit", help="reject runs built on another guard")
     p.add_argument("--task-list", help="reject runs made against another list")
-    p.add_argument("-k", type=int, default=3, help="repair rounds (default 3)")
+    p.add_argument("-k", type=int, default=3,
+                   help="the PREDICTED repair horizon (default 3)")
+    p.add_argument("--also-k", default="4",
+                   help="further horizons to report, comma-separated "
+                        "(default 4 — what the compile budget allowed). Both "
+                        "are printed; printing only the better one is the "
+                        "adjustment this tool exists to prevent.")
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
 
@@ -726,9 +751,10 @@ def main(argv=None):
         p.error("a protocol file is required (or --list-hash)")
 
     records, malformed = read_records(args.protocol)
+    also = tuple(int(x) for x in (args.also_k or "").split(",") if x.strip())
     s = score(records, args.guard_commit,
               list_hash(args.task_list) if args.task_list else None,
-              args.k, malformed)
+              args.k, malformed, also)
     print(json.dumps(s, indent=1, ensure_ascii=False) if args.json
           else render(s))
     return 0

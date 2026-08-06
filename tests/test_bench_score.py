@@ -473,6 +473,58 @@ class TheEndingThatLooksLikeAFailure(unittest.TestCase):
         self.assertIn("ends mid-run", s["runs_rejected"][0]["reason"])
 
 
+
+class TheHorizonIsCountedInAttempts(unittest.TestCase):
+    """`k` counts COMPILE ATTEMPTS in total, the first one included.
+
+    Not cosmetic: the compile budget allows four attempts, so under the other
+    reading — k repairs AFTER the first — k=3 and k=4 would name the same thing.
+    Reporting both would then look like two horizons and measure one twice.
+    Caught by a probe built to tell them apart, which did not.
+
+    Both are reported because the prediction was fixed at k=3 before the run and
+    the apparatus allowed 4. Printing only whichever came out better is the
+    after-the-fact adjustment this module exists to prevent — asked for by the
+    measured side, about its own prediction."""
+
+    @staticmethod
+    def _succeeds_on(attempt):
+        recs = [dict(HEAD)]
+        for _ in range(attempt - 1):
+            recs += [WRITE, compile_rec(False)]
+        recs += [WRITE, compile_rec(True), ANSWER_OK]
+        return recs
+
+    def test_the_fourth_attempt_is_outside_three_and_inside_four(self):
+        s = score.score(self._succeeds_on(4), also_k=(4,))
+        self.assertEqual(s["repaired_within_3"]["pct"], 0.0)
+        self.assertEqual(s["repaired_within_4"]["pct"], 100.0)
+
+    def test_the_third_attempt_is_inside_both(self):
+        s = score.score(self._succeeds_on(3), also_k=(4,))
+        self.assertEqual(s["repaired_within_3"]["pct"], 100.0)
+        self.assertEqual(s["repaired_within_4"]["pct"], 100.0)
+
+    def test_a_budget_ending_is_a_miss_at_every_horizon(self):
+        """Eight of forty in arm 1 ended this way. They belong in the
+        denominator as "not repaired", never discarded."""
+        recs = [dict(HEAD)]
+        for _ in range(4):
+            recs += [WRITE, compile_rec(False)]
+        recs.append({"kind": "case", "aborted": True,
+                     "error": "BudgetOut: compile budget exhausted after 4 "
+                              "compile attempt(s)"})
+        s = score.score(recs, also_k=(4,))
+        self.assertEqual(s["runs_counted"], 1)
+        for key in ("repaired_within_3", "repaired_within_4"):
+            self.assertEqual(s[key], {"hits": 0, "of": 1, "pct": 0.0}, key)
+
+    def test_both_horizons_are_always_present(self):
+        s = score.score(self._succeeds_on(2), also_k=(4,))
+        self.assertIn("repaired_within_3", s)
+        self.assertIn("repaired_within_4", s)
+
+
 class TheTaskList(unittest.TestCase):
     """The list is the measurement's other half, and its defects are silent.
 
