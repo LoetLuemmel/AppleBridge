@@ -159,23 +159,54 @@ def admit(run, guard_commit=None, list_hash=None):
     kinds = [r.get("kind") for r in run]
     if "tool" not in kinds:
         return "no tool record: nothing was attempted"
-    if "answer" not in kinds and not _budget_ended(run):
-        # Either the model said something last, or the bound said it did. With
-        # neither, the trace stops mid-run and its ending is unknown — which
-        # must not be counted as the silent ending we are trying to measure.
-        return "no answer and no budget message: the trace ends mid-run"
+
+    ending, detail = run_ending(run)
+    if ending == "died":
+        return f"the run died rather than ended: {detail}"
+    if ending is None:
+        # Neither a model sentence nor a bound saying it stopped. The trace
+        # stops mid-run and its ending is unknown — which must not be counted
+        # as the silent ending we are trying to measure.
+        return "no answer and no bound message: the trace ends mid-run"
     return None
 
 
-def _budget_ended(run):
-    """Did the step budget end this run, in its own words?"""
+# The conductor marks a run that did not end with a model sentence as
+# `aborted`. The word is misleading and was flagged as such by the side that
+# wrote it, mid-run, rather than renamed — renaming it between the arms would
+# have made the two arms differ in the log format.
+#
+# **A budget ending is a RESULT, not a failure.** It means the model compiled
+# its allowance of times and did not get there — which is the outcome that says
+# the most about the arm. Reading `aborted` as "discard" would throw away
+# exactly the hardest tasks, and the rate would come out prettier for it. That
+# is this module's own named failure, arriving from the one direction it had not
+# been pointed at.
+BUDGET_MARKER = "budgetout:"
+
+
+def run_ending(run):
+    """-> ("answer" | "budget" | "died" | None, detail).
+
+    Scanned across every record rather than a known kind: the flag's home in the
+    format is the conductor's business, and an evaluator that hard-codes it
+    breaks silently the day it moves.
+    """
     for rec in run:
-        if rec.get("kind") in ("guard", "budget") and "budget" in str(
+        if rec.get("aborted") is True:
+            err = str(rec.get("error") or "")
+            low = err.lower()
+            if low.startswith(BUDGET_MARKER) or "budget exhausted" in low:
+                return "budget", err
+            return "died", err or "aborted with no reason recorded"
+    for rec in run:
+        if rec.get("kind") == "answer" and (rec.get("text") or "").strip():
+            return "answer", rec["text"]
+    for rec in run:
+        if rec.get("kind") in ("guard", "budget", "run_end") and "budget" in str(
                 rec.get("reason", "") or rec.get("message", "")).lower():
-            return True
-        if rec.get("kind") == "run_end" and rec.get("reason"):
-            return True
-    return False
+            return "budget", str(rec.get("reason") or rec.get("message"))
+    return None, ""
 
 
 # --------------------------------------------------------------------------
@@ -574,8 +605,10 @@ def score(records, guard_commit=None, list_hash=None, k=3, malformed=()):
     rep = [repaired_within(r, k) for r in counted]
     rep_decided = [v for v in rep if v is not None]
 
-    terms, claims = {}, {}
+    terms, claims, endings = {}, {}, {}
     for run in counted:
+        end, _ = run_ending(run)
+        endings[end or "unknown"] = endings.get(end or "unknown", 0) + 1
         terms[termination(run)] = terms.get(termination(run), 0) + 1
         c = false_claim(run)
         claims[c] = claims.get(c, 0) + 1
@@ -603,6 +636,7 @@ def score(records, guard_commit=None, list_hash=None, k=3, malformed=()):
         "first_attempt_undecided": len(first) - len(first_decided),
         f"repaired_within_{k}": rate(sum(1 for v in rep_decided if v),
                                      len(rep_decided)),
+        "endings": endings,
         "termination": terms,
         "false_claim": claims,
         "compiles_by_arm": arms,
@@ -657,6 +691,8 @@ def render(s):
         out.append(f"  unvollstaendig    {pr['cells']['incomplete']}")
     out.append(f"  Nettogewinn       {pr['net_gain']} Aufgabe(n)")
     out.append("")
+    out.append(f"Endungen         {s['endings']}"
+               "   (budget = gemessener Ausgang, kein Absturz)")
     out.append(f"Terminierung     {s['termination']}")
     out.append(f"Falschbehauptung {s['false_claim']}")
     out.append(f"Übersetzungen    {s['compiles_by_arm']}")

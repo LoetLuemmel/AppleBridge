@@ -412,6 +412,67 @@ class TheArmMustAgreeWithItself(unittest.TestCase):
         self.assertEqual(score.declared_arm([{"arm": False}]), "nolint")
 
 
+
+class TheEndingThatLooksLikeAFailure(unittest.TestCase):
+    """`aborted: true` is not "discard" — and reading it that way throws away
+    exactly the tasks the arms differ on.
+
+    Flagged mid-run by the side that wrote the field, 2026-08-06, at 20 of 40:
+    three runs carried it and none was an error. All three said the compile
+    budget had stopped them — this repository's own bound, doing what it was
+    built for. The model compiled its allowance and did not get there, which is
+    the outcome that says the most about the arm.
+
+    Discarding them would have made the rate prettier. That is this module's own
+    named failure arriving from the one direction it had not been pointed at."""
+
+    BUDGET = ("BudgetOut: compile budget exhausted after 4 compile attempt(s): "
+              "the loop was stopped by its bound, not by the model deciding it "
+              "was done")
+
+    def _run(self, error, compiles=4):
+        recs = [dict(HEAD, task_id="t09")]
+        for _ in range(compiles):
+            recs += [WRITE, compile_rec(False)]
+        recs.append({"kind": "case", "aborted": True, "error": error})
+        return recs
+
+    def test_a_budget_ending_counts_and_is_not_a_pass(self):
+        s = score.score(self._run(self.BUDGET))
+        self.assertEqual(s["runs_counted"], 1, s["runs_rejected"])
+        self.assertEqual(s["endings"], {"budget": 1})
+        self.assertEqual(s["repaired_within_3"],
+                         {"hits": 0, "of": 1, "pct": 0.0})
+
+    def test_a_real_death_is_rejected_and_named(self):
+        """The other half: a run that died has an unknown ending and must not be
+        counted as the silent one we are trying to measure."""
+        s = score.score(self._run("ConnectionResetError: [Errno 54]"))
+        self.assertEqual(s["runs_counted"], 0)
+        self.assertIn("died rather than ended", s["runs_rejected"][0]["reason"])
+        self.assertIn("ConnectionReset", s["runs_rejected"][0]["reason"])
+
+    def test_the_flag_is_found_wherever_it_lives(self):
+        """Scanned across records rather than on a known kind: where the field
+        sits is the conductor's business, and hard-coding it breaks silently the
+        day it moves."""
+        for kind in ("case", "run_end", "answer", "model"):
+            recs = [dict(HEAD), WRITE, compile_rec(False),
+                    {"kind": kind, "aborted": True, "error": self.BUDGET}]
+            self.assertEqual(score.run_ending(recs)[0], "budget", kind)
+
+    def test_an_ordinary_run_still_ends_on_its_answer(self):
+        self.assertEqual(
+            score.run_ending(run(compile_rec(True), ANSWER_OK))[0], "answer")
+
+    def test_a_trace_that_just_stops_is_still_rejected(self):
+        """The guard that must survive this change: no sentence, no bound, no
+        abort flag — the ending is unknown, and unknown is not measured."""
+        s = score.score(run(compile_rec(False)))
+        self.assertEqual(s["runs_counted"], 0)
+        self.assertIn("ends mid-run", s["runs_rejected"][0]["reason"])
+
+
 class TheTaskList(unittest.TestCase):
     """The list is the measurement's other half, and its defects are silent.
 
