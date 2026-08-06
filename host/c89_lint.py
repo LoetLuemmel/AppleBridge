@@ -44,7 +44,16 @@ RULES = (
      # "`int i; for (i = 0; …)`" -- and a model that copies a suggestion
      # literally would then write an ellipsis into its source. The remedy is
      # read by the thing that has to act on it, so it must be copy-safe.
-     "put `int i;` before the loop and drop the type from the for-head"),
+     #
+     # "as an additional line" is not padding. Measured 2026-08-06, proof run,
+     # task A: the model followed this remedy CORRECTLY and destroyed the
+     # program doing it -- it put `int i;` at the top of the block by REPLACING
+     # `int sum = 0;` instead of adding a line. Next error: undefined identifier
+     # 'sum'. A remedy that says what to write and not what to keep leaves the
+     # keeping to be guessed, and the thing guessing has no memory of the file
+     # it is editing.
+     "put `int i;` before the loop as an additional line, keeping the "
+     "declarations that are already there, and drop the type from the for-head"),
     ("line_comment",
      re.compile(r"//"),
      "`//` line comments are C99",

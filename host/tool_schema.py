@@ -79,6 +79,32 @@ def first_paragraph(text):
     return " ".join(para.split())
 
 
+# Properties the HARNESS sets and the model must never see. Not a secret and
+# not a security boundary — a measurement one. `mac_compile`'s `lint` selects
+# the control arm of "first-attempt rate with the lint against without it", and
+# a parameter is also a sentence: exported, it tells the model in the WITHOUT
+# arm that a C89 lint exists. A control arm that knows what it controls for is
+# not one. Named by the Jetson session 2026-08-06, against a leak this repo had
+# just built.
+#
+# The wall belongs HERE, at the export, and not in the tool: Claude's MCP
+# surface is not the measured party, so hiding the parameter from every reader
+# would cost honesty to buy nothing.
+HARNESS_ONLY = {"mac_compile": ("lint",)}
+
+
+def strip_harness_params(name, schema):
+    """-> the schema without the properties the harness owns for this tool."""
+    hidden = HARNESS_ONLY.get(name)
+    if not hidden or not schema.get("properties"):
+        return schema
+    kept = {k: v for k, v in schema["properties"].items() if k not in hidden}
+    out = dict(schema, properties=kept)
+    if "required" in out:
+        out["required"] = [r for r in out["required"] if r not in hidden]
+    return out
+
+
 def to_ollama(tools, brief=False):
     """MCP tool defs -> Ollama /api/chat `tools` entries."""
     out = []
@@ -87,6 +113,7 @@ def to_ollama(tools, brief=False):
         # An empty schema still has to be an object: Ollama requires the key,
         # and a model handed `null` parameters has been observed to invent them.
         params = d.get("inputSchema") or {"type": "object", "properties": {}}
+        params = strip_harness_params(d["name"], params)
         out.append({
             "type": "function",
             "function": {

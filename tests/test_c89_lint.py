@@ -63,6 +63,17 @@ def test_the_fix_text_is_copy_safe():
         assert "…" not in fix and "..." not in fix, fix
 
 
+def test_the_fix_text_says_what_to_KEEP_not_only_what_to_write():
+    """Measured 2026-08-06, proof run task A: the model obeyed this remedy
+    correctly and destroyed the program doing it — it put `int i;` at the top of
+    the block by REPLACING `int sum = 0;` rather than adding a line, and the next
+    compile said `undefined identifier 'sum'`. A remedy that names the addition
+    and not the keeping leaves the keeping to be guessed."""
+    r = L.remedies(L.check(MODEL_SOURCE))[0]
+    assert "additional line" in r, r
+    assert "keeping" in r, r
+
+
 def test_two_loops_are_one_lesson():
     """Ten `//` comments are one lesson, not ten — repeating it costs context
     on a node with 2 GB free and teaches nothing the first line did not."""

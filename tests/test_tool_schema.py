@@ -124,6 +124,35 @@ def test_the_build_profile_stays_small_enough_to_be_worth_having():
     assert r["tools"] <= 8 and r["description_chars"] < 1500, r
 
 
+def test_the_control_arm_is_not_advertised_to_the_measured_model():
+    """`mac_compile`'s `lint` selects the control arm of a with/without
+    measurement. Exported, it would tell the model in the WITHOUT arm that a C89
+    lint exists — and a control arm that knows what it controls for is not one.
+    Both export modes, because --brief keeps a different slice of the text."""
+    tools, _ = ts.load_tools()
+    chosen, _ = ts.select(tools, only=["mac_compile"])
+    for brief in (True, False):
+        fn = ts.to_ollama(chosen, brief=brief)[0]["function"]
+        assert "lint" not in fn["parameters"]["properties"], (brief, fn["parameters"])
+        assert "lint" not in fn["description"].lower(), brief
+
+
+def test_the_parameter_is_hidden_from_the_model_and_not_from_us():
+    """The wall is at the export. Removing it from the tool itself would cost
+    honesty on the MCP surface — which is not the measured party — to buy
+    nothing."""
+    tools, _ = ts.load_tools()
+    entry = next(t for t in tools if t["name"] == "mac_compile")
+    assert "lint" in entry["inputSchema"]["properties"]
+
+
+def test_stripping_touches_only_the_named_tool():
+    """A blanket filter would quietly eat a parameter somewhere else."""
+    kept = ts.strip_harness_params("mac_status", {"type": "object",
+                                                  "properties": {"lint": {}}})
+    assert "lint" in kept["properties"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

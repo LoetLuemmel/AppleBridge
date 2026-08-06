@@ -69,6 +69,37 @@ _BENIGN = re.compile(r"\bError 52\b")
 _ERROR_MARKERS = re.compile(r"error|fatal|cannot open|unable to open|^###|^#", re.I)
 _WARNING_MARKERS = re.compile(r"warning", re.I)
 
+# SC writes FOUR lines per diagnostic and puts the message LAST:
+#
+#     printf("%d\n", a);          <- the offending source line
+#     ^                           <- the column marker
+#     File "…err.c"; line 7 #Error: ';' expected
+#     #-----------------------
+#
+# Classifying line by line therefore dropped the two informative lines (neither
+# carries a marker) and KEPT the empty one (`#---` matches `^#`). Measured
+# 2026-08-06 by the parallel session against a probe whose defect was
+# deliberately NOT a lint rule, and reproduced host-side against this function.
+#
+# Why it matters more than it looks: for the four habits `c89_lint` knows, its
+# own `text` field carries the source line — so the loss is invisible exactly
+# until the model hits an error the lint does NOT know, which is where a repair
+# rate is measured. The back channel was blind where the measurement looks.
+#
+# The group has to be bound BACKWARDS — message found, then take the lines
+# before it. Reading forwards attaches a source line to the *following*
+# diagnostic, which is worse than dropping it: it is confidently wrong.
+_SEPARATOR = re.compile(r"^#-{3,}$")
+
+# The banner SC prints once per invocation. Not a diagnostic — and, left in the
+# stream, it would be picked up as the prefix of the FIRST error.
+_BANNER = re.compile(r"^Copyright\b|^\S+ (?:C|C\+\+) Compiler\b", re.I)
+
+# How many preceding markerless lines may join a diagnostic. Two, because SC
+# writes exactly two (source line, caret). More would start collecting whatever
+# an unrelated tool printed earlier in the same capture.
+_PREFIX_LINES = 2
+
 
 # --------------------------------------------------------------------------
 # deciders — text in, verdict out
@@ -87,23 +118,38 @@ def artifact_exists(exists_output):
     return bool(text.strip()) and "NoDir" not in text and "__SENDERR__" not in text
 
 
-def diag_lines(text):
-    """Captured diagnostics as stripped lines (the guest mixes CR and LF)."""
-    return [l.strip() for l in (text or "").replace("\r", "\n").split("\n") if l.strip()]
-
-
 def classify_diagnostics(text):
     """-> {"errors": [...], "warnings": [...], "remedies": [...]}.
+
+    An entry is a whole diagnostic, not a line: the offending source line and
+    the column marker travel with the message that names them (see `_SEPARATOR`
+    above for what SC actually writes and why the binding runs backwards). The
+    entries stay strings, so `errors[0]` is still the first error — it is just
+    no longer amputated.
+
+    Indentation is preserved inside a group, and that is not cosmetic: strip the
+    lines and the caret no longer points at the column it exists to mark.
 
     `Error 52` is a warning, not an error: it only says a library passed to the
     linker was not needed.
     """
     errors, warnings = [], []
-    for line in diag_lines(text):
+    pending = []                    # markerless lines since the last diagnostic
+    for raw in (text or "").replace("\r", "\n").split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        if _SEPARATOR.match(line) or _BANNER.match(line):
+            pending = []            # neither a diagnostic nor a prefix for one
+            continue
         if _BENIGN.search(line) or _WARNING_MARKERS.search(line):
-            warnings.append(line)
+            warnings.append("\n".join(pending[-_PREFIX_LINES:] + [line]))
         elif _ERROR_MARKERS.search(line):
-            errors.append(line)
+            errors.append("\n".join(pending[-_PREFIX_LINES:] + [line]))
+        else:
+            pending.append(raw.rstrip())
+            continue
+        pending = []                # a classified line ends the group
     remedies = [remedy for pattern, remedy in _REMEDIES if pattern.search(text or "")]
     return {"errors": errors, "warnings": warnings, "remedies": remedies}
 
