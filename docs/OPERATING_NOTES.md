@@ -2440,3 +2440,89 @@ in eine Prüfung verwandeln lässt, gehört dorthin verwandelt.
 durch Nachdenken gefunden.** Jeder fiel bei einer Messung an, die etwas anderes
 wollte. Das ist ein Argument dafür, mehr zu messen, als eine Aufgabe verlangt —
 und keines dafür, vorsichtiger nachzudenken.
+
+## Dieselbe Shell, zwei Tage später, und diesmal in der Schreibstrecke — 2026-08-06
+
+Der Eintrag *„The shell eats the text before any tool can see it"* ist vom
+2026-08-04 und endet mit der allgemeinen Fassung: **für Text, der Inhalt ist und
+nicht Parameter, nimm einen Kanal, den die Shell nicht liest.** Zwei Tage später
+hat dieselbe Fehlerklasse eine ganze Messung gekostet — nicht im Notizkanal,
+sondern in der Strecke, über die Quelltext auf den Gast geschrieben wird.
+
+Der Dirigent der Gegenseite ruft nicht `WRITEFILE` direkt auf, sondern
+
+```
+ssh <mac> python3 ab_call.py <name> "'" + json.dumps(args) + "'"
+```
+
+Das JSON steht in **einfachen Hochkommata** auf einer Kommandozeile. Eine
+C-Quelle enthält aber selbst Hochkommata — jedes Zeichenliteral ist eines. Beim
+ersten davon schließt die Shell die Anführung, das Stück bis zum nächsten
+Hochkomma liegt ungeschützt da, und dort verarbeitet sie Backslashes:
+
+```
+geschickt:  27 5c 74 27      ' \ t '
+angekommen: 27 09 27         ' <TAB> '
+```
+
+**Das ist kein Sonderfall, sondern eine strukturelle Unverträglichkeit:** wer
+Inhalt mit einem Zeichen umschließt, das in der Syntax dieses Inhalts vorkommt,
+hat keinen Grenzfall gebaut, sondern eine Garantie. C-Quelltext und einfache
+Hochkommata sind so ein Paar.
+
+### Was daran neu ist und den Eintrag rechtfertigt
+
+**Erstens: der Compiler hat es gemeldet, in Klartext, sieben Stunden vorher.**
+`SC` protokollierte für dieselbe Datei
+
+```
+Zeile 6: expression expected
+Zeile 7: Lexical error: ILLEGAL CHARACTER, ASCII 8 DECIMAL
+Zeile 8: Lexical error: unrecognized token
+```
+
+Zeile für Zeile genau das, was die Shell-Zerlegung vorhersagt — bis hin zum
+ASCII 8, das aus `'\b'` geworden war. Gelesen hat es niemand, und zwar aus einem
+benennbaren Grund: die Auszählung filterte auf den Marker `#Error`, und
+`#Lexical error` traf ihn nicht. **Ein Filter über Diagnosen kann genau die
+Meldung wegschneiden, die alles erklärt** — und hinterlässt eine Zählung, die
+vollständig aussieht. Aus 152 „Fehlerzeilen" wurden beim Nachsehen 193
+Diagnosezeilen, und die zwei fehlenden Lexical-Zeilen waren die Spur.
+
+**Zweitens: der Schaden ist still und breit.** 58 Schreibaufrufe scheiterten
+(41× `Invalid \escape`, 17× `Unterminated string`), 15 von 40 Aufgaben waren
+betroffen — in *beiden* Armen dieselben —, und danach übersetzten 14 Läufe eine
+Datei, die es nicht gab. Für diese Aufgaben hat die Apparatur gemessen, wie ein
+Modell auf ein kaputtes Werkzeug reagiert, nicht wie es C89 schreibt.
+
+### Warum die Regel nicht gehalten hat
+
+Sie stand geschrieben. Der letzte Eintrag dieser Datei sagt, warum das nicht
+reicht: eine Regel hat drei Stationen — Absicht, Notiz, Code —, und nur die
+dritte hält. Für den Notizkanal war sie Code (`notes.py --stdin`, mit einem Test
+auf den zitierten Begrenzer). Für die Schreibstrecke war sie eine Notiz. Sie hat
+sich exakt so verhalten, wie der Eintrag darüber es vorhersagt.
+
+### Was auf dieser Seite gilt, und warum
+
+Ein Durchgang durch `host/` und `mcp/` am 2026-08-06: **kein `shell=True`, kein
+`os.system`, kein `os.popen`.** Jeder Unterprozess wird als Argumentliste
+aufgerufen. Die beiden Stellen, die beliebigen Inhalt tragen, sind aus Bauart
+sicher und nicht aus Sorgfalt:
+
+- `run_applescript` gibt das Skript über **stdin** an `osascript -`;
+- `mac_write_file` schickt einen **längencodierten** `WRITEFILE`-Rahmen
+  (`<pathLen>:<typeHex>:<creatorHex>:<dataLen>:<rsrcLen>` und danach die Nutzdaten),
+  der Inhalt wird also nie geparst, sondern nach angesagter Länge gelesen.
+
+Gemessen: 269 Bytes hin, 269 Bytes zurück, byte-gleich, Escape-Folge und roher
+Tabulator beide unverändert. **Das ist die Form, die zu kopieren ist** — nicht
+ein besseres Zitieren.
+
+### Der Handgriff, der es beim nächsten Mal sofort zeigt
+
+Nach dem Schreiben zurücklesen und die Prüfsumme vergleichen, bevor übersetzt
+wird. Der Defekt hätte sich beim ersten Lauf gemeldet statt nach sieben Stunden,
+und zwar unabhängig davon, ob jemand an eine Shell gedacht hat. Das ist derselbe
+Satz wie überall in dieser Datei: **am Artefakt prüfen, nicht am Status** — hier
+nur eine Schicht früher als sonst, nämlich an der Datei statt am Objekt.
