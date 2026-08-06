@@ -270,6 +270,22 @@ def repaired_within(run, k):
     return False
 
 
+def passed_within(run, k):
+    """-> True/False. Did this run end with a verified artefact within k
+    COMPILE ATTEMPTS — the first one included?
+
+    The LEVEL the prediction was about, as against `repaired_within`, which is
+    conditional on having failed first. A run that never compiled at all counts
+    as False and not as undecidable: no compile, no artefact, and dropping those
+    would flatter exactly the arm in which they are more common. Nine of the
+    forty in arm 1 are that case.
+    """
+    for rec in compiles(run)[:k]:
+        if _verdict(rec) is True:
+            return True
+    return False
+
+
 def termination(run):
     """-> one of loop_guard.TerminationWatch's outcomes, replayed from the trace.
 
@@ -466,8 +482,12 @@ def run_arm(run):
     return declared_arm(run) or (sorted(observed_arms(run)) or [None])[0]
 
 
-def paired(counted):
+def paired(counted, key=None, label="first attempt"):
     """The 2x2 table, and the tasks that CHANGE SIDES — by name.
+
+    `key` is the per-run verdict being paired (True/False/None); it defaults to
+    the first-attempt control. The same table serves any horizon, because the
+    question is always the same one: which TASKS moved.
 
     Both arms run the same forty tasks, so this is a paired experiment and two
     separate rates throw the pairing away. The claim sits in the tasks that
@@ -486,7 +506,7 @@ def paired(counted):
         arm = run_arm(run)
         if task is None or arm is None:
             continue
-        by_task.setdefault(task, {})[arm] = first_attempt_ok(run)
+        by_task.setdefault(task, {})[arm] = (key or first_attempt_ok)(run)
 
     cells = {"both": [], "only_with_lint": [], "only_without_lint": [],
              "neither": [], "incomplete": []}
@@ -505,6 +525,7 @@ def paired(counted):
 
     switchers = cells["only_with_lint"] + cells["only_without_lint"]
     return {
+        "basis": label,
         "pairs": len(by_task) - len(cells["incomplete"]),
         "cells": cells,
         "switchers": sorted(switchers),
@@ -640,8 +661,15 @@ def score(records, guard_commit=None, list_hash=None, k=3, malformed=(),
             key = {True: "lint", False: "nolint"}.get(arm, "unknown")
             arms[key] = arms.get(key, 0) + 1
 
+    paired_by_k = {}
+    for kk in (k,) + tuple(also_k):
+        paired_by_k[f"paired_within_{kk}"] = paired(
+            counted, key=lambda r, _k=kk: passed_within(r, _k),
+            label=f"passed within {kk} compile attempts")
+
     return {
         "paired": paired(counted),
+        **paired_by_k,
         "arm_control": arm_control(counted),
         "label": LABEL,
         "runs_total": len(runs),
@@ -694,10 +722,27 @@ def render(s):
     if ac["not_comparable"]:
         out.append(f"  nicht vergleichbar {[d['task'] for d in ac['not_comparable']]}")
 
+    for key in sorted(k2 for k2 in s if k2.startswith("paired_within_")):
+        p2 = s[key]
+        out.append("")
+        out.append(f"ERGEBNIS {key.rsplit('_', 1)[-1]:>2} Versuche — {p2['basis']}")
+        out.append(f"  beide bestanden   {len(p2['cells']['both'])}")
+        out.append(f"  NUR mit Lint      {len(p2['cells']['only_with_lint'])}  "
+                   f"{p2['cells']['only_with_lint']}")
+        out.append(f"  NUR ohne Lint     {len(p2['cells']['only_without_lint'])}  "
+                   f"{p2['cells']['only_without_lint']}")
+        out.append(f"  keiner bestanden  {len(p2['cells']['neither'])}")
+        out.append(f"  DIFFERENZ         {p2['net_gain']:+d} Aufgabe(n)  "
+                   f"(Wechsler: {len(p2['switchers'])})")
+
     pr = s["paired"]
     out.append("")
-    out.append(f"VERBUNDEN        {pr['pairs']} Paare — das Ergebnis sind die "
-               f"Wechsler, nicht die zwei Quoten")
+    out.append(f"KONTROLLTAFEL    {pr['pairs']} Paare, Basis ERSTVERSUCH — das ist "
+               f"die Kontrolle und NICHT das Ergebnis:")
+    out.append("                 bei temperature 0 kann der Lint den ersten "
+               "Versuch nicht erreichen,")
+    out.append("                 also MUSS diese Tafel leere Wechslerzellen "
+               "haben. Tut sie es nicht, ist etwas durchgesickert.")
     out.append(f"  beide bestanden   {len(pr['cells']['both'])}")
     out.append(f"  NUR mit Lint      {len(pr['cells']['only_with_lint'])}  "
                f"{pr['cells']['only_with_lint']}")
