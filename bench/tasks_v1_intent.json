@@ -1,0 +1,29 @@
+{
+  "note": "What each task in tasks_v1.json was chosen FOR. Deliberately a separate file: the counting side gets the task lines with no comment column and counts, per task, how many of the lint's four rules a natural solution would trigger. Only afterwards does it see this. A blind check that can read the answer key is not one.",
+  "why_this_exists": "The first draft of the list was to be written by the side that also wrote the lint, with the rule 'name a program, never a construct'. That rule is necessary and not sufficient — the bias sits in WHICH programs get picked, not in how they are worded. 'Print a triangle of stars' names no construct and forces the loop the C99 trap lives in. Named by the parallel session, 2026-08-06.",
+  "the_condition_that_makes_the_experiment_an_experiment": "The list MUST contain traps the lint does NOT know. Otherwise the decisive comparison measures a tool against itself and 'with lint is better' is a tautology rather than a finding.",
+  "lint_knows": [
+    "a declaration in the for initialiser",
+    "// line comments",
+    "bool / true / false without stdbool.h",
+    "inline / restrict / _Bool"
+  ],
+  "lint_does_not_know": {
+    "char_signedness": "The classic one, and K&R warns about it itself: `char c; while ((c = getchar()) != EOF)` cannot work where char is unsigned, and the loop either never ends or ends early. Invited by every task that reads characters until end of input.",
+    "missing_prototype": "C89 wants a function declared before it is called. A program that puts main first and its helpers after gets an implicit declaration — which SC diagnoses and no regex here catches.",
+    "old_style_parameters": "K&R-era sources declare parameters between the parenthesis and the brace. A model imitating the source material may reproduce it. Legal C89, but it interacts badly with prototypes elsewhere in the same file.",
+    "integer_width": "Assumptions about how wide an int is, which do not survive the move to a 68k compiler — most visible in the bit tasks and in anything that shifts by more than fifteen places.",
+    "declaration_after_statement": "A genuine C89 rule the lint deliberately does not check, because finding it reliably needs a parser and a wrong flag is worse than a missing one. Invited by any task long enough to have a second block."
+  },
+  "expected_by_task": {
+    "t02, t03, t04, t05, t06, t07, t26, t40": "char signedness — these read characters until end of input",
+    "t08, t09, t35, t39": "arrays plus a helper function: missing prototype, and the widest surface for a declaration after a statement",
+    "t16..t25": "string handling without the library — prototypes, and the pointer-versus-array habits K&R teaches",
+    "t27..t31": "integer width and shift counts on a 68k compiler",
+    "t32, t33, t34": "loops with two indices — the densest ground for the for-head rule the lint DOES know",
+    "t36, t37, t38, t39": "arrays of structures and static tables — old-style declarations most likely here",
+    "t01, t10..t15": "plain loops and formatted output, chosen as the low-trap baseline the distribution needs"
+  },
+  "one_word_kept_on_purpose": "Three tasks say 'array' (t32, t33, t34). A check for construct-naming flags it, and it stays: 'array' names the DATA, not a piece of syntax, and it steers towards none of the four rules the lint knows. Calling it something else would have made the task ambiguous rather than neutral — and an ambiguous task measures the wording. Recorded here so the decision is visible rather than merely made.",
+  "honest_uncertainty": "This is what the tasks were chosen for, not what they will produce. If the counting side's blind distribution comes out skewed against this table, that is a finding about the list — and it is available BEFORE the measurement rather than after it, which is the only reason for doing it this way."
+}

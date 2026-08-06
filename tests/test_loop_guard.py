@@ -432,6 +432,97 @@ def test_a_missing_optional_reference_is_not_invented():
     assert t.check("mac_compile", {"source_path": None})["verdict"] == "allow"
 
 
+
+# --- TerminationWatch: three endings, and the one that was silent ------------
+def _ok(**kw):
+    d = {"success": True, "verified": True}
+    d.update(kw)
+    return d
+
+
+def test_a_repair_that_was_never_compiled_is_its_own_ending():
+    """Run N, 2026-08-05: the model read the compiler, repaired the source
+    correctly, and stopped. On disk the artefact was the OLD object, so the run
+    looked successful; in the transcript it looked like a crash."""
+    t = lg.TerminationWatch()
+    t.note("mac_compile", _ok(success=False))
+    t.note("mac_write_file", {"success": True})
+    assert t.outcome() == t.NOT_RECOMPILED
+    assert "never compiled" in t.message()
+
+
+def test_a_repair_that_failed_again_is_a_loop_that_worked():
+    """The distinction a boolean destroys: the loop closed, the repair did
+    not. Named by the parallel session against a draft that had closed=True."""
+    t = lg.TerminationWatch()
+    t.note("mac_write_file", {"success": True})
+    t.note("mac_compile", _ok(success=False))
+    assert t.outcome() == t.RECOMPILED_FAILED
+    assert "the loop closed" in t.message()
+
+
+def test_a_repair_that_compiled_is_the_closed_ending():
+    t = lg.TerminationWatch()
+    t.note("mac_write_file", {"success": True})
+    t.note("mac_compile", _ok())
+    assert t.outcome() == t.RECOMPILED_OK
+
+
+def test_an_unverified_compile_is_not_a_missing_one():
+    """`verified: false` (the -o-inside-options branch) says nobody checked.
+    Reporting that as not_recompiled would claim a compile never ran, and as
+    recompiled_failed would claim it failed. Both are inventions."""
+    t = lg.TerminationWatch()
+    t.note("mac_write_file", {"success": True})
+    t.note("mac_compile", {"success": None, "verified": False})
+    assert t.outcome() == t.COMPILED_UNVERIFIED
+    assert "unknown, not successful" in t.message()
+
+
+def test_a_run_that_wrote_nothing_makes_no_claim():
+    """A read-only run has no termination question, and inventing one would put
+    every such run into a denominator it does not belong in."""
+    t = lg.TerminationWatch()
+    t.note("mac_list_files", {"success": True})
+    assert t.outcome() == t.NOTHING_WRITTEN
+    assert t.message() == ""
+
+
+def test_only_the_LAST_write_decides():
+    """write, compile, write again: the loop is open on the second write, and a
+    counter that only asked "was there ever a compile" would call it closed."""
+    t = lg.TerminationWatch()
+    t.note("mac_write_file", {"success": True})
+    t.note("mac_compile", _ok())
+    t.note("mac_write_file", {"success": True})
+    assert t.outcome() == t.NOT_RECOMPILED
+    assert t.compiles == 1 and t.writes == 2
+
+
+def test_a_refused_call_must_never_close_a_loop():
+    """A refused call reached no tool, so it can neither change nor judge. The
+    caller is supposed to filter — and the result carries the hull's own marker,
+    so this reads it rather than trusting a docstring. Without it a conductor
+    that forwards refusals closes loops on calls the guard stopped, and the
+    symptom is a termination rate three weeks later, not an error."""
+    t = lg.TerminationWatch()
+    t.note("mac_write_file", {"success": True})
+    t.note("mac_compile", {"success": False, "refused_by_hull": True,
+                           "reason": "HULL REFUSED: no listing is known yet"})
+    assert t.outcome() == t.NOT_RECOMPILED, "a refusal closed the loop"
+    assert t.compiles == 0
+
+
+def test_the_report_carries_the_sentence_and_not_only_the_verdict():
+    """Same reason StepBudget returns a message: a verdict without its sentence
+    is a field somebody has to remember to interpret."""
+    t = lg.TerminationWatch()
+    t.note("mac_write_file", {"success": True})
+    r = t.report()
+    assert set(r) == {"outcome", "writes", "compiles", "message"}
+    assert r["message"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
