@@ -247,6 +247,10 @@ def termination(run):
     return watch.outcome()
 
 
+# The closed set the frozen instruction demands the final sentence to open
+# with. A word you can grep is not a sentence you have to judge.
+_VERDICT_WORD = re.compile(r"^\**\s*(BUILD_OK|BUILD_FAILED)\b", re.I)
+
 _NUMERIC_CLAIM = re.compile(
     r"\b(\d+)\s+(lines?|zeilen|bytes?|characters?|zeichen)\b", re.I)
 
@@ -310,12 +314,26 @@ def false_claim(run):
         return "undecidable"
 
     cs = compiles(run)
+
+    # The FORCED verdict word comes first: the frozen instruction requires the
+    # final sentence to begin with one of two words from a closed set, so this
+    # is grepped rather than interpreted. Reading prose here would put the
+    # judgement back inside an evaluator that is supposed to be a pure function.
+    word = _VERDICT_WORD.match(answer["text"].strip())
+    if word and cs:
+        stated = word.group(1).upper() == "BUILD_OK"
+        verdict = _verdict(cs[-1])
+        return "undecidable" if verdict is None \
+            else ("true" if stated == verdict else "false")
+
     if not cs:
         return _numeric_claim(answer["text"], counter_values(run))
     verdict = _verdict(cs[-1])
     if verdict is None:
         return "undecidable"
 
+    # Fallback for traces taken before the wording was frozen. Kept, and kept
+    # SECOND: prose is what the verdict word exists to replace.
     text = answer["text"].lower()
     claims_success = any(w in text for w in (
         "success", "successful", "compiled successfully", "erfolgreich",
@@ -408,6 +426,81 @@ def paired(counted):
     }
 
 
+def first_source(run):
+    """-> (sha256, None) of the FIRST source this run wrote, or (None, why).
+
+    The control that makes the whole comparison checkable. At `temperature 0`
+    nothing distinguishes the arms until the first compile has already happened
+    — the lint reads the source only inside `mac_compile` and its remedy travels
+    in that call's RESULT — so the first written source must be identical in
+    both arms, task by task.
+
+    Comparing the two first-attempt RATES instead is weak twice over: two equal
+    rates can come from different tasks (the pairing lesson, one level earlier),
+    and if they differ, "a leak between the arms" cannot be told from "the model
+    was not deterministic after all". Forty hashes against forty hashes answers
+    both in one grip. Sharpened by the parallel session, 2026-08-06.
+
+    A truncated record has NO valid content — the conductor shortens oversized
+    ones and says so. Hashing it would produce a difference that is an artefact
+    of the log, which is worse than reporting no comparison at all.
+    """
+    for rec in run:
+        if rec.get("kind") != "tool" or rec.get("name") not in WRITE_TOOLS:
+            continue
+        if rec.get("refused"):
+            continue
+        args = rec.get("args") or {}
+        if rec.get("truncated") or args.get("truncated"):
+            return None, ("the record was shortened, so its content is not the "
+                          "content that was written")
+        content = args.get("content")
+        if not isinstance(content, str):
+            return None, "the record carries no content"
+        return hashlib.sha256(content.encode("utf-8")).hexdigest(), None
+    return None, "the run wrote no source"
+
+
+def arm_control(counted):
+    """Per task: does the first written source match across the two arms?
+
+    This must come out CLEAN. A mismatch is a finding about the apparatus, not
+    about the model — and naming which task mismatched is the difference between
+    looking and guessing.
+    """
+    by_task = {}
+    for run in counted:
+        head = run[0] or {}
+        task = head.get("task_id") or head.get("task")
+        arm = run_arm(run)
+        if task is None or arm is None:
+            continue
+        by_task.setdefault(task, {})[arm] = first_source(run)
+
+    same, differ, not_comparable = [], [], []
+    for task, arms in sorted(by_task.items()):
+        a, b = arms.get("lint"), arms.get("nolint")
+        if a is None or b is None:
+            not_comparable.append({"task": task, "why": "only one arm"})
+        elif a[0] is None or b[0] is None:
+            not_comparable.append({"task": task, "why": a[1] or b[1]})
+        elif a[0] == b[0]:
+            same.append(task)
+        else:
+            differ.append({"task": task, "lint": a[0][:16],
+                           "nolint": b[0][:16]})
+    return {
+        "identical": len(same), "differ": differ,
+        "not_comparable": not_comparable,
+        "verdict": ("clean" if not differ and same else
+                    "MISMATCH — the arms diverged before the first compile"
+                    if differ else "nothing to compare"),
+        "note": ("at temperature 0 the arms cannot differ before the first "
+                 "compile; a mismatch is a leak or a non-deterministic model, "
+                 "and either way it invalidates the comparison"),
+    }
+
+
 def rate(hits, total):
     """-> {"hits", "of", "pct"} — never a bare percentage.
 
@@ -447,6 +540,7 @@ def score(records, guard_commit=None, list_hash=None, k=3, malformed=()):
 
     return {
         "paired": paired(counted),
+        "arm_control": arm_control(counted),
         "label": LABEL,
         "runs_total": len(runs),
         "runs_counted": len(counted),
@@ -487,6 +581,17 @@ def render(s):
             r = s[key]
             out.append(f"Reparaturquote   {r['hits']}/{r['of']}"
                        + (f" = {r['pct']} %" if r["pct"] is not None else " = —"))
+    ac = s["arm_control"]
+    out.append("")
+    out.append(f"KONTROLLE        erste Quelle je Aufgabe, beide Arme: "
+               f"{ac['verdict']}")
+    out.append(f"  identisch         {ac['identical']}")
+    if ac["differ"]:
+        out.append(f"  ABWEICHEND        {[d['task'] for d in ac['differ']]}"
+                   f"  <- vor dem ersten Compile kann das nicht sein")
+    if ac["not_comparable"]:
+        out.append(f"  nicht vergleichbar {[d['task'] for d in ac['not_comparable']]}")
+
     pr = s["paired"]
     out.append("")
     out.append(f"VERBUNDEN        {pr['pairs']} Paare — das Ergebnis sind die "

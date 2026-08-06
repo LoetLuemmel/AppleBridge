@@ -504,3 +504,59 @@ class TerminationWatch:
         """Everything a trace should carry about termination, in one dict."""
         return {"outcome": self.outcome(), "writes": self.writes,
                 "compiles": self.compiles, "message": self.message()}
+
+
+class CompileBudget:
+    """A bound on COMPILE attempts, deliberately separate from StepBudget.
+
+    Why a second class and not a second counter: a budget that counts two
+    different things merges exactly the cases that need telling apart, which is
+    the mistake `TerminationWatch` was redesigned to avoid one screen up.
+    `StepBudget` bounds model turns and should go on bounding only those.
+
+    Why it is needed at all — measured 2026-08-06, and it is a bias in the
+    measurement rather than a nuisance: a run under the HARDER condition uses
+    more turns and therefore hits a turn bound sooner. The 08:20 run (old remedy
+    text) ran into the bound at 8 steps; the two runs with the new text were
+    finished after 5. A turn budget is not neutral between the arms — it stops
+    the arm that struggles, and the arm that struggles is the one being measured.
+
+    Counting compiles instead gives both arms the same number of ATTEMPTS at the
+    thing the experiment is about, however many turns each of them spends
+    getting there. Named by the operator in a third proofread of the article.
+
+    Like the other guards: reports, never blocks, and says who ended the run.
+    """
+
+    def __init__(self, max_compiles=4):
+        if max_compiles < 1:
+            raise ValueError("max_compiles must be at least 1")
+        self.max_compiles = max_compiles
+        self.used = 0
+
+    def spend(self):
+        """True while an attempt remains. Call it before each compile."""
+        if self.used >= self.max_compiles:
+            return False
+        self.used += 1
+        return True
+
+    @property
+    def exhausted(self):
+        return self.used >= self.max_compiles
+
+    def remaining(self):
+        return max(0, self.max_compiles - self.used)
+
+    def message(self):
+        """Why the loop stopped — never "" while exhausted.
+
+        Names the unit out loud. A transcript that says only "budget exhausted"
+        leaves the reader to guess which of the two bounds ended the run, and
+        the two mean different things about the model.
+        """
+        if not self.exhausted:
+            return ""
+        return (f"compile budget exhausted after {self.used} compile "
+                f"attempt(s): the loop was stopped by its bound, not by the "
+                f"model deciding it was done")

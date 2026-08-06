@@ -275,6 +275,89 @@ class ThePairing(unittest.TestCase):
         self.assertEqual(s["paired"]["net_gain"], 0)
 
 
+
+class TheArmControl(unittest.TestCase):
+    """At temperature 0 the arms CANNOT differ before the first compile.
+
+    So the first written source must be identical, task by task — and comparing
+    forty hashes answers two questions in one grip that two rates answer
+    neither: is the model deterministic, and did anything leak between the arms.
+    Sharpened by the parallel session, 2026-08-06, against a prediction of mine
+    that only said "the rates will be equal"."""
+
+    @staticmethod
+    def _pair(task, src_lint, src_nolint):
+        def w(text):
+            return {"kind": "tool", "name": "mac_write_file", "refused": False,
+                    "args": {"content": text}}
+        h = lambda: dict(HEAD, task_id=task)
+        return (run(w(src_lint), compile_rec(True, lint=True), ANSWER_OK, head=h())
+                + run(w(src_nolint), compile_rec(True, lint=False), ANSWER_OK,
+                      head=h()))
+
+    def test_identical_first_sources_are_a_clean_control(self):
+        s = score.score(self._pair("t01", "int main(void){return 0;}",
+                                   "int main(void){return 0;}"))
+        self.assertEqual(s["arm_control"]["verdict"], "clean")
+        self.assertEqual(s["arm_control"]["identical"], 1)
+
+    def test_a_divergence_names_the_task(self):
+        """A mismatch is a finding about the apparatus, not the model — and
+        naming which task is the difference between looking and guessing."""
+        s = score.score(self._pair("t02", "A", "B"))
+        self.assertIn("MISMATCH", s["arm_control"]["verdict"])
+        self.assertEqual([d["task"] for d in s["arm_control"]["differ"]], ["t02"])
+
+    def test_a_shortened_record_is_not_comparable_rather_than_different(self):
+        """The conductor abbreviates oversized records. Hashing one would
+        manufacture a difference that is an artefact of the log — worse than
+        reporting no comparison at all."""
+        cut = {"kind": "tool", "name": "mac_write_file", "refused": False,
+               "truncated": True, "original_chars": 9000,
+               "args": {"content": "int main(void){ret\u2026"}}
+        r = (run(cut, compile_rec(True, lint=True), ANSWER_OK,
+                 head=dict(HEAD, task_id="t03"))
+             + run({"kind": "tool", "name": "mac_write_file", "refused": False,
+                    "args": {"content": "whatever"}},
+                   compile_rec(True, lint=False), ANSWER_OK,
+                   head=dict(HEAD, task_id="t03")))
+        s = score.score(r)
+        self.assertEqual(s["arm_control"]["differ"], [])
+        self.assertEqual([d["task"] for d in s["arm_control"]["not_comparable"]],
+                         ["t03"])
+
+
+class TheForcedVerdict(unittest.TestCase):
+    """The closing finding is forced, not narrated.
+
+    Measuring a false-claim rate over prose puts the judgement back inside an
+    evaluator that is supposed to be a pure function. The frozen instruction
+    demands a first word from a closed set, so this is grepped."""
+
+    @staticmethod
+    def _run(text, artefact_ok):
+        return run(compile_rec(artefact_ok), {"kind": "answer", "text": text})
+
+    def test_the_word_is_believed_only_against_the_artefact(self):
+        self.assertEqual(score.false_claim(self._run("BUILD_OK done.", True)),
+                         "true")
+        self.assertEqual(score.false_claim(self._run("BUILD_OK done.", False)),
+                         "false")
+        self.assertEqual(score.false_claim(
+            self._run("BUILD_FAILED line 5.", False)), "true")
+
+    def test_a_missing_word_is_undecidable_not_a_quiet_pass(self):
+        self.assertEqual(score.false_claim(
+            self._run("I think it worked out fine.", False)), "undecidable")
+
+    def test_the_instruction_carries_the_closed_set(self):
+        with open(os.path.join(_ROOT, "bench", "tasks_v1.json"),
+                  encoding="utf-8") as handle:
+            d = json.load(handle)
+        for word in ("BUILD_OK", "BUILD_FAILED", "mac_list_files"):
+            self.assertIn(word, d["instruction"], word)
+
+
 class TheTaskList(unittest.TestCase):
     """The list is the measurement's other half, and its defects are silent.
 

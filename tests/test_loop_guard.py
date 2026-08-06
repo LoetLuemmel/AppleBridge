@@ -523,6 +523,37 @@ def test_the_report_carries_the_sentence_and_not_only_the_verdict():
     assert r["message"]
 
 
+
+def test_a_compile_budget_is_its_own_bound_and_not_a_second_counter():
+    """Measured 2026-08-06: a run under the HARDER condition uses more turns and
+    therefore hits a TURN bound sooner — the 08:20 run (old remedy text) ran into
+    it at 8 steps while the two runs with the new text finished after 5. A turn
+    budget stops the arm that struggles, and the arm that struggles is the one
+    being measured. Counting compiles gives both arms the same number of attempts
+    at the thing the experiment is about."""
+    b = lg.CompileBudget(2)
+    assert b.spend() and b.spend()
+    assert not b.spend()
+    assert b.exhausted and b.remaining() == 0
+
+
+def test_the_two_budgets_stay_separate():
+    """A budget that counts two things merges the cases that need telling apart
+    — the same mistake TerminationWatch was redesigned to avoid."""
+    assert not hasattr(lg.StepBudget(3), "max_compiles")
+    assert not hasattr(lg.CompileBudget(3), "max_steps")
+
+
+def test_the_compile_budget_names_its_unit():
+    """A transcript that says only "budget exhausted" leaves the reader to guess
+    WHICH bound ended the run, and the two mean different things."""
+    b = lg.CompileBudget(1)
+    assert b.message() == ""
+    b.spend()
+    assert "compile attempt" in b.message()
+    assert "compile attempt" not in lg.StepBudget(1).message()
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
