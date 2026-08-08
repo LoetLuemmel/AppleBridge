@@ -302,5 +302,80 @@ class QuotingPathsForMPW(unittest.TestCase):
                 self.assertIn(mpw.ESCAPE, cmd)
 
 
+class AMissingOutputFolderIsSaidOutLoud(unittest.TestCase):
+    """MPW creates no intermediate folders, and says nothing about it.
+
+    Measured 2026-08-08: 27 sources re-measured into a folder that had never
+    been created reported `errors: []` for every one — the same signature as
+    the quoting defect fixed the same day, and as a compiler that simply had
+    nothing to say. Three causes, one appearance; only this probe tells them
+    apart.
+    """
+
+    def test_the_parent_of_a_file_is_its_folder(self):
+        self.assertEqual(mpw.parent_folder("MeinMac:Bench:x.o"), "MeinMac:Bench:")
+
+    def test_a_file_on_a_volume_root_has_the_volume(self):
+        self.assertEqual(mpw.parent_folder("MeinMac:x.o"), "MeinMac:")
+
+    def test_a_volume_and_a_bare_name_have_no_parent_to_probe(self):
+        for path in ("MeinMac:", "x.o", "", None):
+            self.assertIsNone(mpw.parent_folder(path), repr(path))
+
+    def test_the_probe_quotes_the_folder(self):
+        """The folder inherits the path's apostrophes, so the probe would
+        otherwise reproduce the very defect it is diagnosing."""
+        sent = []
+        mpw.output_folder_missing(lambda cmd, to=20.0: sent.append(cmd) or "",
+                                  "Disk:What's New?:a.o")
+        self.assertEqual(len(sent), 1)
+        self.assertIn(mpw.ESCAPE, sent[0])
+
+    @staticmethod
+    def _guest(folder_there):
+        """A ToolServer that answers, with the output folder present or not."""
+        def send(cmd, timeout=30.0):
+            if cmd.startswith("Echo "):
+                return cmd[len("Echo "):]          # the liveness probe
+            if cmd.startswith("Exists") and cmd.rstrip().endswith(":'"):
+                return "Disk:Gone:" if folder_there else ""
+            return ""
+        return send
+
+    def test_a_failed_step_in_a_missing_folder_says_so(self):
+        got = mpw.run_step(self._guest(False), "SC 'x'",
+                           "Disk:Gone:a.o", "Disk:Gone:a.o.err")
+        self.assertFalse(got["success"])
+        self.assertTrue(got.get("output_folder_missing"))
+        self.assertTrue(any("does not exist" in r for r in got["remedies"]))
+
+    def test_a_present_folder_is_not_blamed(self):
+        got = mpw.run_step(self._guest(True), "SC 'x'",
+                           "Disk:Gone:a.o", "Disk:Gone:a.o.err")
+        self.assertNotIn("output_folder_missing", got)
+        self.assertTrue(got["toolserver_alive"])
+
+    def test_a_dead_toolserver_is_never_reported_as_a_missing_folder(self):
+        """The regression this ordering exists for: with nobody answering,
+        `Exists` is empty for a folder that is perfectly present, so the
+        cheaper question must not be asked first."""
+        def dead(cmd, timeout=30.0):
+            return ""
+
+        got = mpw.run_step(dead, "SC 'x'", "Disk:There:a.o", "Disk:There:a.o.err")
+        self.assertFalse(got["toolserver_alive"])
+        self.assertNotIn("output_folder_missing", got)
+
+    def test_a_successful_step_never_pays_for_the_probe(self):
+        """The folder demonstrably exists when the artefact does, so the happy
+        path must not carry an extra round trip."""
+        def send(cmd, timeout=30.0):
+            return "Disk:There:a.o" if cmd.startswith("Exists") else ""
+
+        got = mpw.run_step(send, "SC 'x'", "Disk:There:a.o", "Disk:There:a.o.err")
+        self.assertTrue(got["success"])
+        self.assertEqual(len(got["commands"]), 4)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -294,6 +294,39 @@ def toolserver_alive(send, timeout=20.0):
     return _PROBE in out
 
 
+def parent_folder(path):
+    """-> the containing folder of a Mac path, or None when there is none.
+
+    `MeinMac:Bench:x.o` -> `MeinMac:Bench:`. A volume root (`MeinMac:`) and a
+    bare name with no colon have no parent worth probing, and return None.
+    """
+    text = (path or "").rstrip(":")
+    cut = text.rfind(":")
+    if cut <= 0:
+        return None
+    return text[:cut + 1]
+
+
+def output_folder_missing(send, artifact, timeout=20.0):
+    """Does the artefact's folder exist? Call this only when a step FAILED.
+
+    MPW creates no intermediate folders, so a step told to write into a folder
+    that is not there produces no artefact AND no error file — and therefore no
+    diagnostic at all. Measured 2026-08-08: a re-measurement of 27 sources
+    reported `errors: []` for every one of them, indistinguishable from the
+    quoting defect fixed in the same session, and from a compiler that simply
+    said nothing. Three different causes, one signature.
+
+    On the failure path only, for the same reason as `toolserver_alive`: on a
+    successful step the folder demonstrably exists, so the round trip would buy
+    nothing on the path that runs most often.
+    """
+    folder = parent_folder(artifact)
+    if not folder:
+        return False
+    return not artifact_exists(send(f"Exists {quote(folder)}", timeout))
+
+
 def run_step(send, command, artifact, err_file, timeout=250.0):
     """Run one build step and report what was actually verified.
 
@@ -324,5 +357,19 @@ def run_step(send, command, artifact, err_file, timeout=250.0):
     result = classify_diagnostics(captured)
     result.update({"success": found, "artifact": artifact, "commands": sent})
     if not found:
-        result["toolserver_alive"] = toolserver_alive(_send)
+        # Liveness FIRST, and the folder question only after it — because an
+        # empty answer to `Exists` means "not there" OR "nobody answered", and
+        # those are not the same finding. Probing the folder first would report
+        # a missing folder with full confidence whenever ToolServer is simply
+        # down: a precise, actionable, wrong answer, which is the failure this
+        # whole probe exists to prevent. Caught by
+        # test_build_verification.py's toolserver probe, not by foresight.
+        alive = toolserver_alive(_send)
+        result["toolserver_alive"] = alive
+        if alive and output_folder_missing(_send, artifact):
+            result["output_folder_missing"] = True
+            result["remedies"] = result["remedies"] + [
+                f"the output folder {parent_folder(artifact)} does not exist — "
+                f"MPW creates no intermediate folders, so nothing was written "
+                f"and nothing was reported; create it (`NewFolder`) and re-run"]
     return result
