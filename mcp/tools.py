@@ -1019,7 +1019,7 @@ def mac_list_files(path: str) -> Dict[str, Any]:
                     "files": _parse_listdir(stdout), "raw": stdout, "via": "listdir"}
 
         # 2) Fallback — MPW Files -l through ToolServer.
-        command = f"Files -l '{path}'"
+        command = f"Files -l {mpw.quote(path)}"
         status, stdout, stderr = conn.send_command(command, timeout=30.0)
 
         if status == 0 and stdout:
@@ -1146,9 +1146,9 @@ def mac_compile(source_path: str, output_path: Optional[str] = None,
         # the harmless direction — and exactly the kind that sends a caller off
         # to repair a source that is not broken. Found 2026-08-05 by the
         # parallel session, on the first run of a local model through this tool.
-        command = f"SC '{source_path}'"
+        command = f"SC {mpw.quote(source_path)}"
         if obj_path:
-            command += f" -o '{obj_path}'"
+            command += f" -o {mpw.quote(obj_path)}"
         if options:
             command += f" {options}"
 

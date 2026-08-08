@@ -28,6 +28,34 @@ import re
 # writes to a file called "=" — a mistake that hides a failing build.
 STDERR_REDIRECT = "≥"
 
+# MPW's escape character (option-D). It survives the bridge because
+# host_server encodes every command to MacRoman before sending, where this is
+# 0xB6 — the same path that carries STDERR_REDIRECT above.
+ESCAPE = "∂"
+
+
+def quote(path):
+    """Wrap a Mac path so MPW receives it as ONE literal argument.
+
+    Inside single quotes MPW treats everything literally — spaces, `ƒ`, `•`,
+    `{}`, even ESCAPE itself — so a path needs no other preparation. The single
+    exception is the quote character, which cannot appear inside its own
+    quoting at all: the string simply ends there. The fix is to close, escape
+    the quote outside, and reopen.
+
+    Measured 2026-08-08, on 49 real Developer-CD sources: naive `f"SC '{p}'"`
+    split the command at the apostrophe of the folder `What's New?` — a
+    STANDARD folder on every Developer CD, not an exotic name. SC then never
+    received a filename, so it emitted no diagnostics, produced no object, and
+    the result was a failure with `errors: []`. Twenty-seven of the
+    forty-nine, all of them, and none of the other twenty-two. A failure that
+    reports nothing is worse than one that reports the wrong thing, because
+    there is nothing to search for: the reader looks for a defect in a source
+    file that was never opened.
+    """
+    return "'" + str(path).replace("'", "'" + ESCAPE + "''") + "'"
+
+
 # Tools that print nothing when they succeed. Kept in step with the timeout
 # budget in host_server.LONG_CMDS by tests; `SetFile`/`Delete` are silent too
 # but fast, so they belong here and not there.
@@ -284,10 +312,14 @@ def run_step(send, command, artifact, err_file, timeout=250.0):
         sent.append(cmd)
         return send(cmd, to) or ""
 
-    _send(f"Delete -i {artifact} {err_file}")
-    _send(f"{command} {STDERR_REDIRECT} {err_file}", timeout)
-    captured = _send(f"Catenate {err_file}")
-    found = artifact_exists(_send(f"Exists {artifact}"))
+    # Every path is quoted here, not by the caller: these four lines are where
+    # `artifact` and `err_file` meet the shell, and a caller that quoted them
+    # itself would have to quote for a command line it cannot see.
+    art, err = quote(artifact), quote(err_file)
+    _send(f"Delete -i {art} {err}")
+    _send(f"{command} {STDERR_REDIRECT} {err}", timeout)
+    captured = _send(f"Catenate {err}")
+    found = artifact_exists(_send(f"Exists {art}"))
 
     result = classify_diagnostics(captured)
     result.update({"success": found, "artifact": artifact, "commands": sent})

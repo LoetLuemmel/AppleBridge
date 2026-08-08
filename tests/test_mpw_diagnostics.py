@@ -242,5 +242,65 @@ class TheRemedyThatNeedsTheSourceLine(unittest.TestCase):
         self.assertEqual(sum("START of its block" in r for r in got["remedies"]), 1)
 
 
+class QuotingPathsForMPW(unittest.TestCase):
+    """The apostrophe that made SC fail without saying anything.
+
+    Measured 2026-08-08 over 49 Developer-CD sources: naive `'{path}'` split
+    the command at the apostrophe of `What's New?` — 27 of 49 silently, 0 of
+    the remaining 22. The tell was a failure with no diagnostics at all, which
+    is why it read as a compiler mystery for a whole measurement.
+    """
+
+    def test_an_ordinary_path_is_just_quoted(self):
+        self.assertEqual(mpw.quote("MeinMac:MPW:main.c"), "'MeinMac:MPW:main.c'")
+
+    def test_spaces_and_mac_characters_need_nothing_extra(self):
+        """Inside single quotes MPW takes everything literally, so the
+        characters people expect to be dangerous are already safe."""
+        for path in ("a:b c:d.c", "a:WASTE Demo ƒ:x.c", "a:• Obsolete:y.c",
+                     "a:{braces}:z.c", "a:" + mpw.ESCAPE + ":w.c"):
+            self.assertEqual(mpw.quote(path), "'" + path + "'")
+
+    def test_the_apostrophe_is_closed_escaped_and_reopened(self):
+        self.assertEqual(mpw.quote("CD:What's New?:a.c"),
+                         "'CD:What'" + mpw.ESCAPE + "''s New?:a.c'")
+
+    def test_every_apostrophe_is_escaped_not_only_the_first(self):
+        self.assertEqual(mpw.quote("o'n'e").count(mpw.ESCAPE), 2)
+
+    @staticmethod
+    def _delimiters(text):
+        """Quote characters that still DELIMIT — an escaped one is a literal.
+
+        Counting raw quotes was this test's own first version of the defect it
+        guards: it called the correct output unbalanced, because `∂'` looks
+        like a quote and is not one.
+        """
+        return text.replace(mpw.ESCAPE + "'", "").count("'")
+
+    def test_the_quoted_form_is_balanced(self):
+        """An odd number of DELIMITING quotes is exactly the defect: the
+        command line ends somewhere inside the path."""
+        for path in ("plain", "What's", "a'b'c'd", "'leading", "trailing'"):
+            self.assertEqual(self._delimiters(mpw.quote(path)) % 2, 0, path)
+
+    def test_run_step_quotes_the_artefact_and_the_error_file(self):
+        """The four command lines run_step builds are where a path meets the
+        shell, so the quoting belongs there and not in each caller."""
+        sent = []
+
+        def send(cmd, timeout=30.0):
+            sent.append(cmd)
+            return ""
+
+        mpw.run_step(send, "SC 'x'", "Disk:What's New?:a.o",
+                     "Disk:What's New?:a.o.err")
+        self.assertTrue(sent, "run_step sent nothing")
+        for cmd in sent:
+            self.assertEqual(self._delimiters(cmd) % 2, 0, cmd)
+            if "What" in cmd:
+                self.assertIn(mpw.ESCAPE, cmd)
+
+
 if __name__ == "__main__":
     unittest.main()
