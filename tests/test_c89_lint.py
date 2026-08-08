@@ -119,9 +119,17 @@ def test_a_block_comment_across_lines_stays_closed():
 
 def test_the_word_boolean_is_not_the_type_bool():
     """`Boolean` is the Mac Toolbox's own type and is C89-legal here — a
-    substring match would have refused the correct answer."""
-    assert rules("Boolean ok = true;") == ["bool_type"]      # `true`, not `Boolean`
+    substring match would have refused the correct answer.
+
+    Until 2026-08-08 the first line below expected `["bool_type"]`, annotated
+    "`true`, not `Boolean`" — the test pinned the false positive rather than
+    catching it, and read as correct because the reason given was true: the
+    match really did come from `true`. What went unasked was whether `true`
+    should match at all. It should not; MacTypes.h defines it.
+    """
+    assert rules("Boolean ok = true;") == []
     assert rules("Boolean ok = 1;") == []
+    assert rules("bool ok = 1;") == ["bool_type"]      # the real C99 type still is
 
 
 def test_a_variable_named_inline_is_not_the_keyword():
@@ -135,6 +143,34 @@ def test_a_line_comment_is_found():
 
 def test_stdbool_is_found_by_its_header_too():
     assert "bool_type" in rules("#include <stdbool.h>")
+
+
+def test_the_c99_type_is_still_found():
+    assert "bool_type" in rules("bool ready = 0;")
+
+
+def test_true_and_false_are_c89_on_a_mac_and_must_not_be_flagged():
+    """MacTypes.h:301-302 defines them itself, as an enum:
+
+        false = 0,
+        true  = 1
+
+    Measured 2026-08-08 on the real Universal Headers. Flagging them blocked 49
+    of 60 Developer-CD sources BEFORE the compiler ever saw them, so the number
+    reported as "blocked by the C89 lint" described the lint. The rule even
+    recommended `Boolean` "from the Mac headers" — the header that supplies
+    `true`/`false`.
+    """
+    assert rules("Boolean ok = true;") == []
+    assert rules("if (x == false) return;") == []
+    assert rules("gDone = true; gBusy = false;") == []
+
+
+def test_a_flagged_bool_still_names_the_mac_alternative():
+    """The remedy has to survive the narrowing, or the fix trades a false
+    positive for an unusable hint."""
+    found = L.check("bool ready = 0;")
+    assert any("Boolean" in f["fix"] for f in found), found
 
 
 def test_c99_keywords_are_found():

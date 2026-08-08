@@ -70,10 +70,28 @@ RULES = (
      re.compile(r"//"),
      "`//` line comments are C99",
      "replace it with a block comment: `/*` before the text, `*/` after"),
+    # `true` and `false` were in this alternation until 2026-08-08 and did not
+    # belong: the Mac headers define them themselves —
+    #
+    #     MacTypes.h:301-302    false = 0,
+    #                           true  = 1
+    #
+    # — as an enum, so on any source that includes them (a Developer-CD source
+    # does by construction) they are ordinary C89 constants, not C99. The rule's
+    # own remedy pointed at `Boolean` "from the Mac headers", which is the very
+    # header that supplies them: it refuted itself in its own sentence.
+    #
+    # This mattered beyond a wrong hint, because the lint runs BEFORE the
+    # compiler: a flagged file is never handed to SC, so "n of m blocked by the
+    # C89 lint" measured the lint and not the language. Over 60 real
+    # Developer-CD sources it carried 49 of them, and it depressed the
+    # first-attempt rate of the WITH-lint arm of the Phase-5 measurement — a
+    # defect in the instrument, reported as a property of the code.
     ("bool_type",
-     re.compile(r"\b(?:bool|stdbool\.h|true|false)\b"),
-     "`bool`/`true`/`false` need <stdbool.h>, which is C99",
-     "use `short` with 0 and 1, or `Boolean` from the Mac headers"),
+     re.compile(r"\b(?:bool|stdbool\.h)\b"),
+     "`bool` needs <stdbool.h>, which is C99",
+     "use `short` with 0 and 1, or `Boolean` from the Mac headers — whose "
+     "`true`/`false` are C89 and need no change"),
     ("c99_keyword",
      re.compile(r"\b(?:inline|restrict|_Bool)\b"),
      "`inline`/`restrict`/`_Bool` are C99 keywords",
