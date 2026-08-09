@@ -369,3 +369,258 @@ class TurnScope:
         return {"verdict": "allow", "tool": tool,
                 "why": ("every naming argument resolved against what was known "
                         "when the turn opened")}
+
+
+# Tools that CHANGE the source, and tools that JUDGE it. The split is the whole
+# of TerminationWatch: a loop is closed when the last change was followed by a
+# judgement, and open when it was not.
+#
+# `mac_build` is in both — it writes nothing but it compiles, so it can close a
+# loop; `mpw_execute` is in neither, because what an arbitrary MPW line does is
+# exactly what this module refuses to guess.
+WRITE_TOOLS = ("mac_write_file", "mac_put_file")
+COMPILE_TOOLS = ("mac_compile", "mac_build")
+
+
+class TerminationWatch:
+    """Did the loop close — and if it did, on which of the two endings?
+
+    The case this exists for, measured 2026-08-05 (run N): the model read the
+    compiler's complaint, repaired the source correctly, and then stopped. No
+    answer, no second compile. On disk the artefact was the OLD object file, so
+    the run looked successful; in the transcript it looked like a crash. The
+    only honest reading — *the source was changed and never judged again* — was
+    available to nobody, because nothing was watching for it.
+
+    **Three outcomes, not two.** The obvious design returns a boolean, and a
+    boolean merges exactly the two cases the measurement is about:
+
+        recompiled_ok      changed, judged, the artefact appeared
+        recompiled_failed  changed, judged, it failed again — the loop WORKED
+        not_recompiled     changed and never judged — the silent ending
+
+    A repair that fails again is a loop doing its job; a repair nobody compiled
+    is a loop that stopped mid-sentence. Named by the parallel session, 2026-08-06,
+    against a draft of this class that had `closed: True|False`.
+
+    Fed from outside, like the other guards here: a conductor calls `note` with
+    the tool name and its RESULT, and the result is the tool's own dict — the
+    verdict must come from the artefact check the tool already did, never from
+    anything the model said about it.
+
+    Reports; never blocks. By the time this can speak, the loop is over.
+    """
+
+    NOTHING_WRITTEN = "nothing_written"
+    RECOMPILED_OK = "recompiled_ok"
+    RECOMPILED_FAILED = "recompiled_failed"
+    NOT_RECOMPILED = "not_recompiled"
+    # A FOURTH, beyond the three agreed: the compile happened and could not be
+    # verified (`verified: false`). Calling that `not_recompiled` would be the
+    # same merge this class was built to stop, one level down — a compile that
+    # ran is not a compile that never ran, and "nobody knows" is not "it
+    # failed". Rare by construction: it needs -o hidden inside `options`.
+    COMPILED_UNVERIFIED = "compiled_unverified"
+
+    def __init__(self, write_tools=WRITE_TOOLS, compile_tools=COMPILE_TOOLS):
+        self.write_tools = tuple(write_tools)
+        self.compile_tools = tuple(compile_tools)
+        self.writes = 0
+        self.compiles = 0
+        self._pending_write = False      # a write not yet followed by a compile
+        self._last_verdict = None        # success of the last compile, if known
+
+    def note(self, name, result=None):
+        """Record one executed tool call. Refused calls must NOT be passed here.
+
+        A refused call never reached a tool, so it changed nothing and judged
+        nothing — counting it would let a loop close on a call the guard
+        stopped. The caller filters, because only the caller sees the record's
+        `refused` field. But a refused RESULT carries the hull's own marker, and
+        reading it here costs one line: a contract that only a docstring
+        enforces is one an outside conductor breaks silently, and the symptom
+        would be a termination rate three weeks later, not an error.
+        """
+        if isinstance(result, dict) and (result.get("refused_by_hull")
+                                         or result.get("refused")):
+            return
+        if name in self.write_tools:
+            self.writes += 1
+            self._pending_write = True
+            self._last_verdict = None
+        elif name in self.compile_tools:
+            self.compiles += 1
+            self._pending_write = False
+            self._last_verdict = self._compile_succeeded(result)
+
+    @staticmethod
+    def _compile_succeeded(result):
+        """-> True / False / None, from the tool's OWN verified verdict.
+
+        `None` where the tool says it could not check (`verified: false`, the
+        -o-inside-options branch). Folding that into False would report a
+        failed repair where the truth is an unmade measurement — the same
+        collapse this class exists to prevent, one level down.
+        """
+        if not isinstance(result, dict):
+            return None
+        if result.get("verified") is False:
+            return None
+        success = result.get("success")
+        return None if success is None else bool(success)
+
+    def outcome(self):
+        """One of the four constants above. Call it when the loop has ended."""
+        if not self.writes:
+            return self.NOTHING_WRITTEN
+        if self._pending_write:
+            return self.NOT_RECOMPILED
+        if self._last_verdict is None:
+            return self.COMPILED_UNVERIFIED
+        return self.RECOMPILED_OK if self._last_verdict else self.RECOMPILED_FAILED
+
+    def message(self):
+        """The sentence for the transcript — never "" once anything was written."""
+        out = self.outcome()
+        if out == self.NOTHING_WRITTEN:
+            return ""
+        if out == self.NOT_RECOMPILED:
+            return (f"the source was written {self.writes} time(s) and the last "
+                    f"change was never compiled: the loop stopped mid-repair, "
+                    f"and the artefact on disk is older than the source")
+        if out == self.COMPILED_UNVERIFIED:
+            return (f"the source was compiled after the last change, but the "
+                    f"compile could not be verified after {self.compiles} "
+                    f"compile(s) — the ending is unknown, not successful")
+        if out == self.RECOMPILED_FAILED:
+            return (f"the source was compiled after the last change and failed "
+                    f"again after {self.compiles} compile(s): the loop closed, "
+                    f"the repair did not")
+        return (f"the source was compiled after the last change and the "
+                f"artefact appeared: the loop closed after {self.compiles} "
+                f"compile(s)")
+
+    def report(self):
+        """Everything a trace should carry about termination, in one dict."""
+        return {"outcome": self.outcome(), "writes": self.writes,
+                "compiles": self.compiles, "message": self.message()}
+
+
+class CompileBudget:
+    """A bound on COMPILE attempts, deliberately separate from StepBudget.
+
+    Why a second class and not a second counter: a budget that counts two
+    different things merges exactly the cases that need telling apart, which is
+    the mistake `TerminationWatch` was redesigned to avoid one screen up.
+    `StepBudget` bounds model turns and should go on bounding only those.
+
+    Why it is needed at all — measured 2026-08-06, and it is a bias in the
+    measurement rather than a nuisance: a run under the HARDER condition uses
+    more turns and therefore hits a turn bound sooner. The 08:20 run (old remedy
+    text) ran into the bound at 8 steps; the two runs with the new text were
+    finished after 5. A turn budget is not neutral between the arms — it stops
+    the arm that struggles, and the arm that struggles is the one being measured.
+
+    Counting compiles instead gives both arms the same number of ATTEMPTS at the
+    thing the experiment is about, however many turns each of them spends
+    getting there. Named by the operator in a third proofread of the article.
+
+    Like the other guards: reports, never blocks, and says who ended the run.
+    """
+
+    def __init__(self, max_compiles=4):
+        if max_compiles < 1:
+            raise ValueError("max_compiles must be at least 1")
+        self.max_compiles = max_compiles
+        self.used = 0
+
+    def spend(self):
+        """True while an attempt remains. Call it before each compile."""
+        if self.used >= self.max_compiles:
+            return False
+        self.used += 1
+        return True
+
+    @property
+    def exhausted(self):
+        return self.used >= self.max_compiles
+
+    def remaining(self):
+        return max(0, self.max_compiles - self.used)
+
+    def message(self):
+        """Why the loop stopped — never "" while exhausted.
+
+        Names the unit out loud. A transcript that says only "budget exhausted"
+        leaves the reader to guess which of the two bounds ended the run, and
+        the two mean different things about the model.
+        """
+        if not self.exhausted:
+            return ""
+        return (f"compile budget exhausted after {self.used} compile "
+                f"attempt(s): the loop was stopped by its bound, not by the "
+                f"model deciding it was done")
+
+
+class UncompiledWrite:
+    """Says, IN the tool result, that the last write was never compiled.
+
+    `TerminationWatch` already works this out — but only afterwards, for whoever
+    reads the transcript. This says it at the moment its case is true, which is
+    the one delivery route measured to work: 2026-08-05, the same sentence was
+    ignored in a prompt and obeyed in a tool result.
+
+    **Why it exists at all.** The strategy's own rule for what deserves training
+    is: *train only what a tool can DETECT but not ENFORCE.* Detection was proved
+    on 2026-08-06 — sixteen of eighty runs never compiled at all, and nineteen
+    did not compile after their last change. The other half of the rule was never
+    tested: nobody had tried a tool that says so while the loop is still running.
+    Until that has been tried and has failed, the case is an open stage-1 job and
+    not a training candidate. Named by the third party, and neither session had
+    seen it, because both had reasoned from the result backwards.
+
+    It REPORTS. It does not block, and the hint carries no instruction to stop —
+    a guard that refuses here would be deciding that a caller who wrote a file
+    did not mean to write it. Whether a conductor turns this into a refusal is
+    the conductor's decision, and it can, because the flag is in the result.
+    """
+
+    def __init__(self, write_tools=WRITE_TOOLS, compile_tools=COMPILE_TOOLS):
+        self.write_tools = tuple(write_tools)
+        self.compile_tools = tuple(compile_tools)
+        self._pending = None          # path of the write not yet compiled
+
+    def note(self, name, args=None, result=None):
+        """Record an executed call. -> a hint dict for the NEXT result, or None.
+
+        Refused calls are ignored on the same reasoning as `TerminationWatch`:
+        a call that never reached a tool neither wrote nor compiled.
+        """
+        if isinstance(result, dict) and (result.get("refused_by_hull")
+                                         or result.get("refused")):
+            return None
+        if name in self.write_tools:
+            self._pending = (args or {}).get("path") or "the source"
+        elif name in self.compile_tools:
+            self._pending = None
+        return self.hint()
+
+    def hint(self):
+        """The sentence to travel in the result, or None when nothing is due.
+
+        Phrased as a STATE and not as an order. "You have not compiled" is a
+        reproach and invites agreement; naming what is true of the file is the
+        form that produced a repair when it arrived in a tool result.
+        """
+        if not self._pending:
+            return None
+        return {
+            "uncompiled_write": self._pending,
+            "note": (f"{self._pending} has been written since the last compile. "
+                     f"Nothing on disk reflects that change yet — an artefact "
+                     f"found now is the one from before it."),
+        }
+
+    @property
+    def pending(self):
+        return self._pending

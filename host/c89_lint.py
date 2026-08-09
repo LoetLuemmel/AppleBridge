@@ -44,15 +44,54 @@ RULES = (
      # "`int i; for (i = 0; …)`" -- and a model that copies a suggestion
      # literally would then write an ellipsis into its source. The remedy is
      # read by the thing that has to act on it, so it must be copy-safe.
-     "put `int i;` before the loop and drop the type from the for-head"),
+     #
+     # "as an additional line" is not padding. Measured 2026-08-06, proof run,
+     # task A: the model followed this remedy CORRECTLY and destroyed the
+     # program doing it -- it put `int i;` at the top of the block by REPLACING
+     # `int sum = 0;` instead of adding a line. Next error: undefined identifier
+     # 'sum'. A remedy that says what to write and not what to keep leaves the
+     # keeping to be guessed, and the thing guessing has no memory of the file
+     # it is editing.
+     #
+     # "at the start of the block" replaces "before the loop", measured
+     # 2026-08-06 over forty tasks. Two runs followed this remedy; ONE of them
+     # failed on it. t01 put `int i;` after a `printf(...)` — before the loop,
+     # exactly as the text said, and C89 wants declarations before the first
+     # STATEMENT. t35 put it among the other declarations and compiled.
+     #
+     # The morning's version had already been widened once, from what to write
+     # to what to keep. The place stayed wrong, and this is the same defect one
+     # step further along in the same sentence: an instruction that says what to
+     # add and not where it belongs.
+     "put `int i;` at the start of the block, before the first statement, as an "
+     "additional line, keeping the declarations that are already there, and "
+     "drop the type from the for-head"),
     ("line_comment",
      re.compile(r"//"),
      "`//` line comments are C99",
      "replace it with a block comment: `/*` before the text, `*/` after"),
+    # `true` and `false` were in this alternation until 2026-08-08 and did not
+    # belong: the Mac headers define them themselves —
+    #
+    #     MacTypes.h:301-302    false = 0,
+    #                           true  = 1
+    #
+    # — as an enum, so on any source that includes them (a Developer-CD source
+    # does by construction) they are ordinary C89 constants, not C99. The rule's
+    # own remedy pointed at `Boolean` "from the Mac headers", which is the very
+    # header that supplies them: it refuted itself in its own sentence.
+    #
+    # This mattered beyond a wrong hint, because the lint runs BEFORE the
+    # compiler: a flagged file is never handed to SC, so "n of m blocked by the
+    # C89 lint" measured the lint and not the language. Over 60 real
+    # Developer-CD sources it carried 49 of them, and it depressed the
+    # first-attempt rate of the WITH-lint arm of the Phase-5 measurement — a
+    # defect in the instrument, reported as a property of the code.
     ("bool_type",
-     re.compile(r"\b(?:bool|stdbool\.h|true|false)\b"),
-     "`bool`/`true`/`false` need <stdbool.h>, which is C99",
-     "use `short` with 0 and 1, or `Boolean` from the Mac headers"),
+     re.compile(r"\b(?:bool|stdbool\.h)\b"),
+     "`bool` needs <stdbool.h>, which is C99",
+     "use `short` with 0 and 1, or `Boolean` from the Mac headers — whose "
+     "`true`/`false` are C89 and need no change"),
     ("c99_keyword",
      re.compile(r"\b(?:inline|restrict|_Bool)\b"),
      "`inline`/`restrict`/`_Bool` are C99 keywords",

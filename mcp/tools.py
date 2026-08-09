@@ -183,6 +183,14 @@ checking a guess.""",
                 "options": {
                     "type": "string",
                     "description": "Additional compiler options"
+                },
+                "lint": {
+                    "type": "boolean",
+                    "description": "Run the C89 pre-check before compiling "
+                                   "(default true). Set false for the control "
+                                   "arm of a with-lint/without-lint measurement; "
+                                   "the value is echoed in the result, so the "
+                                   "arm is readable from the trace afterwards."
                 }
             },
             "required": ["source_path"]
@@ -1011,7 +1019,7 @@ def mac_list_files(path: str) -> Dict[str, Any]:
                     "files": _parse_listdir(stdout), "raw": stdout, "via": "listdir"}
 
         # 2) Fallback — MPW Files -l through ToolServer.
-        command = f"Files -l '{path}'"
+        command = f"Files -l {mpw.quote(path)}"
         status, stdout, stderr = conn.send_command(command, timeout=30.0)
 
         if status == 0 and stdout:
@@ -1087,13 +1095,26 @@ def mac_list_files(path: str) -> Dict[str, Any]:
 
 
 def mac_compile(source_path: str, output_path: Optional[str] = None,
-                options: Optional[str] = None) -> Dict[str, Any]:
+                options: Optional[str] = None,
+                lint: bool = True) -> Dict[str, Any]:
     """Compile a C source with SC, and report only what was verified.
 
     `SC` is silent on success AND on failure, and the bridge cannot carry its
     exit status (see host/mpw.py), so the old `status == 0` test reported a
     clean compile for a file the compiler never opened. Success here means the
     object file is on disk afterwards; the diagnostics come back with it.
+
+    `lint=False` turns off the C89 pre-check — the CONTROL arm of the one
+    experiment that decides whether training has any headroom left: first-attempt
+    rate with the lint against without it, on the same task list (agreed with the
+    Jetson session 2026-08-06). It exists as a parameter rather than as something
+    a caller strips from the result, because the arm then travels IN the trace and
+    can be checked afterwards; a caller doing the cutting has to remove exactly
+    the c89 tail of `remedies` and leave the bridge remedies from `mpw.py`
+    standing, and nobody can verify from the transcript that it did.
+
+    The compiler stays the verdict either way. `lint` changes what the caller is
+    TOLD, never what is built.
     """
     try:
         conn = get_connection()
@@ -1125,9 +1146,9 @@ def mac_compile(source_path: str, output_path: Optional[str] = None,
         # the harmless direction — and exactly the kind that sends a caller off
         # to repair a source that is not broken. Found 2026-08-05 by the
         # parallel session, on the first run of a local model through this tool.
-        command = f"SC '{source_path}'"
+        command = f"SC {mpw.quote(source_path)}"
         if obj_path:
-            command += f" -o '{obj_path}'"
+            command += f" -o {mpw.quote(obj_path)}"
         if options:
             command += f" {options}"
 
@@ -1136,9 +1157,11 @@ def mac_compile(source_path: str, output_path: Optional[str] = None,
             # cannot make. Saying "unverified" is the honest answer; guessing
             # the path and testing that guess is how this function lied before.
             out = send(command, 120.0)
+            # `lint` reports whether the C89 pre-check RAN, not what was asked
+            # for: this branch returns before reading the source, so it did not.
             return {"success": None, "verified": False, "source": source_path,
                     "object": None, "output": out or None,
-                    "error": None,
+                    "error": None, "lint": False,
                     "note": "-o is inside `options`, so the object path is unknown "
                             "here and nothing was verified. Pass output_path to get "
                             "a verified result."}
@@ -1150,7 +1173,7 @@ def mac_compile(source_path: str, output_path: Optional[str] = None,
         # rewrite is the part a caller can act on. Measured 2026-08-05: a local
         # model wrote exactly that, and a prompt naming the rule did not fix it.
         c89 = []
-        if source_path.lower().endswith((".c", ".cp", ".cpp")):
+        if lint and source_path.lower().endswith((".c", ".cp", ".cpp")):
             try:
                 st, out, _ = conn.send_command("READFILE:" + source_path,
                                                timeout=60.0)
@@ -1172,6 +1195,7 @@ def mac_compile(source_path: str, output_path: Optional[str] = None,
             "warnings": step["warnings"],
             "remedies": step["remedies"] + c89_lint.remedies(c89),
             "c89": c89 or None,
+            "lint": bool(lint),
             "toolserver_alive": step.get("toolserver_alive"),
             "commands": step["commands"],
             "output": "\n".join(step["errors"] + step["warnings"]) or None,
@@ -2017,8 +2041,16 @@ def mac_build(project_dir: str, app_name: Optional[str] = None,
         r = run_cmd(f"Exists {path}", timeout=30.0)
         return bool(r.strip()) and "NoDir" not in r and "__SENDERR__" not in r
 
-    def diag_lines(text):
-        return [l.strip() for l in text.replace("\r", "\n").split("\n") if l.strip()]
+    # Diagnostics go through mpw.classify_diagnostics, the same classifier
+    # mac_compile uses. This function carried its own — a line splitter plus a
+    # case-SENSITIVE `"Error" in l`, which is exactly the defect that classifier
+    # was written for on 2026-08-02: SC writes "Fatal error: unable to open
+    # file", Asm writes "# Not a text file", and only one of the two contains a
+    # capital "Error". The copy also dropped every line without a marker, so the
+    # offending source line and the column marker never reached the caller
+    # (measured 2026-08-06 on the mac_compile path; this path had it too).
+    def diagnose(text):
+        return mpw.classify_diagnostics(text)
 
     # 1. Discover sources
     if not sources:
@@ -2039,13 +2071,14 @@ def mac_build(project_dir: str, app_name: Optional[str] = None,
         obj = (src[:-2] + ".o") if src.endswith(".c") else (src + ".o")
         run_cmd(f"Delete -i {obj}", timeout=30.0)   # clean slate: stale .o must not mask a failure
         run_cmd(f"SC {src} -o {obj} ≥ {err_file}", timeout=_BUILD_STEP_TIMEOUT)
-        diag = diag_lines(run_cmd(f"Catenate {err_file}", timeout=30.0))
+        diag = diagnose(run_cmd(f"Catenate {err_file}", timeout=30.0))
         ok = exists(obj)
         compile_results.append({
             "file": c_file,
             "ok": ok,
-            "warnings": [l for l in diag if "Warning" in l],
-            "errors": [l for l in diag if "Error" in l],
+            "warnings": diag["warnings"],
+            "errors": diag["errors"],
+            "remedies": diag["remedies"],
         })
         if ok:
             obj_files.append(obj)
@@ -2062,10 +2095,11 @@ def mac_build(project_dir: str, app_name: Optional[str] = None,
                 f"-o {app_path} ≥ {err_file}")
     run_cmd(f"Delete -i {app_path}", timeout=30.0)   # so Exists can't see a stale artifact
     run_cmd(link_cmd, timeout=_BUILD_STEP_TIMEOUT)
-    link_diag = diag_lines(run_cmd(f"Catenate {err_file}", timeout=30.0))
-    # "Error 52: File was not needed for link" is a benign over-specified-lib warning;
-    # everything else the linker writes (undefined entry, "Errors prevented...") is fatal.
-    link_errs = [l for l in link_diag if "Error" in l and "Error 52" not in l]
+    # "Error 52: File was not needed for link" is a benign over-specified-lib
+    # warning; the classifier already sorts it into warnings, so what comes back
+    # as an error here is fatal (undefined entry, "Errors prevented...").
+    link_diag = diagnose(run_cmd(f"Catenate {err_file}", timeout=30.0))
+    link_errs = link_diag["errors"]
     # Verify by artifact (a long link returns -1712 yet succeeds, leaving the file
     # and an empty err) AND by the absence of fatal linker diagnostics (a failed
     # link can leave a partial file).
@@ -2083,8 +2117,7 @@ def mac_build(project_dir: str, app_name: Optional[str] = None,
     # 4. Optional Rez (e.g. a SIZE resource for an Apple-Event-aware app)
     if rez_file:
         run_cmd(f"Rez -a {rez_file} -o {app_path} ≥ {err_file}", timeout=120.0)
-        rez_errs = [l for l in diag_lines(run_cmd(f"Catenate {err_file}", timeout=30.0))
-                    if "Error" in l]
+        rez_errs = diagnose(run_cmd(f"Catenate {err_file}", timeout=30.0))["errors"]
         result["rez"] = {"ok": not rez_errs, "errors": rez_errs}
         if rez_errs:
             result["success"] = False
@@ -2395,6 +2428,14 @@ TOOL_HANDLERS = {
 # same shape is a problem, and nothing would have shown it.
 _REPEATS = loop_guard.RepeatWatch()
 
+# Says, in the result, that the last write has not been compiled. The strategy's
+# rule for what deserves training is "train only what a tool can DETECT but not
+# ENFORCE" — detection was proved on 2026-08-06 (sixteen of eighty runs never
+# compiled), and the enforcing half had never been tried. This is that attempt.
+# It reports; whether a conductor turns it into a refusal is the conductor's
+# decision, and it can, because the flag is in the result.
+_UNCOMPILED = loop_guard.UncompiledWrite()
+
 
 def call_tool(name: str, arguments: Dict[str, Any]) -> Any:
     """Call a tool by name with arguments."""
@@ -2411,6 +2452,13 @@ def call_tool(name: str, arguments: Dict[str, Any]) -> Any:
     # reads these results has to change.
     if repeat and isinstance(result, dict) and "repeated_call" not in result:
         result["repeated_call"] = repeat
+
+    # Same route, same reason: the rule arrives at the moment its case is true,
+    # in the place the caller is already reading. Fed AFTER the handler, so a
+    # write that failed does not claim an uncompiled change.
+    hint = _UNCOMPILED.note(name, arguments, result if isinstance(result, dict) else None)
+    if hint and isinstance(result, dict) and "uncompiled_write" not in result:
+        result["uncompiled_write"] = hint
 
     # One place, so every tool carries it and no tool has to remember to.
     # The host server appends a NOTES field to the control-port reply when the

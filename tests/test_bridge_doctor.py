@@ -559,6 +559,34 @@ def test_the_header_prints_what_the_guest_dials():
     assert "guest dials:" in text
 
 
+
+def test_a_probe_survives_MacRoman_bytes_in_its_own_output():
+    """`hls` prints Mac filenames as the volume stores them — MacRoman, not UTF-8.
+
+    Measured 2026-08-06 while diagnosing a live bridge: `_run` used
+    `subprocess.run(..., text=True)`, which decodes with the STRICT default, so
+    one umlaut in a folder name at the root of a guest image raised
+    UnicodeDecodeError out of `communicate` and took the entire report down —
+    while the error message on the control port was telling the operator to run
+    exactly this tool.
+
+    A probe whose docstring promises "never raise" must survive its own input,
+    and the input of a Mac-facing probe is not UTF-8. Pinned with a real
+    MacRoman byte (0xAA = the trademark sign) rather than a placeholder."""
+    import tempfile
+    # A real `hls -l` line as a German guest stores it: "Systemordner" plus a
+    # MacRoman byte no UTF-8 decoder accepts.
+    raw = b"d/d 0 0 Systemordner\xaa Wed Aug  6 19:00 2026\n"
+    with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as fh:
+        fh.write(raw)
+        path = fh.name
+    try:
+        out = bd._run(["/bin/cat", path])
+    finally:
+        os.unlink(path)
+    assert "Systemordner" in out, out
+    assert out                      # degraded to text, not to an exception
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

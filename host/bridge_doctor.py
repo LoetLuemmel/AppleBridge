@@ -73,10 +73,21 @@ def _run(argv, timeout=4.0):
 
     Probes must never raise: a missing binary, a non-zero exit or a hung
     command degrades that one field to empty, not the whole diagnosis.
+
+    Decoding is done HERE and with `errors="replace"`, never by `text=True`.
+    `hls` prints Mac filenames as the volume stores them — MacRoman bytes, not
+    UTF-8 — and `text=True` decodes with the strict default, so a single umlaut
+    in a folder name at the root of a guest image raised `UnicodeDecodeError`
+    out of `subprocess.communicate` and took the WHOLE report down. Measured
+    2026-08-06 while diagnosing a live bridge: byte 0xAA at position 1254 of an
+    `hls -l :` listing, and the one tool the error message tells the operator to
+    run was the one that could not run. A probe that cannot survive its own
+    input is not a probe.
     """
     try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        return (p.stdout or "") + (p.stderr or "")
+        p = subprocess.run(argv, capture_output=True, timeout=timeout)
+        out = (p.stdout or b"") + (p.stderr or b"")
+        return out.decode("utf-8", errors="replace")
     except (OSError, subprocess.SubprocessError):
         return ""
 

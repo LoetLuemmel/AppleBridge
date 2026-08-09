@@ -63,6 +63,32 @@ def test_the_fix_text_is_copy_safe():
         assert "…" not in fix and "..." not in fix, fix
 
 
+def test_the_fix_text_says_what_to_KEEP_not_only_what_to_write():
+    """Measured 2026-08-06, proof run task A: the model obeyed this remedy
+    correctly and destroyed the program doing it — it put `int i;` at the top of
+    the block by REPLACING `int sum = 0;` rather than adding a line, and the next
+    compile said `undefined identifier 'sum'`. A remedy that names the addition
+    and not the keeping leaves the keeping to be guessed."""
+    r = L.remedies(L.check(MODEL_SOURCE))[0]
+    assert "additional line" in r, r
+    assert "keeping" in r, r
+
+
+def test_the_fix_text_says_WHERE_and_not_only_what():
+    """Measured 2026-08-06 over forty tasks: two runs followed this remedy and
+    ONE of them failed on it. t01 put `int i;` after a printf — before the loop,
+    exactly as the text said — and C89 wants declarations before the first
+    STATEMENT. t35 put it among the other declarations and compiled.
+
+    The text had already been widened once, from what to write to what to keep.
+    The place stayed wrong: the same defect one step further along in the same
+    sentence."""
+    r = L.remedies(L.check(MODEL_SOURCE))[0]
+    assert "start of the block" in r, r
+    assert "before the first statement" in r, r
+    assert "before the loop" not in r, r
+
+
 def test_two_loops_are_one_lesson():
     """Ten `//` comments are one lesson, not ten — repeating it costs context
     on a node with 2 GB free and teaches nothing the first line did not."""
@@ -93,9 +119,17 @@ def test_a_block_comment_across_lines_stays_closed():
 
 def test_the_word_boolean_is_not_the_type_bool():
     """`Boolean` is the Mac Toolbox's own type and is C89-legal here — a
-    substring match would have refused the correct answer."""
-    assert rules("Boolean ok = true;") == ["bool_type"]      # `true`, not `Boolean`
+    substring match would have refused the correct answer.
+
+    Until 2026-08-08 the first line below expected `["bool_type"]`, annotated
+    "`true`, not `Boolean`" — the test pinned the false positive rather than
+    catching it, and read as correct because the reason given was true: the
+    match really did come from `true`. What went unasked was whether `true`
+    should match at all. It should not; MacTypes.h defines it.
+    """
+    assert rules("Boolean ok = true;") == []
     assert rules("Boolean ok = 1;") == []
+    assert rules("bool ok = 1;") == ["bool_type"]      # the real C99 type still is
 
 
 def test_a_variable_named_inline_is_not_the_keyword():
@@ -109,6 +143,34 @@ def test_a_line_comment_is_found():
 
 def test_stdbool_is_found_by_its_header_too():
     assert "bool_type" in rules("#include <stdbool.h>")
+
+
+def test_the_c99_type_is_still_found():
+    assert "bool_type" in rules("bool ready = 0;")
+
+
+def test_true_and_false_are_c89_on_a_mac_and_must_not_be_flagged():
+    """MacTypes.h:301-302 defines them itself, as an enum:
+
+        false = 0,
+        true  = 1
+
+    Measured 2026-08-08 on the real Universal Headers. Flagging them blocked 49
+    of 60 Developer-CD sources BEFORE the compiler ever saw them, so the number
+    reported as "blocked by the C89 lint" described the lint. The rule even
+    recommended `Boolean` "from the Mac headers" — the header that supplies
+    `true`/`false`.
+    """
+    assert rules("Boolean ok = true;") == []
+    assert rules("if (x == false) return;") == []
+    assert rules("gDone = true; gBusy = false;") == []
+
+
+def test_a_flagged_bool_still_names_the_mac_alternative():
+    """The remedy has to survive the narrowing, or the fix trades a false
+    positive for an unusable hint."""
+    found = L.check("bool ready = 0;")
+    assert any("Boolean" in f["fix"] for f in found), found
 
 
 def test_c99_keywords_are_found():

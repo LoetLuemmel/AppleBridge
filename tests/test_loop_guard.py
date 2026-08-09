@@ -432,6 +432,190 @@ def test_a_missing_optional_reference_is_not_invented():
     assert t.check("mac_compile", {"source_path": None})["verdict"] == "allow"
 
 
+
+# --- TerminationWatch: three endings, and the one that was silent ------------
+def _ok(**kw):
+    d = {"success": True, "verified": True}
+    d.update(kw)
+    return d
+
+
+def test_a_repair_that_was_never_compiled_is_its_own_ending():
+    """Run N, 2026-08-05: the model read the compiler, repaired the source
+    correctly, and stopped. On disk the artefact was the OLD object, so the run
+    looked successful; in the transcript it looked like a crash."""
+    t = lg.TerminationWatch()
+    t.note("mac_compile", _ok(success=False))
+    t.note("mac_write_file", {"success": True})
+    assert t.outcome() == t.NOT_RECOMPILED
+    assert "never compiled" in t.message()
+
+
+def test_a_repair_that_failed_again_is_a_loop_that_worked():
+    """The distinction a boolean destroys: the loop closed, the repair did
+    not. Named by the parallel session against a draft that had closed=True."""
+    t = lg.TerminationWatch()
+    t.note("mac_write_file", {"success": True})
+    t.note("mac_compile", _ok(success=False))
+    assert t.outcome() == t.RECOMPILED_FAILED
+    assert "the loop closed" in t.message()
+
+
+def test_a_repair_that_compiled_is_the_closed_ending():
+    t = lg.TerminationWatch()
+    t.note("mac_write_file", {"success": True})
+    t.note("mac_compile", _ok())
+    assert t.outcome() == t.RECOMPILED_OK
+
+
+def test_an_unverified_compile_is_not_a_missing_one():
+    """`verified: false` (the -o-inside-options branch) says nobody checked.
+    Reporting that as not_recompiled would claim a compile never ran, and as
+    recompiled_failed would claim it failed. Both are inventions."""
+    t = lg.TerminationWatch()
+    t.note("mac_write_file", {"success": True})
+    t.note("mac_compile", {"success": None, "verified": False})
+    assert t.outcome() == t.COMPILED_UNVERIFIED
+    assert "unknown, not successful" in t.message()
+
+
+def test_a_run_that_wrote_nothing_makes_no_claim():
+    """A read-only run has no termination question, and inventing one would put
+    every such run into a denominator it does not belong in."""
+    t = lg.TerminationWatch()
+    t.note("mac_list_files", {"success": True})
+    assert t.outcome() == t.NOTHING_WRITTEN
+    assert t.message() == ""
+
+
+def test_only_the_LAST_write_decides():
+    """write, compile, write again: the loop is open on the second write, and a
+    counter that only asked "was there ever a compile" would call it closed."""
+    t = lg.TerminationWatch()
+    t.note("mac_write_file", {"success": True})
+    t.note("mac_compile", _ok())
+    t.note("mac_write_file", {"success": True})
+    assert t.outcome() == t.NOT_RECOMPILED
+    assert t.compiles == 1 and t.writes == 2
+
+
+def test_a_refused_call_must_never_close_a_loop():
+    """A refused call reached no tool, so it can neither change nor judge. The
+    caller is supposed to filter — and the result carries the hull's own marker,
+    so this reads it rather than trusting a docstring. Without it a conductor
+    that forwards refusals closes loops on calls the guard stopped, and the
+    symptom is a termination rate three weeks later, not an error."""
+    t = lg.TerminationWatch()
+    t.note("mac_write_file", {"success": True})
+    t.note("mac_compile", {"success": False, "refused_by_hull": True,
+                           "reason": "HULL REFUSED: no listing is known yet"})
+    assert t.outcome() == t.NOT_RECOMPILED, "a refusal closed the loop"
+    assert t.compiles == 0
+
+
+def test_the_report_carries_the_sentence_and_not_only_the_verdict():
+    """Same reason StepBudget returns a message: a verdict without its sentence
+    is a field somebody has to remember to interpret."""
+    t = lg.TerminationWatch()
+    t.note("mac_write_file", {"success": True})
+    r = t.report()
+    assert set(r) == {"outcome", "writes", "compiles", "message"}
+    assert r["message"]
+
+
+
+def test_a_compile_budget_is_its_own_bound_and_not_a_second_counter():
+    """Measured 2026-08-06: a run under the HARDER condition uses more turns and
+    therefore hits a TURN bound sooner — the 08:20 run (old remedy text) ran into
+    it at 8 steps while the two runs with the new text finished after 5. A turn
+    budget stops the arm that struggles, and the arm that struggles is the one
+    being measured. Counting compiles gives both arms the same number of attempts
+    at the thing the experiment is about."""
+    b = lg.CompileBudget(2)
+    assert b.spend() and b.spend()
+    assert not b.spend()
+    assert b.exhausted and b.remaining() == 0
+
+
+def test_the_two_budgets_stay_separate():
+    """A budget that counts two things merges the cases that need telling apart
+    — the same mistake TerminationWatch was redesigned to avoid."""
+    assert not hasattr(lg.StepBudget(3), "max_compiles")
+    assert not hasattr(lg.CompileBudget(3), "max_steps")
+
+
+def test_the_compile_budget_names_its_unit():
+    """A transcript that says only "budget exhausted" leaves the reader to guess
+    WHICH bound ended the run, and the two mean different things."""
+    b = lg.CompileBudget(1)
+    assert b.message() == ""
+    b.spend()
+    assert "compile attempt" in b.message()
+    assert "compile attempt" not in lg.StepBudget(1).message()
+
+
+
+# --- UncompiledWrite: the enforcing half nobody had tried ------------------
+def test_a_write_says_so_in_the_next_result():
+    """The strategy's rule for what deserves training is "train only what a tool
+    can DETECT but not ENFORCE". Detection was proved on 2026-08-06 — sixteen of
+    eighty runs never compiled at all. The enforcing half had never been tried,
+    and until it has been tried and failed, the case is an open stage-1 job and
+    not a training candidate. Named by a third party; neither session saw it,
+    because both reasoned from the result backwards."""
+    w = lg.UncompiledWrite()
+    assert w.note("mac_list_files", {}, {"success": True}) is None
+    hint = w.note("mac_write_file", {"path": "MeinMac:Bench:t01.c"}, {"success": True})
+    assert hint["uncompiled_write"] == "MeinMac:Bench:t01.c"
+    assert "since the last compile" in hint["note"]
+
+
+def test_a_compile_clears_it():
+    w = lg.UncompiledWrite()
+    w.note("mac_write_file", {"path": "x.c"}, {"success": True})
+    assert w.note("mac_compile", {}, {"success": False, "verified": True}) is None
+    assert w.pending is None
+
+
+def test_a_failed_compile_still_clears_it():
+    """It reports that nothing was compiled, not that nothing succeeded. A
+    failed compile is still a compile, and claiming otherwise would make the
+    hint fire through every repair round."""
+    w = lg.UncompiledWrite()
+    w.note("mac_write_file", {"path": "x.c"}, {"success": True})
+    w.note("mac_compile", {}, {"success": False, "verified": True})
+    assert w.hint() is None
+
+
+def test_a_refused_write_does_not_arm_it():
+    """Same reasoning as TerminationWatch: a call that never reached a tool
+    neither wrote nor compiled."""
+    w = lg.UncompiledWrite()
+    assert w.note("mac_write_file", {"path": "x.c"},
+                  {"success": False, "refused_by_hull": True}) is None
+    assert w.pending is None
+
+
+def test_the_hint_names_a_state_and_not_a_reproach():
+    """"You have not compiled" is a reproach and invites agreement. Naming what
+    is true of the FILE is the form that produced a repair when it arrived in a
+    tool result — the one delivery route measured to work."""
+    w = lg.UncompiledWrite()
+    note = w.note("mac_write_file", {"path": "x.c"}, {"success": True})["note"]
+    assert "you have not" not in note.lower()
+    assert "must" not in note.lower()
+    assert "artefact found now is the one from before it" in note
+
+
+def test_it_reports_and_does_not_block():
+    """A guard that refused here would decide that a caller who wrote a file did
+    not mean to write it. Whether a conductor turns the flag into a refusal is
+    the conductor's decision — and it can, because the flag is in the result."""
+    w = lg.UncompiledWrite()
+    for _ in range(3):
+        assert w.note("mac_write_file", {"path": "x.c"}, {"success": True}) is not None
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

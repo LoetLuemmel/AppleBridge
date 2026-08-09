@@ -188,3 +188,76 @@ Format — every entry carries all five fields, checked by
 - **Evidence:** on 2026-08-03 one finding — the arming rule for the `_ModalDialog` walk — was written **three times**: into the channel, onto the CMS page, and into agent memory. That is the only class of fact in this project with three owners, and preventing exactly that is why D-006 exists. Three structural findings came with it: the page is behind Authelia and writable only through an MCP tool, so it **cannot be grepped at the moment it is needed**, which is mid-debug; both sessions publish to it independently with no review and no conflict detection, the CMS having no version history by its own account; and sixteen appended, never-rewritten entries force linear reading where grep was wanted. In the repository the file also comes under `tests/test_doc_claims.py`, which already enforces provenance on hard rules.
 - **Cost, stated rather than buried:** the notes stop being readable without a checkout. That is a real loss for a human who wants them on a phone, and it is accepted because the reader who needs them *at the moment of need* is an agent with the repo already open. A generated publish step could restore it; **deliberately not built now**, because a hand-maintained mirror is precisely the shape that drifts and this project has paid for that once already (D-006). Second cost: the Jetson-side session published through its own CMS tooling and now edits the repository through its worktree instead — a change to its workflow, not a restriction on it; it confirmed by measurement that the worktree path works for it and that the CMS was never its only way to write. Third cost, **named by that session and not by this one**: the migration removes the CMS tool as an *ssh-less* read path for the notes. It judged this negligible because ssh to the Mac is its baseline and `grep` over that connection covers it — but the cost is real for any future reader whose baseline is not ssh, and it is recorded here rather than discovered later.
 - **Revisit if:** a reader **without** a checkout turns out to actually use the page — then the page is the product, the file is the draft, and this decision inverts. Equally if the `docs/**` rules make the notes awkward to write: they carry dated measurements as *provenance*, and should `test_doc_claims` ever read those as progress journalling, the constraint is wrong for this file and one of the two must give.
+
+## D-021 — a defect at the bound is back-computed, a defect in the prefix discards the arm
+
+- **Date:** 2026-08-06
+- **Status:** active
+- **Decision:** when a defect is found in a measurement that has already produced data, what happens to that data is decided by **where the defect can reach**, not by whether anybody could find an effect:
+  - it reaches **only the suffix** after the point at which a termination condition should have fired — the arm is **kept** and the affected runs are **back-computed by truncation**, a pure function over the trace;
+  - it reaches the **prefix** — task list, instruction, remedy text, tool block, sampling, guard hull — the arm is **discarded** and re-run, *without* a check for whether it had an effect;
+  - it reaches **only the interpretation** — the evaluator, an admission rule — nothing is discarded; the reading state gets a new number and the report says which one computed the figures.
+  One number is not back-computable and is therefore set to **not decidable**, named and counted: a claim in a closing sentence the model wrote in a state a correctly bounded run would never have reached.
+- **Evidence:** the compile budget counted only `mac_compile` calls while `mac_build` compiles too, so two of forty runs in arm 1 were granted extra attempts (six and five). Both sessions first argued *empirically* — "checked, no result changed" — which is a claim the interested party re-establishes every time, and the measuring side disclosed that the strict reading would cost it two hours and that this would be its **second** reading of its own rule at the edge, both in the same direction. The question was therefore put to a third party that had not built the apparatus. Its answer replaced the empirical criterion with a structural one: **a bound is a termination condition, so a miscount at it can only change what happens after it should have fired; the prefix is bit-identical with the run a correct bound would have produced.** It also showed the exoneration had been checked against one of five figures — under a correct bound one affected run would have ended *by the bound* rather than on a failed sixth call, which is exactly the third termination outcome — and that this too is reconstructible from the prefix.
+- **Why the structural half holds, in the form it should have had from the start** (sharpened by the third party 2026-08-06, after the measurement had exposed the weaker wording): the back-computation **re-scores a recorded execution and does not produce a second one.** *Nothing is newly generated, so nothing can differ.* The earlier phrasing — "the prefix is bit-identical" — is true here and reads like a claim about the machine, which on the other axis it would be and where it is false: generation on this node is not repeatable, measured at 7.5 % over forty paired tasks with a provably identical stimulus. Same two words, structural on one axis and empirical on the other; naming the axis is what makes the sentence a proof rather than an assumption.
+- **Precondition, checked and not assumed:** the ruling holds only while the bound is **purely terminal**. Were the model told how many attempts remained, the miscount would have changed the prefix from attempt one and no back-computation would be admissible. Verified from both sides with different patterns over 302 tool results across both arms: no key relating to the count, no occurrence of the word in any result, and the single hit in model output was `"remaining problems"` — a false positive of the wider pattern, reported by the side that found it rather than rounded away.
+- **Cost, stated rather than buried:** the affected runs are scored as the runs they would have been and not as the runs that happened, so their tails exist in the trace and in no figure. The rule is also *harder* than the one it replaces in one direction: a wrong remedy text would forbid back-computation entirely, however harmless it looked — and that is the class of defect which demonstrably flipped a run on the morning this was decided. A criterion that never bites is none.
+- **Revisit if:** a bound is ever built that reports its own state to the model, or a defect appears that is neither prefix nor suffix but both — then the three-way split is short a case, the same way "defect found" was short one before this entry existed.
+
+## D-022 — where a training run computes, and what the project is actually for
+
+- **Date:** 2026-08-06
+- **Status:** active
+- **Decided by:** the operator, in the article
+  [*Wie die Optimierung weitergeht*](https://pit.390er.de/nvidia/wie-die-optimierung-weitergeht-klassen-entfernen-statt-quoten/),
+  section *Der Trainingsort*. That wording is the source; this entry mirrors it
+  because decisions of record live here (D-006), not because it restates them
+  better.
+- **Decision:**
+  - **The project's purpose is Phase 5, and it is a question, not a metric:** *can
+    a system be taught and optimised to drive an MPW or THINK C development
+    environment over AppleBridge?* Everything upstream of that — gate, rewriter,
+    fixed chain, bank — is preparation for it.
+  - **The training runs on a 7B.** A smaller base model is **explicitly not an
+    alternative**: the question is what a *fine-tuned 7B* can do for this purpose,
+    and substituting a 3B answers a different one.
+  - **Order of places:** preprocessing on the Xavier where technically possible,
+    further steps on an **M4 Pro with 24 GB**. The Xavier alone looks limited or
+    unsuitable for the training itself; the Orin's shared memory is too small.
+  - **A rented 24 GB card stays in scope as a fallback**, should Apple's Metal
+    turn out incompatible or unsuitable. This is a deliberate reversal of the
+    reading proposed by this session, which would have ruled rented compute out
+    altogether.
+  - **But taking that fallback counts as a narrow failure, not as a neutral
+    option** (operator, 2026-08-06): *the goal is to be reached with our own
+    means.* The card is permitted so that the project cannot be blocked outright
+    — it is not permitted as a shortcut. The practical consequence is a weighting,
+    not a prohibition: work spent on making the M4 Pro path succeed buys more than
+    the hours it costs, because taking the fallback costs the goal itself.
+  - **The location is therefore no longer a blocker.** Training begins once the
+    preparations for it are made.
+- **Evidence:** on 2026-08-06 a published instruction proposed a rented 24 GB card
+  for Phase 5. Three instances read that text and **none objected** — one of them
+  had checked its denominators, found two errors in its rewriter rules and run its
+  acceptance condition, and had even written a section headed *"what is expressly
+  not disputed"* with four points, without noticing the fifth. The reason is
+  checkable and was checked: a search of `DECISIONS.md` (21 entries at the time),
+  `CLAUDE.md`, `README.md`, `ARCHITECTURE.md` and `docs/*.md` for any wording of
+  the condition returned **nothing**. It lived in the project's name and in every
+  prior decision, and therefore in no text a review could be held against. That is
+  the same class as the day's wrong denominators, one level up: **not a number
+  without its basis, but a basis without its sentence.** A condition nobody ever
+  had to say out loud is invisible to every review, and the more self-evident it
+  is, the more certainly it is missing.
+- **What this entry is not:** a prohibition. This session drafted one — *"computation
+  stays in-house, rented compute is excluded"* — and asked the operator to pick the
+  boundary. The answer was narrower in one direction and wider in the other: the
+  purpose fixes the **model size**, and the place is ordered by preference with an
+  external fallback rather than closed. A rule written from the assumption instead
+  of from the answer would have forbidden the fallback the operator wants to keep.
+- **Revisit if:** the M4 Pro path proves workable end to end (then the fallback is
+  dead weight and should be struck), or a 7B turns out not to fit anywhere
+  available (then the model-size question reopens — but as a *finding*, not as a
+  substitution made for convenience). **Not** a reason to revisit: that the rented
+  card would be faster or cheaper on a given afternoon. That is precisely the
+  trade the "narrow failure" clause exists to refuse.

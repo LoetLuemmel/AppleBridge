@@ -28,6 +28,34 @@ import re
 # writes to a file called "=" — a mistake that hides a failing build.
 STDERR_REDIRECT = "≥"
 
+# MPW's escape character (option-D). It survives the bridge because
+# host_server encodes every command to MacRoman before sending, where this is
+# 0xB6 — the same path that carries STDERR_REDIRECT above.
+ESCAPE = "∂"
+
+
+def quote(path):
+    """Wrap a Mac path so MPW receives it as ONE literal argument.
+
+    Inside single quotes MPW treats everything literally — spaces, `ƒ`, `•`,
+    `{}`, even ESCAPE itself — so a path needs no other preparation. The single
+    exception is the quote character, which cannot appear inside its own
+    quoting at all: the string simply ends there. The fix is to close, escape
+    the quote outside, and reopen.
+
+    Measured 2026-08-08, on 49 real Developer-CD sources: naive `f"SC '{p}'"`
+    split the command at the apostrophe of the folder `What's New?` — a
+    STANDARD folder on every Developer CD, not an exotic name. SC then never
+    received a filename, so it emitted no diagnostics, produced no object, and
+    the result was a failure with `errors: []`. Twenty-seven of the
+    forty-nine, all of them, and none of the other twenty-two. A failure that
+    reports nothing is worse than one that reports the wrong thing, because
+    there is nothing to search for: the reader looks for a defect in a source
+    file that was never opened.
+    """
+    return "'" + str(path).replace("'", "'" + ESCAPE + "''") + "'"
+
+
 # Tools that print nothing when they succeed. Kept in step with the timeout
 # budget in host_server.LONG_CMDS by tests; `SetFile`/`Delete` are silent too
 # but fast, so they belong here and not there.
@@ -57,6 +85,69 @@ _REMEDIES = (
      "completes. Judge by the artefact, not by this status."),
 )
 
+# Remedies keyed on a DIAGNOSTIC GROUP: the compiler's message plus the source
+# line it points at. Only possible since the group travels together (see
+# `_SEPARATOR`) — before that, the source line was dropped and there was nothing
+# to key on.
+#
+# **Why this is not a lint rule.** `c89_lint`'s docstring has said since day one
+# that "a declaration appearing after a statement inside a block" is deliberately
+# NOT detected: finding it reliably needs a parser, and a wrong flag is worse
+# than a missing one. That reasoning still holds for a rule that runs BEFORE the
+# compiler — it would fire on correct code.
+#
+# It does not hold here. This fires only on a line the compiler has ALREADY
+# rejected, so a false positive on correct code is impossible by construction.
+# The trade-off the docstring names disappears rather than being re-decided.
+#
+# Measured 2026-08-06 over eighty runs: `expression expected` is SC's message for
+# several distinct C89 violations. Of 135 such lines, 84 were a declaration in a
+# for-head (which the lint does catch) and 46 were a declaration after a
+# statement — the second-largest cause in the whole measurement, and until now
+# the model was told only "expression expected", which names nothing.
+#
+# **What keeps the two classes apart is the `^` anchor**, and it is worth naming
+# because the other 84 lines look like declarations too: `for (int i = 0; …)`
+# contains `int i` and would match an unanchored pattern. It begins with `for`,
+# so it cannot match an anchored one — the for-head belongs to `c89_lint`, this
+# belongs to what the lint deliberately does not detect, and the anchor is the
+# whole border between them. Pinned by a test, because widening the pattern
+# without the anchor would trade a gap for a MISDIRECTION: the remedy would point
+# at the loop line and say "move it above the first statement", which is exactly
+# the wrong instruction and exactly how one of two applications of our own remedy
+# failed on 2026-08-06. Named by the parallel session before it could bite twice.
+_GROUP_REMEDIES = (
+    (re.compile(r"expression expected", re.I),
+     re.compile(r"^\s*(?:const\s+|static\s+|register\s+|volatile\s+|"
+                r"unsigned\s+|signed\s+)*"
+                r"(?:int|char|long|short|float|double|size_t|FILE)\b"
+                r"[\s*]+[A-Za-z_]"),
+     "C89 wants every declaration at the START of its block, before the first "
+     "statement. This line declares something after a statement — move it up, "
+     "above the first statement of the enclosing block, and keep the "
+     "declarations that are already there."),
+)
+
+
+def group_remedies(errors):
+    """Remedies that need the source line, not just the message.
+
+    Reads the grouped entries `classify_diagnostics` produces: the last line is
+    the compiler's message, the ones before it are the source and the caret.
+    """
+    out = []
+    for entry in errors:
+        lines = [l for l in entry.split("\n") if l.strip()]
+        if len(lines) < 2:
+            continue
+        message, source = lines[-1], lines[0]
+        for msg_pat, src_pat, remedy in _GROUP_REMEDIES:
+            if msg_pat.search(message) and src_pat.match(source) \
+                    and remedy not in out:
+                out.append(remedy)
+    return out
+
+
 # Benign: the linker reporting that a library it was handed was not needed.
 _BENIGN = re.compile(r"\bError 52\b")
 
@@ -68,6 +159,37 @@ _BENIGN = re.compile(r"\bError 52\b")
 # result disagreed. Hence one case-insensitive marker set for both.
 _ERROR_MARKERS = re.compile(r"error|fatal|cannot open|unable to open|^###|^#", re.I)
 _WARNING_MARKERS = re.compile(r"warning", re.I)
+
+# SC writes FOUR lines per diagnostic and puts the message LAST:
+#
+#     printf("%d\n", a);          <- the offending source line
+#     ^                           <- the column marker
+#     File "…err.c"; line 7 #Error: ';' expected
+#     #-----------------------
+#
+# Classifying line by line therefore dropped the two informative lines (neither
+# carries a marker) and KEPT the empty one (`#---` matches `^#`). Measured
+# 2026-08-06 by the parallel session against a probe whose defect was
+# deliberately NOT a lint rule, and reproduced host-side against this function.
+#
+# Why it matters more than it looks: for the four habits `c89_lint` knows, its
+# own `text` field carries the source line — so the loss is invisible exactly
+# until the model hits an error the lint does NOT know, which is where a repair
+# rate is measured. The back channel was blind where the measurement looks.
+#
+# The group has to be bound BACKWARDS — message found, then take the lines
+# before it. Reading forwards attaches a source line to the *following*
+# diagnostic, which is worse than dropping it: it is confidently wrong.
+_SEPARATOR = re.compile(r"^#-{3,}$")
+
+# The banner SC prints once per invocation. Not a diagnostic — and, left in the
+# stream, it would be picked up as the prefix of the FIRST error.
+_BANNER = re.compile(r"^Copyright\b|^\S+ (?:C|C\+\+) Compiler\b", re.I)
+
+# How many preceding markerless lines may join a diagnostic. Two, because SC
+# writes exactly two (source line, caret). More would start collecting whatever
+# an unrelated tool printed earlier in the same capture.
+_PREFIX_LINES = 2
 
 
 # --------------------------------------------------------------------------
@@ -87,24 +209,40 @@ def artifact_exists(exists_output):
     return bool(text.strip()) and "NoDir" not in text and "__SENDERR__" not in text
 
 
-def diag_lines(text):
-    """Captured diagnostics as stripped lines (the guest mixes CR and LF)."""
-    return [l.strip() for l in (text or "").replace("\r", "\n").split("\n") if l.strip()]
-
-
 def classify_diagnostics(text):
     """-> {"errors": [...], "warnings": [...], "remedies": [...]}.
+
+    An entry is a whole diagnostic, not a line: the offending source line and
+    the column marker travel with the message that names them (see `_SEPARATOR`
+    above for what SC actually writes and why the binding runs backwards). The
+    entries stay strings, so `errors[0]` is still the first error — it is just
+    no longer amputated.
+
+    Indentation is preserved inside a group, and that is not cosmetic: strip the
+    lines and the caret no longer points at the column it exists to mark.
 
     `Error 52` is a warning, not an error: it only says a library passed to the
     linker was not needed.
     """
     errors, warnings = [], []
-    for line in diag_lines(text):
+    pending = []                    # markerless lines since the last diagnostic
+    for raw in (text or "").replace("\r", "\n").split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        if _SEPARATOR.match(line) or _BANNER.match(line):
+            pending = []            # neither a diagnostic nor a prefix for one
+            continue
         if _BENIGN.search(line) or _WARNING_MARKERS.search(line):
-            warnings.append(line)
+            warnings.append("\n".join(pending[-_PREFIX_LINES:] + [line]))
         elif _ERROR_MARKERS.search(line):
-            errors.append(line)
+            errors.append("\n".join(pending[-_PREFIX_LINES:] + [line]))
+        else:
+            pending.append(raw.rstrip())
+            continue
+        pending = []                # a classified line ends the group
     remedies = [remedy for pattern, remedy in _REMEDIES if pattern.search(text or "")]
+    remedies += group_remedies(errors)
     return {"errors": errors, "warnings": warnings, "remedies": remedies}
 
 
@@ -156,6 +294,39 @@ def toolserver_alive(send, timeout=20.0):
     return _PROBE in out
 
 
+def parent_folder(path):
+    """-> the containing folder of a Mac path, or None when there is none.
+
+    `MeinMac:Bench:x.o` -> `MeinMac:Bench:`. A volume root (`MeinMac:`) and a
+    bare name with no colon have no parent worth probing, and return None.
+    """
+    text = (path or "").rstrip(":")
+    cut = text.rfind(":")
+    if cut <= 0:
+        return None
+    return text[:cut + 1]
+
+
+def output_folder_missing(send, artifact, timeout=20.0):
+    """Does the artefact's folder exist? Call this only when a step FAILED.
+
+    MPW creates no intermediate folders, so a step told to write into a folder
+    that is not there produces no artefact AND no error file — and therefore no
+    diagnostic at all. Measured 2026-08-08: a re-measurement of 27 sources
+    reported `errors: []` for every one of them, indistinguishable from the
+    quoting defect fixed in the same session, and from a compiler that simply
+    said nothing. Three different causes, one signature.
+
+    On the failure path only, for the same reason as `toolserver_alive`: on a
+    successful step the folder demonstrably exists, so the round trip would buy
+    nothing on the path that runs most often.
+    """
+    folder = parent_folder(artifact)
+    if not folder:
+        return False
+    return not artifact_exists(send(f"Exists {quote(folder)}", timeout))
+
+
 def run_step(send, command, artifact, err_file, timeout=250.0):
     """Run one build step and report what was actually verified.
 
@@ -174,13 +345,31 @@ def run_step(send, command, artifact, err_file, timeout=250.0):
         sent.append(cmd)
         return send(cmd, to) or ""
 
-    _send(f"Delete -i {artifact} {err_file}")
-    _send(f"{command} {STDERR_REDIRECT} {err_file}", timeout)
-    captured = _send(f"Catenate {err_file}")
-    found = artifact_exists(_send(f"Exists {artifact}"))
+    # Every path is quoted here, not by the caller: these four lines are where
+    # `artifact` and `err_file` meet the shell, and a caller that quoted them
+    # itself would have to quote for a command line it cannot see.
+    art, err = quote(artifact), quote(err_file)
+    _send(f"Delete -i {art} {err}")
+    _send(f"{command} {STDERR_REDIRECT} {err}", timeout)
+    captured = _send(f"Catenate {err}")
+    found = artifact_exists(_send(f"Exists {art}"))
 
     result = classify_diagnostics(captured)
     result.update({"success": found, "artifact": artifact, "commands": sent})
     if not found:
-        result["toolserver_alive"] = toolserver_alive(_send)
+        # Liveness FIRST, and the folder question only after it — because an
+        # empty answer to `Exists` means "not there" OR "nobody answered", and
+        # those are not the same finding. Probing the folder first would report
+        # a missing folder with full confidence whenever ToolServer is simply
+        # down: a precise, actionable, wrong answer, which is the failure this
+        # whole probe exists to prevent. Caught by
+        # test_build_verification.py's toolserver probe, not by foresight.
+        alive = toolserver_alive(_send)
+        result["toolserver_alive"] = alive
+        if alive and output_folder_missing(_send, artifact):
+            result["output_folder_missing"] = True
+            result["remedies"] = result["remedies"] + [
+                f"the output folder {parent_folder(artifact)} does not exist — "
+                f"MPW creates no intermediate folders, so nothing was written "
+                f"and nothing was reported; create it (`NewFolder`) and re-run"]
     return result
