@@ -208,6 +208,14 @@ and prints the guest-side values you need in step 3 — labelled by *whose*
 address each one is, which is the mistake this step exists to prevent. It asks
 for nothing and needs no password.
 
+**What that costs, stated rather than buried:** the `slirp` backend carries **no
+AppleTalk**. The Chooser stays empty, and `mac_appletalk_browse`, `NBPLOOK` and
+`AFPMOUNT` — all built and tested — cannot be exercised on the branch this
+installs. TCP keeps working either way, which is exactly how that gap disguises
+itself. AppleTalk lives on the hand-configured `etherhelper` branch, which needs
+two interactive password prompts per launch and therefore cannot start
+unattended; that trade is the reason `slirp` is what ships.
+
 If it **refuses**, read what it says. It will not convert a host already configured
 for the `etherhelper` backend, because that is somebody's working AppleTalk setup —
 except on a machine with **one network interface**, where it says the opposite and
@@ -415,6 +423,11 @@ with no compiler is still fully driveable.
 host's window — so it is unaffected by where the emulator window sits or what
 overlaps it. `mac_host_screenshot` is the host-side counterpart, for the moments
 when a modal tracking loop has the guest and the daemon cannot answer.
+
+`mac_appletalk_browse` is the one entry in this table the default installation
+cannot reach: it needs AppleTalk, and the `slirp` backend does not carry it (see
+step 1). It works on the hand-configured `etherhelper` branch. Listing it without
+that note would advertise a capability the shipping configuration does not have.
 
 ## Project Structure
 
