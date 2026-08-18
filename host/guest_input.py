@@ -52,7 +52,11 @@ import subprocess
 import sys
 
 EMULATORS = ("BasiliskII", "SheepShaver")
-PREFS_PATH = os.path.expanduser("~/.basilisk_ii_prefs")
+try:                                   # WHICH emulator's prefs (SheepShaver has its own)
+    import emulator_prefs as _emu_prefs
+    PREFS_PATH = _emu_prefs.resolve()["path"]
+except Exception:                      # deployed copy predating the module
+    PREFS_PATH = os.path.expanduser("~/.basilisk_ii_prefs")
 DEFAULT_GUEST_SIZE = (1024, 768)
 # Fallback only: the title bar is normally derived as window height - guest
 # height, which stays correct if the emulator is ever resized or restyled.

@@ -158,7 +158,7 @@ def bench_screenshot(iters):
 
 def ether_line():
     try:
-        with open(os.path.expanduser("~/.basilisk_ii_prefs")) as f:
+        with open(__import__("emulator_prefs").resolve()["path"]) as f:
             for line in f:
                 if line.startswith("ether "):
                     return line.strip()
