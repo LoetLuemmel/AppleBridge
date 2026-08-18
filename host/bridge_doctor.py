@@ -58,6 +58,7 @@ LAUNCHD_LABEL = "de.390er.applebridge-host"
 DAEMON_PORT = 9000
 CONTROL_PORT = 9001
 import emulator_prefs                                  # noqa: E402  (flat host/ import)
+import platform_seam                                  # noqa: E402  (what differs per host OS)
 
 # Which emulator's prefs file this machine actually uses is a QUESTION, not a
 # constant: SheepShaver keeps its own, and reading Basilisk's on a SheepShaver
@@ -360,12 +361,11 @@ def probe_network(run, host_ip):
         if m and current:
             ifaces[current].append(m.group(1))
 
-    default_if = None
-    for line in run(["route", "-n", "get", "default"]).splitlines():
-        m = re.search(r"interface:\s*(\S+)", line)
-        if m:
-            default_if = m.group(1)
-            break
+    # BSD: `route -n get default`. Linux: `ip route show default`. Asking the
+    # wrong one returns empty, and empty is the INPUT to the rule about which
+    # interface must carry the host address — so it fails as a wrong diagnosis
+    # rather than a missing one.
+    default_if = platform_seam.default_route_interface(run=run)
 
     return {
         "host_ip": host_ip,
@@ -470,12 +470,18 @@ def interpret(probes):
         # Advising a bootstrap here names a component the reader never had, so
         # only the ABSENCE of a listener is worth reporting (R13).
         if not sk["listen"]["daemon_port"] and not sk["listen"]["control_port"]:
+            svc = probes.get("service") or platform_seam.service()
             out.append(_finding(
                 ERROR, "host_server_not_running",
-                "Nothing is listening, and no launchd agent is installed on this "
-                "machine — this installation starts the host server by hand.",
-                "cd host && ./run_server.sh < /dev/null &   (the redirect matters: "
-                "a terminal gives the interactive prompt and no control port)"))
+                "Nothing is listening, and no host-server service is installed "
+                "on this machine — this installation starts it by hand."
+                + ("" if svc["supported"] else
+                   f" ({svc['kind'] or 'this platform'} is not wired up here, "
+                   "so there is no agent to install — naming one would "
+                   "describe a machine that is not this one.)"),
+                platform_seam.manual_start_hint()
+                + "   (the redirect matters: a terminal gives the interactive "
+                  "prompt and no control port)"))
     elif not ld["loaded"]:
         out.append(_finding(
             ERROR, "launchd_absent",
@@ -669,7 +675,7 @@ def verdict(findings):
 # public entry point
 # --------------------------------------------------------------------------
 def collect(run=None, read=None, uid=None, host_ip=DEFAULT_HOST_IP,
-            prefs_path=None, netmode_path=None, exists=None):
+            prefs_path=None, netmode_path=None, exists=None, service=None):
     """Run the full sweep and return {probes, findings, verdict, ok}.
 
     `run`/`read` are injectable so the test suite can drive every failure mode
@@ -694,6 +700,9 @@ def collect(run=None, read=None, uid=None, host_ip=DEFAULT_HOST_IP,
     probes = {
         "uid": uid,
         "prefs_choice": choice,
+        # Injected so a test states WHICH platform it is about instead of
+        # inheriting the one it happens to run on (the seam's whole point).
+        "service": service or platform_seam.service(),
         "launchd": probe_launchd(run, uid, exists),
         "sockets": probe_sockets(run),
         "network": probe_network(run, host_ip),
@@ -740,7 +749,11 @@ def format_text(report):
 
     state = "disabled" if ld["disabled"] else ("loaded" if ld["loaded"] else "absent")
     pid = f" (pid {ld['pid']})" if ld["pid"] else ""
-    lines.append(f"launchd job:      {state}{pid}")
+    svc = p.get("service") or platform_seam.service()
+    label = "launchd job:      " if svc["kind"] == "launchd" else \
+        f"{(svc['kind'] or 'service'):<17} "
+    lines.append(f"{label}{state}{pid}"
+                 + ("" if svc["supported"] else "   (not wired up on this platform)"))
     lines.append(f":{DAEMON_PORT} / :{CONTROL_PORT}:    "
                  f"{sk['listen']['daemon_port'] or '—'} / "
                  f"{sk['listen']['control_port'] or '—'}")
