@@ -12,7 +12,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "host"))
-import bridge_doctor as bd  # noqa: E402
+import bridge_doctor as bd
+import platform_seam  # noqa: E402
 
 UID = 501
 HOST_IP = "192.168.3.154"
@@ -116,8 +117,12 @@ def report(**kw):
         if any(path.endswith(m) for m in missing):
             return False
         return installed if path.endswith(".plist") else True
+    # These cases are ABOUT a macOS host (launchd, ~/Library, `route -n get
+    # default`), so they say so rather than inheriting whatever platform the
+    # suite runs on — the seam exists precisely so that is a value.
     return bd.collect(run=make_run(**kw), read=make_read(**read_kw), uid=UID,
-                      host_ip=host_ip, exists=exists)
+                      host_ip=host_ip, exists=exists,
+                      service=platform_seam.service(platform_name="darwin"))
 
 
 def keys(rep):
@@ -317,7 +322,8 @@ def test_every_probe_failing_still_yields_a_report():
     """
     rep = bd.collect(run=lambda argv, timeout=4.0: "",
                      read=lambda path: "", uid=UID, host_ip=HOST_IP,
-                     exists=lambda _p: True)         # agent installed, not loaded
+                     exists=lambda _p: True,          # agent installed, not loaded
+                     service=platform_seam.service(platform_name="darwin"))
     assert rep["verdict"] == "error"          # missing job + missing alias
     assert {"launchd_absent", "host_ip_missing"} <= keys(rep)
     assert isinstance(bd.format_text(rep), str)
@@ -327,7 +333,8 @@ def test_every_probe_failing_on_a_machine_without_the_agent():
     """The same collapse on an installation that has no launchd job at all."""
     rep = bd.collect(run=lambda argv, timeout=4.0: "",
                      read=lambda path: "", uid=UID, host_ip=HOST_IP,
-                     exists=lambda _p: False)
+                     exists=lambda _p: False,
+                     service=platform_seam.service(platform_name="darwin"))
     assert rep["verdict"] == "error"
     k = keys(rep)
     assert "host_server_not_running" in k

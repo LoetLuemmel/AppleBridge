@@ -31,6 +31,8 @@ import os
 import re
 import subprocess
 
+import platform_seam
+
 ENV_VAR = "APPLEBRIDGE_HOST_IP"
 BIND_ALL = "0.0.0.0"
 LOCAL_ENV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "local.env")
@@ -81,20 +83,18 @@ def ipv4_addresses(run=None):
     """
     runner = run or (lambda cmd: subprocess.run(
         cmd, capture_output=True, text=True, timeout=10).stdout)
-    try:
-        out = runner(["ifconfig"])
-    except (OSError, subprocess.SubprocessError):
-        return []
-    found, iface = [], None
-    for line in out.splitlines():
-        head = re.match(r"^(\w+):", line)
-        if head:
-            iface = head.group(1)
-            continue
-        m = re.search(r"^\s+inet (\d+\.\d+\.\d+\.\d+)", line)
-        if m and iface and not m.group(1).startswith("127."):
-            found.append((iface, m.group(1)))
-    return found
+
+    def safe(cmd):
+        try:
+            return runner(cmd) or ""
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    # `ifconfig` is macOS-always and Linux-only-if-net-tools. Measured on a
+    # Linux container 2026-08-18: it returned nothing, and an EMPTY address
+    # list is not a harmless gap — it is what made the installer print "one
+    # usable interface (none found)" and leave the guest's `IP=` unanswerable.
+    return platform_seam.ipv4_addresses(run=safe)
 
 
 def describe_reachability(addresses=None):

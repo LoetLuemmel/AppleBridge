@@ -19,7 +19,8 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "host"))
-import install_bridge as ib  # noqa: E402
+import install_bridge as ib
+import platform_seam  # noqa: E402
 import macbinary  # noqa: E402
 
 HOST_ADDRS = [("en0", "192.168.3.213")]
@@ -131,8 +132,33 @@ def test_an_already_slirp_host_only_needs_config_not_a_backend_rewrite():
 
 
 def test_a_fresh_host_gets_backend_config_and_a_launch_path():
-    plan = ib.decide(probes(ether=None, intended=None))
+    """On a platform whose service manager is wired up — which is macOS today.
+
+    Stated rather than inherited: on Linux there is deliberately no agent step
+    (platform_seam.service()["supported"] is False), and a test that silently
+    assumed the host it ran on would fail there for the right reason with the
+    wrong message.
+    """
+    p = probes(ether=None, intended=None)
+    p["service"] = platform_seam.service(platform_name="darwin")
+    plan = ib.decide(p)
     assert keys(plan["steps"]) == ["set_backend", "write_local_env", "install_agent"]
+
+
+def test_a_host_without_a_service_manager_is_told_how_to_start_it_by_hand():
+    """The Linux half of the same decision, and the defect it replaces.
+
+    Measured 2026-08-18 in a Linux container: the plan's third step proposed
+    installing a launchd agent, justified by a TCC-protected ~/Documents that
+    does not exist there — R13's own prohibition, one layer up.
+    """
+    p = probes(ether=None, intended=None)
+    p["service"] = platform_seam.service(platform_name="linux")
+    plan = ib.decide(p)
+    assert "install_agent" not in keys(plan["steps"])
+    note = [n for n in plan["notes"] if n["key"] == "no_service_manager"][0]
+    assert "run_server.sh" in note["message"]
+    assert "launchd" not in note["message"], "do not name a component this host lacks"
 
 
 def test_no_agent_replaces_the_step_with_the_redirect_that_r12_is_about():
@@ -1291,7 +1317,9 @@ def test_a_kit_export_without_hfsutils_names_the_tool_and_how_to_get_it():
     io = KitIO()
     ok, msg, _ = io.build(probes_=probes(hfs_missing=["hmount", "hcopy"]))
     assert ok is False
-    assert "hfsutils" in msg and "brew install hfsutils" in msg, msg
+    # The invariant is "names the tool AND a way to get it"; WHICH way is a
+    # property of the host, pinned per platform in test_platform_seam.py.
+    assert "hfsutils" in msg and "install" in msg, msg
     assert "hmount" in msg, "say WHICH tools are missing"
     assert not io.calls, "it must refuse before shelling out to a missing tool"
 
@@ -1300,7 +1328,7 @@ def test_seeding_prefs_without_hfsutils_refuses_the_same_way():
     ok, msg = ib.seed_guest_prefs("/tmp/x.dmg", "192.168.3.1",
                                   probes(hfs_missing=list(ib.HFS_TOOLS)),
                                   run=lambda argv: "")
-    assert ok is False and "brew install hfsutils" in msg, msg
+    assert ok is False and "install" in msg and "hfsutils" in msg, msg
 
 
 def test_the_seed_refusal_names_the_route_that_needs_no_hfsutils():

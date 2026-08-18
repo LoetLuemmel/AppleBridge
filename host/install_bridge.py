@@ -75,6 +75,7 @@ import bridge_doctor                                   # noqa: E402  (path first
 import host_config                                     # noqa: E402
 import macbinary                                       # noqa: E402
 import emulator_prefs as emu_prefs                     # noqa: E402  (WHICH prefs file)
+import platform_seam                                   # noqa: E402  (what differs per host OS)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -201,7 +202,7 @@ def is_emulator_bundle(path, exists=None):
                for exe in EMULATOR_EXECUTABLES)
 
 
-def hfsutils_advice(missing, action, alternative=None):
+def hfsutils_advice(missing, action, alternative=None, note=None):
     """The one message for 'this machine cannot touch an HFS volume'.
 
     `alternative` names a route that needs no hfsutils at all, for the callers
@@ -211,10 +212,14 @@ def hfsutils_advice(missing, action, alternative=None):
     be told the address in AppleBridgeConfig — and a refusal that withholds it
     turns a detour into a dead end.
     """
+    # Where the package comes from is a property of THIS machine, not of the
+    # developer's. Measured on Linux 2026-08-18: this message offered `brew
+    # install` to a Debian host, which is the reporter's point reproduced by
+    # our own code (emaculation t=12754).
     return ("hfsutils is not installed, so nothing here can %s: missing %s. "
-            "It is not part of macOS — `brew install hfsutils` (or MacPorts "
-            "`port install hfsutils`), then run this again.%s"
+            "%s, then run this again.%s"
             % (action, ", ".join(missing),
+               note or platform_seam.package_note("hfsutils"),
                (" " + alternative) if alternative else ""))
 
 
@@ -281,6 +286,13 @@ def probe_emulator_bundle(run=None, exists=None, candidates=BUNDLE_CANDIDATES,
                 "override_missing": path}
     for line in run(["pgrep", "-fl", "BasiliskII|SheepShaver"]).splitlines():
         m = re.search(r"(/.*?\.app)/Contents/MacOS/", line)
+        if not m:
+            # Not a bundle: on Linux the command line IS the executable —
+            # /usr/bin/SheepShaver, ~/Apps/BasiliskII.AppImage, a build tree.
+            # Measured 2026-08-18: the bundle-shaped pattern matched nothing
+            # there, so discovery fell through to /Applications and reported
+            # "not found" on a host where the emulator was running.
+            m = re.search(r"(/\S*(?:BasiliskII|SheepShaver)[^\s]*)", line)
         if not (m and exists(m.group(1))):
             continue
         # Gatekeeper TRANSLOCATION: a quarantined app is run from a randomly
@@ -369,7 +381,7 @@ def probe_emulator_bundle(run=None, exists=None, candidates=BUNDLE_CANDIDATES,
 
 def probe(run=None, read=None, exists=None, addresses=None,
           prefs_path=None, netmode_path=None,
-          local_env_path=LOCAL_ENV, emulator_app=None):
+          local_env_path=LOCAL_ENV, emulator_app=None, service=None):
     """Everything the decision needs, gathered read-only."""
     run = run or _run
     read = read or _read
@@ -417,6 +429,8 @@ def probe(run=None, read=None, exists=None, addresses=None,
     return {
         "bundle": bundle,
         "prefs_choice": choice,
+        # See bridge_doctor.collect: the platform is a value, not the host.
+        "service": service or platform_seam.service(),
         "hfsutils": probe_hfsutils(),
         "processes": procs,
         "emulator_prefs": emulator_prefs,
@@ -516,9 +530,20 @@ def decide(probes, force_slirp=False, want_agent=True):
     elif not bundle["helper"]:
         notes.append(_item(
             NOTE, "no_etherhelper",
-            "no etherhelpertool in the emulator bundle: the etherhelper branch "
-            "does not exist on this machine at all (R8), which settles the "
-            "backend before the interface count is consulted."))
+            ("no etherhelpertool in the emulator bundle: the etherhelper "
+             "branch does not exist on this machine at all (R8), which settles "
+             "the backend before the interface count is consulted."
+             if bundle.get("app") else
+             # Saying this about a bundle nobody found describes a probe that
+             # never ran. On Linux there is no bundle to carry a helper at all
+             # (D-024), and the honest sentence is about the search.
+             "no emulator was found, so nothing could be probed for an "
+             "etherhelpertool. On this host the backend question is settled "
+             "by the platform rather than by the bundle (D-024). If an "
+             "emulator IS installed here, name it: "
+             "`--emulator-app /path/to/emulator` — discovery looks at running "
+             "processes first, then well-known locations, and a layout nobody "
+             "guessed needs telling.")))
 
     if bundle.get("translocated"):
         notes.append(_item(
@@ -531,10 +556,22 @@ def decide(probes, force_slirp=False, want_agent=True):
             "`xattr -dr com.apple.quarantine <BasiliskII.app>`, then move it out "
             "of the folder it was unzipped into and relaunch."))
 
-    if len(ifaces) < 2:
+    if not ifaces:
+        # Zero is not one. This branch printed "one usable interface (none
+        # found)" on Linux until 2026-08-18, because `ifconfig` is not there
+        # and nothing noticed the empty list — a confident wrong statement
+        # about the machine, which is worse than the missing fact.
+        notes.append(_item(
+            NOTE, "no_interfaces",
+            "NO usable interface could be read on this host, so the address "
+            "questions below cannot be answered — not that the answer is one "
+            "interface. slirp does not need one (the guest dials 10.0.2.2 and "
+            "the server binds 0.0.0.0), so the install proceeds; but `IP=` "
+            "cannot be filled in with a LAN address from here."))
+    elif len(ifaces) < 2:
         notes.append(_item(
             NOTE, "single_interface",
-            f"one usable interface ({', '.join(ifaces) or 'none found'}) — on a "
+            f"one usable interface ({', '.join(ifaces)}) — on a "
             "single-NIC host a bridged backend cannot reach the machine it runs "
             "in (D-015), so slirp is the only branch that can work here."))
 
@@ -606,7 +643,18 @@ def decide(probes, force_slirp=False, want_agent=True):
                        emulator_app=bundle["app"]))
 
     # --- who starts the server (R15: one launch path per installation) -----
-    if want_agent:
+    svc = probes.get("service") or platform_seam.service()
+    if want_agent and not svc["supported"]:
+        # Naming what is missing is a true sentence about this machine;
+        # planning a launchd agent on a host with no launchd is not (R13).
+        notes.append(_item(
+            NOTE, "no_service_manager",
+            f"no supported service manager here ({svc['kind'] or 'unknown'} "
+            "is not wired up yet), so the host server is NOT installed to "
+            "start at login. Start it by hand: "
+            f"`{platform_seam.manual_start_hint()}` — the redirect matters, a "
+            "TTY gives the interactive prompt and no control port (R12)."))
+    elif want_agent:
         steps.append(_item(
             STEP, "install_agent",
             "install the launchd agent so the host server starts at login",
