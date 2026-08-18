@@ -214,5 +214,89 @@ class LinuxDiscovery(unittest.TestCase):
         self.assertIn("--emulator-app", text)
 
 
+class TtyGatedPrompt(unittest.TestCase):
+    """Ask a human; never ask a script.
+
+    Requested in the field (emaculation t=12754). The installer answered with
+    `--emulator-app` on the grounds that a program which stops to ask cannot
+    run unattended — true of the *installed result* (D-018), which is not the
+    same claim as the installer never asking. These pin both halves, because
+    an isatty-dependent mode is exactly what R12 warns about and is only safe
+    while the non-interactive branch still names the flag.
+    """
+
+    def test_no_terminal_means_no_prompt_at_all(self):
+        asked = []
+        ask = install_bridge.emulator_asker(
+            isatty=lambda: False, input_fn=lambda p: asked.append(p) or "x")
+        self.assertIsNone(ask)
+        self.assertEqual(asked, [], "a pipe or cron job is never asked")
+
+    def test_json_output_is_never_interrupted_by_a_prompt(self):
+        self.assertIsNone(install_bridge.emulator_asker(
+            isatty=lambda: True, input_fn=lambda p: "x", as_json=True))
+
+    def test_a_terminal_gets_asked(self):
+        import io
+        ask = install_bridge.emulator_asker(
+            isatty=lambda: True, input_fn=lambda p: "/opt/SheepShaver",
+            out=io.StringIO())
+        self.assertIsNotNone(ask)
+        self.assertEqual(ask(), "/opt/SheepShaver")
+
+    def test_an_answered_path_becomes_the_emulator(self):
+        b = install_bridge.probe_emulator_bundle(
+            run=lambda a: "", exists=lambda p: p == "/opt/SheepShaver",
+            candidates=(), ask=lambda: "  /opt/SheepShaver  ")
+        self.assertEqual(b["app"], "/opt/SheepShaver")
+        self.assertEqual(b["source"], "operator (prompted)")
+
+    def test_an_empty_answer_leaves_the_flag_advice_standing(self):
+        b = install_bridge.probe_emulator_bundle(
+            run=lambda a: "", exists=lambda p: False, candidates=(),
+            ask=lambda: "")
+        self.assertIsNone(b["app"])
+        self.assertNotIn("asked_missing", b)
+
+    def test_a_typed_path_that_is_not_there_is_reported_not_swallowed(self):
+        """Otherwise the operator believes they answered and the installer
+        goes on disagreeing about something else entirely."""
+        b = install_bridge.probe_emulator_bundle(
+            run=lambda a: "", exists=lambda p: False, candidates=(),
+            ask=lambda: "/opt/typo")
+        self.assertEqual(b["asked_missing"], "/opt/typo")
+        probes = install_bridge.probe(
+            run=lambda a: "", read=lambda p: "", exists=lambda p: False,
+            addresses=[], prefs_path="/tmp/none", local_env_path="/none",
+            ask=lambda: "/opt/typo")
+        notes = {n["key"]: n for n in install_bridge.decide(probes)["notes"]}
+        self.assertIn("asked_path_missing", notes)
+        self.assertIn("/opt/typo", notes["asked_path_missing"]["message"])
+
+    def test_the_helper_note_does_not_call_an_elf_a_bundle(self):
+        """The same defect class one notch smaller: describing a macOS layout
+        to a host that has none."""
+        probes = install_bridge.probe(
+            run=lambda a: "", read=lambda p: "",
+            exists=lambda p: p == "/opt/SheepShaver",
+            addresses=[], prefs_path="/tmp/none", local_env_path="/none",
+            emulator_app="/opt/SheepShaver")
+        notes = {n["key"]: n["message"]
+                 for n in install_bridge.decide(probes)["notes"]}
+        self.assertIn("no_etherhelper", notes)
+        self.assertNotIn("in the emulator bundle", notes["no_etherhelper"])
+        self.assertIn("D-024", notes["no_etherhelper"])
+
+    def test_a_refused_prompt_is_not_an_error(self):
+        """EOF or Ctrl-C answers nothing and must not raise."""
+        import io
+
+        def boom(_prompt):
+            raise EOFError
+        ask = install_bridge.emulator_asker(
+            isatty=lambda: True, input_fn=boom, out=io.StringIO())
+        self.assertEqual(ask(), "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

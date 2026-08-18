@@ -246,8 +246,57 @@ def bundle_dirs_from_prefs(emulator_prefs):
     return out
 
 
+def emulator_asker(isatty=None, input_fn=None, out=None, as_json=False):
+    """-> a callable that ASKS where the emulator is, or None to stay silent.
+
+    Requested by the reader who ported the installer to Linux (emaculation
+    t=12754): "possibly to ask the user to locate the emulator if it isn't
+    automatically found". The original answer was `--emulator-app`, on the
+    grounds that a program which stops to ask cannot run from a script, a cron
+    job or another machine (D-018).
+
+    That reasoning stretched further than the decision it came from. D-018
+    requires the INSTALLED RESULT to start with nobody at the keyboard; the
+    installer itself is run once, by a person, who is by definition there. So
+    the two cases get the two behaviours they deserve:
+
+      * a terminal on stdin -> ask, because a human can answer;
+      * anything else (a pipe, a cron job, ssh without a tty, `--json`)
+        -> no prompt at all, and the note naming `--emulator-app` stands.
+
+    The isatty split is exactly the shape R12 warns about — a mode chosen
+    silently by whether a terminal is attached. It is safe HERE only because
+    the non-interactive branch is not silent: it prints the flag that does the
+    same job. Keep it that way, or this becomes the defect R12 describes.
+    """
+    if as_json:
+        return None                     # a prompt would corrupt the document
+    isatty = isatty if isatty is not None else sys.stdin.isatty
+    try:
+        interactive = bool(isatty())
+    except (OSError, ValueError):       # a closed or detached stdin
+        interactive = False
+    if not interactive:
+        return None
+    input_fn = input_fn or input
+    stream = out or sys.stdout
+
+    def ask():
+        print("\nNo emulator was found automatically.", file=stream)
+        print("Enter the path to BasiliskII or SheepShaver, or press Return "
+              "to skip:", file=stream)
+        try:
+            return input_fn("  path> ")
+        except (EOFError, KeyboardInterrupt):
+            print("", file=stream)
+            return ""
+
+    return ask
+
+
 def probe_emulator_bundle(run=None, exists=None, candidates=BUNDLE_CANDIDATES,
-                          prefs_dirs=(), listdir=None, override=None):
+                          prefs_dirs=(), listdir=None, override=None,
+                          ask=None):
     """-> {app, helper, source} — the emulator bundle and whether it can do etherhelper.
 
     R8 makes this the FIRST question, ahead of counting interfaces: whether the
@@ -361,6 +410,23 @@ def probe_emulator_bundle(run=None, exists=None, candidates=BUNDLE_CANDIDATES,
             if found:
                 break
 
+    # Everything automatic has now failed. If — and only if — somebody is at
+    # the keyboard, ask them; a script gets no prompt and keeps the note that
+    # names `--emulator-app` (see emulator_asker).
+    asked = None
+    if not found and ask:
+        answer = (ask() or "").strip()
+        if answer:
+            path = os.path.expanduser(answer)
+            if exists(path):
+                found, source = path, "operator (prompted)"
+            else:
+                # NOT silent: a typed path that is not there must come back as
+                # a statement about that path, or the operator is left thinking
+                # they answered and the installer disagreed about something
+                # else entirely.
+                asked = path
+
     probe_target = found or note      # the helper question is about the bundle,
     # KNOWN LIMITATION, measured 2026-07-30: this is a PRESENCE test, and presence
     # is not usability. The helper published inside every emaculation build is
@@ -376,12 +442,15 @@ def probe_emulator_bundle(run=None, exists=None, candidates=BUNDLE_CANDIDATES,
     out = {"app": found, "helper": helper, "source": source}
     if note:
         out["translocated"] = note
+    if asked:
+        out["asked_missing"] = asked
     return out
 
 
 def probe(run=None, read=None, exists=None, addresses=None,
           prefs_path=None, netmode_path=None,
-          local_env_path=LOCAL_ENV, emulator_app=None, service=None):
+          local_env_path=LOCAL_ENV, emulator_app=None, service=None,
+          ask=None):
     """Everything the decision needs, gathered read-only."""
     run = run or _run
     read = read or _read
@@ -404,7 +473,7 @@ def probe(run=None, read=None, exists=None, addresses=None,
 
     bundle = probe_emulator_bundle(
         run, exists, prefs_dirs=bundle_dirs_from_prefs(emulator_prefs),
-        override=emulator_app)
+        override=emulator_app, ask=ask)
 
     # Second pass, and the reason this is not one call: bundle discovery needs
     # the prefs to find unusual install folders, so a prefs file has to be
@@ -530,9 +599,18 @@ def decide(probes, force_slirp=False, want_agent=True):
     elif not bundle["helper"]:
         notes.append(_item(
             NOTE, "no_etherhelper",
-            ("no etherhelpertool in the emulator bundle: the etherhelper "
-             "branch does not exist on this machine at all (R8), which settles "
-             "the backend before the interface count is consulted."
+            (("no etherhelpertool in the emulator bundle: the etherhelper "
+              "branch does not exist on this machine at all (R8), which "
+              "settles the backend before the interface count is consulted."
+              if str(bundle.get("app", "")).endswith(".app") else
+              # Not a bundle at all: on Linux the emulator is an executable,
+              # and `etherhelper` is compiled in only under
+              # ENABLE_MACOSX_ETHERHELPER (D-024). Saying "not in the bundle"
+              # here describes a macOS layout this host does not have.
+              "this emulator is not a macOS bundle, and `etherhelper` is "
+              "built only into the macOS one (D-024) — so that branch does "
+              "not exist here and the backend question is settled before the "
+              "interface count is consulted.")
              if bundle.get("app") else
              # Saying this about a bundle nobody found describes a probe that
              # never ran. On Linux there is no bundle to carry a helper at all
@@ -544,6 +622,13 @@ def decide(probes, force_slirp=False, want_agent=True):
              "`--emulator-app /path/to/emulator` — discovery looks at running "
              "processes first, then well-known locations, and a layout nobody "
              "guessed needs telling.")))
+
+    if bundle.get("asked_missing"):
+        notes.append(_item(
+            NOTE, "asked_path_missing",
+            f"the path you entered does not exist: {bundle['asked_missing']}. "
+            "Nothing was recorded for it — check the spelling and re-run, or "
+            "pass `--emulator-app <path>`."))
 
     if bundle.get("translocated"):
         notes.append(_item(
@@ -1651,7 +1736,8 @@ def main(argv=None):
     seed_image = args.seed_guest_prefs
     kit_dir = args.export_guest_kit
 
-    probes = probe(emulator_app=args.emulator_app)
+    probes = probe(emulator_app=args.emulator_app,
+                   ask=emulator_asker(as_json=as_json))
     plan = decide(probes, force_slirp=force, want_agent=want_agent)
 
     results = None
