@@ -57,8 +57,14 @@ except ImportError:            # deployed copy predating the module
 LAUNCHD_LABEL = "de.390er.applebridge-host"
 DAEMON_PORT = 9000
 CONTROL_PORT = 9001
-PREFS_PATH = os.path.expanduser("~/.basilisk_ii_prefs")
-NETMODE_PATH = os.path.expanduser("~/.basilisk_ii_prefs.netmode")
+import emulator_prefs                                  # noqa: E402  (flat host/ import)
+
+# Which emulator's prefs file this machine actually uses is a QUESTION, not a
+# constant: SheepShaver keeps its own, and reading Basilisk's on a SheepShaver
+# host reports on a file nothing writes. `collect()` resolves it per run; these
+# stay as the shape of the default for callers that pass nothing.
+PREFS_PATH = emulator_prefs.prefs_path(emulator_prefs.DEFAULT)
+NETMODE_PATH = emulator_prefs.netmode_path(PREFS_PATH)
 
 # Finding levels, ordered by severity — `verdict` reports the worst one seen.
 ERROR, WARN, INFO = "error", "warn", "info"
@@ -550,13 +556,15 @@ def interpret(probes):
             (f"set 'ether {intended}' in {emu['prefs_path']} and relaunch"
              if intended else
              "record the intended backend (host/install_bridge.py writes "
-             f"{os.path.basename(NETMODE_PATH)}) or set {emu['prefs_path']} back "
+             f"{os.path.basename(emu['prefs_path'])}{emulator_prefs.NETMODE_SUFFIX}) "
+             f"or set {emu['prefs_path']} back "
              "to the backend this stack was set up for, then relaunch")))
     if ether and intended and ether != intended:
         out.append(_finding(
             WARN, "ether_drift",
             f"Emulator backend '{ether}' differs from the intended "
-            f"'{intended}' recorded in .basilisk_ii_prefs.netmode.",
+            f"'{intended}' recorded in "
+            f"{os.path.basename(emu['prefs_path'])}{emulator_prefs.NETMODE_SUFFIX}.",
             f"set 'ether {intended}' in {emu['prefs_path']} and relaunch"))
     if (ether or "").startswith("etherhelper/") and emulator_running \
             and not proc["etherhelpertool"]:
@@ -661,7 +669,7 @@ def verdict(findings):
 # public entry point
 # --------------------------------------------------------------------------
 def collect(run=None, read=None, uid=None, host_ip=DEFAULT_HOST_IP,
-            prefs_path=PREFS_PATH, netmode_path=NETMODE_PATH, exists=None):
+            prefs_path=None, netmode_path=None, exists=None):
     """Run the full sweep and return {probes, findings, verdict, ok}.
 
     `run`/`read` are injectable so the test suite can drive every failure mode
@@ -671,12 +679,25 @@ def collect(run=None, read=None, uid=None, host_ip=DEFAULT_HOST_IP,
     read = read or _read
     uid = os.getuid() if uid is None else uid
 
+    processes = probe_processes(run)
+    # An explicitly passed path wins (the test suite pins one); otherwise ask
+    # which emulator this machine runs. A running SheepShaver is the whole
+    # reason this is not a constant.
+    if prefs_path:
+        choice = {"emulator": None, "path": prefs_path,
+                  "netmode": netmode_path or emulator_prefs.netmode_path(prefs_path),
+                  "source": "caller", "ambiguous": False, "present": []}
+    else:
+        choice = emulator_prefs.resolve(processes=processes, exists=exists)
+    prefs_path, netmode_path = choice["path"], choice["netmode"]
+
     probes = {
         "uid": uid,
+        "prefs_choice": choice,
         "launchd": probe_launchd(run, uid, exists),
         "sockets": probe_sockets(run),
         "network": probe_network(run, host_ip),
-        "processes": probe_processes(run),
+        "processes": processes,
         "emulator_prefs": probe_emulator_prefs(read, prefs_path, netmode_path),
         "installation": probe_installation(read, exists),
     }

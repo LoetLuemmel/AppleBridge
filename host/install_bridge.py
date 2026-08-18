@@ -74,12 +74,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bridge_doctor                                   # noqa: E402  (path first)
 import host_config                                     # noqa: E402
 import macbinary                                       # noqa: E402
+import emulator_prefs as emu_prefs                     # noqa: E402  (WHICH prefs file)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 SLIRP = "slirp"
-PREFS_PATH = os.path.expanduser("~/.basilisk_ii_prefs")
-NETMODE_PATH = PREFS_PATH + ".netmode"
+# Not a constant — SheepShaver keeps its own prefs file, and writing `ether
+# slirp` into Basilisk's on a SheepShaver host configures nothing while
+# verifying itself (the write is confirmed by re-reading what it just wrote).
+# `probe()` resolves it; these remain the shape of the default.
+PREFS_PATH = emu_prefs.prefs_path(emu_prefs.DEFAULT)
+NETMODE_PATH = emu_prefs.netmode_path(PREFS_PATH)
 LOCAL_ENV = os.path.join(HERE, "local.env")
 
 # Where an install run leaves its record. The report has always gone to stdout
@@ -363,23 +368,57 @@ def probe_emulator_bundle(run=None, exists=None, candidates=BUNDLE_CANDIDATES,
 
 
 def probe(run=None, read=None, exists=None, addresses=None,
-          prefs_path=PREFS_PATH, netmode_path=NETMODE_PATH,
+          prefs_path=None, netmode_path=None,
           local_env_path=LOCAL_ENV, emulator_app=None):
     """Everything the decision needs, gathered read-only."""
     run = run or _run
     read = read or _read
 
+    procs = bridge_doctor.probe_processes(run)
+    # WHICH prefs file, before anything reads one. A caller that pins a path
+    # (the test suite) keeps it; otherwise a running emulator decides, because
+    # it is the process holding the file this installer is about to rewrite.
+    if prefs_path:
+        choice = {"emulator": None, "path": prefs_path, "source": "caller",
+                  "netmode": netmode_path or emu_prefs.netmode_path(prefs_path),
+                  "ambiguous": False, "present": []}
+    else:
+        choice = emu_prefs.resolve(processes=procs, exists=exists)
+
     # Emulator prefs FIRST: the bundle search uses the folders they name, so a
     # machine whose layout nobody guessed is still discoverable.
     emulator_prefs = bridge_doctor.probe_emulator_prefs(
-        read, prefs_path, netmode_path)
+        read, choice["path"], choice["netmode"])
+
+    bundle = probe_emulator_bundle(
+        run, exists, prefs_dirs=bundle_dirs_from_prefs(emulator_prefs),
+        override=emulator_app)
+
+    # Second pass, and the reason this is not one call: bundle discovery needs
+    # the prefs to find unusual install folders, so a prefs file has to be
+    # picked first — but where nothing was running, a DISCOVERED emulator names
+    # the program better than a file's mtime does. Only the two weak sources
+    # are revisited; a running process is never overruled.
+    if choice["source"] in ("most recently modified of two",
+                            "default (no prefs file exists yet)"):
+        again = emu_prefs.resolve(processes=procs, bundle=bundle, exists=exists)
+        if again["path"] != choice["path"]:
+            # The bundle may CORRECT the guess, but it may not CLEAR the doubt:
+            # discovery walks an ordered candidate list with Basilisk first, so
+            # on a machine carrying both emulators it names Basilisk whether or
+            # not that is the one in use. Adopting its answer while keeping the
+            # flag is the honest combination — the path improves, the caller is
+            # still told two are installed.
+            choice = dict(again,
+                          ambiguous=again["ambiguous"] or choice["ambiguous"])
+            emulator_prefs = bridge_doctor.probe_emulator_prefs(
+                read, choice["path"], choice["netmode"])
 
     return {
-        "bundle": probe_emulator_bundle(
-            run, exists, prefs_dirs=bundle_dirs_from_prefs(emulator_prefs),
-            override=emulator_app),
+        "bundle": bundle,
+        "prefs_choice": choice,
         "hfsutils": probe_hfsutils(),
-        "processes": bridge_doctor.probe_processes(run),
+        "processes": procs,
         "emulator_prefs": emulator_prefs,
         "addresses": (host_config.ipv4_addresses(
             lambda cmd: run(cmd)) if addresses is None else addresses),
@@ -391,7 +430,7 @@ def probe(run=None, read=None, exists=None, addresses=None,
         "default_route_interface": bridge_doctor.probe_network(
             run, "0.0.0.0").get("default_route_interface"),
         "local_env_exists": (exists or os.path.exists)(local_env_path),
-        "paths": {"prefs": prefs_path, "netmode": netmode_path,
+        "paths": {"prefs": choice["path"], "netmode": choice["netmode"],
                   "local_env": local_env_path},
     }
 
@@ -1433,6 +1472,11 @@ def format_text(probes, plan, results=None, dry_run=True):
     lines.append(f"emulator bundle:  {bundle['app'] or '— not found —'}"
                  + (f"   ({bundle['source']})" if bundle["source"] else ""))
     lines.append(f"etherhelpertool:  {'present' if bundle['helper'] else 'absent'}")
+    choice = probes.get("prefs_choice") or {}
+    if choice:
+        # Name the file that was read. The defect this replaces was invisible
+        # precisely because nothing ever said WHICH prefs file it had verified.
+        lines.append(f"prefs file:       {emu_prefs.describe(choice)}")
     lines.append(f"current backend:  {emu.get('ether') or '—'}"
                  + (f"   (intended: {emu['intended']})" if emu.get("intended") else ""))
     lines.append(f"interfaces:       {', '.join(ifaces) or '—'}")
