@@ -144,7 +144,7 @@ able to cancel its own perception preconditions.
    verbatim. Read `$0A1C` low-mem directly (no `GetMenuBar` allocation in the filter).
 2. **v1 field scope — title + item-text + points, PLUS `enabled`.** `enabled` MUST be
    in v1: a disabled item does nothing, and the conductor would read the click as
-   "done" (the #196 rule one level deeper). `checkmark`/`cmd-key`/`submenu` deferred.
+   "done" (the #196 rule one level deeper). `checkmark`/`cmd-key` deferred; `submenu` was lifted in v2 (2026-08-08: one level, detected via cmdChar `$1B` + mark byte, resolved by a bounded, address-validated scan of the MenuList tail — see the header of `mac/journal/menuwalk.c`).
 
 ## Review incorporated (owner 12:04 — "Sie trägt")
 
