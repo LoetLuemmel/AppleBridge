@@ -2526,3 +2526,54 @@ wird. Der Defekt hätte sich beim ersten Lauf gemeldet statt nach sieben Stunden
 und zwar unabhängig davon, ob jemand an eine Shell gedacht hat. Das ist derselbe
 Satz wie überall in dieser Datei: **am Artefakt prüfen, nicht am Status** — hier
 nur eine Schicht früher als sonst, nämlich an der Datei statt am Objekt.
+
+## Eine LF-Quelle übersetzt fehlerfrei und erzeugt nichts — 2026-08-08
+
+Bei der THINK-C-Kalibrierung meldete eine Quelldatei von der Apprentice-CD
+**keinen einzigen Fehler** und lieferte **0 Byte Objektcode**. Kein Dialog,
+keine Warnung, in der Projektanzeige eine schlichte Null neben einem
+10-KB-Quelltext voller Funktionen.
+
+Bytegenau ausgezählt, beide von derselben CD:
+
+    sprintf.c      10.163 B   CR=0      LF=386     -> 0 Byte Objektcode
+    graphics_1.c   56.491 B   CR=2085   LF=0       -> 17.922 Byte Objektcode
+
+Der klassische Mac-Compiler trennt Zeilen an **CR**. Eine reine LF-Datei ist
+für ihn **eine** Zeile. Und dann greift der Mechanismus, der es lautlos macht:
+das erste `#define` schluckt den gesamten Rest der Datei als Makrorumpf, denn
+eine Makrodefinition endet am Zeilenende — hier am Dateiende. Zurück bleibt
+eine **leere Übersetzungseinheit**. Die übersetzt fehlerfrei.
+
+**Warum das eine Messung vergiftet statt sie zu stören:** wer „bestanden"
+daran festmacht, dass eine `.o`-Datei entstanden ist, zählt diesen Fall als
+Erfolg. Eine leere Übersetzungseinheit *erzeugt* eine `.o`-Datei. Der Fehler
+hebt die Quote und sieht dabei aus wie ein gutes Ergebnis — er ist damit
+schwerer zu bemerken als ein Absturz.
+
+**Der Korpus ist gemischt.** Nicht „die CD ist Mac, also CR": auf derselben
+Scheibe, in benachbarten Ordnern, liegt beides. Die Herkunft der Datei
+entscheidet, nicht die des Datenträgers.
+
+### Der Handgriff
+
+**Am Objekt prüfen, nicht am Ausbleiben einer Meldung.** Ein Compile ist
+bestanden, wenn Objektcode entstanden ist, dessen Größe zur Quelle passt —
+nicht, wenn kein Fehlerfenster erschien. Ein Objekt von 0 Byte ist ein
+Fehlschlag mit besonders freundlichem Gesicht.
+
+Und davor, eine Schicht früher: **CR und LF je Quelldatei zählen, bevor
+übersetzt wird.** Zwei Zeilen Code, und der Effekt kann nicht mehr still
+durchlaufen.
+
+### Was dieser Eintrag über sich selbst weiß
+
+Die Warnung existierte. Am selben Vormittag stand im Notizkanal „denkt an die
+Zeilenenden — die Dateien sind LF, nicht CR", bezogen auf einen anderen
+Datensatz. Drei Stunden später lief dieselbe Ursache in einer anderen
+Messstrecke wieder auf, gelesen von jemandem, der die Warnung gelesen hatte.
+
+Das ist der Eintrag „Eine Regel hat drei Stationen" von 2026-08-05, noch
+einmal und in neuer Kleidung: Absicht, Notiz, Code — und nur die dritte hält.
+Auch dieser Abschnitt hier ist erst Station zwei. Gehalten hat er, wenn eine
+Prüfung im Messaufbau LF-Quellen meldet, bevor jemand sie zählt.
