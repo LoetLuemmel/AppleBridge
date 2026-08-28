@@ -71,9 +71,15 @@ _SEGMENTS = re.compile(r"[;\r\n]|&&|\|\|")
 # (pattern, remedy). Scanned over captured diagnostics; the remedy is the rule
 # that applies, delivered at the moment it is true rather than left in a file.
 _REMEDIES = (
-    (re.compile(r"-31001|Not a text file", re.I),
+    # SC's own wording for the same defect is "Command line error: unable to open
+    # input file" — measured 2026-08-08 (RUECKMELDUNG_2026-08-08_xavier.md): 120
+    # failures went by without this remedy firing because only the OS-error spelling
+    # was matched. Also true of an ExtFS (Unix:) source, where SetFile does not stick.
+    (re.compile(r"-31001|Not a text file|unable to open input file", re.I),
      "The file has no TEXT type, so MPW will not open it — this is the usual "
-     "result of Duplicate out of Unix:. Fix with: SetFile -t TEXT -c 'MPS ' <file>"),
+     "result of Duplicate out of Unix:. Fix with: SetFile -t TEXT -c 'MPS ' <file>. "
+     "If the file is still on Unix: that will not stick: copy it to a local volume "
+     "first (mac_read_file -> mac_write_file), then compile."),
     (re.compile(r"\bError 48\b"),
      "One segment is over the 32 KB PC-relative reach. Link with ILink -model far "
      "(D-011 in DECISIONS.md); plain Link cannot do it."),
