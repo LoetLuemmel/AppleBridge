@@ -467,6 +467,7 @@ AppleBridge/
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - Detailed explanation of the MCP + OpenTransport dual paradigm
 - **[docs/SETUP.md](docs/SETUP.md)** - the detail behind the install: why the emulator's networking is configured this way, building the guest software from source, and the reference tables
 - **[docs/SCREENSHOT_V2.md](docs/SCREENSHOT_V2.md)** - how a look at the guest got 30× cheaper: region, PackBits and an XOR row delta in the daemon, an indexed PNG on the host, with the before/after measurements and the VNC assessment
+- **[docs/RUECKMELDUNG_2026-08-08_xavier.md](docs/RUECKMELDUNG_2026-08-08_xavier.md)** - dated feedback from the parallel (Jetson) session: four evidenced findings from one day's work, kept as delivered until each is incorporated or closed
 - **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** - Common issues, fixes, and known limitations
 - **[ASSEMBLY_TEMPLATE.md](ASSEMBLY_TEMPLATE.md)** - 68k assembly programming guide
 
