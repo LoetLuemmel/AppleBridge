@@ -6,7 +6,18 @@
  * the classic way to tell builds apart (replacing ad-hoc names like
  * "AppleBridge5"). One 'vers' file stamps the whole suite uniformly.
  *
- * This build: 0.8 development — d33 makes the journaling self-test tell the truth. JGATE
+ * This build: 0.8 development — d47 lets LAUNCH open a document: LAUNCH:<app><TAB><doc>
+ * hands the app an 'odoc' event in its launch parameters, so the THINK Project Manager
+ * starts on a project instead of on a modal Standard File picker nobody can drive.
+ * d46 makes a screenshot cost what it shows. SCREENSHOT2
+ * crops to the requested rectangle IN THE GUEST, packs every row with the Toolbox's
+ * PackBits, and — when the host names the generation of the frame it already holds —
+ * sends only the rows that changed since. The legacy verb streamed the raw 768 KB
+ * pixmap for every look, on a slirp link measured at ~200 KB/s: 4.4 s per capture, of
+ * which the base64 leg everyone suspected was milliseconds (measured 2026-08-30). The
+ * old SCREENSHOT is untouched, so an older host keeps working; the new verb is matched
+ * first because the old one is a prefix match that would have swallowed it silently.
+ * d33 makes the journaling self-test tell the truth. JGATE
  * reported `armed=0 calls=0 FAIL` for a working driver: it was written against the
  * pre-PR-#69 contract, where dCtlStorage held the driver's call counter. That field is now
  * a POINTER to a daemon-owned state block, and the driver treats a nil pointer as "not
@@ -109,14 +120,14 @@ resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
     development, 0x36,   /* development stage, non-release revision 38 (BCD) */
     verUS,
-    "0.8d45",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d45 - a refused Apple Event can finally fail"  /* long -> Get Info */
+    "0.8d47",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d47 - LAUNCH opens a document"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
     development, 0x36,
     verUS,
-    "0.8d45",
+    "0.8d47",
     "AppleBridge"        /* the shared/suite version line */
 };

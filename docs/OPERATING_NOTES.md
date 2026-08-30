@@ -2526,3 +2526,138 @@ wird. Der Defekt hätte sich beim ersten Lauf gemeldet statt nach sieben Stunden
 und zwar unabhängig davon, ob jemand an eine Shell gedacht hat. Das ist derselbe
 Satz wie überall in dieser Datei: **am Artefakt prüfen, nicht am Status** — hier
 nur eine Schicht früher als sonst, nämlich an der Datei statt am Objekt.
+
+## Eine LF-Quelle übersetzt fehlerfrei und erzeugt nichts — 2026-08-08
+
+Bei der THINK-C-Kalibrierung meldete eine Quelldatei von der Apprentice-CD
+**keinen einzigen Fehler** und lieferte **0 Byte Objektcode**. Kein Dialog,
+keine Warnung, in der Projektanzeige eine schlichte Null neben einem
+10-KB-Quelltext voller Funktionen.
+
+Bytegenau ausgezählt, beide von derselben CD:
+
+    sprintf.c      10.163 B   CR=0      LF=386     -> 0 Byte Objektcode
+    graphics_1.c   56.491 B   CR=2085   LF=0       -> 17.922 Byte Objektcode
+
+Der klassische Mac-Compiler trennt Zeilen an **CR**. Eine reine LF-Datei ist
+für ihn **eine** Zeile. Und dann greift der Mechanismus, der es lautlos macht:
+das erste `#define` schluckt den gesamten Rest der Datei als Makrorumpf, denn
+eine Makrodefinition endet am Zeilenende — hier am Dateiende. Zurück bleibt
+eine **leere Übersetzungseinheit**. Die übersetzt fehlerfrei.
+
+**Warum das eine Messung vergiftet statt sie zu stören:** wer „bestanden"
+daran festmacht, dass eine `.o`-Datei entstanden ist, zählt diesen Fall als
+Erfolg. Eine leere Übersetzungseinheit *erzeugt* eine `.o`-Datei. Der Fehler
+hebt die Quote und sieht dabei aus wie ein gutes Ergebnis — er ist damit
+schwerer zu bemerken als ein Absturz.
+
+**Der Korpus ist gemischt.** Nicht „die CD ist Mac, also CR": auf derselben
+Scheibe, in benachbarten Ordnern, liegt beides. Die Herkunft der Datei
+entscheidet, nicht die des Datenträgers.
+
+### Der Handgriff
+
+**Am Objekt prüfen, nicht am Ausbleiben einer Meldung.** Ein Compile ist
+bestanden, wenn Objektcode entstanden ist, dessen Größe zur Quelle passt —
+nicht, wenn kein Fehlerfenster erschien. Ein Objekt von 0 Byte ist ein
+Fehlschlag mit besonders freundlichem Gesicht.
+
+Und davor, eine Schicht früher: **CR und LF je Quelldatei zählen, bevor
+übersetzt wird.** Zwei Zeilen Code, und der Effekt kann nicht mehr still
+durchlaufen.
+
+### Was dieser Eintrag über sich selbst weiß
+
+Die Warnung existierte. Am selben Vormittag stand im Notizkanal „denkt an die
+Zeilenenden — die Dateien sind LF, nicht CR", bezogen auf einen anderen
+Datensatz. Drei Stunden später lief dieselbe Ursache in einer anderen
+Messstrecke wieder auf, gelesen von jemandem, der die Warnung gelesen hatte.
+
+Das ist der Eintrag „Eine Regel hat drei Stationen" von 2026-08-05, noch
+einmal und in neuer Kleidung: Absicht, Notiz, Code — und nur die dritte hält.
+Auch dieser Abschnitt hier ist erst Station zwei. Gehalten hat er, wenn eine
+Prüfung im Messaufbau LF-Quellen meldet, bevor jemand sie zählt.
+
+## `ProcessRequest` sits at the 68K frame limit: growing a struct it holds breaks the build — 2026-08-30
+
+**Symptom.** `SC main.c` fails with
+
+    File "HD:SRC:DevTools.proj:SC.admin:SC.src:SC[pp]:Source:CG68000:CGcntrl.c"; line 638  # Internal error compiling ProcessRequest
+
+after a change that never touched `ProcessRequest` — 14 bytes added to
+`ScreenshotData` in `applebridge.h` (the SCREENSHOT2 region/encoding fields).
+
+**Control that named the cause.** HEAD's `main.c` compiled against HEAD's
+header (`-i inchead:` first) passes; the same `main.c` against the new header
+fails. `ProcessRequest` had a `ScreenshotData` local (~790 bytes) on a frame
+that also holds two 8 KB command buffers and every block-scoped array of a
+~2 400-line function; the 68K `d16(An)` displacement reaches 32 KB, and the
+frame was within 14 bytes of it. The error message names the function, not
+the frame, and nothing in the diff points at `main.c`.
+
+**Handgriff.** A verb that needs more than a few bytes of locals gets its own
+`static Boolean XxxVerb(ABConn *, const char *)` above `ProcessRequest`, which
+only tests the prefix and returns the call (`Screenshot2Verb`, `ScreenshotVerb`
+are the pattern). When `main.c` fails with an *internal* error in a function
+you did not edit, compile HEAD against the old header before reading your own
+diff for the tenth time — twenty minutes here, measured.
+
+## Ein Screenshot kostet, was er zeigt — gemessen vor und nach SCREENSHOT2 — 2026-08-30
+
+**Ausgangslage.** `mac_screenshot` brauchte 4,4 s (drei Läufe 4,42/4,31/4,50 s;
+die Notiz vom 2026-08-04 nennt 4,7 s Median). Verdächtigt wurde die base64-
+Strecke. Gemessen: erstes Byte auf `:9001` kommt nach 3,9 s und **ist** das
+Ende — der ganze Rest ist der 786-KB-Rohtransfer über den Gast-OT-Stack und
+slirp (~200 KB/s). Host-PNG 0,31 s, base64 Millisekunden.
+
+**Was sich geändert hat** (`docs/SCREENSHOT_V2.md`): Ausschnitt, PackBits und
+XOR-Zeilendelta **im Gast**, indiziertes PNG auf dem Host. Zweiter Blick auf
+denselben Bildschirm: **0,14 s, 2,8 KB** statt 4,4 s, 787 KB. Ausschnitt
+400×300: 0,45 s. Erster Blick auf einem Link: 2,7 s — PackBits packt das
+gerasterte Desktopmuster nur 1,33:1; das zahlt man einmal pro Link.
+
+**Der Handgriff, der sich daraus ergibt.** Ein Ausschnitt lohnt sich jetzt
+auf der *Brücke*, nicht nur in der Antwort; die alte Tool-Beschreibung
+behauptete das schon, bevor es stimmte (der Host schickte das nackte Verb,
+`host_server.py:1445` vor diesem Datum). Und: die Kosten stehen in der Antwort
+— `encoding`, `wire_bytes`, `elapsed_ms` im `mac_screenshot`-Ergebnis. Wer
+nach dem Datum wieder 4 s misst, sieht dort `enc=0`: dann spricht ein alter
+Daemon, oder der Host läuft noch auf der Kopie vor `deploy_host.sh` — genau so
+sahen die ersten fünf Messungen nach dem Swap aus: neuer Daemon, alter Host,
+Legacy-Verb, 5,2 s, und kein Fehler weit und breit.
+
+**Das Verbose-Fenster ist selbst der Unterschied.** Zwischen zwei Aufnahmen
+ändern sich ~228 Zeilen: die Konsole protokolliert das Kommando. Ein reines
+Zeilendelta trug deshalb noch 138 KB; XOR mit der Vorgängerzeile macht daraus
+3 KB. `MONITOR:0` bringt ein leeres Delta auf 815 B — und das Ausblenden
+selbst kostet einmal 192 KB Delta, weil das Fenster verschwindet.
+
+## Ein Benchmark im Gast, per THINK C, ohne Hand am Gerät — was es gekostet hat — 2026-08-30
+
+**Was lief:** `host/bench/fbbench.c` als `main.c` in `CalibExpand.π`, TPM per
+`LAUNCH:<app><TAB><doc>` (0.8d47) direkt auf das Projekt geöffnet — kein
+modaler Dateiwähler mehr —, *Remove Objects* per echter Maus (`guest_input.py
+menu 196 9 210 108`), Return, Cmd-R, Return für *Bring up to date?*, Ergebnis
+per `READFILE`. Zwei Durchläufe, beide vollständig gelesen.
+
+**Drei Fallen, je eine Runde:**
+
+* **`NewPtr` von 4 × 768 KB schlägt still fehl** — THINK Cs Standardpartition
+  sind 384 KB. Das Programm lief, schrieb `capture failed` und war fertig; ohne
+  eine Zeile, die den Fehlschlag *benennt*, hätte das wie ein leeres Ergebnis
+  ausgesehen. `NewPtrSys` (System-Heap, wächst unter System 7) löste es; der
+  `MemError()`-Wert steht seither in der Datei.
+* **`mac_host_menu` verweigerte mit „outside the 0x768 screen"**:
+  `emulator_prefs.resolve()` hatte SheepShavers Prefs mit `screen win/0/768`
+  gewählt, obwohl Basilisk lief. `parse_guest_size` fällt jetzt bei einer
+  Nullseite auf den Standard zurück; der MCP-Prozess trägt das alte Modul bis
+  zum Neustart, die CLI nicht — deshalb lief die Geste über die CLI.
+* **Der Poll las „fertig" nicht**, obwohl die Datei fertig war: `sed -n 3p`
+  auf eine Antwort, deren Zeilenzahl von der Länge abhängt. Ein Leser, der
+  nach `STDOUT:<n>` schneidet (`readbench.py`), sah es beim ersten Versuch.
+
+**Und ein Befund, der eine Hypothese gekostet hat:** *rowdedup* — „das Muster
+wiederholt sich zeilenweise" — packte 1,58:1. Das Desktop-Dither alterniert
+Zeile für Zeile; benachbarte Zeilen sind nie gleich, ihre XOR-Summe fast leer.
+Das ist der ganze Unterschied zwischen 1,39:1 und 13,6:1, und er war ohne
+Messung nicht zu sehen.

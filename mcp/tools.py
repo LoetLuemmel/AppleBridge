@@ -202,8 +202,12 @@ checking a guess.""",
 
 Returns a base64-encoded PNG of the current desktop. Pass `region` as
 [x, y, width, height] (screen pixels, origin top-left, screen is 1024x768) to
-decode only that rectangle — e.g. read a single dialog instead of the whole
-frame, for a smaller, faster image.""",
+capture only that rectangle — the guest crops BEFORE the transfer (daemon
+0.8d46+), so a dialog-sized region costs a fraction of a full frame on the
+bridge, not just in the reply. Consecutive full-screen captures send only the
+rows that changed (row delta), so the second look at an unchanged screen is
+nearly free. The reply's `encoding` (raw/packbits/delta), `wire_bytes` and
+`elapsed_ms` say what the capture cost on the guest->host leg.""",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -233,6 +237,10 @@ Path uses : separator and points at the application file, e.g.
                 "path": {
                     "type": "string",
                     "description": "Mac path to the application (using : separator)"
+                },
+                "document": {
+                    "type": "string",
+                    "description": "Optional Mac path of a document the app opens at launch (odoc in the launch parameters; daemon 0.8d47+). Use it for apps whose cold start is a modal file picker, e.g. a THINK C project."
                 }
             },
             "required": ["path"]
@@ -1232,16 +1240,30 @@ def mac_screenshot(region: Optional[list] = None) -> Dict[str, Any]:
             except (ValueError, TypeError):
                 return {"success": False,
                         "error": "region must be [x, y, width, height] integers"}
-        # Full-screen (or cropped) pixmap transfer + host PNG decode.
+        # Pixmap transfer + host PNG decode. With a 0.8d46+ daemon the guest
+        # crops to the region and PackBits-packs the rows before the transfer,
+        # and a full-screen capture that follows another sends only the rows
+        # that changed; the SHOTINFO field reports which of those happened.
+        conn.last_shotinfo = None
         status, stdout, stderr = conn.send_command(command, timeout=30.0)
 
         if status == 0 and stdout:
             # stdout already contains base64-encoded PNG
-            return {
+            result = {
                 "success": True,
                 "image": stdout,  # Already base64 encoded
                 "format": "png"
             }
+            info = getattr(conn, "last_shotinfo", None)
+            if info:
+                for tok in info.split():
+                    k, _, v = tok.partition("=")
+                    if k and v.lstrip("-").isdigit():
+                        result[k] = int(v)
+                enc = result.get("enc")
+                if enc is not None:
+                    result["encoding"] = {0: "raw", 1: "packbits", 2: "delta", 3: "up+packbits"}.get(enc, str(enc))
+            return result
         else:
             return {
                 "success": False,
@@ -1254,8 +1276,12 @@ def mac_screenshot(region: Optional[list] = None) -> Dict[str, Any]:
         }
 
 
-def launch_app(path: str) -> Dict[str, Any]:
-    """Launch a GUI app on the Mac (foreground) via the daemon's LAUNCH verb."""
+def launch_app(path: str, document: Optional[str] = None) -> Dict[str, Any]:
+    """Launch a GUI app on the Mac (foreground) via the daemon's LAUNCH verb.
+
+    `document` (daemon 0.8d47+) is opened by the app at launch through an
+    'odoc' Apple Event in the launch parameters — the way to get past an
+    application whose cold start is a modal Standard File picker."""
     try:
         conn = get_connection()
         if not conn.is_connected():
@@ -1265,7 +1291,8 @@ def launch_app(path: str) -> Dict[str, Any]:
                 "error": "Mac not connected. Make sure the AppleBridge daemon is running and connected."
             }
         # The :9001 control server routes a raw 'LAUNCH:<path>' verb to the daemon.
-        status, stdout, stderr = conn.send_command("LAUNCH:" + path, timeout=15.0)
+        verb = "LAUNCH:" + path + ("\t" + document if document else "")
+        status, stdout, stderr = conn.send_command(verb, timeout=15.0)
         return {
             "success": status == 0,
             "status": status,

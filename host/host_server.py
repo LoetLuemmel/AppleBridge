@@ -634,15 +634,29 @@ def timeout_for(command):
     return DEFAULT_TIMEOUT
 
 
+def _region_row_bytes(width_px, depth):
+    """rowBytes of a guest-cropped region: pixels packed, no slack — the daemon
+    writes cropped rows contiguously (screenshot.c, CaptureScreenshot2)."""
+    return (width_px * depth + 7) // 8
+
+
 def screenshot_png(shot, region=None):
     """Decode a request_screenshot() dict to PNG bytes (or None).
 
-    `region` optionally crops to (x, y, w, h) screen pixels."""
+    `region` optionally crops to (x, y, w, h) screen pixels. A shot the guest
+    already cropped (v2) carries the region's pixels at (0, 0), so the crop is
+    only applied when the pixmap is the full screen. Indexed depths take the
+    slice-copy path (`raw_to_png_indexed`, ~4 ms for 1024x768); 16/32-bit still
+    go through the per-pixel truecolor encoder."""
     if not shot:
         return None
-    return screenshot_decode.raw_to_png(
-        shot["width"], shot["height"], shot["depth"],
-        shot["row_bytes"], shot["clut"], shot["pixels"], region=region)
+    if shot.get("region_origin") is not None:
+        region = None
+    elif region is None:
+        region = shot.get("region")
+    fn = screenshot_decode.raw_to_png_indexed if shot["depth"] <= 8 else screenshot_decode.raw_to_png
+    return fn(shot["width"], shot["height"], shot["depth"],
+              shot["row_bytes"], shot["clut"], shot["pixels"], region=region)
 
 
 class AppleBridgeServer:
@@ -683,6 +697,15 @@ class AppleBridgeServer:
         # command preceded it -> the prime suspect. Cleared on a clean response.
         self.last_command = None
         self.last_command_time = 0.0
+        # Screenshot v2 state (IMAGE2: region + PackBits + row delta, daemon
+        # 0.8d46+). `shot_v2` is None until the first capture on a link tells
+        # us which verb the daemon speaks; `shot_prev` is the last FULL frame
+        # received (dict with gen + pixels) and is the base a delta applies to.
+        # Both are keyed on the link id: a reconnected daemon has an empty
+        # retained frame and gen 0, so a base from the old link is void.
+        self.shot_v2 = None
+        self.shot_prev = None
+        self.shot_link = None
 
     def _note_command(self, desc):
         """Record the command about to be sent, for crash correlation. Heartbeats
@@ -1426,16 +1449,205 @@ class AppleBridgeServer:
         self.authed = True
         log(f"HELLO: negotiated protocol v{self.peer_version} + auth OK")
 
-    def request_screenshot(self):
+    def request_screenshot(self, region=None, delta=True):
         """Request a screenshot. Returns a dict with the decoded pixmap parts:
 
-            {width, height, depth, row_bytes, clut: bytes, pixels: bytes}
+            {width, height, depth, row_bytes, clut: bytes, pixels: bytes,
+             region: (x, y, w, h) or None, enc, gen, wire_bytes}
 
-        or None on failure. The daemon streams:
+        or None on failure. Two wire formats:
+
+        v2 (daemon 0.8d46+), tried first:
+            SCREENSHOT2:<x>:<y>:<w>:<h>:<flags>:<baseGen>   ->
+            IMAGE2:<w>:<h>:<depth>:<rowBytes>:<clutCount>:<rx>:<ry>:<rw>:<rh>:<enc>:<gen>:<dataSize>\\n
+            <CLUT><payload>
+        where the guest crops to the region BEFORE the transfer, packs each row
+        with PackBits (enc 1), and — when the host names the generation it holds
+        and asks for the full screen — sends only the rows that changed since
+        (enc 2). The 768 KB raw pixmap that cost ~4 s over slirp becomes tens of
+        KB, or a few hundred bytes when nothing moved (measured 2026-08-30).
+
+        legacy, used when the daemon answers the v2 verb with its "Invalid
+        command format" frame (remembered per link):
             IMAGE:<w>:<h>:<depth>:<rowBytes>:<clutCount>:<dataSize>\\n
             <clutCount*3 CLUT bytes><dataSize pixel bytes>
         Read length-framed — the same content-agnostic approach as commands.
         """
+        if not self.connected or not self.client_socket:
+            return None
+        link = (self.link_epoch, self.link_generation)
+        if self.shot_link != link:
+            self.shot_link = link
+            self.shot_v2 = None
+            self.shot_prev = None
+        if self.shot_v2 is not False:
+            shot = self._request_screenshot_v2(region, delta)
+            if shot is not None or self.shot_v2 is not False:
+                return shot
+            # fell through: the daemon does not speak v2 -> legacy, once per link
+        shot = self._request_screenshot_legacy()
+        if shot is not None and region is not None:
+            shot["region"] = tuple(region)   # crop host-side, as before
+        return shot
+
+    def _request_screenshot_v2(self, region, delta):
+        """The IMAGE2 exchange. Sets self.shot_v2 False (and returns None) when
+        the daemon rejects the verb, so the caller can fall back exactly once."""
+        if not self._drain():
+            self._mark_disconnected("drain detected closed socket")
+            return None
+        if region is not None:
+            rx, ry, rw, rh = (int(v) for v in region)
+            if rw <= 0 or rh <= 0:
+                return None
+        else:
+            rx, ry, rw, rh = 0, 0, 0, 0
+        full = region is None
+        base_gen = 0
+        flags = 1 | 4                               # PackBits rows, Up-predicted (enc 3)
+        if delta and full and self.shot_prev is not None:
+            flags |= 2
+            base_gen = self.shot_prev["gen"]
+        verb = f"SCREENSHOT2:{rx}:{ry}:{rw}:{rh}:{flags}:{base_gen}"
+        try:
+            self.client_socket.sendall(verb.encode("mac_roman"))
+        except OSError as e:
+            self._mark_disconnected(f"send failed: {e}")
+            return None
+
+        buf = bytearray()
+        wire = [0]
+
+        def _fill():
+            chunk = self.client_socket.recv(65536)
+            if not chunk:
+                raise ConnectionError("peer closed during screenshot")
+            buf.extend(chunk)
+            wire[0] += len(chunk)
+
+        def _read_line():
+            while True:
+                cr = buf.find(b"\r")
+                lf = buf.find(b"\n")
+                idx = min([x for x in (cr, lf) if x >= 0], default=-1)
+                if idx >= 0:
+                    line = bytes(buf[:idx])
+                    del buf[:idx + 1]
+                    return line
+                _fill()
+
+        def _read_exact(n):
+            while len(buf) < n:
+                _fill()
+            data = bytes(buf[:n])
+            del buf[:n]
+            return data
+
+        def _swallow_status_frame(first_line):
+            """Consume the rest of a STATUS frame whose first line we hold, so
+            the wire stays in step. Returns the STDERR text."""
+            # Two encoders write this frame: SendCommandResult skips the data
+            # block entirely at STDOUT:0, the hand-written rejection frames emit
+            # an empty one. Walk lines to STDERR (empties tolerated), then read
+            # exactly what is due — never one line more, since a read past the
+            # frame blocks on a live socket until the 30 s timeout.
+            err = b""
+            for _ in range(8):
+                line = _read_line()
+                if line.startswith(b"STDERR:"):
+                    break
+                if line.startswith(b"STDOUT:"):
+                    n = int(line.split(b":")[1])
+                    if n > 0:
+                        _read_exact(n); _read_line()
+            else:
+                raise ValueError("STATUS frame without STDERR")
+            n = int(line.split(b":")[1])
+            if n > 0:
+                err = _read_exact(n); _read_line()
+            _read_line()                             # end marker
+            return err.decode("mac_roman", "replace")
+
+        try:
+            self.client_socket.settimeout(SCREENSHOT_TIMEOUT)
+            header = _read_line()
+            if header.startswith(b"STATUS:"):
+                err = _swallow_status_frame(header)
+                if "Invalid command" in err:
+                    log("screenshot: daemon predates IMAGE2 -> legacy SCREENSHOT for this link")
+                    self.shot_v2 = False
+                else:
+                    log(f"screenshot v2: daemon error {err!r}")
+                return None
+            if not header.startswith(b"IMAGE2:"):
+                log(f"screenshot v2: unexpected header {header[:48]!r}")
+                self._mark_disconnected("screenshot v2 header desync")
+                return None
+            parts = header.split(b":")
+            if len(parts) < 13:
+                log(f"screenshot v2: malformed header {header[:64]!r}")
+                self._mark_disconnected("screenshot v2 malformed header")
+                return None
+            w, h, depth, rb, cc, ox, oy, ow, oh, enc, gen, ds = (int(parts[i]) for i in range(1, 13))
+            if not (0 <= ds <= MAX_DECLARED) or not (0 <= cc <= 256) or enc not in (0, 1, 2, 3):
+                log(f"screenshot v2 declared out of range data={ds} clut={cc} enc={enc}; dropping link")
+                self._mark_disconnected("screenshot oversized declared length")
+                return None
+            clut = _read_exact(cc * 3) if cc > 0 else b""
+            payload = _read_exact(ds)
+            self.shot_v2 = True
+        except (socket.timeout, ValueError) as e:
+            log(f"screenshot v2 read error: {e}; got {len(buf)}B")
+            return None
+        except (OSError, ConnectionError) as e:
+            self._mark_disconnected(f"recv error during screenshot: {e}")
+            return None
+        finally:
+            try:
+                if self.client_socket:
+                    self.client_socket.settimeout(None)
+            except OSError:
+                pass
+
+        # Decode the payload into a plain pixmap (whole frame or the region).
+        try:
+            is_full = (ox == 0 and oy == 0 and ow == w and oh == h)
+            if enc == 2:
+                prev = self.shot_prev
+                if prev is None or not is_full or prev["gen"] != gen - 1 \
+                        or (prev["width"], prev["height"], prev["depth"], prev["row_bytes"]) != (w, h, depth, rb):
+                    log(f"screenshot v2: delta gen={gen} without a matching base; dropping link")
+                    self._mark_disconnected("screenshot delta without base")
+                    return None
+                runs = screenshot_decode.parse_delta(payload, rb, packed=True)
+                pixels = screenshot_decode.apply_delta(prev["pixels"], rb, h, runs)
+                changed = sum(len(d) // rb for _, d in runs)
+                log(f"screenshot v2 {w}x{h} depth={depth} enc=2 gen={gen} rows_changed={changed} wire={wire[0]}B")
+            else:
+                sub_rb = rb if is_full else _region_row_bytes(ow, depth)
+                pixels = screenshot_decode.decode_rows(enc, payload, oh, sub_rb)
+                log(f"screenshot v2 {w}x{h} depth={depth} region={ox},{oy},{ow},{oh} enc={enc} gen={gen} wire={wire[0]}B")
+        except ValueError as e:
+            log(f"screenshot v2 decode failed: {e}")
+            return None
+
+        if is_full:
+            pixels_rb = rb
+            shot = {"width": w, "height": h, "depth": depth, "row_bytes": rb,
+                    "clut": clut, "pixels": pixels, "region": None}
+            if gen > 0:
+                self.shot_prev = {"gen": gen, "width": w, "height": h, "depth": depth,
+                                  "row_bytes": rb, "pixels": pixels}
+        else:
+            # The guest already cropped: hand back a pixmap of the region's size.
+            shot = {"width": ow, "height": oh, "depth": depth, "row_bytes": _region_row_bytes(ow, depth),
+                    "clut": clut, "pixels": pixels, "region": None,
+                    "region_origin": (ox, oy)}
+        shot.update({"enc": enc, "gen": gen, "wire_bytes": wire[0]})
+        return shot
+
+    def _request_screenshot_legacy(self):
+        """The original IMAGE exchange (daemon < 0.8d46): whole screen, raw."""
         if not self.connected or not self.client_socket:
             return None
         if not self._drain():
@@ -1497,7 +1709,8 @@ class AppleBridgeServer:
             pixels = _read_exact(ds)
             log(f"screenshot {w}x{h} depth={depth} rowBytes={rb} clut={cc} data={ds}B")
             return {"width": w, "height": h, "depth": depth,
-                    "row_bytes": rb, "clut": clut, "pixels": pixels}
+                    "row_bytes": rb, "clut": clut, "pixels": pixels,
+                    "region": None, "enc": 0, "gen": 0, "wire_bytes": ds + cc * 3}
         except (socket.timeout, ValueError) as e:
             log(f"screenshot read error: {e}; got {len(buf)}B")
             return None
@@ -2018,7 +2231,8 @@ def run_control_server(server):
                                 region = (rx, ry, rw, rh)
                             except (ValueError, IndexError):
                                 region = None
-                        shot = server.request_screenshot()
+                        t_shot = time.time()
+                        shot = server.request_screenshot(region=region)
                         try:
                             png = screenshot_png(shot, region=region)
                         except Exception as e:
@@ -2028,8 +2242,15 @@ def run_control_server(server):
                             b64 = base64.b64encode(png).decode("ascii")
                             # Framed STATUS/STDOUT so the MCP text parser extracts
                             # the base64 PNG into stdout (base64 is ASCII-safe).
-                            out = f"STATUS:0\rSTDOUT:{len(b64)}\r{b64}\rSTDERR:0\r\r"
-                            log(f"screenshot -> {len(png)}B PNG ({len(b64)}B base64)")
+                            # A trailing SHOTINFO field (same shape as NOTES, read
+                            # by name, skipped by older readers) carries the wire
+                            # cost so a caller sees which leg it paid: enc 0 raw,
+                            # 1 PackBits rows, 2 row delta.
+                            ms = int((time.time() - t_shot) * 1000)
+                            note = (f"enc={shot.get('enc', 0)} gen={shot.get('gen', 0)} "
+                                    f"wire_bytes={shot.get('wire_bytes', 0)} elapsed_ms={ms}")
+                            out = f"STATUS:0\rSTDOUT:{len(b64)}\r{b64}\rSTDERR:0\rSHOTINFO:{len(note)}\r{note}\r\r"
+                            log(f"screenshot -> {len(png)}B PNG ({len(b64)}B base64) {note}")
                         else:
                             out = "STATUS:-1\rSTDOUT:0\rSTDERR:17\rScreenshot failed\r\r"
                     elif cmd == "MACSTATUS":

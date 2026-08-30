@@ -194,7 +194,7 @@ MENUWALK_DOC = os.path.join(_ROOT, "docs", "MENUWALK_DESIGN.md")
 
 # scalar offsets defined identically (same name, same value) in both C files
 _MB_OFFSETS = ["oMB_Magic", "oMB_Up", "oMB_Gen", "oMB_MenuCount", "oMB_Trunc",
-               "oMB_ItemCount", "oMB_MBarH", "oMB_Menus"]
+               "oMB_ItemCount", "oMB_MBarH", "oMB_BarCount", "oMB_Menus"]
 
 
 def test_mb_block_offsets_agree():
@@ -232,11 +232,11 @@ def test_mb_record_sizes_and_caps_agree():
     assert walk["MAX_ITEMS"] == main["kMB_MAX_ITEMS"], \
         "MAX_ITEMS %d != kMB_MAX_ITEMS %d" % (walk["MAX_ITEMS"], main["kMB_MAX_ITEMS"])
     items_base = walk["oMB_Menus"] + walk["MAX_MENUS"] * walk["MENU_REC"]
-    assert items_base == 670, "oMB_Items base drifted from 670: %d" % items_base
+    assert items_base == 1086, "oMB_Items base drifted from 1086: %d" % items_base
     # kMB_Size is a derived expression in both files; verify the derivation lands at
-    # the documented 4766 from the component defines this test already pins.
+    # the documented 5694 from the component defines this test already pins.
     total = items_base + walk["MAX_ITEMS"] * walk["ITEM_REC"]
-    assert total == 4766, "MB block size drifted from 4766: %d" % total
+    assert total == 5694, "MB block size drifted from 5694: %d" % total
 
 
 def test_mb_item_flag_bits():

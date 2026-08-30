@@ -37,7 +37,7 @@ PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 #
 # Entries may name a subdirectory; the loop creates it.
 RUNTIME_FILES=(host_server.py screenshot_decode.py macbinary.py bridge_doctor.py host_config.py
-               guest_input.py run_server.sh tools/notes.py)
+               platform_seam.py guest_input.py run_server.sh tools/notes.py)
 
 RESTART=1
 [ "${1:-}" = "--no-restart" ] && RESTART=0

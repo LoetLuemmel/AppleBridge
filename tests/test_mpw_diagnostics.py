@@ -88,6 +88,14 @@ class WhatMustNotChange(unittest.TestCase):
         self.assertTrue(any("-31001" in e for e in got["errors"]), got["errors"])
         self.assertTrue(any("SetFile -t TEXT" in r for r in got["remedies"]))
 
+    def test_sc_wording_of_the_missing_type_gets_the_remedy(self):
+        # 2026-08-08: SC says "unable to open input file", not -31001; the remedy
+        # never fired on 120 real failures until this spelling was matched too.
+        got = mpw.classify_diagnostics(
+            "### SC - Command line error: unable to open input file 'Unix:x:a.c'")
+        self.assertTrue(got["errors"], got)
+        self.assertTrue(any("SetFile -t TEXT" in r for r in got["remedies"]), got)
+
     def test_error_52_is_still_a_warning(self):
         got = mpw.classify_diagnostics(
             "### Link: Warning: File was not needed for link: (Error 52) StdCLib.o")

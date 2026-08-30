@@ -211,3 +211,50 @@ BridgeResult SendScreenshot(ABConn *conn, const ScreenshotData *s)
 
     return kBridgeNoErr;
 }
+
+/*
+ * Stream a SCREENSHOT2 reply (0.8d46).
+ *
+ * Wire format:
+ *   IMAGE2:<w>:<h>:<depth>:<rowBytes>:<clutCount>:<rx>:<ry>:<rw>:<rh>:<enc>:<gen>:<dataSize>\n
+ *   <clutCount*3 bytes CLUT>      (omitted when clutCount == 0)
+ *   <dataSize bytes payload>      (rows, packed rows, or delta runs — see screenshot.c)
+ *
+ * <w>/<h>/<rowBytes> describe the SCREEN; <rx>..<rh> the rectangle carried.
+ * The host reads each section by its declared length, as for IMAGE.
+ */
+BridgeResult SendScreenshot2(ABConn *conn, const ScreenshotData *s)
+{
+    char hdr[160];
+    char *p = hdr;
+    OSStatus err;
+
+    strcpy(p, PROTO_IMAGE2);         p += strlen(PROTO_IMAGE2);  /* "IMAGE2:" */
+    NumToString(s->width, p);        while (*p) p++; *p++ = ':';
+    NumToString(s->height, p);       while (*p) p++; *p++ = ':';
+    NumToString(s->depth, p);        while (*p) p++; *p++ = ':';
+    NumToString(s->rowBytes, p);     while (*p) p++; *p++ = ':';
+    NumToString(s->clutCount, p);    while (*p) p++; *p++ = ':';
+    NumToString(s->rx, p);           while (*p) p++; *p++ = ':';
+    NumToString(s->ry, p);           while (*p) p++; *p++ = ':';
+    NumToString(s->rw, p);           while (*p) p++; *p++ = ':';
+    NumToString(s->rh, p);           while (*p) p++; *p++ = ':';
+    NumToString(s->enc, p);          while (*p) p++; *p++ = ':';
+    NumToString(s->gen, p);          while (*p) p++; *p++ = ':';
+    NumToString(s->dataSize, p);     while (*p) p++; *p++ = '\n';
+
+    err = ABSend(conn, hdr, p - hdr);
+    if (err != noErr) return kBridgeCommandErr;
+
+    if (s->clutCount > 0) {
+        err = ABSend(conn, (const char *)s->clut, (long)s->clutCount * 3);
+        if (err != noErr) return kBridgeCommandErr;
+    }
+
+    if (s->dataSize > 0 && s->data != NULL) {
+        err = ABSend(conn, s->data, s->dataSize);
+        if (err != noErr) return kBridgeCommandErr;
+    }
+
+    return kBridgeNoErr;
+}

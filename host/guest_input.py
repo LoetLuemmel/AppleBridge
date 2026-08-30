@@ -73,7 +73,16 @@ class InputError(Exception):
 def parse_guest_size(prefs_text, default=DEFAULT_GUEST_SIZE):
     """Read the emulated screen size from a Basilisk prefs body ('screen win/W/H')."""
     m = re.search(r"^screen\s+\w+/(\d+)/(\d+)", prefs_text or "", re.M)
-    return (int(m.group(1)), int(m.group(2))) if m else default
+    if not m:
+        return default
+    w, h = int(m.group(1)), int(m.group(2))
+    # A zero dimension is a prefs file that does not describe THIS emulator
+    # (SheepShaver's carried `screen win/0/768` on 2026-08-30, and resolve()
+    # had picked it): every gesture then refused with "outside the 0x768
+    # screen". A screen has no zero side; fall back rather than refuse.
+    if w <= 0 or h <= 0:
+        return default
+    return (w, h)
 
 
 def parse_window_geometry(osascript_output):
