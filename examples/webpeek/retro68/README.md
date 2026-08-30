@@ -27,6 +27,10 @@ loads, which is how the screenshots here were taken.
 | `https://td5.390er.de/guide/` via the Links menu (9674 B) | 0 (cached by slirp) | 8 | 236 | 289 ticks = 4.8 s |
 | `http://macintoshgarden.org/` typed, plain http (32716 B) | 1 | 25 | — | 89 ticks = 1.5 s |
 
+![WebPeek 2 showing the 68k TLS section of td5.390er.de](webpeek2-section-window.png)
+
+![WebPeek 2 showing macintoshgarden.org over plain http](webpeek2-garden-window.png)
+
 ## Files
 
 | File | Role |
