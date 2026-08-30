@@ -50,7 +50,7 @@ Retro68 (see `mac/httpsget/README.md`: no CONSOLE library, `-fno-jump-tables`, p
 
 ## Known issues
 
-- `File ▸ Open URL from Clipboard` answers "Clipboard holds no text" after `mac_clipboard_set`: `GetScrap` returns nothing although the daemon set the scrap. WebPeek 1 had the same code path; not yet investigated.
+- `File ▸ Open URL from Clipboard` after `mac_clipboard_set` works since the host server mirrors the text to the host pasteboard as plain text (2026-08-30). Under Basilisk II the cross-application clipboard goes through the host pasteboard on `GetScrap`, and the emulator could not read back the RTF its own `PutScrap` hook had written — a front application saw scrap size 0. WebPeek calls `GetScrap` once (that triggers the import) and then walks the scrap from low memory.
 - `mac_type` at full rate drops characters into the location line (a known bridge trait): type 5 characters per call.
 
 ## Traps met while writing it
