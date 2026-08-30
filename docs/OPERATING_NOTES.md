@@ -2661,3 +2661,45 @@ wiederholt sich zeilenweise" — packte 1,58:1. Das Desktop-Dither alterniert
 Zeile für Zeile; benachbarte Zeilen sind nie gleich, ihre XOR-Summe fast leer.
 Das ist der ganze Unterschied zwischen 1,39:1 und 13,6:1, und er war ohne
 Messung nicht zu sehen.
+
+## Crypto on the guest was built on the host — five traps, each measured once — 2026-08-30
+
+A day of Retro68 + Crypto Ancienne on the 68K guest (`mac/httpsget/`,
+`examples/webpeek/retro68/`). What cost a round, so nobody pays it twice:
+
+* **Retro68's `CONSOLE` applications die silently on this guest** — the
+  toolchain's own HelloWorld sample launches and vanishes; a plain-window app
+  (the Dialog sample) runs. Draw your own window and log to a file. Three
+  rounds went to "no window, therefore it did not run" while the log file on
+  disk proved it had: a background-launched application paints nothing unless
+  it services `updateEvt`. **The artefact on disk is the evidence; the screen is
+  not.**
+* **gcc 16 for m68k emits a PC-relative switch jump table beyond 8-bit reach**
+  (`value -1928 out of range`, `move.w .L117(%pc,%d1.l)`): `-fno-jump-tables`.
+  Making the large locals static did nothing — that was the wrong suspect.
+* **`<string.h>` includes `<strings.h>`, which on a case-insensitive disk resolves
+  to Multiversal's Toolbox `Strings.h`** and drags the whole Toolbox into a crypto
+  library (an `enum` named `mask` collides). A two-line `strings.h` shim first on
+  the include path.
+* **`carl` retries as TLS 1.2 by default.** A host-side "it works" proves nothing
+  about 1.3 unless run with `-3`. The general form: reproduce on the host with the
+  guest's compile flags (`-DNO_FUNNY_ALIGNMENT -DBIG_STRING_SIZE=4096`) and
+  `-DDEBUG` first — the guest costs a minute per try, the host seconds. The
+  reducer's unterminated tag buffer (every page body vanished) and the
+  certificate parser's off-by-one (nothing verified in TLS 1.3) were both found
+  that way after guest rounds had found nothing.
+* **A verifier is proven by what it rejects.** The positive run passed with the
+  chain check switched on and the timing barely moved — because the TLS 1.3
+  parser had handed the callback zero certificates. Matrix: untrusted root, trusted
+  root with a wrong name, trusted root with the right name, the public chain. A
+  wrong SNI against a *public* server proves nothing; it answers
+  `unrecognized_name` before any certificate is sent.
+
+And one from the clipboard, the same evening: **under Basilisk II the
+cross-application clipboard goes through the host pasteboard on `GetScrap`**, and
+the emulator could not re-import the RTF its own `PutScrap` hook had written — a
+front application read scrap size 0 after `CLIPSET` while the daemon's own
+`GetScrap` still returned the text. Read the scrap from low memory in the *front*
+app before theorising; the per-layer-scrap theory produced a daemon build that
+took the front and gave it back, and changed nothing. The host server now
+`pbcopy`s the plain text after `CLIPSET`; plain text is what the import reads.

@@ -697,9 +697,12 @@ payloads when a file transfer is overkill.""",
         "name": "mac_clipboard_set",
         "description": """Set the classic Mac's clipboard (the 'TEXT' scrap) to `text`.
 
-After this, the guest can Paste the text anywhere; Basilisk II also mirrors it
-to the host pasteboard. Text only; intended for small payloads (bounded ~8 KB —
-use mac_put_file for anything large).""",
+After this, the guest can Paste the text anywhere. Under Basilisk II the host
+server also puts the plain text on the HOST pasteboard: the emulator's own
+guest<->host mirror wrote RTF it could not read back, so a front application's
+GetScrap came up empty (measured 2026-08-30); a plain string on the host
+pasteboard is what its GetScrap hook imports correctly. Text only; intended for
+small payloads (bounded ~8 KB — use mac_put_file for anything large).""",
         "inputSchema": {
             "type": "object",
             "properties": {
