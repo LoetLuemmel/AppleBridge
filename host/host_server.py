@@ -1596,7 +1596,17 @@ class AppleBridgeServer:
             clut = _read_exact(cc * 3) if cc > 0 else b""
             payload = _read_exact(ds)
             self.shot_v2 = True
-        except (socket.timeout, ValueError) as e:
+        except socket.timeout:
+            # The request is still in the daemon's receive buffer, unanswered.
+            # Keeping the link means the NEXT request lands behind it and the
+            # daemon reads both as one line ("PINGSTATSCREENSHOT2:…" in its
+            # console, 2026-08-30, a greedy foreground app starving it for
+            # 76 s): every later verb then fails until the link is dropped.
+            # Drop it now; the daemon redials with a clean stream.
+            log(f"screenshot v2 read timeout after {SCREENSHOT_TIMEOUT}s; got {len(buf)}B — dropping link so the daemon redials clean")
+            self._mark_disconnected("screenshot timeout; the unanswered request would desync the next one")
+            return None
+        except ValueError as e:
             log(f"screenshot v2 read error: {e}; got {len(buf)}B")
             return None
         except (OSError, ConnectionError) as e:
