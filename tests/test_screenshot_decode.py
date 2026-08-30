@@ -156,6 +156,168 @@ def test_rejects_empty_crop():
         lambda: sd.raw_to_png(4, 2, 8, 4, b"", bytes(8), region=(4, 0, 2, 2)))
 
 
+# --- IMAGE2: PackBits rows, row delta, indexed PNG (2026-08-30) ---------------
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "host", "tools"))
+
+
+def _packbits_row(src):
+    """Reference Apple PackBits encoder (the one host/tools/gif_to_rez.py uses
+    for 'Gfrm' resources; copied so this test stays free of Pillow)."""
+    dst = bytearray()
+    n = len(src)
+    i = 0
+    while i < n:
+        j = i
+        while j < n and j - i < 128 and src[j] == src[i]:
+            j += 1
+        run = j - i
+        if run >= 3:
+            dst.append(257 - run)
+            dst.append(src[i])
+            i = j
+        else:
+            lit = bytearray()
+            while i < n and len(lit) < 128:
+                k = i
+                while k < n and k - i < 3 and src[k] == src[i]:
+                    k += 1
+                if k - i == 3:
+                    break
+                lit.append(src[i])
+                i += 1
+            dst.append(len(lit) - 1)
+            dst += lit
+    return bytes(dst)
+
+
+def _pack_rows(rows):
+    out = bytearray()
+    for r in rows:
+        p = _packbits_row(r)
+        out += struct.pack(">H", len(p)) + p
+    return bytes(out)
+
+
+def _png_plte(png):
+    i = png.find(b"PLTE")
+    ln = struct.unpack(">I", png[i - 4:i])[0]
+    return png[i + 4:i + 4 + ln]
+
+
+def _png_idat_raw(png):
+    i = png.find(b"IDAT")
+    ln = struct.unpack(">I", png[i - 4:i])[0]
+    return zlib.decompress(png[i + 4:i + 4 + ln])
+
+
+def test_unpack_bits_roundtrip_desktop_like_row():
+    row = bytes([0xFF] * 500 + [1, 2, 3, 4, 5, 5, 5, 5, 9] + [0] * 515)
+    packed = _packbits_row(row)
+    assert len(packed) < 40, len(packed)
+    out, off = sd.unpack_bits(packed, 0, len(row))
+    assert out == row and off == len(packed)
+
+
+def test_unpack_bits_rejects_short_and_overlong_streams():
+    row = bytes(range(64))
+    packed = _packbits_row(row)
+    assert _expect_valueerror(lambda: sd.unpack_bits(packed[:-1], 0, 64))
+    assert _expect_valueerror(lambda: sd.unpack_bits(packed, 0, 63))
+
+
+def test_unpack_rows_walks_length_prefixed_rows():
+    rows = [bytes([y] * 16) for y in range(5)]
+    payload = _pack_rows(rows)
+    data, off = sd.unpack_rows(payload, 0, 5, 16)
+    assert data == b"".join(rows) and off == len(payload)
+
+
+def test_decode_rows_raw_and_packed_agree():
+    rows = [bytes([(x * y) & 0xFF for x in range(32)]) for y in range(4)]
+    raw = b"".join(rows)
+    assert sd.decode_rows(0, raw, 4, 32) == raw
+    assert sd.decode_rows(1, _pack_rows(rows), 4, 32) == raw
+    assert _expect_valueerror(lambda: sd.decode_rows(7, raw, 4, 32))
+
+
+def test_delta_composites_changed_runs_onto_previous_frame():
+    rb, h = 8, 6
+    prev = bytes([0x11] * (rb * h))
+    new_rows = {2: bytes([0xAA] * rb), 3: bytes([0xBB] * rb), 5: bytes([0xCC] * rb)}
+    # enc 2 carries row XOR previous-row, so an unchanged byte is a zero on the wire
+    xor = {y: bytes(a ^ 0x11 for a in r) for y, r in new_rows.items()}
+    payload = (struct.pack(">HH", 2, 2) + _pack_rows([xor[2], xor[3]])
+               + struct.pack(">HH", 5, 1) + _pack_rows([xor[5]]))
+    runs = sd.parse_delta(payload, rb, packed=True)
+    assert [(y, len(d) // rb) for y, d in runs] == [(2, 2), (5, 1)]
+    cur = sd.apply_delta(prev, rb, h, runs)
+    for y in range(h):
+        row = cur[y * rb:(y + 1) * rb]
+        assert row == new_rows.get(y, prev[:rb]), (y, row)
+
+
+def test_delta_of_one_changed_byte_is_a_zero_run_on_the_wire():
+    rb = 1024
+    prev = bytes(range(256)) * 4
+    new = bytearray(prev); new[700] ^= 0x5A
+    xrow = bytes(a ^ b for a, b in zip(prev, new))
+    packed = _packbits_row(xrow)
+    assert len(packed) < 24, len(packed)          # the point of XOR: one glyph, a few bytes
+    runs = sd.parse_delta(struct.pack(">HH", 0, 1) + _pack_rows([xrow]), rb)
+    assert sd.apply_delta(prev, rb, 1, runs) == bytes(new)
+
+
+def test_delta_run_outside_frame_is_an_error():
+    payload = struct.pack(">HH", 5, 2) + _pack_rows([bytes(4), bytes(4)])
+    runs = sd.parse_delta(payload, 4, packed=True)
+    assert _expect_valueerror(lambda: sd.apply_delta(bytes(24), 4, 6, runs))
+
+
+def test_indexed_png_8bit_copies_rows_and_palette():
+    clut = bytes([255, 0, 0,   0, 255, 0,   0, 0, 255,   255, 255, 255])
+    pixels = bytes([0, 1, 2, 3,   3, 2, 1, 0])
+    png = sd.raw_to_png_indexed(4, 2, 8, 4, clut, pixels)
+    w, h, bd, color = _png_ihdr(png)
+    assert (w, h, bd, color) == (4, 2, 8, 3)
+    assert _png_plte(png) == clut
+    raw = _png_idat_raw(png)
+    assert raw == b"\x00" + pixels[:4] + b"\x00" + pixels[4:]
+
+
+def test_indexed_png_region_slices_rows():
+    clut = bytes(range(256)) * 3
+    pixels = bytes([(x + y * 16) & 0xFF for y in range(4) for x in range(16)])
+    png = sd.raw_to_png_indexed(16, 4, 8, 16, clut, pixels, region=(4, 1, 8, 2))
+    w, h, bd, color = _png_ihdr(png)
+    assert (w, h) == (8, 2)
+    raw = _png_idat_raw(png)
+    assert raw == b"\x00" + pixels[16 + 4:16 + 12] + b"\x00" + pixels[32 + 4:32 + 12]
+
+
+def test_indexed_png_1bit_no_clut_uses_white_zero_black_one():
+    png = sd.raw_to_png_indexed(8, 1, 1, 1, b"", bytes([0b10100000]))
+    w, h, bd, color = _png_ihdr(png)
+    assert (bd, color) == (1, 3)
+    assert _png_plte(png) == bytes([255, 255, 255, 0, 0, 0])
+    assert _png_idat_raw(png) == b"\x00" + bytes([0b10100000])
+
+
+def test_indexed_png_unaligned_subbyte_crop_falls_back_to_truecolor():
+    clut = bytes([255, 0, 0,   0, 255, 0])
+    # 4 pixels at 4 bpp: indices 0,1,0,1 ; crop x=1..3 -> not byte aligned
+    png = sd.raw_to_png_indexed(4, 1, 4, 2, clut, bytes([0x01, 0x01]), region=(1, 0, 2, 1))
+    w, h, bd, color = _png_ihdr(png)
+    assert (w, h, bd, color) == (2, 1, 8, 2)      # truecolor path
+    assert _png_rows(png, 2, 1)[0] == [(0, 255, 0), (255, 0, 0)]
+
+
+def test_indexed_png_16bit_delegates_to_truecolor():
+    px = bytes([0x7C, 0x00])   # RGB555 red
+    png = sd.raw_to_png_indexed(1, 1, 16, 2, b"", px)
+    assert _png_ihdr(png)[3] == 2
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

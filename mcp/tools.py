@@ -202,8 +202,12 @@ checking a guess.""",
 
 Returns a base64-encoded PNG of the current desktop. Pass `region` as
 [x, y, width, height] (screen pixels, origin top-left, screen is 1024x768) to
-decode only that rectangle — e.g. read a single dialog instead of the whole
-frame, for a smaller, faster image.""",
+capture only that rectangle — the guest crops BEFORE the transfer (daemon
+0.8d46+), so a dialog-sized region costs a fraction of a full frame on the
+bridge, not just in the reply. Consecutive full-screen captures send only the
+rows that changed (row delta), so the second look at an unchanged screen is
+nearly free. The reply's `encoding` (raw/packbits/delta), `wire_bytes` and
+`elapsed_ms` say what the capture cost on the guest->host leg.""",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1232,16 +1236,30 @@ def mac_screenshot(region: Optional[list] = None) -> Dict[str, Any]:
             except (ValueError, TypeError):
                 return {"success": False,
                         "error": "region must be [x, y, width, height] integers"}
-        # Full-screen (or cropped) pixmap transfer + host PNG decode.
+        # Pixmap transfer + host PNG decode. With a 0.8d46+ daemon the guest
+        # crops to the region and PackBits-packs the rows before the transfer,
+        # and a full-screen capture that follows another sends only the rows
+        # that changed; the SHOTINFO field reports which of those happened.
+        conn.last_shotinfo = None
         status, stdout, stderr = conn.send_command(command, timeout=30.0)
 
         if status == 0 and stdout:
             # stdout already contains base64-encoded PNG
-            return {
+            result = {
                 "success": True,
                 "image": stdout,  # Already base64 encoded
                 "format": "png"
             }
+            info = getattr(conn, "last_shotinfo", None)
+            if info:
+                for tok in info.split():
+                    k, _, v = tok.partition("=")
+                    if k and v.lstrip("-").isdigit():
+                        result[k] = int(v)
+                enc = result.get("enc")
+                if enc is not None:
+                    result["encoding"] = {0: "raw", 1: "packbits", 2: "delta"}.get(enc, str(enc))
+            return result
         else:
             return {
                 "success": False,

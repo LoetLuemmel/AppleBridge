@@ -2316,6 +2316,64 @@ static Ptr InstallMBBlk(void)          /* idempotent within a daemon lifetime */
     return s;
 }
 
+/* Legacy SCREENSHOT: stream the full raw pixmap (header + CLUT + pixels) — no
+ * size cap; SendData chunks it over OTSnd, the host decodes it to PNG. A
+ * partial send desyncs the wire, so it is reported as unhealthy. */
+static Boolean ScreenshotVerb(ABConn *conn)
+{
+    ScreenshotData screenshot;
+    Boolean ok = true;
+    BridgeResult result;
+    static const char kFail[] = "STATUS:-1\nSTDOUT:0\n\nSTDERR:18\nScreenshot failed\n\n";
+
+    SetActivity("SCREENSHOT");          /* daemon activity -> top bar */
+    result = CaptureScreenshot(&screenshot);
+    if (result == kBridgeNoErr) {
+        if (SendScreenshot(conn, &screenshot) != kBridgeNoErr) ok = false;
+        CleanupScreenshot(&screenshot);
+    } else {
+        NoteErr("screenshot");
+        if (ABSend(conn, kFail, strlen(kFail)) != noErr) ok = false;
+    }
+    gLastTX = TickCount();
+    gTXCount++;
+    return ok;
+}
+
+/* SCREENSHOT2:<x>:<y>:<w>:<h>:<flags>:<baseGen> — see CaptureScreenshot2 in
+ * screenshot.c. Returns whether the link is still healthy (a partial send of
+ * the payload desyncs the wire, like the legacy verb). */
+static Boolean Screenshot2Verb(ABConn *conn, const char *request)
+{
+    ScreenshotData screenshot;
+    Boolean ok = true;
+    short i = (short)strlen(PROTO_SCREENSHOT2);
+    long  v[6];
+    short k;
+    BridgeResult result;
+    static const char kFail[] = "STATUS:-1\nSTDOUT:0\n\nSTDERR:18\nScreenshot failed\n\n";
+
+    for (k = 0; k < 6; k++) {
+        v[k] = 0;
+        while (request[i] >= '0' && request[i] <= '9') v[k] = v[k] * 10 + (request[i++] - '0');
+        if (request[i] == ':') i++;
+    }
+    SetActivity("SCREENSHOT2");
+
+    result = CaptureScreenshot2(&screenshot, (short)v[0], (short)v[1], (short)v[2], (short)v[3],
+                                (short)v[4], v[5]);
+    if (result == kBridgeNoErr) {
+        if (SendScreenshot2(conn, &screenshot) != kBridgeNoErr) ok = false;
+        CleanupScreenshot(&screenshot);
+    } else {
+        NoteErr("screenshot2");
+        if (ABSend(conn, kFail, strlen(kFail)) != noErr) ok = false;
+    }
+    gLastTX = TickCount();
+    gTXCount++;
+    return ok;
+}
+
 Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
 {
     char responseBuffer[RESP_SCRATCH];   /* small: fixed verb/error strings only (was 64 KB on the stack) */
@@ -2466,31 +2524,21 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         return true;
     }
 
-    /* Check if it's a screenshot request */
-    if (strncmp(request, PROTO_SCREENSHOT, strlen(PROTO_SCREENSHOT)) == 0) {
-        ScreenshotData screenshot;
-        Boolean ok = true;
+    /* SCREENSHOT2 — region + PackBits + row delta (0.8d46). Tested BEFORE the
+     * legacy verb: that one is a prefix match and would swallow this request
+     * and answer with the whole raw screen. The body lives in its own function
+     * because ProcessRequest is already at the size where SC's 68K code
+     * generator gives up ("Internal error compiling ProcessRequest",
+     * CGcntrl.c line 638 — measured 2026-08-30 when the block was inline). */
+    if (strncmp(request, PROTO_SCREENSHOT2, strlen(PROTO_SCREENSHOT2)) == 0)
+        return Screenshot2Verb(conn, request);
 
-        SetActivity("SCREENSHOT");          /* daemon activity -> top bar */
-
-        result = CaptureScreenshot(&screenshot);
-        if (result == kBridgeNoErr) {
-            /* Stream the full pixmap (header + CLUT + pixels) — no size cap;
-               SendData chunks it over OTSnd. The host decodes it to PNG. A
-               partial send here desyncs the wire, so report it as unhealthy. */
-            if (SendScreenshot(conn, &screenshot) != kBridgeNoErr) ok = false;
-            CleanupScreenshot(&screenshot);
-        } else {
-            strcpy(responseBuffer, "STATUS:-1\nSTDOUT:0\n\nSTDERR:18\nScreenshot failed\n\n"); NoteErr("screenshot");
-            if (ABSend(conn, responseBuffer, strlen(responseBuffer)) != noErr) ok = false;
-        }
-
-        /* Mark TX activity */
-        gLastTX = TickCount();
-        gTXCount++;
-
-        return ok;
-    }
+    /* Legacy SCREENSHOT (whole screen, raw pixels). Also out of line: its
+     * ScreenshotData local (~790 bytes) sat on ProcessRequest's frame, which
+     * is at the 68K 32 KB d16(A6) edge — growing that struct by 14 bytes made
+     * SC fail with the internal error above until this moved (2026-08-30). */
+    if (strncmp(request, PROTO_SCREENSHOT, strlen(PROTO_SCREENSHOT)) == 0)
+        return ScreenshotVerb(conn);
 
     /* MACUITREE: dump the live window/dialog UI tree as JSON. READ-ONLY --
      * walks the Window Manager list + the front dialog's DITL through the

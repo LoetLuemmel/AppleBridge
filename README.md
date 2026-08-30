@@ -1,12 +1,23 @@
 # AppleBridge
 
-**AI-powered development for classic 68k Macintosh systems.**
+**Remote Apple Events for System 7 — control, monitor and build on a classic Mac from outside, with AI or without.**
 
 AppleBridge puts a **classic Macintosh on the end of a socket** — an emulated one under
-Basilisk II or SheepShaver, or a real 68k machine over a serial cable — so that software can
-be built, run and observed on it from outside. Point Claude Code at it and you can do all of
-that in natural language; the bridge itself is a host server and a guest daemon, and needs
-neither Claude nor an emulator in particular.
+Basilisk II or SheepShaver, or a real 68k machine over a serial cable. At its core it gives
+System 7 what Mac OS X later shipped as *remote Apple Events*: any program on the network can
+send commands into the Mac — through MPW's ToolServer and the daemon's native verbs — and read
+real output back, plus extras the original never had, like screenshots of the guest's own
+screen for context.
+
+That makes it two things at once:
+
+- **A low-level remote-control plane for classic Mac OS.** No AI required: the bridge is a
+  host server and a guest daemon speaking a plain TCP (or serial) protocol, and anything — a
+  script, a CI job, `nc` on a command line — can control, monitor and manage System 7 with it.
+- **A full AI development environment.** 30 MCP tools expose the whole surface to Claude Code
+  out of the box, but you can throw whatever model you want at the problem — frontier models
+  already know MPW, THINK C and Inside Macintosh — so software can be written, compiled,
+  linked, run and debugged on the Mac in natural language.
 
 ![A System 7.5.3 desktop with only AppleBridge running: its Verbose console listing DISKINFO, directory listings, a file read and the Startup Items folder, with a NET OT / RX 175 / TX 175 / ERR 0 footer](docs/images/daemon-verbose-0.8d33.png)
 
@@ -455,6 +466,7 @@ AppleBridge/
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - Detailed explanation of the MCP + OpenTransport dual paradigm
 - **[docs/SETUP.md](docs/SETUP.md)** - the detail behind the install: why the emulator's networking is configured this way, building the guest software from source, and the reference tables
+- **[docs/SCREENSHOT_V2.md](docs/SCREENSHOT_V2.md)** - how a look at the guest got 30× cheaper: region, PackBits and an XOR row delta in the daemon, an indexed PNG on the host, with the before/after measurements and the VNC assessment
 - **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** - Common issues, fixes, and known limitations
 - **[ASSEMBLY_TEMPLATE.md](ASSEMBLY_TEMPLATE.md)** - 68k assembly programming guide
 
@@ -479,7 +491,7 @@ AppleBridge/
 
 ## Status
 
-**Current daemon:** 0.8d45 ("a refused Apple Event can finally fail") — the version the
+**Current daemon:** 0.8d46 ("a screenshot costs what it shows") — the version the
 daemon itself reports, from `mac/vers.r`.
 
 - TCP bridge, NAT-reversed (the guest dials OUT), with an asynchronous connect

@@ -57,6 +57,8 @@
 #define PROTO_STDERR "STDERR:"
 #define PROTO_SCREENSHOT "SCREENSHOT"
 #define PROTO_IMAGE "IMAGE:"
+#define PROTO_SCREENSHOT2 "SCREENSHOT2:" /* host->daemon: region + PackBits + row delta (0.8d46) */
+#define PROTO_IMAGE2 "IMAGE2:"           /* SCREENSHOT2 response header */
 #define PROTO_WRITEFILE "WRITEFILE:"   /* host->daemon: write both forks to disk */
 #define PROTO_READFILE "READFILE:"     /* daemon->host: stream both forks back */
 #define PROTO_FILE "FILE:"             /* READFILE response header */
@@ -124,6 +126,11 @@ typedef struct {
     Ptr   data;               /* raw pixels (dynamically allocated) */
     short clutCount;          /* CLUT entries (0 for direct-colour 16/32-bit) */
     unsigned char clut[768];  /* up to 256 * RGB (8-bit per channel) */
+    /* SCREENSHOT2 (0.8d46): the rectangle actually carried, and how. The
+     * legacy SendScreenshot ignores these; CaptureScreenshot leaves them 0. */
+    short rx, ry, rw, rh;     /* region within the screen; full = 0,0,width,height */
+    short enc;                /* 0 raw rows, 1 PackBits rows, 2 row delta of PackBits rows */
+    long  gen;                /* generation of the retained full frame after this capture */
 } ScreenshotData;
 
 /* Function declarations */
@@ -135,6 +142,7 @@ typedef struct {
 BridgeResult ParseCommand(const char *request, char *command, long *commandLength);
 BridgeResult SendCommandResult(ABConn *conn, const CommandResult *result);
 BridgeResult SendScreenshot(ABConn *conn, const ScreenshotData *screenshot);
+BridgeResult SendScreenshot2(ABConn *conn, const ScreenshotData *screenshot);
 
 /* Command execution */
 BridgeResult ExecuteCommand(const char *command, CommandResult *result);
@@ -151,6 +159,11 @@ Boolean IsAppRunning(OSType signature);
 
 /* Screenshot capture */
 BridgeResult CaptureScreenshot(ScreenshotData *screenshot);
+/* Region crop + PackBits rows + row delta against the retained frame (0.8d46).
+ * rw/rh of 0 = whole screen; flags bit0 = PackBits, bit1 = delta if baseGen
+ * names the frame the daemon retains. */
+BridgeResult CaptureScreenshot2(ScreenshotData *screenshot, short rx, short ry,
+                                short rw, short rh, short flags, long baseGen);
 void CleanupScreenshot(ScreenshotData *screenshot);
 
 /* Fork-aware binary file transfer (fileio.c). Each returns true if the

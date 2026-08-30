@@ -40,6 +40,10 @@ class MacConnection:
         # session channel is quiet. Deliberately last-write-wins rather than a
         # queue: it is an announcement that something is there, not the thing.
         self.last_notes: Optional[str] = None
+        # Set from the optional SHOTINFO field of a screenshot reply:
+        # "enc=<n> gen=<n> wire_bytes=<n> elapsed_ms=<n>" — the cost of the
+        # guest->host leg, which the base64 PNG in stdout says nothing about.
+        self.last_shotinfo: Optional[str] = None
 
     def connect(self) -> bool:
         """Connect to MacintoshBridgeHost server."""
@@ -223,6 +227,22 @@ class MacConnection:
                         chars_read += len(lines[i]) + 1
                         i += 1
                     stderr = '\n'.join(stderr_lines)
+                    continue
+                except ValueError:
+                    pass
+            elif line.startswith("SHOTINFO:"):
+                # Optional trailing field on screenshot replies (host_server
+                # 2026-08-30): wire bytes / encoding / elapsed of the capture.
+                # Off the tuple for the same reason as NOTES.
+                try:
+                    length = int(line[9:])
+                    i += 1
+                    body, chars_read = [], 0
+                    while i < len(lines) and chars_read < length:
+                        body.append(lines[i])
+                        chars_read += len(lines[i]) + 1
+                        i += 1
+                    self.last_shotinfo = '\n'.join(body).strip() or None
                     continue
                 except ValueError:
                     pass

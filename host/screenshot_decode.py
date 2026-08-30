@@ -15,6 +15,13 @@ host_server.py uses.
 
 Supported depths: 1, 2, 4, 8 (indexed via the CLUT, or grayscale fallback),
 16 (RGB 5-5-5, big-endian), 32 (xRGB-8888, big-endian as classic stores it).
+
+Since daemon 0.8d46 there is a second frame, IMAGE2, whose payload may be
+PackBits-packed per row (enc 1) or a row-delta against the previous full frame
+(enc 2). `unpack_rows`, `parse_delta` and `apply_delta` turn either back into
+the same raw pixmap the functions above consume, and `raw_to_png_indexed`
+writes an indexed PNG (colour type 3) straight from those rows — no per-pixel
+Python loop, which is what made the truecolor path cost 0.3 s per frame.
 """
 import binascii
 import struct
@@ -115,6 +122,177 @@ def raw_to_png(width: int, height: int, depth: int, row_bytes: int,
     return (b"\x89PNG\r\n\x1a\n"
             + _png_chunk(b"IHDR", ihdr)
             + _png_chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+            + _png_chunk(b"IEND", b""))
+
+
+# --- IMAGE2 payloads: PackBits rows and row deltas ---------------------------
+
+def unpack_bits(src, off, expected):
+    """Apple PackBits: decode `expected` bytes starting at src[off].
+
+    Returns (row_bytes, new_off). Control byte c: 0..127 copies the next c+1
+    literal bytes; 129..255 repeats the next byte 257-c times; 128 is a no-op.
+    Raises ValueError on a short or overlong stream — a packed row that does not
+    land exactly on `expected` means the wire is out of step, and a silently
+    padded row would hide that."""
+    out = bytearray()
+    n = len(src)
+    while len(out) < expected:
+        if off >= n:
+            raise ValueError(f"PackBits stream ended {expected - len(out)} bytes early")
+        c = src[off]
+        off += 1
+        if c < 128:
+            cnt = c + 1
+            if off + cnt > n:
+                raise ValueError("PackBits literal overruns the payload")
+            out += src[off:off + cnt]
+            off += cnt
+        elif c > 128:
+            if off >= n:
+                raise ValueError("PackBits repeat overruns the payload")
+            out += bytes((src[off],)) * (257 - c)
+            off += 1
+        # c == 128: no-op
+    if len(out) != expected:
+        raise ValueError(f"PackBits row decoded to {len(out)} bytes, expected {expected}")
+    return bytes(out), off
+
+
+def unpack_rows(payload, off, rows, row_bytes):
+    """Decode `rows` PackBits rows, each prefixed by a 2-byte big-endian packed
+    length (PICT style). Returns (bytes of rows*row_bytes, new_off)."""
+    out = bytearray()
+    n = len(payload)
+    for _ in range(rows):
+        if off + 2 > n:
+            raise ValueError("row length prefix missing")
+        plen = (payload[off] << 8) | payload[off + 1]
+        off += 2
+        if off + plen > n:
+            raise ValueError("packed row overruns the payload")
+        row, end = unpack_bits(payload[off:off + plen], 0, row_bytes)
+        if end != plen:
+            raise ValueError(f"packed row has {plen - end} trailing bytes")
+        out += row
+        off += plen
+    return bytes(out), off
+
+
+def parse_delta(payload, row_bytes, packed=True):
+    """enc 2: a sequence of <y0:2><n:2> runs, each followed by n rows (packed
+    as enc 1 when `packed`, raw otherwise). Returns [(y0, rows_bytes), ...]."""
+    runs = []
+    off = 0
+    n = len(payload)
+    while off < n:
+        if off + 4 > n:
+            raise ValueError("delta run header truncated")
+        y0 = (payload[off] << 8) | payload[off + 1]
+        cnt = (payload[off + 2] << 8) | payload[off + 3]
+        off += 4
+        if packed:
+            data, off = unpack_rows(payload, off, cnt, row_bytes)
+        else:
+            end = off + cnt * row_bytes
+            if end > n:
+                raise ValueError("raw delta run overruns the payload")
+            data = bytes(payload[off:end])
+            off = end
+        runs.append((y0, data))
+    return runs
+
+
+def apply_delta(prev, row_bytes, height, runs):
+    """Composite delta runs onto a copy of the previous full frame.
+
+    Each delivered row is the XOR of the new row with the previous frame's row
+    (enc 2): the bytes that did not change are zero on the wire, which is what
+    lets PackBits collapse a row where one glyph was redrawn to a few bytes."""
+    if len(prev) < height * row_bytes:
+        raise ValueError("previous frame is shorter than the declared image")
+    cur = bytearray(prev)
+    for y0, data in runs:
+        rows = len(data) // row_bytes
+        if y0 < 0 or y0 + rows > height:
+            raise ValueError(f"delta run {y0}+{rows} outside {height} rows")
+        a = y0 * row_bytes
+        b = a + rows * row_bytes
+        old = int.from_bytes(cur[a:b], "big")
+        cur[a:b] = (old ^ int.from_bytes(data, "big")).to_bytes(b - a, "big")
+    return bytes(cur)
+
+
+def decode_rows(enc, payload, rows, row_bytes):
+    """enc 0 raw / enc 1 PackBits rows -> exactly rows*row_bytes bytes."""
+    if enc == 0:
+        need = rows * row_bytes
+        if len(payload) < need:
+            raise ValueError(f"short raw payload: {len(payload)} < {need}")
+        return bytes(payload[:need])
+    if enc == 1:
+        data, off = unpack_rows(payload, 0, rows, row_bytes)
+        return data
+    raise ValueError(f"unsupported encoding {enc}")
+
+
+# --- indexed PNG: the fast path for depths 1/2/4/8 ---------------------------
+
+def _indexed_palette(clut, depth):
+    entries = 1 << depth
+    pal = _palette(clut)[:entries]
+    if not pal:
+        if depth == 1:
+            pal = [(255, 255, 255), (0, 0, 0)]   # classic: 0 = white
+        else:
+            maxv = entries - 1
+            pal = [((i * 255) // maxv,) * 3 for i in range(entries)]
+    return pal
+
+
+def raw_to_png_indexed(width, height, depth, row_bytes, clut, pixels, region=None):
+    """Indexed PNG (colour type 3) from a 1/2/4/8-bit pixmap.
+
+    PNG packs sub-byte pixels MSB-first, exactly as QuickDraw does, so each
+    scanline is copied by slice: no per-pixel loop. An x-crop that does not
+    start on a byte boundary at depth < 8 cannot be sliced and falls back to
+    the truecolor `raw_to_png`, which is correct at any offset."""
+    if depth not in (1, 2, 4, 8):
+        return raw_to_png(width, height, depth, row_bytes, clut, pixels, region=region)
+    if width <= 0 or height <= 0:
+        raise ValueError(f"bad dimensions {width}x{height}")
+    if len(pixels) < height * row_bytes:
+        raise ValueError(f"short pixel buffer: {len(pixels)} < {height*row_bytes}")
+    if region is not None:
+        rx, ry, rw, rh = region
+        rx = max(0, min(int(rx), width))
+        ry = max(0, min(int(ry), height))
+        rw = max(0, min(int(rw), width - rx))
+        rh = max(0, min(int(rh), height - ry))
+        if rw == 0 or rh == 0:
+            raise ValueError(f"empty crop region {region} on {width}x{height}")
+    else:
+        rx, ry, rw, rh = 0, 0, width, height
+    ppb = 8 // depth                      # pixels per byte
+    if rx % ppb:
+        return raw_to_png(width, height, depth, row_bytes, clut, pixels, region=(rx, ry, rw, rh))
+    x0 = rx // ppb
+    nbytes = (rw * depth + 7) // 8
+    stride = 1 + nbytes
+    raw = bytearray(stride * rh)
+    mv = memoryview(pixels)
+    o = 0
+    for y in range(ry, ry + rh):
+        base = y * row_bytes + x0
+        raw[o + 1:o + stride] = mv[base:base + nbytes]
+        o += stride
+    pal = _indexed_palette(clut, depth)
+    plte = b"".join(bytes(rgb) for rgb in pal)
+    ihdr = struct.pack(">IIBBBBB", rw, rh, depth, 3, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n"
+            + _png_chunk(b"IHDR", ihdr)
+            + _png_chunk(b"PLTE", plte)
+            + _png_chunk(b"IDAT", zlib.compress(bytes(raw), 6))
             + _png_chunk(b"IEND", b""))
 
 
