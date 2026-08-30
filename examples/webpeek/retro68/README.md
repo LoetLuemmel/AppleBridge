@@ -25,6 +25,7 @@ loads, which is how the screenshots here were taken.
 |---|---|---|---|---|
 | `https://td5.390er.de/68k-tls/` (9958 B) | 7 | 9 | 238 | 323 ticks = 5.4 s |
 | `https://td5.390er.de/guide/` via the Links menu (9674 B) | 0 (cached by slirp) | 8 | 236 | 289 ticks = 4.8 s |
+| `http://macintoshgarden.org/` typed, plain http (32716 B) | 1 | 25 | — | 89 ticks = 1.5 s |
 
 ## Files
 
@@ -42,6 +43,11 @@ Retro68 (see `mac/httpsget/README.md`: no CONSOLE library, `-fno-jump-tables`, p
 
     cmake -S . -B build -DCRYANC=/path/to/cryanc -DCMAKE_TOOLCHAIN_FILE=…/retro68.toolchain.cmake
     cmake --build build        # build/WebPeek2.bin → mac_put_file → launch_app
+
+## Known issues
+
+- `File ▸ Open URL from Clipboard` answers "Clipboard holds no text" after `mac_clipboard_set`: `GetScrap` returns nothing although the daemon set the scrap. WebPeek 1 had the same code path; not yet investigated.
+- `mac_type` at full rate drops characters into the location line (a known bridge trait): type 5 characters per call.
 
 ## Traps met while writing it
 
