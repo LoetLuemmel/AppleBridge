@@ -1,0 +1,370 @@
+diff --git a/cryanc.c b/cryanc.c
+index fcc9455..f7ff55f 100644
+--- a/cryanc.c
++++ b/cryanc.c
+@@ -37441,6 +37441,11 @@ struct TLSContext {
+     unsigned char client_verified;
+     /* handshake messages flags */
+     unsigned char hs_messages[11];
++    /* client-side HelloRetryRequest state (RFC 8446 4.1.4) */
++    unsigned char hrr;               /* an HRR was processed; second hello sent */
++    unsigned short hrr_group;        /* NamedGroup the server asked for */
++    unsigned char *hrr_cookie;       /* cookie to echo, if any */
++    unsigned short hrr_cookie_len;
+     void *user_data;
+     struct TLSCertificate **root_certificates;
+     unsigned int root_count;
+@@ -40978,6 +40983,7 @@ void tls_destroy_context(struct TLSContext *context) {
+ 
+     if (!context)
+         return;
++    TLS_FREE(context->hrr_cookie);
+     if (!context->is_child) {
+         if (context->certificates) {
+             for (i = 0; i < context->certificates_count; i++)
+@@ -41859,6 +41865,39 @@ void _private_tls_set_session_id(struct TLSContext *context) {
+         context->session_size = 0;
+ }
+ 
++#ifdef WITH_TLS_13
++/* SHA-256("HelloRetryRequest"): the ServerHello.random that marks a HelloRetryRequest */
++static const unsigned char _tls13_hrr_random[32] = {0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11, 0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65, 0xB8, 0x91, 0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E, 0x07, 0x9E, 0x09, 0xE2, 0xC8, 0xA8, 0x33, 0x9C};
++
++/* the group the client offers a key share for: the HRR-requested one, else the build-time default */
++#ifndef TLS_CLIENT_KEYSHARE_GROUP
++#ifdef TLS_CURVE25519
++#define TLS_CLIENT_KEYSHARE_GROUP 29
++#else
++#define TLS_CLIENT_KEYSHARE_GROUP 23
++#endif
++#endif
++static const struct ECCCurveParameters *_private_tls_client_keyshare_curve(struct TLSContext *context) {
++    int group = context->hrr_group ? context->hrr_group : TLS_CLIENT_KEYSHARE_GROUP;
++    switch (group) {
++        case 24: return &secp384r1;
++        case 25: return &secp521r1;
++#ifdef TLS_CURVE25519
++        case 29: return &x25519;
++#endif
++        default: return &secp256r1;
++    }
++}
++static int _private_tls_client_keyshare_len(struct TLSContext *context) {
++    const struct ECCCurveParameters *c = _private_tls_client_keyshare_curve(context);
++#ifdef TLS_CURVE25519
++    if (c == &x25519)
++        return 32;
++#endif
++    return 2 * c->size + 1;           /* uncompressed point */
++}
++#endif
++
+ struct TLSPacket *tls_build_hello(struct TLSContext *context, int tls13_downgrade) {
+     unsigned short packet_version;
+     unsigned short version;
+@@ -41880,10 +41919,12 @@ struct TLSPacket *tls_build_hello(struct TLSContext *context, int tls13_downgrad
+     } else
+     if ((!context->is_server) || ((context->version != TLS_V13) && (context->version != DTLS_V13)))
+ #endif
+-    if (!tls_random(context->local_random, context->is_server ? TLS_SERVER_RANDOM_SIZE : TLS_CLIENT_RANDOM_SIZE))
+-        return NULL;
+-    if (!context->is_server)
+-        *(unsigned int *)context->local_random = htonl((unsigned int)time(NULL));
++    if (!context->hrr) {              /* after an HRR the second hello repeats the first random */
++        if (!tls_random(context->local_random, context->is_server ? TLS_SERVER_RANDOM_SIZE : TLS_CLIENT_RANDOM_SIZE))
++            return NULL;
++        if (!context->is_server)
++            *(unsigned int *)context->local_random = htonl((unsigned int)time(NULL));
++    }
+ 
+     if ((context->is_server) && (tls13_downgrade)) {
+         if ((tls13_downgrade == TLS_V12) || (tls13_downgrade == DTLS_V12))
+@@ -42219,12 +42260,9 @@ struct TLSPacket *tls_build_hello(struct TLSContext *context, int tls13_downgrad
+                     extension_len += sni_len + 9;
+ #ifdef WITH_TLS_13
+                 if ((!context->is_server) && ((context->version == TLS_V13) || (context->version == DTLS_V13))) {
+-#ifdef TLS_CURVE25519
+-                    extension_len += 70;
+-#else
+-                    /* secp256r1 produces 65 bytes export */
+-                    extension_len += 109;
+-#endif
++                    extension_len += 44 + _private_tls_client_keyshare_len(context);
++                    if (context->hrr_cookie_len)
++                        extension_len += 6 + context->hrr_cookie_len;
+                 }
+ #endif
+                 tls_packet_uint16(packet, extension_len);
+@@ -42335,65 +42373,59 @@ struct TLSPacket *tls_build_hello(struct TLSContext *context, int tls13_downgrad
+                     tls_packet_uint16(packet, shared_key_short);
+                     tls_packet_append(packet, (unsigned char *)shared_key, shared_key_short);
+                 } else {
++                    const struct ECCCurveParameters *ks = _private_tls_client_keyshare_curve(context);
+ #ifdef TLS_CURVE25519
+-                    static const unsigned char basepoint[32] = {9};
+-
+-                    /* make key */
+-                    shared_key_short = 32;
+-                    tls_packet_uint16(packet, shared_key_short + 6);
+-                    tls_packet_uint16(packet, shared_key_short + 4);
+-
+-                    TLS_FREE(context->client_secret);
+-                    context->client_secret = (unsigned char *)TLS_MALLOC(32);
+-                    if (!context->client_secret) {
+-                        DEBUG_PRINT0("ERROR IN TLS_MALLOC");
+-                        TLS_FREE(packet);
+-                        return NULL;
+-
+-                    }
+-
+-                    tls_random(context->client_secret, 32);
+-
+-                    context->client_secret[0] &= 248;
+-                    context->client_secret[31] &= 127;
+-                    context->client_secret[31] |= 64;
+-
+-                    curve25519(shared_key, context->client_secret, basepoint);
+-
+-                    tls_packet_uint16(packet, (unsigned short)x25519.iana);
+-                    tls_packet_uint16(packet, shared_key_short);
+-                    tls_packet_append(packet, (unsigned char *)shared_key, shared_key_short);
+-#else
+-                    ltc_ecc_set_type *dp;
+-                    unsigned char out[TLS_MAX_RSA_KEY];
+-                    unsigned long out_len;
+-
+-                    /* make key */
+-                    shared_key_short = 65;
+-                    tls_packet_uint16(packet, shared_key_short + 6);
+-                    tls_packet_uint16(packet, shared_key_short + 4);
+-
+-                    _private_tls_ecc_dhe_create(context);      
+-                    dp = (ltc_ecc_set_type *)&secp256r1.dp;
+-        
+-                    if (ecc_make_key_ex(NULL, find_prng("sprng"), context->ecc_dhe, dp)) {
+-                        TLS_FREE(context->ecc_dhe);
+-                        context->ecc_dhe = NULL;
+-                        DEBUG_PRINT0("Error generating ECC key\n");
+-                        TLS_FREE(packet);
+-                        return NULL;
+-                    }
+-                    out_len = shared_key_short;
+-                    if (ecc_ansi_x963_export(context->ecc_dhe, out, &out_len)) {
+-                        DEBUG_PRINT0("Error exporting ECC key\n");
+-                        TLS_FREE(packet);
+-                        return NULL;
+-                    }
+-
+-                    tls_packet_uint16(packet, (unsigned short)secp256r1.iana);
+-                    tls_packet_uint16(packet, out_len);
+-                    tls_packet_append(packet, (unsigned char *)out, shared_key_short);
++                    if (ks == &x25519) {
++                        static const unsigned char basepoint[32] = {9};
++
++                        /* make key */
++                        shared_key_short = 32;
++                        tls_packet_uint16(packet, shared_key_short + 6);
++                        tls_packet_uint16(packet, shared_key_short + 4);
++                        TLS_FREE(context->client_secret);
++                        context->client_secret = (unsigned char *)TLS_MALLOC(32);
++                        if (!context->client_secret) {
++                            DEBUG_PRINT0("ERROR IN TLS_MALLOC");
++                            TLS_FREE(packet);
++                            return NULL;
++                        }
++                        tls_random(context->client_secret, 32);
++                        context->client_secret[0] &= 248;
++                        context->client_secret[31] &= 127;
++                        context->client_secret[31] |= 64;
++                        curve25519(shared_key, context->client_secret, basepoint);
++                        tls_packet_uint16(packet, (unsigned short)x25519.iana);
++                        tls_packet_uint16(packet, shared_key_short);
++                        tls_packet_append(packet, (unsigned char *)shared_key, shared_key_short);
++                    } else
+ #endif
++                    {
++                        ltc_ecc_set_type *dp;
++                        unsigned char out[TLS_MAX_RSA_KEY];
++                        unsigned long out_len;
++                        /* make key */
++                        shared_key_short = 2 * ks->size + 1;
++                        tls_packet_uint16(packet, shared_key_short + 6);
++                        tls_packet_uint16(packet, shared_key_short + 4);
++                        _private_tls_ecc_dhe_create(context);
++                        dp = (ltc_ecc_set_type *)&ks->dp;
++                        if (ecc_make_key_ex(NULL, find_prng("sprng"), context->ecc_dhe, dp)) {
++                            TLS_FREE(context->ecc_dhe);
++                            context->ecc_dhe = NULL;
++                            DEBUG_PRINT0("Error generating ECC key\n");
++                            TLS_FREE(packet);
++                            return NULL;
++                        }
++                        out_len = shared_key_short;
++                        if (ecc_ansi_x963_export(context->ecc_dhe, out, &out_len)) {
++                            DEBUG_PRINT0("Error exporting ECC key\n");
++                            TLS_FREE(packet);
++                            return NULL;
++                        }
++                        tls_packet_uint16(packet, (unsigned short)ks->iana);
++                        tls_packet_uint16(packet, out_len);
++                        tls_packet_append(packet, (unsigned char *)out, shared_key_short);
++                    }
+                 }
+             }
+             if (!context->is_server) {
+@@ -42412,6 +42444,13 @@ struct TLSPacket *tls_build_hello(struct TLSContext *context, int tls13_downgrad
+                 tls_packet_uint16(packet, 0x0601);
+                 tls_packet_uint16(packet, 0x0203);
+                 tls_packet_uint16(packet, 0x0201);
++                if ((context->hrr_cookie) && (context->hrr_cookie_len)) {
++                    /* cookie (echoed from the HelloRetryRequest) */
++                    tls_packet_uint16(packet, 0x2C);
++                    tls_packet_uint16(packet, context->hrr_cookie_len + 2);
++                    tls_packet_uint16(packet, context->hrr_cookie_len);
++                    tls_packet_append(packet, context->hrr_cookie, context->hrr_cookie_len);
++                }
+             }
+         }
+ #endif
+@@ -42705,7 +42744,11 @@ int _private_tls_parse_key_share(struct TLSContext *context, const unsigned char
+                 continue;
+             case 0x0019:
+                 /* secp521r1 */
+-                break;
++                curve = &secp521r1;
++                buffer = &buf[i];
++                DEBUG_PRINT0("KEY SHARE => secp521r1\n");
++                buf_len = 0;
++                continue;
+             case 0x001D:
+                 /* x25519 */
+ #ifdef TLS_CURVE25519
+@@ -42878,6 +42921,7 @@ int _private_tls_parse_key_share(struct TLSContext *context, const unsigned char
+ int tls_parse_hello(struct TLSContext *context, const unsigned char *buf, int buf_len, unsigned int *write_packets, unsigned int *dtls_verified) {
+     int res = 0;
+     int downgraded = 0;
++    int is_hrr = 0;
+     int hello_min_size;
+     unsigned int bytes_to_follow;
+     unsigned short version;
+@@ -42940,7 +42984,7 @@ int tls_parse_hello(struct TLSContext *context, const unsigned char *buf, int bu
+     }
+     if (downgraded) {
+         context->version = version;
+-        if (!context->is_server)
++        if ((!context->is_server) && (!context->hrr))
+             _private_tls_change_hash_type(context);
+         DEBUG_PRINT1("DOWNGRADED TO %x\n", (int)context->version);
+     }
+@@ -42951,13 +42995,17 @@ int tls_parse_hello(struct TLSContext *context, const unsigned char *buf, int bu
+     if (context->version == TLS_V13 && version == TLS_V12) {
+         downgraded = 1;
+         context->version = version;
+-        if (!context->is_server)
++        if ((!context->is_server) && (!context->hrr))
+             _private_tls_change_hash_type(context);
+         DEBUG_PRINT1("DOWNGRADED TO %x\n", (int)context->version);
+     }
+ #endif
+ 
+     memcpy(context->remote_random, &buf[res], TLS_CLIENT_RANDOM_SIZE);
++#ifdef WITH_TLS_13
++    if ((!context->is_server) && (!memcmp(context->remote_random, _tls13_hrr_random, 32)))
++        is_hrr = 1;
++#endif
+     res += TLS_CLIENT_RANDOM_SIZE;
+     
+     session_len = buf[res++];
+@@ -43227,6 +43275,20 @@ int tls_parse_hello(struct TLSContext *context, const unsigned char *buf, int bu
+                 /* pre-shared key */
+                 DEBUG_DUMP_HEX_LABEL("EXTENSION, PRE SHARED KEY", &buf[res], extension_len);
+             } else
++            if (extension_type == 0x2C) {
++                /* cookie: only meaningful in a HelloRetryRequest; echoed in the second hello */
++                if ((is_hrr) && (extension_len >= 2)) {
++                    unsigned short cookie_len = (unsigned short)((buf[res] << 8) | buf[res + 1]);
++                    if ((cookie_len) && (cookie_len <= extension_len - 2)) {
++                        TLS_FREE(context->hrr_cookie);
++                        context->hrr_cookie = (unsigned char *)TLS_MALLOC(cookie_len);
++                        if (context->hrr_cookie) {
++                            memcpy(context->hrr_cookie, &buf[res + 2], cookie_len);
++                            context->hrr_cookie_len = cookie_len;
++                        }
++                    }
++                }
++            } else
+             if (extension_type == 0x33) {
+                 /* key share */
+                 if (context->is_server) {
+@@ -43235,13 +43297,17 @@ int tls_parse_hello(struct TLSContext *context, const unsigned char *buf, int bu
+                         DEBUG_PRINT0("BROKEN KEY SHARE\n");
+                         return TLS_BROKEN_PACKET;
+                     }
++                } else
++                if (is_hrr) {
++                    if (extension_len == 2)
++                        context->hrr_group = (unsigned short)((buf[res] << 8) | buf[res + 1]);
+                 } else {
+                     key_size = extension_len;
+                 }
+                 DEBUG_DUMP_HEX_LABEL("EXTENSION, KEY SHARE", &buf[res], extension_len);
+                 if (context->is_server)
+                     key_share = &buf[res + 2];
+-                else
++                else if (!is_hrr)
+                     key_share = &buf[res];
+             } else
+             if (extension_type == 0x0D) {
+@@ -43258,6 +43324,31 @@ int tls_parse_hello(struct TLSContext *context, const unsigned char *buf, int bu
+     }
+     if (buf_len != res)
+         return TLS_NEED_MORE_DATA;
++#ifdef WITH_TLS_13
++    if (is_hrr) {
++        /* HelloRetryRequest: restart the transcript as message_hash(ClientHello1), then
++           let the caller hash this HRR and send a second hello for the requested group. */
++        unsigned char header[4] = {0xFE, 0, 0, 0};
++        unsigned char hash[TLS_MAX_SHA_SIZE];
++        int hash_len;
++        DEBUG_PRINT3("HELLO RETRY REQUEST: already=%i version=%04x group=%i\n", (int)context->hrr, (int)context->version, (int)context->hrr_group);
++        if ((context->hrr) || (context->version != TLS_V13) || (!context->hrr_group))
++            return TLS_UNEXPECTED_MESSAGE;      /* a second HRR, or nothing to retry with */
++        if (!tls_cipher_supported(context, cipher)) {
++            context->cipher = 0;
++            return TLS_NO_COMMON_CIPHER;
++        }
++        context->hrr = 1;
++        hash_len = _private_tls_done_hash(context, hash);
++        header[3] = (unsigned char)hash_len;
++        _private_tls_update_hash(context, header, sizeof(header));
++        _private_tls_update_hash(context, hash, hash_len);
++        context->hs_messages[2] = 0;             /* the real ServerHello is still to come */
++        context->connection_status = 0;
++        *write_packets = 5;                      /* -> tls_build_hello(): ClientHello2 */
++        return res;
++    }
++#endif
+     if ((context->is_server) && (cipher_buffer) && (cipher_len)) {
+         int cipher = tls_choose_cipher(context, cipher_buffer, cipher_len, &scsv_set);
+         if (cipher < 0) {
+@@ -43285,8 +43376,8 @@ int tls_parse_hello(struct TLSContext *context, const unsigned char *buf, int bu
+     if ((key_share) && (key_size) && ((context->version == TLS_V13) || (context->version == DTLS_V13))) {
+         int key_share_err = _private_tls_parse_key_share(context, key_share, key_size);
+         if (key_share_err) {
+-            /* request hello retry */
+-            if (context->connection_status != 4) {
++            /* request hello retry (server side only: a client with no usable share has failed) */
++            if ((context->is_server) && (context->connection_status != 4)) {
+                 *write_packets = 5;
+                 context->hs_messages[1] = 0;
+                 context->connection_status = 4;
+@@ -44960,7 +45051,8 @@ int tls_parse_message(struct TLSContext *context, unsigned char *buf, int buf_le
+             context->dtls_epoch_remote++;
+             if (context->connection_status != 2) {
+ #ifdef WITH_TLS_13
+-                if (context->connection_status == 4) {
++                if ((context->connection_status == 4) || ((!context->is_server) && (context->hrr) && (context->connection_status < 2))) {
++                    /* server side: we sent an HRR; client side: the server's compatibility-mode CCS after its HRR */
+                     DEBUG_PRINT0("IGNORING CHANGE CIPHER SPEC MESSAGE (HELLO RETRY REQUEST)\n");
+                     break;
+                 }

@@ -223,6 +223,50 @@ nearly free. The reply's `encoding` (raw/packbits/delta), `wire_bytes` and
         }
     },
     {
+        "name": "mac_https_get",
+        "description": """Fetch an https:// URL FROM THE GUEST — the classic Mac does the TLS itself.
+
+Drives `httpsget`, a 68K application (Retro68 + Crypto Ancienne) that speaks
+TLS 1.2/1.3 over the MacTCP driver API, verifies the server's certificate
+chain against a built-in root bundle (13 public roots; subject checked against
+the host name), performs an HTTP/1.0 GET and streams the response to a file.
+This tool resolves the host name on the host side (the app takes an IP),
+writes the request file, launches the app, waits for its log to carry this
+request's nonce, and reads the response back.
+
+Expect seconds, not milliseconds: on an emulated 68030 a verified TLS 1.3
+handshake is 3–6 s (a HelloRetryRequest to P-521 plus three RSA verifies), a
+P-256/X25519 handshake under a second; real hardware is slower again. The
+reply carries the guest's own timings in ticks (60/s) so the cost is visible.
+
+Redirects are NOT followed — a 3xx comes back as such with its Location. The
+body is returned as text when the content type is text/* or JSON (decoded per
+its charset), otherwise base64. A certificate that does not verify ends the
+connection before any HTTP is sent: `success: false` with the guest's log.""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "https:// URL to fetch (http:// is refused — that is what the proxy is for)"
+                },
+                "app_dir": {
+                    "type": "string",
+                    "description": "Guest folder holding the httpsget application and its request/response files (default MeinMac:TTLS:)"
+                },
+                "tls_version": {
+                    "type": "string",
+                    "description": "\"13\" (default) or \"12\""
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Seconds to wait for the guest to finish (default 90)"
+                }
+            },
+            "required": ["url"]
+        }
+    },
+    {
         "name": "launch_app",
         "description": """Launch a GUI application on the classic Mac and bring it to the FOREGROUND.
 
@@ -1306,6 +1350,129 @@ def launch_app(path: str, document: Optional[str] = None) -> Dict[str, Any]:
             "path": path,
             "error": str(e)
         }
+
+
+def mac_https_get(url: str, app_dir: str = "MeinMac:TTLS:", tls_version: str = "13",
+                  timeout: int = 90) -> Dict[str, Any]:
+    """Fetch an https:// URL with the guest's own TLS client (`httpsget`).
+
+    The guest has no resolver in this path, so the name is resolved here and
+    the IP handed over; the NAME still travels for SNI, the Host header and the
+    certificate's subject check. The request file carries a nonce, and the log
+    the app writes at the END of its run echoes it — the only way to tell this
+    run's result from a stale log without a delete verb.
+    """
+    import socket
+    import secrets
+    from urllib.parse import urlsplit
+
+    t0 = time.time()
+    try:
+        parts = urlsplit(url)
+        if parts.scheme != "https" or not parts.hostname:
+            return {"success": False, "url": url,
+                    "error": "only https:// URLs with a host name — http:// is what the proxy is for"}
+        host = parts.hostname
+        port = parts.port or 443
+        path = parts.path or "/"
+        if parts.query:
+            path += "?" + parts.query
+        try:
+            ip = socket.gethostbyname(host)
+        except OSError as e:
+            return {"success": False, "url": url, "error": f"host-side DNS failed for {host}: {e}"}
+
+        if not app_dir.endswith(":"):
+            app_dir += ":"
+        nonce = secrets.token_hex(4)
+        req = "\n".join([nonce, ip, str(port), host, path,
+                         "12" if str(tls_version) == "12" else "13"]) + "\n"
+        w = mac_write_file(app_dir + "https.req", req)
+        if not w.get("success"):
+            return {"success": False, "url": url, "error": "could not write https.req: %s" % w.get("error")}
+
+        conn = get_connection()
+        status, stdout, stderr = conn.send_command("LAUNCH:" + app_dir + "httpsget", timeout=15.0)
+        if status != 0:
+            return {"success": False, "url": url, "error": "launch failed: %s" % (stderr or status)}
+
+        # Poll for the log that carries our nonce. The app writes it once, at
+        # the end, so a log without the nonce is the previous run's.
+        log = None
+        deadline = t0 + timeout
+        while time.time() < deadline:
+            time.sleep(1.0)
+            st, out, _ = conn.send_command("READFILE:" + app_dir + "https.log", timeout=30.0)
+            if st == 0:
+                text = macbinary.decode(base64.b64decode(out))["data"].decode(
+                    "mac_roman", errors="replace").replace("\r", "\n")
+                if ("nonce " + nonce) in text:
+                    log = text
+                    break
+        if log is None:
+            return {"success": False, "url": url, "nonce": nonce,
+                    "error": f"no result from the guest within {timeout} s (is httpsget in {app_dir}?)"}
+
+        st, out, err = conn.send_command("READFILE:" + app_dir + "https.out", timeout=240.0)
+        raw = macbinary.decode(base64.b64decode(out))["data"] if st == 0 else b""
+
+        # Guest-side facts from the log: they are the measurement.
+        info: Dict[str, Any] = {}
+        for line in log.split("\n"):
+            m = re.search(r"(\d+) ticks", line)
+            if line.startswith("TLS handshake:") and m:
+                info["handshake_ticks"] = int(m.group(1))
+            elif line.startswith("cipher="):
+                info["cipher"] = line[7:].strip()
+            elif line.startswith("tcp connect:") and m:
+                info["connect_ticks"] = int(m.group(1))
+            elif line.startswith("roots loaded:"):
+                mm = re.search(r"roots loaded: (\d+)", line)
+                if mm:
+                    info["roots"] = int(mm.group(1))
+
+        head, sep, body = raw.partition(b"\r\n\r\n")
+        if not sep:
+            # No complete response: a TLS failure (certificate, alert) or a drop.
+            reason = [l for l in log.split("\n")
+                      if "error" in l or "dropped" in l or "timeout" in l or "failed" in l]
+            return {"success": False, "url": url, "nonce": nonce, "tls": info,
+                    "error": (reason[-1] if reason else "no HTTP response from the guest"),
+                    "guest_log": log, "elapsed_s": round(time.time() - t0, 1)}
+
+        lines = head.decode("iso-8859-1").split("\r\n")
+        status_line = lines[0]
+        try:
+            code = int(status_line.split()[1])
+        except (IndexError, ValueError):
+            code = None
+        headers: Dict[str, str] = {}
+        for hl in lines[1:]:
+            k, _, v = hl.partition(":")
+            if k:
+                headers[k.strip().lower()] = v.strip()
+        ctype = headers.get("content-type", "")
+        textual = ctype.startswith("text/") or "json" in ctype or "xml" in ctype
+        result: Dict[str, Any] = {
+            "success": True, "url": url, "ip": ip, "status": code, "status_line": status_line,
+            "headers": headers, "body_bytes": len(body), "tls": info,
+            "verified": True,
+            "elapsed_s": round(time.time() - t0, 1), "nonce": nonce,
+        }
+        if textual:
+            m = re.search(r"charset=([\w-]+)", ctype)
+            enc = m.group(1) if m else "utf-8"
+            try:
+                result["body"] = body.decode(enc, errors="replace")
+            except LookupError:
+                result["body"] = body.decode("utf-8", errors="replace")
+        else:
+            result["body_base64"] = base64.b64encode(body).decode("ascii")
+        if code and 300 <= code < 400 and "location" in headers:
+            result["redirect"] = headers["location"]
+        return result
+    except Exception as e:
+        return {"success": False, "url": url, "error": str(e)}
 
 
 def _inject(verb: str, label_fields: Dict[str, Any]) -> Dict[str, Any]:
@@ -2420,6 +2587,7 @@ TOOL_HANDLERS = {
     "mac_compile": mac_compile,
     "mac_screenshot": mac_screenshot,
     "launch_app": launch_app,
+    "mac_https_get": mac_https_get,
     "mac_type": mac_type,
     "mac_key": mac_key,
     "mac_menu": mac_menu,
