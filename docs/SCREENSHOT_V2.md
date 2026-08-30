@@ -110,6 +110,9 @@ which is why it stays a spike (D-025).
 
 ## Measured (2026-08-30, Basilisk II, System 7.6.1, `ether slirp`, 1024×768×8)
 
+![One look at the guest screen: seconds and bytes per look, before and after](images/screenshot-cost-before-after.svg)
+
+
 | capture | before | after | wire bytes |
 |---|---|---|---|
 | full screen, first look | 4.4 s | 2.7 s (enc 1) | 787 KB → 578 KB |
