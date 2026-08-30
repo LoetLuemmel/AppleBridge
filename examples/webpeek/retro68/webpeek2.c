@@ -184,12 +184,38 @@ static void FetchFromLocation(void) {
     { char *q = url + n; while (q > url && (q[-1] == ' ' || q[-1] == '\r')) *--q = 0; }
     if (url[0]) Fetch(url, 0);
 }
+/* Read the 'TEXT' item of the desk scrap WITHOUT the GetScrap trap.
+ * Basilisk II patches GetScrap to re-import the host pasteboard into the Mac scrap
+ * first, and that re-import empties it here (measured 2026-08-30: size 0, count
+ * bumped, GetScrap -102 although PutScrap had just succeeded and the host held the
+ * text). The scrap itself is documented (Inside Macintosh, Scrap Manager): a
+ * sequence of {OSType type; long length; data padded to even}, at the low-memory
+ * ScrapHandle once loaded. Reading it directly works on Basilisk and real Macs alike. */
+static long ReadScrapText(char *out, long cap) {
+    Handle h; long size, pos = 0, n = 0;
+    if (LMGetScrapState() == 0) LoadScrap();                 /* on disk -> memory (not patched) */
+    h = LMGetScrapHandle(); size = LMGetScrapSize();
+    if (!h || size < 8) return 0;
+    HLock(h);
+    while (pos + 8 <= size) {
+        unsigned char *p = (unsigned char *)*h + pos;
+        unsigned long type = ((unsigned long)p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3];
+        long len = ((long)p[4] << 24) | ((long)p[5] << 16) | ((long)p[6] << 8) | p[7];
+        if (len < 0 || pos + 8 + len > size) break;
+        if (type == 'TEXT') { n = len < cap ? len : cap; memcpy(out, p + 8, n); break; }
+        pos += 8 + ((len + 1) & ~1L);
+    }
+    HUnlock(h);
+    return n;
+}
 static void FetchFromClipboard(void) {
-    Handle h = NewHandle(0); long off, got, i, n = 0; char url[600];
-    got = GetScrap(h, 'TEXT', &off);
-    if (got > 0) { HLock(h); for (i = 0; i < got && n < 598; i++) { char c = (*h)[i]; if (c == '\r' || c == '\n') break; if (c != ' ') url[n++] = c; } HUnlock(h); }
-    DisposeHandle(h); url[n] = 0;
-    if (n) Fetch(url, 0); else ShowText("Clipboard holds no text.", -1);
+    static char raw[2048]; long got, i, n = 0, gs, off = 0; char url[600];
+    { Handle h = NewHandle(0); gs = GetScrap(h, 'TEXT', &off); DisposeHandle(h); }   /* lets an emulator import the host pasteboard */
+    got = ReadScrapText(raw, sizeof raw);
+    for (i = 0; i < got && n < 598; i++) { char c = raw[i]; if (c == '\r' || c == '\n') break; if (c != ' ') url[n++] = c; }
+    url[n] = 0;
+    if (n) Fetch(url, 0);
+    else { char msg[200]; sprintf(msg, "Clipboard holds no text (GetScrap %ld; scrap size %ld, state %d).", gs, (long)LMGetScrapSize(), (int)LMGetScrapState()); ShowText(msg, -1); }
 }
 
 /* ---------- PICT ---------- */

@@ -659,6 +659,39 @@ def screenshot_png(shot, region=None):
               shot["row_bytes"], shot["clut"], shot["pixels"], region=region)
 
 
+
+def _mirror_scrap_to_host_pasteboard(data, runner=None):
+    """After a CLIPSET, put the same text on the HOST pasteboard as plain text.
+
+    Basilisk II keeps the guest scrap and the host pasteboard in step through
+    trap patches: its PutScrap hook copies what the daemon wrote to the host as
+    RTF + text, and any guest application's GetScrap re-imports the host
+    pasteboard when it changed. Measured 2026-08-30: the re-import of what the
+    hook itself had written came back EMPTY (scrap size 0, GetScrap -102), so a
+    front application saw nothing after mac_clipboard_set -- while a plain
+    string put on the host pasteboard with pbcopy was imported fine and the
+    same application fetched the URL it carried. So the host side finishes the
+    job: the newest host pasteboard content becomes the plain text, and the
+    next GetScrap anywhere in the guest gets it. macOS + pbcopy only; a no-op
+    elsewhere (the guest scrap itself is still written by the daemon). Bytes
+    are MacRoman on the wire; the pasteboard wants UTF-8.
+    """
+    import shutil
+    import subprocess
+    import sys
+    if sys.platform != "darwin" or not data:
+        return False
+    run = runner or subprocess.run
+    if runner is None and not shutil.which("pbcopy"):
+        return False
+    try:
+        text = data.decode("mac_roman", errors="replace").replace("\r", "\n")
+        run(["pbcopy"], input=text.encode("utf-8"), check=False, timeout=5)
+        return True
+    except Exception as e:                                   # noqa: BLE001
+        log(f"CLIPSET host mirror failed: {e}")
+        return False
+
 class AppleBridgeServer:
     def __init__(self, interface=HOST_INTERFACE, port=HOST_PORT,
                  serial_dev=None, serial_baud=SERIAL_BAUD):
@@ -1224,7 +1257,9 @@ class AppleBridgeServer:
             self._mark_disconnected(f"send failed: {e}")
             return None
         log(f"CLIPSET {len(data)}B")
-        return self._read_framed_response(DEFAULT_TIMEOUT, label="CLIPSET")
+        reply = self._read_framed_response(DEFAULT_TIMEOUT, label="CLIPSET")
+        _mirror_scrap_to_host_pasteboard(data)
+        return reply
 
     def send_raw(self, data, timeout=DEFAULT_TIMEOUT):
         """Send a RAW verb (PING / LAUNCH:<path>) — no COMMAND: wrapper.
