@@ -268,6 +268,21 @@ def test_delta_of_one_changed_byte_is_a_zero_run_on_the_wire():
     assert sd.apply_delta(prev, rb, 1, runs) == bytes(new)
 
 
+def test_enc3_up_predictor_roundtrip_and_packs_a_dither():
+    rb, rows = 64, 8
+    # a 2-row dither pattern: no horizontal runs, identical every other row
+    a = bytes([0x55, 0xAA] * (rb // 2)); b = bytes([0xAA, 0x55] * (rb // 2))
+    frame = (a + b) * (rows // 2)
+    up = bytearray(frame)
+    for y in range(rows - 1, 0, -1):
+        s0 = y * rb
+        up[s0:s0 + rb] = bytes(p ^ q for p, q in zip(frame[s0:s0 + rb], frame[s0 - rb:s0]))
+    payload = _pack_rows([bytes(up[y * rb:(y + 1) * rb]) for y in range(rows)])
+    plain = _pack_rows([frame[y * rb:(y + 1) * rb] for y in range(rows)])
+    assert len(payload) < len(plain) // 3, (len(payload), len(plain))
+    assert sd.decode_rows(3, payload, rows, rb) == frame
+
+
 def test_delta_run_outside_frame_is_an_error():
     payload = struct.pack(">HH", 5, 2) + _pack_rows([bytes(4), bytes(4)])
     runs = sd.parse_delta(payload, 4, packed=True)

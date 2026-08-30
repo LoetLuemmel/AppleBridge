@@ -21,6 +21,7 @@
 #include <LowMem.h>
 #include <Processes.h>
 #include <ToolUtils.h>
+#include <Aliases.h>
 #include <AppleEvents.h>
 #include <Gestalt.h>
 #include <Shutdown.h>
@@ -1293,12 +1294,24 @@ static OSErr LaunchAppAtPath(const char *macPath)
     LaunchParamBlockRec lpb;
     OSErr err;
     short i;
+    const char *docPath = NULL;
+    AEDesc appParams;
+    Boolean haveParams = false;
 
-    /* C string -> Pascal string (full HFS path) */
-    for (i = 0; macPath[i] && i < 255; i++) {
+    /* LAUNCH:<app>[<TAB><document>] (0.8d47): a document after a TAB — the
+     * separator cannot be ':' in an HFS path — is handed to the application
+     * as an 'odoc' Apple Event in the launch parameters, so an app whose cold
+     * start is a modal Standard File picker (the THINK Project Manager) opens
+     * straight onto its project. Without it the daemon could open the app but
+     * never the document, and a modal front door blocks every verb after it. */
+    appParams.dataHandle = NULL;
+
+    /* C string -> Pascal string (full HFS path), stopping at the TAB */
+    for (i = 0; macPath[i] && macPath[i] != '\t' && i < 255; i++) {
         pPath[i + 1] = macPath[i];
     }
     pPath[0] = i;
+    if (macPath[i] == '\t' && macPath[i + 1]) docPath = macPath + i + 1;
 
     err = FSMakeFSSpec(0, 0, pPath, &spec);
     if (err != noErr) return err;
@@ -1323,7 +1336,52 @@ static OSErr LaunchAppAtPath(const char *macPath)
     lpb.launchAppSpec = &spec;
     lpb.launchAppParameters = NULL;
 
-    return LaunchApplication(&lpb);
+    if (docPath != NULL) {
+        Str255 pDoc;
+        FSSpec docSpec;
+        ProcessSerialNumber psn;
+        AEDesc target, list;
+        AppleEvent ae;
+        AliasHandle alias = NULL;
+        OSErr aerr;
+
+        for (i = 0; docPath[i] && docPath[i] != '\r' && docPath[i] != '\n' && i < 255; i++)
+            pDoc[i + 1] = docPath[i];
+        pDoc[0] = i;
+        err = FSMakeFSSpec(0, 0, pDoc, &docSpec);
+        if (err != noErr) return err;
+
+        psn.highLongOfPSN = 0; psn.lowLongOfPSN = kNoProcess;
+        aerr = AECreateDesc(typeProcessSerialNumber, (Ptr)&psn, sizeof(psn), &target);
+        if (aerr == noErr) {
+            aerr = AECreateAppleEvent(kCoreEventClass, kAEOpenDocuments, &target,
+                                      kAutoGenerateReturnID, kAnyTransactionID, &ae);
+            AEDisposeDesc(&target);
+        }
+        if (aerr == noErr) {
+            aerr = AECreateList(NULL, 0, false, &list);
+            if (aerr == noErr) {
+                aerr = NewAliasMinimal(&docSpec, &alias);
+                if (aerr == noErr) {
+                    HLock((Handle)alias);
+                    aerr = AEPutPtr(&list, 1, typeAlias, (Ptr)*alias, GetHandleSize((Handle)alias));
+                    DisposeHandle((Handle)alias);
+                }
+                if (aerr == noErr) aerr = AEPutParamDesc(&ae, keyDirectObject, &list);
+                AEDisposeDesc(&list);
+            }
+            if (aerr == noErr) aerr = AECoerceDesc(&ae, typeAppParameters, &appParams);
+            AEDisposeDesc(&ae);
+        }
+        if (aerr != noErr) return aerr;
+        HLock(appParams.dataHandle);
+        lpb.launchAppParameters = (AppParametersPtr)*appParams.dataHandle;
+        haveParams = true;
+    }
+
+    err = LaunchApplication(&lpb);
+    if (haveParams) AEDisposeDesc(&appParams);
+    return err;
 }
 
 /*

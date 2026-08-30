@@ -6,7 +6,10 @@
  * the classic way to tell builds apart (replacing ad-hoc names like
  * "AppleBridge5"). One 'vers' file stamps the whole suite uniformly.
  *
- * This build: 0.8 development — d46 makes a screenshot cost what it shows. SCREENSHOT2
+ * This build: 0.8 development — d47 lets LAUNCH open a document: LAUNCH:<app><TAB><doc>
+ * hands the app an 'odoc' event in its launch parameters, so the THINK Project Manager
+ * starts on a project instead of on a modal Standard File picker nobody can drive.
+ * d46 makes a screenshot cost what it shows. SCREENSHOT2
  * crops to the requested rectangle IN THE GUEST, packs every row with the Toolbox's
  * PackBits, and — when the host names the generation of the frame it already holds —
  * sends only the rows that changed since. The legacy verb streamed the raw 768 KB
@@ -117,14 +120,14 @@ resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
     development, 0x36,   /* development stage, non-release revision 38 (BCD) */
     verUS,
-    "0.8d46",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d46 - a screenshot costs what it shows"  /* long -> Get Info */
+    "0.8d47",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d47 - LAUNCH opens a document"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
     development, 0x36,
     verUS,
-    "0.8d46",
+    "0.8d47",
     "AppleBridge"        /* the shared/suite version line */
 };

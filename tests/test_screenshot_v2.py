@@ -114,9 +114,9 @@ def test_full_frame_packed_then_delta_uses_the_base_it_holds():
     srv = _server([_image2(a, 1, 1), _image2(b, 2, 2, payload=delta)])
     s1 = srv.request_screenshot()
     assert s1["pixels"] == b"".join(a) and s1["enc"] == 1 and s1["gen"] == 1
-    assert srv.client_socket.sent[0] == b"SCREENSHOT2:0:0:0:0:1:0"
+    assert srv.client_socket.sent[0] == b"SCREENSHOT2:0:0:0:0:5:0"
     s2 = srv.request_screenshot()
-    assert srv.client_socket.sent[1] == b"SCREENSHOT2:0:0:0:0:3:1", srv.client_socket.sent[1]
+    assert srv.client_socket.sent[1] == b"SCREENSHOT2:0:0:0:0:7:1", srv.client_socket.sent[1]
     assert s2["pixels"] == b"".join(b) and s2["enc"] == 2 and s2["gen"] == 2
     assert srv.shot_prev["gen"] == 2
     assert s2["wire_bytes"] < len(_image2(b, 1, 2))  # the delta was smaller than a frame
@@ -135,7 +135,7 @@ def test_region_is_sent_to_the_guest_and_not_cropped_again():
     sub = [r[4:12] for r in a[2:6]]                       # x=4 w=8, y=2 h=4
     srv = _server([_image2(a, 1, 1, region=(4, 2, 8, 4), payload=_pack_rows(sub))])
     shot = srv.request_screenshot(region=(4, 2, 8, 4))
-    assert srv.client_socket.sent[0] == b"SCREENSHOT2:4:2:8:4:1:0"
+    assert srv.client_socket.sent[0] == b"SCREENSHOT2:4:2:8:4:5:0"
     assert (shot["width"], shot["height"], shot["row_bytes"]) == (8, 4, 8)
     assert shot["pixels"] == b"".join(sub)
     assert srv.shot_prev is None                          # a region never becomes a delta base
@@ -153,7 +153,7 @@ def test_old_daemon_falls_back_to_legacy_once_per_link():
     assert srv.shot_v2 is False
     s2 = srv.request_screenshot()
     sent = srv.client_socket.sent
-    assert sent == [b"SCREENSHOT2:0:0:4:4:1:0", b"SCREENSHOT", b"SCREENSHOT"], sent
+    assert sent == [b"SCREENSHOT2:0:0:4:4:5:0", b"SCREENSHOT", b"SCREENSHOT"], sent
     assert s2["enc"] == 0
 
 
@@ -170,7 +170,7 @@ def test_new_link_forgets_the_base():
     assert srv.shot_prev is not None
     srv.link_generation += 1                              # a reconnected daemon
     srv.request_screenshot()
-    assert srv.client_socket.sent[1] == b"SCREENSHOT2:0:0:0:0:1:0"
+    assert srv.client_socket.sent[1] == b"SCREENSHOT2:0:0:0:0:5:0"
 
 
 def test_region_row_bytes_packs_pixels_without_slack():

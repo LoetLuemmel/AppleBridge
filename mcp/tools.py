@@ -237,6 +237,10 @@ Path uses : separator and points at the application file, e.g.
                 "path": {
                     "type": "string",
                     "description": "Mac path to the application (using : separator)"
+                },
+                "document": {
+                    "type": "string",
+                    "description": "Optional Mac path of a document the app opens at launch (odoc in the launch parameters; daemon 0.8d47+). Use it for apps whose cold start is a modal file picker, e.g. a THINK C project."
                 }
             },
             "required": ["path"]
@@ -1258,7 +1262,7 @@ def mac_screenshot(region: Optional[list] = None) -> Dict[str, Any]:
                         result[k] = int(v)
                 enc = result.get("enc")
                 if enc is not None:
-                    result["encoding"] = {0: "raw", 1: "packbits", 2: "delta"}.get(enc, str(enc))
+                    result["encoding"] = {0: "raw", 1: "packbits", 2: "delta", 3: "up+packbits"}.get(enc, str(enc))
             return result
         else:
             return {
@@ -1272,8 +1276,12 @@ def mac_screenshot(region: Optional[list] = None) -> Dict[str, Any]:
         }
 
 
-def launch_app(path: str) -> Dict[str, Any]:
-    """Launch a GUI app on the Mac (foreground) via the daemon's LAUNCH verb."""
+def launch_app(path: str, document: Optional[str] = None) -> Dict[str, Any]:
+    """Launch a GUI app on the Mac (foreground) via the daemon's LAUNCH verb.
+
+    `document` (daemon 0.8d47+) is opened by the app at launch through an
+    'odoc' Apple Event in the launch parameters — the way to get past an
+    application whose cold start is a modal Standard File picker."""
     try:
         conn = get_connection()
         if not conn.is_connected():
@@ -1283,7 +1291,8 @@ def launch_app(path: str) -> Dict[str, Any]:
                 "error": "Mac not connected. Make sure the AppleBridge daemon is running and connected."
             }
         # The :9001 control server routes a raw 'LAUNCH:<path>' verb to the daemon.
-        status, stdout, stderr = conn.send_command("LAUNCH:" + path, timeout=15.0)
+        verb = "LAUNCH:" + path + ("\t" + document if document else "")
+        status, stdout, stderr = conn.send_command(verb, timeout=15.0)
         return {
             "success": status == 0,
             "status": status,

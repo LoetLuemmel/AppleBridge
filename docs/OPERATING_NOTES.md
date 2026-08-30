@@ -2631,3 +2631,33 @@ Legacy-Verb, 5,2 s, und kein Fehler weit und breit.
 Zeilendelta trug deshalb noch 138 KB; XOR mit der Vorgängerzeile macht daraus
 3 KB. `MONITOR:0` bringt ein leeres Delta auf 815 B — und das Ausblenden
 selbst kostet einmal 192 KB Delta, weil das Fenster verschwindet.
+
+## Ein Benchmark im Gast, per THINK C, ohne Hand am Gerät — was es gekostet hat — 2026-08-30
+
+**Was lief:** `host/bench/fbbench.c` als `main.c` in `CalibExpand.π`, TPM per
+`LAUNCH:<app><TAB><doc>` (0.8d47) direkt auf das Projekt geöffnet — kein
+modaler Dateiwähler mehr —, *Remove Objects* per echter Maus (`guest_input.py
+menu 196 9 210 108`), Return, Cmd-R, Return für *Bring up to date?*, Ergebnis
+per `READFILE`. Zwei Durchläufe, beide vollständig gelesen.
+
+**Drei Fallen, je eine Runde:**
+
+* **`NewPtr` von 4 × 768 KB schlägt still fehl** — THINK Cs Standardpartition
+  sind 384 KB. Das Programm lief, schrieb `capture failed` und war fertig; ohne
+  eine Zeile, die den Fehlschlag *benennt*, hätte das wie ein leeres Ergebnis
+  ausgesehen. `NewPtrSys` (System-Heap, wächst unter System 7) löste es; der
+  `MemError()`-Wert steht seither in der Datei.
+* **`mac_host_menu` verweigerte mit „outside the 0x768 screen"**:
+  `emulator_prefs.resolve()` hatte SheepShavers Prefs mit `screen win/0/768`
+  gewählt, obwohl Basilisk lief. `parse_guest_size` fällt jetzt bei einer
+  Nullseite auf den Standard zurück; der MCP-Prozess trägt das alte Modul bis
+  zum Neustart, die CLI nicht — deshalb lief die Geste über die CLI.
+* **Der Poll las „fertig" nicht**, obwohl die Datei fertig war: `sed -n 3p`
+  auf eine Antwort, deren Zeilenzahl von der Länge abhängt. Ein Leser, der
+  nach `STDOUT:<n>` schneidet (`readbench.py`), sah es beim ersten Versuch.
+
+**Und ein Befund, der eine Hypothese gekostet hat:** *rowdedup* — „das Muster
+wiederholt sich zeilenweise" — packte 1,58:1. Das Desktop-Dither alterniert
+Zeile für Zeile; benachbarte Zeilen sind nie gleich, ihre XOR-Summe fast leer.
+Das ist der ganze Unterschied zwischen 1,39:1 und 13,6:1, und er war ohne
+Messung nicht zu sehen.

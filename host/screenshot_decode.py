@@ -223,16 +223,27 @@ def apply_delta(prev, row_bytes, height, runs):
     return bytes(cur)
 
 
+def undo_up(data, rows, row_bytes):
+    """Inverse of the Up predictor: row[y] ^= row[y-1], top to bottom."""
+    cur = bytearray(data)
+    for y in range(1, rows):
+        a = y * row_bytes
+        prev = int.from_bytes(cur[a - row_bytes:a], "big")
+        cur[a:a + row_bytes] = (int.from_bytes(cur[a:a + row_bytes], "big") ^ prev).to_bytes(row_bytes, "big")
+    return bytes(cur)
+
+
 def decode_rows(enc, payload, rows, row_bytes):
-    """enc 0 raw / enc 1 PackBits rows -> exactly rows*row_bytes bytes."""
+    """enc 0 raw / enc 1 PackBits rows / enc 3 Up-predicted PackBits rows
+    -> exactly rows*row_bytes bytes."""
     if enc == 0:
         need = rows * row_bytes
         if len(payload) < need:
             raise ValueError(f"short raw payload: {len(payload)} < {need}")
         return bytes(payload[:need])
-    if enc == 1:
+    if enc in (1, 3):
         data, off = unpack_rows(payload, 0, rows, row_bytes)
-        return data
+        return undo_up(data, rows, row_bytes) if enc == 3 else data
     raise ValueError(f"unsupported encoding {enc}")
 
 

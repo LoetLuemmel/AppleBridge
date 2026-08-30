@@ -1504,7 +1504,7 @@ class AppleBridgeServer:
             rx, ry, rw, rh = 0, 0, 0, 0
         full = region is None
         base_gen = 0
-        flags = 1                                   # PackBits rows
+        flags = 1 | 4                               # PackBits rows, Up-predicted (enc 3)
         if delta and full and self.shot_prev is not None:
             flags |= 2
             base_gen = self.shot_prev["gen"]
@@ -1589,7 +1589,7 @@ class AppleBridgeServer:
                 self._mark_disconnected("screenshot v2 malformed header")
                 return None
             w, h, depth, rb, cc, ox, oy, ow, oh, enc, gen, ds = (int(parts[i]) for i in range(1, 13))
-            if not (0 <= ds <= MAX_DECLARED) or not (0 <= cc <= 256) or enc not in (0, 1, 2):
+            if not (0 <= ds <= MAX_DECLARED) or not (0 <= cc <= 256) or enc not in (0, 1, 2, 3):
                 log(f"screenshot v2 declared out of range data={ds} clut={cc} enc={enc}; dropping link")
                 self._mark_disconnected("screenshot oversized declared length")
                 return None

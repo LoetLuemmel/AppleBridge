@@ -491,7 +491,7 @@ AppleBridge/
 
 ## Status
 
-**Current daemon:** 0.8d46 ("a screenshot costs what it shows") — the version the
+**Current daemon:** 0.8d47 ("LAUNCH opens a document") — the version the
 daemon itself reports, from `mac/vers.r`.
 
 - TCP bridge, NAT-reversed (the guest dials OUT), with an asynchronous connect
