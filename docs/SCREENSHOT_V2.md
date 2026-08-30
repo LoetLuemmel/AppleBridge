@@ -128,3 +128,21 @@ adding 14 bytes to `ScreenshotData` made SC fail with an internal error naming
 a function the diff never touched. Both screenshot verbs now live in their own
 functions (`ScreenshotVerb`, `Screenshot2Verb`). Details and the control
 experiment: `docs/OPERATING_NOTES.md`, 2026-08-30.
+
+## Under load (2026-08-30)
+
+`host/bench/churn_capture.py` captures at full rate over `:9001` while a guest
+app repaints (`host/bench/churn.c`, THINK C; `churn_mpw.c`, SC). Results in
+`host/bench/results/churn-*.txt`:
+
+| guest app | captures / 60 s | delta bytes p50 / p90 | elapsed p50 | errors |
+|---|---|---|---|---|
+| update event never serviced (any sleep) | 0 | — | link dropped | daemon starved |
+| 2 rects per tick, 6-tick sleep | 330 (5.5/s) | 6.7 KB / 10.7 KB | 149 ms | 0 |
+| 12 rects per tick, 1-tick sleep | 112 (1.9/s) | 43 KB / 46 KB | 488 ms | 0 |
+
+**Host rule that came out of it:** a `SCREENSHOT2` read timeout now drops the
+link (`_request_screenshot_v2`). Before, the unanswered request stayed in the
+daemon's receive buffer and the next verb was read glued to it
+(`PINGSTATSCREENSHOT2:…` in its console), failing every verb until a redial.
+
