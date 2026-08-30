@@ -1,6 +1,6 @@
 """Tests for host/tool_schema.py — one source of tool definitions, two wrappers.
 
-The MCP surface and a local model's `tools` block describe the SAME 30 tools.
+The MCP surface and a local model's `tools` block describe the SAME 31 tools.
 Writing them twice is the obvious shortcut: the second copy drifts the moment
 either side changes, and the drift surfaces as a model calling a parameter that
 no longer exists — an error the bridge reports plainly and that reads like the

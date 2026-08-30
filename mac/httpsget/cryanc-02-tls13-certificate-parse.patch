@@ -1,0 +1,121 @@
+diff --git a/cryanc.c b/cryanc.c
+index fcc9455..d267746 100644
+--- a/cryanc.c
++++ b/cryanc.c
+@@ -3332,6 +3332,9 @@ aarc4_getword(struct aarc4_stream *as)
+ 	val |= aarc4_getbyte(as);
+ 	return val;
+ }
++#ifdef TLS_ENTROPY_HOOK
++int tls_entropy_hook(unsigned char *out, int len);
++#endif
+ static void
+ aarc4_stir(struct aarc4_stream *as)
+ {
+@@ -3350,6 +3353,11 @@ aarc4_stir(struct aarc4_stream *as)
+          * Still, if /dev/urandom exists, smoke 'em if you got 'em.
+          */
+ 	gettimeofday(&rdat.tv, NULL);
++#ifdef TLS_ENTROPY_HOOK
++	/* systems without an OS RNG: the application supplies what entropy it has
++	   (timer jitter, input, hardware counters); mixed in with the clock below */
++	tls_entropy_hook((unsigned char *)&rdat.rnd, sizeof(rdat.rnd));
++#endif
+ 	if (aarc4_use_dev_urandom != 0) {
+ 		f = fopen("/dev/urandom", "rb");
+ 		if (f) {
+@@ -43317,6 +43325,8 @@ int tls_parse_certificate(struct TLSContext *context, const unsigned char *buf,
+     if (size_of_all_certificates <= 4)
+         return 3 + size_of_all_certificates;
+     res += 3;
++    CHECK_SIZE(size_of_all_certificates, buf_len - res, TLS_NEED_MORE_DATA);
++    size = size_of_all_certificates;
+     if (context->dtls) {
+         int dtls_check = _private_dtls_check_packet(buf, buf_len);
+         if (dtls_check < 0)
+@@ -43325,16 +43335,20 @@ int tls_parse_certificate(struct TLSContext *context, const unsigned char *buf,
+     }
+ #ifdef WITH_TLS_13
+     if ((context->version == TLS_V13) || (context->version == DTLS_V13)) {
++        /* certificate_request_context<0..255>: part of the message length, so it
++           must be consumed AFTER the size check above and subtracted from what is
++           left to walk; checking after consuming it was off by one and returned
++           TLS_NEED_MORE_DATA -- which left the client with zero certificates to verify */
+         int context_size = buf[res];
+         res++;
+-        /* must be 0 */
+-        if (context_size)
++        size--;
++        /* must be 0 for a server certificate */
++        if (context_size) {
+             res += context_size;
++            size -= context_size;
++        }
+     }
+ #endif
+-
+-    CHECK_SIZE(size_of_all_certificates, buf_len - res, TLS_NEED_MORE_DATA);
+-    size = size_of_all_certificates;
+     while (size > 0) {
+         unsigned int certificate_size, certificate_size2, remaining;
+         int certificates_in_chain = 0;
+@@ -43393,15 +43407,15 @@ int tls_parse_certificate(struct TLSContext *context, const unsigned char *buf,
+ #ifdef WITH_TLS_13
+             /* extension */
+             if ((context->version == TLS_V13) || (context->version == DTLS_V13)) {
++                /* each CertificateEntry carries Extension extensions<0..2^16-1> */
+                 if (remaining >= 2) {
+-                    unsigned short size = ntohs(*(unsigned short *)&buf[res2]);
+-
+-                    /* ignore extensions */
++                    unsigned int ext_size = ((unsigned int)buf[res2] << 8) | buf[res2 + 1];
++                    res2 += 2;
+                     remaining -= 2;
+-                    if ((size) && (size >= remaining)) {
+-                        res2 += size;
+-                        remaining -= size;
+-                    }
++                    if (ext_size > remaining)
++                        break;
++                    res2 += ext_size;
++                    remaining -= ext_size;
+                 }
+             }
+ #endif
+@@ -44208,6 +44222,7 @@ int tls_parse_payload(struct TLSContext *context, const unsigned char *buf, int
+                             if (payload_res <= 0)
+                                 payload_res = 1;
+                         } else {
++                            DEBUG_PRINT2("CERTIFICATE: %i certificates, callback %s\n", (int)context->certificates_count, certificate_verify ? "set" : "NULL");
+                             if ((certificate_verify) && (context->certificates_count))
+                                 certificate_verify_alert = certificate_verify(context, context->certificates, context->certificates_count);
+                         }
+@@ -44319,6 +44334,7 @@ int tls_parse_payload(struct TLSContext *context, const unsigned char *buf, int
+             _private_tls_update_hash(context, buf, payload_size + 1);
+         
+         if (certificate_verify_alert != no_error) {
++            DEBUG_PRINT1("CERTIFICATE REJECTED BY CALLBACK, ALERT %i\n", certificate_verify_alert);
+             _private_tls_write_packet(tls_build_alert(context, 1, certificate_verify_alert));
+             context->critical_error = 1;
+         }
+@@ -46732,17 +46748,20 @@ int tls_default_verify(struct TLSContext *context, struct TLSCertificate **certi
+     }
+     /* check if chain is valid */
+     err = tls_certificate_chain_is_valid(certificate_chain, len);
++    DEBUG_PRINT2("VERIFY: chain of %i -> %i\n", len, err);
+     if (err)
+         return err;
+     
+     /* check certificate subject */
+     if ((!context->is_server) && (context->sni) && (len > 0) && (certificate_chain)) {
+         err = tls_certificate_valid_subject(certificate_chain[0], context->sni);
++        DEBUG_PRINT2("VERIFY: subject vs sni %s -> %i\n", context->sni, err);
+         if (err)
+             return err;
+     }
+     
+     err = tls_certificate_chain_is_valid_root(context, certificate_chain, len);
++    DEBUG_PRINT2("VERIFY: root (%i roots) -> %i\n", (int)context->root_count, err);
+     if (err)
+         return err;
+     
