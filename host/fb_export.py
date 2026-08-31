@@ -62,21 +62,46 @@ class FbExportError(Exception):
         self.reason = reason
 
 
+# Last known (pid, exe). NOT trusted blindly: a pid can be reused by an
+# unrelated process, and SIGUSR1 to a stranger terminates it — so every
+# capture re-reads the pid's comm and compares. That single `ps` spawn is the
+# floor; the cache only saves the `pgrep` rediscovery (~10 ms of the ~50 ms a
+# tool capture cost, measured 2026-08-31).
+_last_emulator = None
+
+
+def _comm(pid):
+    return subprocess.run(["ps", "-p", str(pid), "-o", "comm="],
+                          capture_output=True, text=True).stdout.strip()
+
+
 def find_basilisk():
     """(pid, executable path) of the running LOCAL Basilisk II.
 
     Only Basilisk II — the export patch lives in its SDL video driver, and a
     SheepShaver would be terminated by the signal, not helped by it."""
+    global _last_emulator
+    if _last_emulator:
+        pid, exe = _last_emulator
+        if _comm(pid) == exe:
+            return pid, exe
+        _last_emulator = None
     out = subprocess.run(["pgrep", "-x", "BasiliskII"],
                          capture_output=True, text=True).stdout.split()
     if not out:
         raise FbExportError("no_emulator", "no local BasiliskII process")
     pid = int(out[0])
-    exe = subprocess.run(["ps", "-p", str(pid), "-o", "comm="],
-                         capture_output=True, text=True).stdout.strip()
+    exe = _comm(pid)
     if not exe:
         raise FbExportError("no_emulator", f"BasiliskII pid {pid} vanished")
+    _last_emulator = (pid, exe)
     return pid, exe
+
+
+# The marker scan reads the whole ~5 MB executable — 35 of the 52 ms a tool
+# capture was costing. The verdict cannot change while the same file (same
+# inode, size, mtime) backs the same answer, so it is cached on exactly that.
+_marker_cache = {}
 
 
 def binary_has_export(exe):
@@ -85,19 +110,30 @@ def binary_has_export(exe):
     A plain byte search in chunks (with overlap, so a marker straddling a
     chunk boundary is still seen) — deliberately not `grep`, which declined
     to match inside this Mach-O binary while `strings` found the marker."""
+    try:
+        st = os.stat(exe)
+        key = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+        if key in _marker_cache:
+            return _marker_cache[key]
+    except OSError as e:
+        raise FbExportError("unpatched", f"cannot stat emulator binary: {e}")
     keep = len(MARKER) - 1
     try:
         with open(exe, "rb") as fh:
             tail = b""
+            found = False
             while True:
                 chunk = fh.read(1 << 20)
                 if not chunk:
-                    return False
+                    break
                 if MARKER in tail + chunk[:keep] or MARKER in chunk:
-                    return True
+                    found = True
+                    break
                 tail = chunk[-keep:]
     except OSError as e:
         raise FbExportError("unpatched", f"cannot read emulator binary: {e}")
+    _marker_cache[key] = found
+    return found
 
 
 def request_dump(pid, path=None, timeout=5.0):
@@ -183,6 +219,8 @@ def capture_png(region=None, timeout=5.0):
         "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
         "pid": pid,
     }
+    if region:
+        meta["region"] = list(region)
     return png, meta
 
 
