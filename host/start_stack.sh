@@ -189,7 +189,11 @@ fi
 
 echo "[5/5] Launching Basilisk II…"
 if [ -n "$BASILISK_APP" ]; then
-    open -a "$BASILISK_APP"
+    # `open <path>`, NOT `open -a <path>`: -a resolves by bundle id, and with
+    # two copies of BasiliskII on disk (published bundle + fb-export fork
+    # build) it launched the OTHER one — twice, 2026-08-31. A plain path
+    # opens exactly the named bundle.
+    open "$BASILISK_APP"
 else
     echo "      SKIPPED — no emulator bundle configured on this machine."
     echo "      Everything above is up; launch the emulator yourself, or:"
