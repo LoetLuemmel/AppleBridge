@@ -200,11 +200,11 @@ in the v0.7.0 transport-seam refactor.)
 
 **Files:** `mcp/server.py`, `mcp/tools.py`, `mcp/mac_connection.py`
 
-**MCP Tools Provided:** 31 tools across two surfaces plus lifecycle — driving a
+**MCP Tools Provided:** 32 tools across two surfaces plus lifecycle — driving a
 build and reading output (`mpw_execute`, `mac_compile`, `mac_build`,
 `mac_read_file`, `mac_list_files`, `mac_send_apple_event`), moving bytes /
 running / observing / interacting (`mac_put_file`, `mac_get_file`, `mac_https_get`,
-`mac_write_file`, `launch_app`, `mac_screenshot`, `mac_type`, `mac_key`,
+`mac_write_file`, `launch_app`, `mac_screenshot`, `mac_fb_screenshot`, `mac_type`, `mac_key`,
 `mac_menu`, `mac_menu_front`, `mac_click`, `mac_clipboard_get`,
 `mac_clipboard_set`), driving the guest's real mouse (`mac_host_click`,
 `mac_host_menu`, `mac_host_screenshot`), network discovery
