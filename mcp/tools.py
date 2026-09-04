@@ -24,6 +24,7 @@ import mpw  # noqa: E402  (build-step verification: the artefact is the oracle)
 import loop_guard  # noqa: E402  (repetition made visible for a model-driven loop)
 import pump_probe  # noqa: E402  (is the target reading, before a no-reply send)
 import c89_lint  # noqa: E402  (name the C99 habits MPW's 1994 compiler rejects)
+import fb_export  # noqa: E402  (host-side framebuffer capture from a local Basilisk)
 
 
 def _ostype(value, default="????") -> bytes:
@@ -217,6 +218,51 @@ nearly free. The reply's `encoding` (raw/packbits/delta), `wire_bytes` and
                     "minItems": 4,
                     "maxItems": 4,
                     "description": "Optional crop [x, y, width, height] in screen pixels"
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "mac_fb_screenshot",
+        "description": """Capture the guest screen from the LOCAL emulator process — zero bridge traffic.
+
+The fb-export build of Basilisk II dumps the emulated framebuffer (pixels +
+CLUT) host-side on request: 12-31 ms per frame against ~140 ms/look for the
+bridge delta path, pixel-exact at guest depth, and it works even while a menu
+or modal tracking loop starves the daemon. Unlike mac_host_screenshot this is
+NOT a picture of the window — it is the framebuffer itself: exact pixels,
+exact palette, unaffected by Retina scaling, occlusion, or Spaces. The target
+consumers are high-frequency driver loops and video capture.
+
+Requires the fb-export emulator build (macemu branch `fb-export`) running
+locally; the published bundle does not carry the patch, and an unpatched
+emulator is never signalled (the tool verifies the running binary first — the
+signal would terminate an unpatched one). When the fb path is unavailable the
+tool falls back to mac_screenshot over the bridge unless `fallback` is false;
+the reply's `source` says which path answered ("fb-export" or "bridge") and
+`fb_export_unavailable` carries the reason for a fallback.
+
+NOTE: this captures the LOCAL Basilisk II window's guest — if the bridge is
+currently serving a different machine (SheepShaver, the 2013 host, the SE/30),
+the fb path and the bridge path show DIFFERENT screens. `region` is
+[x, y, width, height] in guest pixels, cropped at decode (the dump is local,
+so a crop only shrinks the reply, not the cost).""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "region": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "minItems": 4,
+                    "maxItems": 4,
+                    "description": "Optional crop [x, y, width, height] in guest pixels"
+                },
+                "fallback": {
+                    "type": "boolean",
+                    "description": "Fall back to mac_screenshot (bridge) when the "
+                                   "fb path is unavailable (default true). Set "
+                                   "false to fail fast in a timing-sensitive loop."
                 }
             },
             "required": []
@@ -1321,6 +1367,44 @@ def mac_screenshot(region: Optional[list] = None) -> Dict[str, Any]:
             "success": False,
             "error": str(e)
         }
+
+
+def mac_fb_screenshot(region: Optional[list] = None,
+                      fallback: bool = True) -> Dict[str, Any]:
+    """Capture from the local emulator's framebuffer export; bridge fallback.
+
+    The safety property lives in fb_export.check(): the running binary is
+    read for the fb-export marker BEFORE any signal, because SIGUSR1
+    terminates an emulator without the handler — a refusal here is the safe
+    outcome, and with `fallback` it is also an invisible one."""
+    if region is not None:
+        try:
+            region = [int(v) for v in region]
+            if len(region) != 4:
+                raise ValueError
+        except (TypeError, ValueError):
+            return {"success": False,
+                    "error": "region must be [x, y, width, height] integers"}
+    try:
+        png, meta = fb_export.capture_png(region=region)
+        result = {
+            "success": True,
+            "image": base64.b64encode(png).decode("ascii"),
+            "format": "png",
+            "source": "fb-export",
+        }
+        result.update(meta)
+        return result
+    except fb_export.FbExportError as e:
+        if not fallback:
+            return {"success": False, "source": "fb-export",
+                    "fb_export_unavailable": e.reason, "error": str(e)}
+        result = mac_screenshot(region=region)
+        result["source"] = "bridge"
+        result["fb_export_unavailable"] = e.reason
+        return result
+    except Exception as e:
+        return {"success": False, "source": "fb-export", "error": str(e)}
 
 
 def launch_app(path: str, document: Optional[str] = None) -> Dict[str, Any]:
@@ -2589,6 +2673,7 @@ TOOL_HANDLERS = {
     "mac_list_files": mac_list_files,
     "mac_compile": mac_compile,
     "mac_screenshot": mac_screenshot,
+    "mac_fb_screenshot": mac_fb_screenshot,
     "launch_app": launch_app,
     "mac_https_get": mac_https_get,
     "mac_type": mac_type,
