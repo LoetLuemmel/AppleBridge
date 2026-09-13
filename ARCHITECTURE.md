@@ -200,7 +200,7 @@ in the v0.7.0 transport-seam refactor.)
 
 **Files:** `mcp/server.py`, `mcp/tools.py`, `mcp/mac_connection.py`
 
-**MCP Tools Provided:** 32 tools across two surfaces plus lifecycle — driving a
+**MCP Tools Provided:** 33 tools across two surfaces plus lifecycle — driving a
 build and reading output (`mpw_execute`, `mac_compile`, `mac_build`,
 `mac_read_file`, `mac_list_files`, `mac_send_apple_event`), moving bytes /
 running / observing / interacting (`mac_put_file`, `mac_get_file`, `mac_https_get`,

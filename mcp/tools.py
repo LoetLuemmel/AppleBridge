@@ -906,6 +906,46 @@ Example to type the boot password:
             },
             "required": ["script"]
         }
+    },
+    {
+        "name": "mac_generate_compilable",
+        "description": """pass@k for classic-Mac C: generate k candidate continuations from the
+trained model (Xavier ollama `qwen-dialect`) and compile each on the guest with the real
+compiler, returning the FIRST that compiles. This is the practical form of the measured
+pass@k lift (+8: greedy pass@1 37/88 -> pass@5 45/88): one greedy sample is often "just
+missing", and a few temperature samples recover a compilable version.
+
+Attempt 1 is greedy (temperature 0), attempts 2..k use `temp`. Each candidate is trimmed to
+its last complete unit and gated by SC (mpw) or THINK C (think, via the guest GUI); the loop
+STOPS at the first pass. `item_id` (a guest path like the eval keys) lets the gate copy that
+file's companion headers from the mounted CDs, so project-fragment prefixes resolve.
+
+Returns `success` (a candidate compiled), `compiled_source` (the full prefix+unit, only when
+success), `attempt` (which try compiled), and `attempts_log` (per-try pass/fail). Ties up the
+guest for the duration (k compiles), so it is heavier than a single mac_compile.""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source_prefix": {
+                    "type": "string",
+                    "description": "The C source prefix to continue. If it lacks a "
+                                   "/* @dialect ... */ first line, one is added from `dialect`."
+                },
+                "dialect": {
+                    "type": "string",
+                    "enum": ["think", "mpw"],
+                    "description": "Which compiler judges: think = THINK C 7, mpw = MPW SC."
+                },
+                "k": {"type": "integer", "description": "Number of candidates to try (default 5)"},
+                "temp": {"type": "number", "description": "Sampling temperature for attempts 2..k (default 0.8)"},
+                "item_id": {
+                    "type": "string",
+                    "description": "Optional guest path of the original file, so the gate resolves "
+                                   "its companion headers from the mounted source volumes."
+                }
+            },
+            "required": ["source_prefix", "dialect"]
+        }
     }
 ]
 
@@ -2666,6 +2706,43 @@ def mac_update_daemon(host_path: str, mac_dir: Optional[str] = None,
 
 
 # Tool dispatcher
+def mac_generate_compilable(source_prefix: str, dialect: str, k: int = 5,
+                            temp: float = 0.8, item_id: str = "") -> Dict[str, Any]:
+    """pass@k: generate k candidates on the Xavier and compile each on the guest, first pass wins.
+    Delegates to the proven host-side loop (xavier-eval/passk_infer.py) which owns both ends —
+    Xavier generation and the dialect gate. Returns the first compilable full source."""
+    import subprocess
+    import tempfile
+    if dialect not in ("think", "mpw"):
+        return {"success": False, "error": "dialect must be 'think' or 'mpw'"}
+    tool = os.environ.get("PASSK_INFER",
+                          "/Users/pitforster/Documents/Dev/xavier-eval/passk_infer.py")
+    if not os.path.exists(tool):
+        return {"success": False, "error": f"passk_infer.py not found at {tool} "
+                                           "(set PASSK_INFER to its path)"}
+    f = tempfile.NamedTemporaryFile("w", suffix=".c", delete=False)
+    try:
+        f.write(source_prefix); f.close()
+        cmd = ["/usr/bin/python3", tool, f.name, "--dialect", dialect,
+               "-k", str(int(k)), "--temp", str(float(temp))]
+        if item_id:
+            cmd += ["--item-id", item_id]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+        except subprocess.TimeoutExpired:
+            return {"success": False, "error": "pass@k loop timed out (>30 min)"}
+    finally:
+        try: os.unlink(f.name)
+        except OSError: pass
+    compiled = r.stdout or ""
+    log = [ln for ln in (r.stderr or "").splitlines() if ln.strip()]
+    ok = (r.returncode == 0) and bool(compiled.strip())
+    attempt = next((ln for ln in log if ln.startswith("COMPILED on attempt")), None)
+    return {"success": ok, "dialect": dialect, "k": int(k),
+            "compiled_source": compiled if ok else "",
+            "attempt": attempt, "attempts_log": log}
+
+
 TOOL_HANDLERS = {
     "mpw_execute": mpw_execute,
     "mac_write_file": mac_write_file,
@@ -2699,6 +2776,7 @@ TOOL_HANDLERS = {
     "mac_reboot": mac_reboot,
     "mac_shutdown": mac_shutdown,
     "mac_update_daemon": mac_update_daemon,
+    "mac_generate_compilable": mac_generate_compilable,
 }
 
 
