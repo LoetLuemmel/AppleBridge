@@ -449,6 +449,57 @@ void StatusMessage(const char *msg) { AddLogLine(msg, 0); }
  * Called from command.c's Trace(). */
 void StatusDetail(const char *msg) { AddLogLine(msg, 1); }
 
+/* Append a small unsigned decimal to a C string at *p — no StdCLib/NumToString
+ * dependency (the daemon's minimal link has bitten NumToString before). */
+static void AB_appendNum(char *buf, short *p, unsigned long n)
+{
+    char  tmp[12];
+    short t = 0;
+    if (n == 0) { buf[(*p)++] = '0'; return; }
+    while (n > 0) { tmp[t++] = (char)('0' + (short)(n % 10)); n /= 10; }
+    while (t > 0) buf[(*p)++] = tmp[--t];
+}
+
+/* Dump the mounted volumes to the Verbose console — the same figures DISKINFO
+ * reports (PBHGetVInfoSync, no ToolServer), but on screen. Called when "Show
+ * details" is switched on, so the menu item actually surfaces something: each
+ * line is "<name>  <free>/<total> KB  (vRefNum)". free == 0 marks a read-only
+ * CD. Lines are kind-0 so they stay visible regardless of the details flag. */
+static void ShowVolumeDetails(void)
+{
+    HParamBlockRec pb;
+    Str63          nm;
+    short          i, k, len, p;
+    unsigned long  blk, total, freeb;
+    char           line[LOG_W];
+
+    StatusMessage("--- Mounted volumes (name  free/total KB) ---");
+    for (i = 1; ; i++) {
+        for (k = 0; k < (short)sizeof(pb); k++) ((char *)&pb)[k] = 0;
+        pb.volumeParam.ioNamePtr  = nm;
+        pb.volumeParam.ioVRefNum  = 0;
+        pb.volumeParam.ioVolIndex = i;        /* walk every mounted volume */
+        if (PBHGetVInfoSync(&pb) != noErr) break;   /* past the last one */
+
+        blk   = (unsigned long)pb.volumeParam.ioVAlBlkSiz;
+        total = (unsigned long)((unsigned short)pb.volumeParam.ioVNmAlBlks) * blk;
+        freeb = (unsigned long)((unsigned short)pb.volumeParam.ioVFrBlk) * blk;
+
+        p = 0;
+        len = nm[0];
+        for (k = 0; k < len && p < LOG_W - 40; k++) line[p++] = (char)nm[k + 1];
+        line[p++] = ' '; line[p++] = ' ';
+        AB_appendNum(line, &p, freeb / 1024UL);
+        line[p++] = '/';
+        AB_appendNum(line, &p, total / 1024UL);
+        line[p++] = ' '; line[p++] = 'K'; line[p++] = ' '; line[p++] = '(';
+        AB_appendNum(line, &p, (unsigned long)(-pb.volumeParam.ioVRefNum));
+        line[p++] = ')';
+        line[p]   = '\0';
+        StatusMessage(line);
+    }
+}
+
 /* Show alive indicator with LEDs */
 /* Periodic monitor-window refresh (kept the name for its call sites): flashes
  * the LEDs and syncs the log TE. The old "Alive: <uptime>" footer was removed —
@@ -728,6 +779,7 @@ void HandleMenuCommand(long menuResult)
                 gShowDetails = !gShowDetails;
                 CheckItem(gEditMenu, DETAILS_ITEM, gShowDetails);
                 gLogDirty = true;   /* re-sync to expand/collapse detail lines */
+                if (gShowDetails) ShowVolumeDetails();  /* surface the mounted volumes */
             }
             break;
     }
@@ -2432,6 +2484,43 @@ static Boolean Screenshot2Verb(ABConn *conn, const char *request)
     return ok;
 }
 
+/* The desk scrap is per PROCESS LAYER: the Process Manager copies it between
+ * processes only on a MAJOR SWITCH. A background daemon's PutScrap therefore
+ * lands in the daemon's own layer and the front application never sees it --
+ * measured 2026-08-30: after CLIPSET the daemon's GetScrap returned the text
+ * while the front app read scrap size 0 (the "Clipboard holds no text" WebPeek
+ * defect). So after writing, take the front for an instant and hand it back:
+ * two major switches, and the scrap travels with them. SetFrontProcess is
+ * asynchronous (see JSF above), so each leg is pumped and bounded (~2 s). */
+static short gPropFront, gPropBack, gPropTicks;   /* diagnostics for the CLIPSET reply */
+static Boolean PropagateScrapToFront(void)
+{
+    ProcessSerialNumber selfPSN, prevPSN, frontPSN;
+    Boolean same = false, gotBack = false;
+    short guard;
+    OSErr e1, e2;
+    EventRecord ev;
+    unsigned long t0 = TickCount();
+    gPropFront = gPropBack = 0; gPropTicks = 0;
+    if (GetCurrentProcess(&selfPSN) != noErr || GetFrontProcess(&prevPSN) != noErr) { gPropFront = -1; return false; }
+    SameProcess(&prevPSN, &selfPSN, &same);
+    if (same) { gPropFront = gPropBack = 2; return true; }   /* we ARE front: nothing to propagate */
+    e1 = SetFrontProcess(&selfPSN);
+    for (guard = 0, same = false; guard < 120 && !same; guard++) {
+        WaitNextEvent(everyEvent, &ev, 1L, NULL);
+        if (GetFrontProcess(&frontPSN) == noErr) SameProcess(&frontPSN, &selfPSN, &same);
+    }
+    gPropFront = same ? 1 : (e1 ? (short)e1 : 0);
+    e2 = SetFrontProcess(&prevPSN);
+    for (guard = 0; guard < 120 && !gotBack; guard++) {
+        WaitNextEvent(everyEvent, &ev, 1L, NULL);
+        if (GetFrontProcess(&frontPSN) == noErr) SameProcess(&frontPSN, &prevPSN, &gotBack);
+    }
+    gPropBack = gotBack ? 1 : (e2 ? (short)e2 : 0);
+    gPropTicks = (short)(TickCount() - t0);
+    return same && gotBack;
+}
+
 Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
 {
     char responseBuffer[RESP_SCRATCH];   /* small: fixed verb/error strings only (was 64 KB on the stack) */
@@ -3036,7 +3125,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
      * MENU BAR (targetA5 pinned by the caller in a quiet reference window, as for
      * DLGWALK). Same shared jGNE probe as DLGWALK, but jDPBlock = the MB block, so
      * the stub's Walk() dispatcher runs MenuWalk. Mutually exclusive with dlgpatch's
-     * entry walk (refused while DLGARM is armed) — the DP-block ⊥ rule, one level up.
+     * entry walk (refused while DLGARM is armed) — the DP-block ? rule, one level up.
      * The client disarms on a short timeout (MENUWDISARM); jMaxTries is the backstop. */
     if (strncmp(request, "MENUARM", 7) == 0) {
         Ptr jg, mb, dp; unsigned long targetA5 = 0L, old; const char *p; const char *msg;
@@ -4640,8 +4729,17 @@ msinstall_reply:
         if (clipLen < 0) clipLen = 0;
         ZeroScrap();
         serr = (OSErr)PutScrap(clipLen, 'TEXT', request + headerEnd);
-        if (serr == noErr)
-            strcpy(responseBuffer, "STATUS:0\rSTDOUT:7\rClipSet\rSTDERR:0\r\r");
+        if (serr == noErr) {
+            char body[64], *b; long blen;
+            (void)PropagateScrapToFront();
+            /* ClipSet f=<1 ok|0 no|err> b=<1|0|err> t=<ticks> -- the two legs of the front round-trip */
+            strcpy(body, "ClipSet f="); b = body + strlen(body); b = StatDec(b, (long)gPropFront);
+            strcpy(b, " b="); b += 3; b = StatDec(b, (long)gPropBack);
+            strcpy(b, " t="); b += 3; b = StatDec(b, (long)gPropTicks); *b = 0;
+            blen = (long)strlen(body);
+            strcpy(responseBuffer, "STATUS:0\rSTDOUT:"); b = responseBuffer + strlen(responseBuffer);
+            b = StatDec(b, blen); *b++ = '\r'; strcpy(b, body); b += blen; strcpy(b, "\rSTDERR:0\r\r");
+        }
         else
             strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:13\rPutScrap error\r\r"); NoteErr("clipboard");
         ABSend(conn, responseBuffer, strlen(responseBuffer));
