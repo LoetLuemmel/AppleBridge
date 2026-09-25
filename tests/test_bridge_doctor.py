@@ -411,6 +411,17 @@ def test_a_host_address_in_local_env_is_an_error_on_slirp():
     assert "192.168.3.154" in f["message"]
 
 
+def test_a_host_address_in_local_env_is_required_on_etherhelper():
+    # The etherhelper branch dials the .154 alias, so local.env MUST carry it.
+    # The check once fired regardless of backend and told the operator, with a
+    # live and healthy bridge, to delete that line (2026-09-25).
+    for ether, netmode in (("etherhelper/en8", "etherhelper/en8"),
+                           ("etherhelper/en8", None)):
+        rep = report(ether=ether, netmode=netmode,
+                     local_env="APPLEBRIDGE_HOST_IP=192.168.3.154\n")
+        assert "local_env_has_host_ip" not in keys(rep), (ether, netmode)
+
+
 def test_the_comment_explaining_the_absence_is_not_read_as_an_assignment():
     # The generated file says "APPLEBRIDGE_HOST_IP is deliberately NOT set" in a
     # comment. A substring check reads that as the address being configured —

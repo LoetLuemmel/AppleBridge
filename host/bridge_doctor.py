@@ -600,7 +600,10 @@ def interpret(probes):
     # the result still wrong, and each of these fails without saying so.
     inst = probes.get("installation")
     if inst:
-        if inst["host_ip_assigned"]:
+        # Only slirp needs the wildcard bind. On etherhelper the daemon dials
+        # the aliased address and local.env MUST name it — flagging it there
+        # advised deleting the one line that keeps the bridge up (2026-09-25).
+        if inst["host_ip_assigned"] and (intended or ether) == "slirp":
             out.append(_finding(
                 ERROR, "local_env_has_host_ip",
                 f"local.env assigns APPLEBRIDGE_HOST_IP="
