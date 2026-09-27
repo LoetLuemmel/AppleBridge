@@ -779,8 +779,19 @@ def format_text(report):
     if inst:
         env = "—"
         if inst["local_env_present"]:
-            env = ("host address SET (wrong on slirp)" if inst["host_ip_assigned"]
-                   else "no host address (correct)")
+            # Judged per branch, like the finding: only slirp wants the
+            # wildcard bind; etherhelper dials the aliased address.
+            emu = report["probes"].get("emulator_prefs") or {}
+            branch = emu.get("intended") or emu.get("ether") or ""
+            ip = inst["host_ip_assigned"]
+            if branch == "slirp":
+                env = ("host address SET (wrong on slirp)" if ip
+                       else "no host address (correct)")
+            elif branch.startswith("etherhelper/"):
+                env = (f"host address {ip} (correct on etherhelper)" if ip
+                       else "no host address (wildcard bind)")
+            else:
+                env = f"host address {ip}" if ip else "no host address"
         lines.append(f"local.env:        {env}")
         app = inst["emulator_app"] or "—"
         if inst["emulator_app"] and not inst["emulator_app_exists"]:

@@ -617,3 +617,14 @@ if __name__ == "__main__":
             print(f"FAIL {t.__name__}: {e}")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")
     sys.exit(1 if failed else 0)
+
+
+def test_the_local_env_line_is_judged_per_branch_too():
+    # The summary line said "wrong on slirp" on an etherhelper host after the
+    # finding itself had been fixed (2026-09-27) — two places, one judgement.
+    env = "APPLEBRIDGE_HOST_IP=192.168.3.154\n"
+    eh = bd.format_text(report(ether="etherhelper/en8", netmode="etherhelper/en8",
+                               local_env=env))
+    assert "correct on etherhelper" in eh and "wrong on slirp" not in eh
+    sl = bd.format_text(report(ether="slirp", netmode="slirp", local_env=env))
+    assert "wrong on slirp" in sl
