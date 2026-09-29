@@ -49,6 +49,7 @@ Format — every entry carries all five fields, checked by
 - **Decision:** BasiliskII is never hard-killed; the clean stop is `mac_shutdown` (Shutdown Manager) or Special → Shut Down in the guest.
 - **Evidence:** hard termination can corrupt the guest System 7 disk image — the accumulated state of months with no snapshot discipline; rule violated once 2026-07-03 ([[applebridge-never-kill-basilisk]]).
 - **Revisit if:** a guest-image snapshot/backup routine exists that makes corruption recoverable — which would soften the rule to "prefer clean stop", not remove it.
+- **Amendment 2026-09-29 (operator):** when the guest is **hung** or BasiliskII has **crashed**, no clean stop is reachable — a program looping without yielding starves the cooperative guest, the daemon stops answering, `mac_shutdown` cannot be delivered and Force Quit (Cmd-Opt-Esc) does not take (measured twice in the acceptance run of 2026-09-29, programs v12 and v30). Then the hard stop is the only way out and is permitted (operator: "If BAII crashes, we have no option other than hard kill the task. Otherwise we would destroy the system."). The rule stands unchanged for a **healthy** guest. The build tool's hang guard (xavier-eval round 13) detects the hung state — daemon silent on two probes and the emulator at ≥ 90 % CPU — and notifies the operator; it does not stop the emulator itself.
 
 ## D-005 — no Launch/Stop buttons in the config app
 
