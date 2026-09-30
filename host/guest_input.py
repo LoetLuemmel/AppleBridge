@@ -215,6 +215,21 @@ def parse_region(text):
 STEP_TIMEOUT = 10
 
 
+DEMO_FLAG = "/tmp/applebridge_demo_mouse"
+
+
+def demo_easing():
+    """demo mode (operator, 2026-09-30): while the flag file exists the pointer GLIDES to each target (cliclick -e) so a
+    person watching can follow; the file's content is the easing factor (empty: 200). Absent = unchanged, fast gestures.
+    Measurement runs refuse to start while it is set (it changes gesture timing)."""
+    try:
+        if not os.path.exists(DEMO_FLAG): return []
+        v = open(DEMO_FLAG).read().strip()
+        return ["-e", str(int(v) if v.isdigit() else 200)]
+    except Exception:
+        return []
+
+
 def _run(argv, check=True, timeout=None):
     try:
         p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
@@ -349,7 +364,7 @@ class Session:
         if self.dry_run:
             print("cliclick " + " ".join(args))
             return ""
-        return _run(["cliclick"] + args, timeout=timeout)
+        return _run(["cliclick"] + demo_easing() + args, timeout=timeout)
 
     def point(self, gx, gy):
         g = self.geometry()

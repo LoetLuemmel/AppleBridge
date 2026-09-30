@@ -97,6 +97,16 @@ if [ "$ETHER_BACKEND" = "slirp" ]; then
 elif [ -z "$HOST_IP" ] && [ -z "$EMU_IP" ]; then
     NEEDS_PRIV=0
     echo "[2/5] Network setup: nothing to do — no configured address, no guest IP."
+elif [ -n "$HOST_IP" ] && [ -z "$EMU_IP" ] \
+     && ifconfig "$DEFAULT_IF" 2>/dev/null | grep -q "inet ${HOST_IP} " \
+     && ! ifconfig "$WIRED_IF" 2>/dev/null | grep -q "inet ${HOST_IP} "; then
+    # The one privileged act on this branch is placing HOST_IP on the default-route
+    # interface. If it is already there (and not stranded on the wired NIC), there is
+    # nothing to do — so skip the admin dialog entirely. The alias persists across
+    # BasiliskII relaunches, so this makes every re-launch within a login session
+    # password-free; only a fresh macOS boot (which drops the alias) prompts once.
+    NEEDS_PRIV=0
+    echo "[2/5] Network setup: ${HOST_IP} already on ${DEFAULT_IF} — no privileged step, no password."
 fi
 
 if [ "$NEEDS_PRIV" = "1" ]; then
@@ -189,7 +199,11 @@ fi
 
 echo "[5/5] Launching Basilisk II…"
 if [ -n "$BASILISK_APP" ]; then
-    open -a "$BASILISK_APP"
+    # `open <path>`, NOT `open -a <path>`: -a resolves by bundle id, and with
+    # two copies of BasiliskII on disk (published bundle + fb-export fork
+    # build) it launched the OTHER one — twice, 2026-08-31. A plain path
+    # opens exactly the named bundle.
+    open "$BASILISK_APP"
 else
     echo "      SKIPPED — no emulator bundle configured on this machine."
     echo "      Everything above is up; launch the emulator yourself, or:"

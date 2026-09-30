@@ -411,6 +411,17 @@ def test_a_host_address_in_local_env_is_an_error_on_slirp():
     assert "192.168.3.154" in f["message"]
 
 
+def test_a_host_address_in_local_env_is_required_on_etherhelper():
+    # The etherhelper branch dials the .154 alias, so local.env MUST carry it.
+    # The check once fired regardless of backend and told the operator, with a
+    # live and healthy bridge, to delete that line (2026-09-25).
+    for ether, netmode in (("etherhelper/en8", "etherhelper/en8"),
+                           ("etherhelper/en8", None)):
+        rep = report(ether=ether, netmode=netmode,
+                     local_env="APPLEBRIDGE_HOST_IP=192.168.3.154\n")
+        assert "local_env_has_host_ip" not in keys(rep), (ether, netmode)
+
+
 def test_the_comment_explaining_the_absence_is_not_read_as_an_assignment():
     # The generated file says "APPLEBRIDGE_HOST_IP is deliberately NOT set" in a
     # comment. A substring check reads that as the address being configured —
@@ -593,6 +604,18 @@ def test_a_probe_survives_MacRoman_bytes_in_its_own_output():
         os.unlink(path)
     assert "Systemordner" in out, out
     assert out                      # degraded to text, not to an exception
+
+
+def test_the_local_env_line_is_judged_per_branch_too():
+    # The summary line said "wrong on slirp" on an etherhelper host after the
+    # finding itself had been fixed (2026-09-27) — two places, one judgement.
+    env = "APPLEBRIDGE_HOST_IP=192.168.3.154\n"
+    eh = bd.format_text(report(ether="etherhelper/en8", netmode="etherhelper/en8",
+                               local_env=env))
+    assert "correct on etherhelper" in eh and "wrong on slirp" not in eh
+    sl = bd.format_text(report(ether="slirp", netmode="slirp", local_env=env))
+    assert "wrong on slirp" in sl
+
 
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
