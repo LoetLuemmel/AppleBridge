@@ -64,6 +64,8 @@ def test_launch_scripts_carry_the_second_instance():
     check("the remote agent refuses control port 9001", '"$CTRL_PORT" = "9001"' in inst)
     deploy = open(os.path.join(HOST, "deploy_host.sh")).read()
     check("deploy_host.sh restarts the remote agent too", '"gui/$(id -u)/$LABEL-remote"' in deploy)
+    check("…but only when the runtime changed (a local relaunch must not cut the remote guest's work)",
+          '[ "$CHANGED" = "1" ] && launchctl print "gui/$(id -u)/$LABEL-remote"' in deploy)
 
 
 def test_mcp_side():
