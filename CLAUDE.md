@@ -35,6 +35,15 @@ The **Mac daemon connects OUT** to the host (the emulator sits behind NAT, so th
 
 Smoke test: `cd host && /usr/bin/python3 send_command.py 'Echo HELLO'`.
 
+**A guest on a second machine (2026-10-01).** A host with one NIC cannot reach a server on itself (D-015), so a guest
+emulated on such a machine dials a **second address on this Mac**, served by a second host-server instance:
+`APPLEBRIDGE_REMOTE_HOST_IP` / `APPLEBRIDGE_REMOTE_CTRL_PORT` (default 9011) in `host/local.env`, alias placed by
+`start_stack.sh` in the same privileged step, agent installed by `host/install_remote_guest_service.sh` (deploys restart
+both). That instance runs with `APPLEBRIDGE_REMOTE_GUEST=1` and **refuses every `HOST*` verb** — they act on this Mac's
+own screen and mouse, i.e. on the local guest. Its control port is the remote guest's; 9001 stays the local one. Cloning
+a guest for it: change the clone's own TCP/IP address too, not only `IP=` in AppleBridge Prefs — two guests with one
+address shut each other's TCP/IP down.
+
 ## Hard rules (learned the hard way)
 - **`ILink -model far` is the linker for the daemon** — plain `Link` now fails it with Error 48 (one ~98 KB segment, 32 KB PC-relative reach). Small tools still link fine with `Link`. Why, and when to revisit: D-011 in `DECISIONS.md`.
 - **`/usr/bin/python3` for the host server** — never a venv interpreter; stdlib-only, so system Python suffices. Why: D-007 in `DECISIONS.md`.

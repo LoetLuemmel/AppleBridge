@@ -78,6 +78,12 @@ fi
 if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
     launchctl kickstart -k "gui/$(id -u)/$LABEL"
     echo "[deploy] kicked $LABEL (restarted on the fresh copy)."
+    # the second instance (a guest on another machine, install_remote_guest_service.sh) runs the SAME deployed copy —
+    # restart it too, or the two servers drift apart after a deploy
+    if launchctl print "gui/$(id -u)/$LABEL-remote" >/dev/null 2>&1; then
+        launchctl kickstart -k "gui/$(id -u)/$LABEL-remote"
+        echo "[deploy] kicked $LABEL-remote (restarted on the fresh copy)."
+    fi
 else
     launchctl bootstrap "gui/$(id -u)" "$PLIST"
     echo "[deploy] bootstrapped $LABEL."

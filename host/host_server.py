@@ -64,8 +64,14 @@ import host_config                 # where the host's own address comes from (R1
 # Errno 49 everywhere else. See host_config.py and docs/INSTALLER_REQUIREMENTS.md.
 HOST_INTERFACE, HOST_INTERFACE_SOURCE = host_config.resolve_host_ip()
 HOST_PORT = 9000                   # Mac daemon connects to this
-CONTROL_PORT = 9001                # local control clients connect to this
-LOG_PATH = "/tmp/applebridge_server.log"
+# A second instance serves a guest on ANOTHER machine (2026-10-01: the 2013 MacBook's guest dials a second alias on this
+# Mac — its single Wi-Fi NIC cannot reach a server on the 2013 itself, D-015). Each instance needs its own control port
+# and log; the defaults are the one-instance values every client assumes.
+CONTROL_PORT = int(os.environ.get("APPLEBRIDGE_CTRL_PORT", "9001"))   # local control clients connect to this
+LOG_PATH = os.environ.get("APPLEBRIDGE_LOG", "/tmp/applebridge_server.log")
+# The HOST* verbs act on THIS Mac (its real mouse, its screen, its emulator window). For a guest that runs elsewhere
+# they would click the LOCAL guest instead — so such an instance refuses them.
+REMOTE_GUEST = os.environ.get("APPLEBRIDGE_REMOTE_GUEST", "") == "1"
 
 # Adaptive timeouts (seconds), chosen by the command's first token.
 # Includes the large-output readers (catenate/files/print) so big file reads
@@ -2158,6 +2164,12 @@ def run_control_server(server):
                         f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(msg)}\r{msg}\r\r".encode(
                             "utf-8"))
                     continue          # finally: closes the conn
+                if cmd and REMOTE_GUEST and cmd.startswith("HOST"):
+                    msg = (f"{cmd.split(':', 1)[0]} acts on this Mac's own screen and mouse, but this server instance "
+                           f"serves a guest on another machine (APPLEBRIDGE_REMOTE_GUEST=1) - refused, it would drive the wrong guest.")
+                    log(f"refused {cmd[:40]!r}: remote-guest instance")
+                    ctrl_conn.sendall(f"STATUS:-1\rSTDOUT:0\rSTDERR:{len(msg)}\r{msg}\r\r".encode("utf-8"))
+                    continue
                 if cmd:
                     # Fail fast and LOUD when the daemon isn't linked. Every verb
                     # below needs it, and a bare "No response" tells the user
