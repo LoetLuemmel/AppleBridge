@@ -221,6 +221,17 @@ else
     echo "      A translocated app is never recorded (its path changes per launch):"
     echo "        xattr -dr com.apple.quarantine <BasiliskII.app>, move it, relaunch."
 fi
+if [ -n "$BASILISK_APP" ]; then
+    # Shepherd the boot by LOOKING at the guest's screen (2026-10-01): AppleShare login -> password from local.env,
+    # "AppleTalk interrupted" -> OK, IP conflict -> stop and say so; then check the volumes and tidy the desktop
+    # (daemon console hidden, Finder windows closed) so screen reading sees no stray windows. Needs host/refs/*.json.
+    if [ -d "$SERVER_DIR/refs" ] && ls "$SERVER_DIR"/refs/*.json >/dev/null 2>&1; then
+        echo "      shepherding the boot (guest_boot.py: screen -> login / alerts -> volumes -> tidy desktop)…"
+        /usr/bin/python3 "$SERVER_DIR/guest_boot.py" 420 | sed 's/^/        /'
+    else
+        echo "      no host/refs/ — the AppleShare login and boot alerts are left to you"
+    fi
+fi
 
 echo
 echo "  Host-side stack is up. Now, INSIDE the emulator:"

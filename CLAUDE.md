@@ -35,6 +35,13 @@ The **Mac daemon connects OUT** to the host (the emulator sits behind NAT, so th
 
 Smoke test: `cd host && /usr/bin/python3 send_command.py 'Echo HELLO'`.
 
+**Boot shepherd (2026-10-01).** `start_stack.sh` runs `host/guest_boot.py` after launching the emulator: it LOOKS at the
+guest's framebuffer and matches pixel references (`host/refs/*.json`, machine-specific, untracked) — AppleShare login →
+password from `APPLEBRIDGE_AFP_PASSWORD` in `local.env`, then checks the dialog is gone; "AppleTalk interrupted" → OK;
+IP conflict → stops and says so aloud. Then it checks the volumes and tidies the desktop (console hidden, Finder windows
+closed) for screen reading. A guest on another Mac: the same script with `APPLEBRIDGE_CTRL_PORT`/`APPLEBRIDGE_GUEST_SSH`.
+Never type blind at boot: a blind Return dismissed a network warning instead of the login (2026-10-01).
+
 **A guest on a second machine (2026-10-01).** A host with one NIC cannot reach a server on itself (D-015), so a guest
 emulated on such a machine dials a **second address on this Mac**, served by a second host-server instance:
 `APPLEBRIDGE_REMOTE_HOST_IP` / `APPLEBRIDGE_REMOTE_CTRL_PORT` (default 9011) in `host/local.env`, alias placed by
