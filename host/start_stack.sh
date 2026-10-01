@@ -51,6 +51,9 @@ set -u
 [ -f "$(dirname "$0")/local.env" ] && . "$(dirname "$0")/local.env"
 WIRED_IF="${APPLEBRIDGE_WIRED_IF:-en8}"     # wired LAN the etherhelper bridges onto
 HOST_IP="${APPLEBRIDGE_HOST_IP:-}"   # from host/local.env or the environment (R1)
+# A guest on ANOTHER machine whose daemon dials a second address on this one (a single-NIC host cannot reach a server on
+# itself, D-015): its alias goes on the same default-route interface, in the same one privileged step.
+REMOTE_IP="${APPLEBRIDGE_REMOTE_HOST_IP:-}"
 EMU_IP="${APPLEBRIDGE_GUEST_IP:-}"   # the emulated Mac, if known (behind MACNAT — never routable)
 NETMASK="255.255.255.0"
 BRIDGE="${APPLEBRIDGE_BRIDGE:-bridge100}"   # REQUIRED by the etherhelper backend
@@ -99,7 +102,8 @@ elif [ -z "$HOST_IP" ] && [ -z "$EMU_IP" ]; then
     echo "[2/5] Network setup: nothing to do — no configured address, no guest IP."
 elif [ -n "$HOST_IP" ] && [ -z "$EMU_IP" ] \
      && ifconfig "$DEFAULT_IF" 2>/dev/null | grep -q "inet ${HOST_IP} " \
-     && ! ifconfig "$WIRED_IF" 2>/dev/null | grep -q "inet ${HOST_IP} "; then
+     && ! ifconfig "$WIRED_IF" 2>/dev/null | grep -q "inet ${HOST_IP} " \
+     && { [ -z "$REMOTE_IP" ] || ifconfig "$DEFAULT_IF" 2>/dev/null | grep -q "inet ${REMOTE_IP} "; }; then
     # The one privileged act on this branch is placing HOST_IP on the default-route
     # interface. If it is already there (and not stranded on the wired NIC), there is
     # nothing to do — so skip the admin dialog entirely. The alias persists across
@@ -123,6 +127,12 @@ ifconfig $DEFAULT_IF inet $HOST_IP netmask $NETMASK alias   # put it where the N
 else
     echo "      no APPLEBRIDGE_HOST_IP (host/local.env) — no alias to place, server binds 0.0.0.0"
     ALIAS_OPS=""
+fi
+if [ -n "$REMOTE_IP" ]; then
+    echo "      ${REMOTE_IP} -> ${DEFAULT_IF} (second host server, for the guest on another machine)"
+    ALIAS_OPS="$ALIAS_OPS
+ifconfig $DEFAULT_IF inet $REMOTE_IP netmask $NETMASK alias   # the remote guest's daemon dials this
+"
 fi
 # A stale host route to the guest only exists if someone once added one, which
 # needs the guest's address. Unknown -> nothing to clean up.
@@ -210,6 +220,17 @@ else
     echo "        cd $SERVER_DIR && ./install_bridge.py     # discovers + records it"
     echo "      A translocated app is never recorded (its path changes per launch):"
     echo "        xattr -dr com.apple.quarantine <BasiliskII.app>, move it, relaunch."
+fi
+if [ -n "$BASILISK_APP" ]; then
+    # Shepherd the boot by LOOKING at the guest's screen (2026-10-01): AppleShare login -> password from local.env,
+    # "AppleTalk interrupted" -> OK, IP conflict -> stop and say so; then check the volumes and tidy the desktop
+    # (daemon console hidden, Finder windows closed) so screen reading sees no stray windows. Needs host/refs/*.json.
+    if [ -d "$SERVER_DIR/refs" ] && ls "$SERVER_DIR"/refs/*.json >/dev/null 2>&1; then
+        echo "      shepherding the boot (guest_boot.py: screen -> login / alerts -> volumes -> tidy desktop)…"
+        /usr/bin/python3 "$SERVER_DIR/guest_boot.py" 420 | sed 's/^/        /'
+    else
+        echo "      no host/refs/ — the AppleShare login and boot alerts are left to you"
+    fi
 fi
 
 echo

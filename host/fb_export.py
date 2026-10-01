@@ -43,6 +43,8 @@ import time
 _HOST_DIR = os.path.dirname(os.path.abspath(__file__))
 if _HOST_DIR not in sys.path:
     sys.path.insert(0, _HOST_DIR)
+import guest_remote  # the frame of a guest on another Mac (APPLEBRIDGE_GUEST_SSH, 2026-10-01)  # noqa: E402
+import shlex  # noqa: E402
 import screenshot_decode  # noqa: E402
 
 MARKER = b"BASILISK_FB_DUMP"
@@ -71,6 +73,8 @@ _last_emulator = None
 
 
 def _comm(pid):
+    if guest_remote.active():
+        return guest_remote.run(["ps", "-p", str(pid), "-o", "comm="]).stdout.strip()
     return subprocess.run(["ps", "-p", str(pid), "-o", "comm="],
                           capture_output=True, text=True).stdout.strip()
 
@@ -86,8 +90,8 @@ def find_basilisk():
         if _comm(pid) == exe:
             return pid, exe
         _last_emulator = None
-    out = subprocess.run(["pgrep", "-x", "BasiliskII"],
-                         capture_output=True, text=True).stdout.split()
+    out = (guest_remote.run(["pgrep", "-x", "BasiliskII"]) if guest_remote.active() else
+           subprocess.run(["pgrep", "-x", "BasiliskII"], capture_output=True, text=True)).stdout.split()
     if not out:
         raise FbExportError("no_emulator", "no local BasiliskII process")
     pid = int(out[0])
@@ -110,6 +114,13 @@ def binary_has_export(exe):
     A plain byte search in chunks (with overlap, so a marker straddling a
     chunk boundary is still seen) — deliberately not `grep`, which declined
     to match inside this Mach-O binary while `strings` found the marker."""
+    if guest_remote.active():
+        # the binary is on the other Mac: grep there, -a so the Mach-O counts as text (plain grep declined to match)
+        key = ("remote", guest_remote.TARGET, exe)
+        if key not in _marker_cache:
+            r = guest_remote.shell(f"LC_ALL=C grep -a -c {MARKER.decode()} {shlex.quote(exe)}")
+            _marker_cache[key] = r.stdout.strip().isdigit() and int(r.stdout.strip()) > 0
+        return _marker_cache[key]
     try:
         st = os.stat(exe)
         key = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
@@ -143,6 +154,20 @@ def request_dump(pid, path=None, timeout=5.0):
     renames, so a changed mtime is always a complete file. The dump happens on
     the next video refresh tick (~10 Hz), hence the poll."""
     path = path or dump_path()
+    if guest_remote.active():
+        # ONE round trip: remove the old dump, signal, wait for the new file (the emulator writes a temp name and
+        # renames, so an existing file is complete), send it back on stdout
+        steps = int(timeout / 0.01)
+        script = (f"f={shlex.quote(path)}; rm -f \"$f\"; kill -USR1 {int(pid)} || exit 3; i=0; "
+                  f"while [ ! -f \"$f\" ]; do i=$((i+1)); [ $i -gt {steps} ] && exit 4; sleep 0.01; done; cat \"$f\"")
+        r = guest_remote.shell(script, timeout=timeout + 15, text=False)
+        if r.returncode == 3:
+            raise FbExportError("signal_failed", f"cannot signal remote pid {pid}")
+        if r.returncode == 4:
+            raise FbExportError("timeout", f"no dump at {path} on {guest_remote.TARGET} within {timeout:g}s")
+        if r.returncode != 0:
+            raise FbExportError("signal_failed", f"remote dump failed: {r.stderr.decode(errors='replace')[:160]}")
+        return r.stdout
     try:
         before = os.stat(path).st_mtime_ns
     except OSError:

@@ -38,3 +38,6 @@ uv.lock
 host/local.env
 host/local.env.bak-*
 host/local.env.bak.*
+
+# Pixel references of the boot dialogs (guest_boot.py) — cut from this machine's frames, machine-specific
+host/refs/
