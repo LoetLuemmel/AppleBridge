@@ -44,6 +44,7 @@ Usage
     --dry-run       print what would run, touch nothing
 """
 
+import guest_remote  # run on another Mac when APPLEBRIDGE_GUEST_SSH is set (2026-10-01)
 import argparse
 import os
 import re
@@ -232,7 +233,9 @@ def demo_easing():
 
 def _run(argv, check=True, timeout=None):
     try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        # a guest on another Mac (APPLEBRIDGE_GUEST_SSH): the gesture happens THERE — guest_remote.py
+        p = guest_remote.run(argv, timeout=timeout) if guest_remote.active() else \
+            subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise InputError(f"{argv[0]} did not finish within {timeout}s")
     if check and p.returncode != 0:
@@ -249,8 +252,9 @@ def running_emulator(explicit=None):
     if explicit:
         return explicit
     for name in EMULATORS:
-        if subprocess.run(["pgrep", "-x", name],
-                          capture_output=True).returncode == 0:
+        probe = guest_remote.run(["pgrep", "-x", name]) if guest_remote.active() else \
+            subprocess.run(["pgrep", "-x", name], capture_output=True)
+        if probe.returncode == 0:
             return name
     raise InputError("no emulator process found (BasiliskII / SheepShaver)")
 
@@ -488,7 +492,11 @@ def _capture_rect(x, y, w, h, out_path, dry_run=False, timeout=None):
     if dry_run:
         print(" ".join(argv))
         return out_path
-    _run(argv, timeout=timeout)
+    if guest_remote.active():                 # capture on the remote Mac, bring the file here
+        remote = "/tmp/ab_guest_capture.png"
+        _run(argv[:-1] + [remote], timeout=timeout); guest_remote.fetch(remote, out_path)
+    else:
+        _run(argv, timeout=timeout)
     to_guest_scale(out_path, w, h)
     return out_path
 

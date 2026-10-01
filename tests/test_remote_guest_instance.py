@@ -83,8 +83,26 @@ def test_mcp_side():
     check(".mcp.json (shipped) does NOT register a remote server", "APPLEBRIDGE_REMOTE_GUEST" not in cfg)
 
 
+def test_guest_remote():
+    """the SSH runner: inactive without its variable; cliclick resolves to the copy built for the remote macOS; every
+    other argument is shell-quoted; the deploy carries the module (guest_input imports it)"""
+    sys.path.insert(0, HOST)
+    import importlib
+    os.environ.pop("APPLEBRIDGE_GUEST_SSH", None)
+    import guest_remote; importlib.reload(guest_remote)
+    check("guest_remote inactive without APPLEBRIDGE_GUEST_SSH", not guest_remote.active())
+    cmd = guest_remote.remote_command(["cliclick", "m:1,2", "w:150"])
+    check("cliclick -> $HOME/<tools>/cliclick, unquoted so $HOME expands", cmd.startswith("$HOME/Documents/BasiliskII/tools/cliclick "), cmd)
+    cmd = guest_remote.remote_command(["osascript", "-e", 'tell application "X" to activate'])
+    check("arguments are shell-quoted", cmd == "osascript -e 'tell application \"X\" to activate'", cmd)
+    deploy = open(os.path.join(HOST, "deploy_host.sh")).read()
+    check("deploy_host.sh ships guest_remote.py (guest_input imports it)", "guest_remote.py" in deploy.split("RUNTIME_FILES=(")[1].split(")")[0])
+    for mod in ("guest_input.py", "fb_export.py"):
+        check(f"{mod} routes through guest_remote", "guest_remote.active()" in open(os.path.join(HOST, mod)).read())
+
+
 if __name__ == "__main__":
     test_defaults_unchanged(); test_variables_reach_the_module()
-    test_refusal_precedes_the_daemon_check(); test_launch_scripts_carry_the_second_instance(); test_mcp_side()
+    test_refusal_precedes_the_daemon_check(); test_launch_scripts_carry_the_second_instance(); test_mcp_side(); test_guest_remote()
     print(f"\n{PASS}/{PASS + FAIL} passed")
     sys.exit(1 if FAIL else 0)
