@@ -2798,10 +2798,30 @@ _REPEATS = loop_guard.RepeatWatch()
 _UNCOMPILED = loop_guard.UncompiledWrite()
 
 
+# A second MCP server serves a guest on ANOTHER machine (2026-10-01, the 2013 MacBook): its bridge verbs go to that
+# guest's host-server instance (APPLEBRIDGE_CTRL_PORT), but these tools act on THIS Mac — its framebuffer export, real
+# mouse, screen, AppleScript and local stack — i.e. on the LOCAL guest. Refused there, with the bridge alternative.
+REMOTE_GUEST = os.environ.get("APPLEBRIDGE_REMOTE_GUEST", "") == "1"
+HOST_LOCAL_TOOLS = {
+    "mac_fb_screenshot": "use mac_screenshot (the daemon captures the guest itself)",
+    "mac_host_click": "use mac_click (synthetic, through the daemon)",
+    "mac_host_menu": "use mac_menu / mac_key with a Command shortcut",
+    "mac_host_screenshot": "use mac_screenshot",
+    "mac_menu_front": "the Route-B trigger clicks this Mac's emulator window",
+    "run_applescript": "it would run on this Mac, not on the guest's host",
+    "bridge_doctor": "it diagnoses THIS Mac's stack; mac_status reports the remote guest's link",
+}
+
+
 def call_tool(name: str, arguments: Dict[str, Any]) -> Any:
     """Call a tool by name with arguments."""
     if name not in TOOL_HANDLERS:
         raise ValueError(f"Unknown tool: {name}")
+    if REMOTE_GUEST and name in HOST_LOCAL_TOOLS:
+        return {"success": False, "refused": True,
+                "error": f"{name} acts on this Mac's own screen/mouse/stack, but this MCP server serves a guest on "
+                         f"another machine (APPLEBRIDGE_REMOTE_GUEST=1) — it would act on the wrong guest. "
+                         f"{HOST_LOCAL_TOOLS[name]}."}
 
     handler = TOOL_HANDLERS[name]
     repeat = _REPEATS.note(name, arguments)

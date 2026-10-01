@@ -66,8 +66,25 @@ def test_launch_scripts_carry_the_second_instance():
     check("deploy_host.sh restarts the remote agent too", '"gui/$(id -u)/$LABEL-remote"' in deploy)
 
 
+def test_mcp_side():
+    """the MCP server of a remote guest: its port from the environment, the host-local tools refused before running"""
+    root = os.path.dirname(HERE)
+    code = ("import sys; sys.path.insert(0, %r); from mcp import mac_connection as C, tools as T; "
+            "r = T.call_tool('mac_host_click', {'x': 1, 'y': 1}); "
+            "print(C.DEFAULT_PORT, T.REMOTE_GUEST, r.get('refused'), sorted(T.HOST_LOCAL_TOOLS) == sorted(set(T.HOST_LOCAL_TOOLS) & set(T.TOOL_HANDLERS)))") % root
+    e = {k: v for k, v in os.environ.items() if not k.startswith("APPLEBRIDGE_")}
+    e.update({"APPLEBRIDGE_CTRL_PORT": "9011", "APPLEBRIDGE_REMOTE_GUEST": "1"})
+    r = subprocess.run(["uv", "run", "python", "-c", code], capture_output=True, text=True, env=e, cwd=root, timeout=120)
+    got = (r.stdout.strip().splitlines() or [r.stderr[-200:]])[-1]
+    check("MCP: port 9011, remote on, mac_host_click refused, every guarded name is a real tool", got == "9011 True True True", got)
+    # the remote server is registered LOCALLY (claude mcp add --scope local): a fresh clone has no second guest, and a
+    # committed entry would start a server pointing at a port nobody listens on
+    cfg = open(os.path.join(root, ".mcp.json")).read()
+    check(".mcp.json (shipped) does NOT register a remote server", "APPLEBRIDGE_REMOTE_GUEST" not in cfg)
+
+
 if __name__ == "__main__":
     test_defaults_unchanged(); test_variables_reach_the_module()
-    test_refusal_precedes_the_daemon_check(); test_launch_scripts_carry_the_second_instance()
+    test_refusal_precedes_the_daemon_check(); test_launch_scripts_carry_the_second_instance(); test_mcp_side()
     print(f"\n{PASS}/{PASS + FAIL} passed")
     sys.exit(1 if FAIL else 0)
