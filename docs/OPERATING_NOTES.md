@@ -2721,3 +2721,11 @@ took the front and gave it back, and changed nothing. The host server now
   the local emulator, concluded "running but failed outside the code", and
   stopped instead of retrying (xavier-eval `e2e_bench.recover`, open). Any
   recovery logic added for one guest has to be asked: *which* guest?
+* **The lid's second effect shows up later.** The AFP session to the AppleShare
+  server breaks during the sleep. Two hours after the daemon had reconnected, the
+  2013 guest still carried a modal Finder alert ("The file server's connection has
+  unexpectedly closed down") and had lost its three AppleShare volumes — and the
+  next THINK build ended UNKNOWN, "project window not found", because the alert
+  covered the screen. A Return on that guest's control port dismisses it;
+  `AFPMOUNT` restores the volumes. After any sleep: look at the screen and run
+  `DISKINFO` before trusting the guest again.
