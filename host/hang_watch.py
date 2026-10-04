@@ -203,7 +203,15 @@ def restart(pid):
     boot = subprocess.run([sys.executable, os.path.join(HERE, "guest_boot.py")], capture_output=True, text=True,
                           timeout=900, env=dict(os.environ, APPLEBRIDGE_CTRL_PORT=str(PORT)))
     log("guest_boot: " + (boot.stdout.strip().splitlines() or ["(no output)"])[-1])
-    say(f"{guest} ist wieder da." if bridge_answers() else f"{guest} kommt nach dem Neustart nicht zurück.")
+    back = bridge_answers()
+    if back:      # the build tool's own hang guard (xavier-eval project_build, 2026-09-29) refuses every build while its
+        # flag exists; on 2026-10-04 it kept refusing for 1.5 h after the guest was back. The flag belongs to the hang
+        # this restart has just ended, so it goes with it (kept beside the log, not deleted).
+        flag = "/tmp/applebridge_guest_hung" + ("" if PORT == 9001 else f"_{PORT}")
+        if os.path.exists(flag):
+            os.replace(flag, f"{LOG}.flag-{time.strftime('%Y%m%d-%H%M%S')}")
+            log(f"cleared {flag} (the build tool's hang flag for the hang just ended)")
+    say(f"{guest} ist wieder da." if back else f"{guest} kommt nach dem Neustart nicht zurück.")
 
 
 def observe_once(judge):
