@@ -158,7 +158,12 @@ def request_dump(pid, path=None, timeout=5.0):
         # ONE round trip: remove the old dump, signal, wait for the new file (the emulator writes a temp name and
         # renames, so an existing file is complete), send it back on stdout
         steps = int(timeout / 0.01)
-        script = (f"f={shlex.quote(path)}; rm -f \"$f\"; kill -USR1 {int(pid)} || exit 3; i=0; "
+        # 2026-10-08: several readers (the build tool, the wish service's live view, dialog_watch) dump the same remote
+        # emulator; one reader's `rm` deleted the file between another's wait and its `cat` ("No such file" -> a build
+        # without a verdict, twice). A mkdir lock serialises them; a lock older than 10 s is taken over (a killed reader).
+        script = (f"L={shlex.quote(path)}.lock; j=0; until mkdir \"$L\" 2>/dev/null; do j=$((j+1)); "
+                  f"[ $j -gt 200 ] && {{ rmdir \"$L\" 2>/dev/null; j=0; }}; sleep 0.05; done; trap 'rmdir \"$L\"' EXIT; "
+                  f"f={shlex.quote(path)}; rm -f \"$f\"; kill -USR1 {int(pid)} || exit 3; i=0; "
                   f"while [ ! -f \"$f\" ]; do i=$((i+1)); [ $i -gt {steps} ] && exit 4; sleep 0.01; done; cat \"$f\"")
         r = guest_remote.shell(script, timeout=timeout + 15, text=False)
         if r.returncode == 3:
