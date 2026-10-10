@@ -12,7 +12,7 @@ Every CHECK_S seconds, from the framebuffer (fb_export: no bridge traffic, works
      appletalk_interrupted -> Return (harmless, transient)          ; screenshot + log
      empty_trash           -> Escape = Cancel (never delete)        ; screenshot + log
      appleshare_login / ip_conflict -> NO input, spoken alert        ; screenshot + log
-  bridge silent on two checks in a row, emulator present and NOT busy (cpu < 50 %)
+  bridge silent on THREE checks in a row (two fired twice on 2026-10-09 during a daemon reconnect), emulator present and NOT busy (cpu < 50 %)
      -> an unknown modal is likely: screenshot + spoken alert, NO input (a person decides what to click)
 Screenshots: /tmp/dialog_watch_<port>/<time>_<what>.png. Log: /tmp/applebridge_dialog_watch_<port>.log.
 A guest on another Mac: APPLEBRIDGE_CTRL_PORT=9011 APPLEBRIDGE_GUEST_SSH=user@host (same as guest_boot.py).
@@ -68,7 +68,7 @@ def main():
         answered = GB.ctrl("PROCLIST", 12).startswith("STATUS:0")
         silent = 0 if answered else silent + 1
         if answered: alerted = None
-        if silent >= 2 and f is not None and alerted != "unknown":
+        if silent >= 3 and f is not None and alerted != "unknown":
             cpu = emulator_cpu()
             if cpu is not None and cpu < 50:                      # a hang (>= 90 %) belongs to hang_watch.py
                 p = shot(f, "bridge_silent"); log(f"bridge silent on {silent} checks, emulator at {cpu:.0f} % CPU - a modal is likely ({p})")
