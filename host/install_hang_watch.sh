@@ -38,9 +38,10 @@ for f in "${FILES[@]}"; do cp "$SRC/$f" "$DEST/$f"; done
 [ -d "$SRC/refs" ] && cp "$SRC"/refs/*.json "$DEST/refs/" 2>/dev/null || true
 if [ -f "$SRC/local.env" ]; then cp "$SRC/local.env" "$DEST/local.env"; chmod 600 "$DEST/local.env"; fi
 
-agent() {   # label, port, log, [guest ssh]
+agent() {   # label, port, log, [guest ssh], [emulator bundle on that machine]
     local plist="$HOME/Library/LaunchAgents/$1.plist" extra=""
     [ -n "${4:-}" ] && extra="<key>APPLEBRIDGE_GUEST_SSH</key><string>$4</string>"
+    [ -n "${5:-}" ] && extra="$extra<key>APPLEBRIDGE_GUEST_EMULATOR_APP</key><string>$5</string>"
     cat > "$plist" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -72,7 +73,9 @@ PLIST_EOF
 }
 
 echo "[2/3] The local guest"
-agent "$LABEL" 9001 /tmp/applebridge_hang_watch_9001.log
+# 2026-10-13: the 9001 guest may run on another Mac too (APPLEBRIDGE_LOCAL_GUEST_SSH, e.g. Claudias-MBP .171, so the
+# operator keeps this Mac's mouse); its bundle path there is APPLEBRIDGE_LOCAL_GUEST_EMULATOR_APP
+agent "$LABEL" 9001 /tmp/applebridge_hang_watch_9001.log "${APPLEBRIDGE_LOCAL_GUEST_SSH:-}" "${APPLEBRIDGE_LOCAL_GUEST_EMULATOR_APP:-}"
 
 echo "[3/3] The guest on another Mac"
 if [ -n "${APPLEBRIDGE_REMOTE_GUEST_SSH:-}" ]; then

@@ -68,7 +68,7 @@ PLIST_EOF
 }
 
 echo "[2/3] The local guest"
-agent "$LABEL" 9001
+agent "$LABEL" 9001 "${APPLEBRIDGE_LOCAL_GUEST_SSH:-}"     # 2026-10-13: the 9001 guest may run on another Mac (Claudias-MBP .171)
 
 echo "[3/3] The guest on another Mac"
 if [ -n "${APPLEBRIDGE_REMOTE_GUEST_SSH:-}" ]; then
