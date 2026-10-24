@@ -173,7 +173,7 @@ def log(msg):
 
 def say(msg):
     log(msg)
-    subprocess.run(["say", "-v", "Anna", msg], capture_output=True)
+    subprocess.run(["/usr/bin/lockf", "-k", "/tmp/applebridge_say.lock", "say", "-v", "Anna", msg], capture_output=True)   # one voice at a time: every watcher shares this lock (2026-10-24: two alerts overlapped)
 
 
 def restart(pid):

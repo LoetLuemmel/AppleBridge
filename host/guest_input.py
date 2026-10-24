@@ -224,8 +224,12 @@ def demo_easing():
     person watching can follow; the file's content is the easing factor (empty: 200). Absent = unchanged, fast gestures.
     Measurement runs refuse to start while it is set (it changes gesture timing)."""
     try:
-        if not os.path.exists(DEMO_FLAG): return []
-        v = open(DEMO_FLAG).read().strip()
+        # 2026-10-24: a per-guest flag `/tmp/applebridge_demo_mouse.<host>` (host of APPLEBRIDGE_GUEST_SSH) glides only
+        # the gestures into that guest, so a demo on one guest leaves the other guest's runs at normal speed.
+        host = os.environ.get("APPLEBRIDGE_GUEST_SSH", "").rsplit("@", 1)[-1]
+        flag = next((f for f in ([DEMO_FLAG + "." + host] if host else []) + [DEMO_FLAG] if os.path.exists(f)), None)
+        if not flag: return []
+        v = open(flag).read().strip()
         return ["-e", str(int(v) if v.isdigit() else 200)]
     except Exception:
         return []

@@ -81,7 +81,7 @@ FRONT = 'tell application "System Events" to set frontmost of (first process who
 
 def say(msg):
     print(msg, flush=True)
-    subprocess.run(["say", "-v", "Anna", msg], capture_output=True)
+    subprocess.run(["/usr/bin/lockf", "-k", "/tmp/applebridge_say.lock", "say", "-v", "Anna", msg], capture_output=True)   # one voice at a time: every watcher shares this lock (2026-10-24: two alerts overlapped)
 
 
 def main(timeout=420):
