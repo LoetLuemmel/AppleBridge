@@ -14,7 +14,7 @@ That makes it two things at once:
 - **A low-level remote-control plane for classic Mac OS.** No AI required: the bridge is a
   host server and a guest daemon speaking a plain TCP (or serial) protocol, and anything — a
   script, a CI job, `nc` on a command line — can control, monitor and manage System 7 with it.
-- **A full AI development environment.** 33 MCP tools expose the whole surface to Claude Code
+- **A full AI development environment.** 35 MCP tools expose the whole surface to Claude Code
   out of the box, but you can throw whatever model you want at the problem — frontier models
   already know MPW, THINK C and Inside Macintosh — so software can be written, compiled,
   linked, run and debugged on the Mac in natural language.
@@ -71,7 +71,7 @@ But back to MPW. It's syntax is based on Unix like commands and here the three S
 In total over 6 months of time I established AppleBridge in a bootstrap way. AppleBridge did some heritage from [ClaudeBridge](https://td5.390er.de/claudebridge/) .
 You can already see the REZ part in it and here the programming did really start.
 
-Step-by-step I established 33 MCP tools, that allow Claude Code to access the Macintosh System and almost all toggles of MPW, Think C or even Microsoft FoxPro and yes, you name it!\
+Step-by-step I established 35 MCP tools, that allow Claude Code to access the Macintosh System and almost all toggles of MPW, Think C or even Microsoft FoxPro and yes, you name it!\
 You can become creative yourself and build your own Macintosh software dream. Boundless, if there wouldn't be system limits like memsize or CPU speed.
 
 What doesn't work? - Initially I planned implementing a browser with TLS support, simply looking at modern https:// web pages.\
@@ -150,7 +150,7 @@ sequenceDiagram
 
 ### The four layers
 
-1. **MCP** — Claude Code ↔ `mcp/server.py` over stdio. **Optional**: it adds the 33 tools
+1. **MCP** — Claude Code ↔ `mcp/server.py` over stdio. **Optional**: it adds the 35 tools
    and natural language, and nothing below it depends on it.
 2. **Control** — `mcp/server.py` (or any socket client) ↔ `host_server.py` on `localhost:9001`.
 3. **Bridge** — the guest daemon ↔ `host_server.py` on `:9000`. **The daemon dials OUT**, so
@@ -369,7 +369,7 @@ printf 'LISTDIR:<volume>:AppleBridge:\n\n' | nc localhost 9001
 `<volume>` is your guest's own boot volume — `DISKINFO` above prints it, which is why
 it comes first. It is not the same on two machines.
 
-What MCP adds is the **33 tools** below, and natural language on top of them.
+What MCP adds is the **35 tools** below, and natural language on top of them.
 
 **There is nothing to configure.** `.mcp.json` is committed at the root of this
 repository, Claude Code reads it when it starts in the project directory, and it
@@ -418,7 +418,7 @@ Result: Mac dialog showing "Hello, World!"
 
 ## Available MCP Tools
 
-**33 tools**, in two groups. The split matters more than the list: the *command*
+**35 tools**, in two groups. The split matters more than the list: the *command*
 tier needs MPW/ToolServer on the guest, everything else does not — so a guest
 with no compiler is still fully driveable.
 
@@ -428,6 +428,7 @@ with no compiler is still fully driveable.
 | **Move bytes, run, observe** | `mac_put_file`, `mac_get_file`, `mac_write_file`, `launch_app`, `mac_https_get`, `mac_screenshot`, `mac_fb_screenshot`, `mac_clipboard_get`, `mac_clipboard_set` |
 | **Drive the guest** | `mac_type`, `mac_key`, `mac_click`, `mac_menu`, `mac_menu_front`, `mac_host_click`, `mac_host_menu`, `mac_host_screenshot` |
 | **Network discovery** | `mac_appletalk_browse` |
+| **Toolbox reference** (no guest needed) | `mac_toolbox_lookup`, `mac_toolbox_search` — THINK C 7 headers, THINK Reference and Inside Macintosh through the Mac68k Reference API |
 | **Lifecycle & liveness** | `mac_status`, `bridge_doctor`, `mac_verbose_log`, `mac_reboot`, `mac_shutdown`, `mac_restart_toolserver`, `mac_update_daemon`, `run_applescript` |
 
 `mac_screenshot` reads the **emulated framebuffer** through the daemon, not the
@@ -456,7 +457,7 @@ AppleBridge/
 │   └── Makefile.68k              # MPW makefile
 ├── mcp/                          # Python MCP server (the MCP entry point)
 │   ├── server.py                 # `python -m mcp.server` (see .mcp.json)
-│   ├── tools.py                  # the 33 MCP tools
+│   ├── tools.py                  # the 35 MCP tools
 │   └── mac_connection.py         # talks to host_server.py on :9001
 ├── host/                         # Host server + utilities
 │   ├── host_server.py            # the bridge: :9000 daemon socket + :9001 control
@@ -506,7 +507,7 @@ daemon itself reports, from `mac/vers.r`.
 - Application-level heartbeat + watchdog, so a host that goes away cannot freeze the guest
 - Apple Events command execution (ToolServer returns output; MPW Shell does not)
 - Remote compilation and linking
-- 33 MCP tools for Claude Code — optional, on top of the control port
+- 35 MCP tools for Claude Code — optional, on top of the control port
 - Encoding conversion (UTF-8/LF ↔ MacRoman/CR)
 - Screenshot capture: the emulated framebuffer, decoded to PNG on the host
 - Host server auto-start via launchd

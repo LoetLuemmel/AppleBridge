@@ -269,6 +269,57 @@ so a crop only shrinks the reply, not the cost).""",
         }
     },
     {
+        "name": "mac_toolbox_lookup",
+        "description": """Look up a classic Macintosh Toolbox call in the Mac68k Reference API (THINK C 7 on System 7.6.1, 68K).
+
+One call, three sources, under a pinned data version: the declaration THINK C 7
+compiles against (header and line), the THINK Reference 2.0 entry (what the
+call does: parameters, returns, notes, example) and the Inside Macintosh entry
+(how it behaves in context — local vs global coordinates, event order, what to
+call before and after), newest book first. Every name form resolves: the
+headers' names (SetControlValue), THINK Reference's older names (SetCtlValue),
+header macros (AddResMenu -> AppendResMenu), case; THINK Reference topic pages
+resolve by title ("About the Alias Manager").
+
+If the sources disagree: headers (what compiles) > THINK Reference > Inside
+Macintosh CD (1994) > Inside Macintosh I-III (1985) — the answer states it.
+Use it BEFORE writing a Toolbox call you are not sure of; quote the sentence
+you rely on. An empty answer (`found: false`) means the name is unknown to all
+three sources — most likely invented; it is logged as a finding.
+Reference: https://pit.390er.de/harness-tooling/mac68k-reference-api-endpoints-parameters-examples/""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string",
+                         "description": "Toolbox call or topic title, e.g. TrackControl, SetControlValue, GetKeys, About the Alias Manager"},
+                "format": {"type": "string", "enum": ["text", "json"],
+                           "description": "text (default): one plain-text answer ready to read or quote; json: the structured record"},
+                "platform": {"type": "string", "enum": ["68k", "ppc", "all"],
+                             "description": "68k (default; System 7 on 68K). ppc/all add PowerPC-only material - not for the 68K guests"}
+            },
+            "required": ["name"]
+        }
+    },
+    {
+        "name": "mac_toolbox_search",
+        "description": """Search the Mac68k Reference API when the call's NAME is not known.
+
+All words must occur (case-insensitive). Returns THINK Reference entries
+(name, summary, volume, page) and Inside Macintosh sections (book, chapter,
+snippet), newest book first, at most `limit` per source. Follow up with
+mac_toolbox_lookup on a name it finds. Example queries: "local coordinates
+control", "check box value", "TextEdit idle", "color foreground".""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "words that must all occur"},
+                "limit": {"type": "integer", "description": "max results per source (default 10, at most 100)"},
+                "platform": {"type": "string", "enum": ["68k", "ppc", "all"], "description": "68k (default)"}
+            },
+            "required": ["query"]
+        }
+    },
+    {
         "name": "mac_https_get",
         "description": """Fetch an https:// URL FROM THE GUEST — the classic Mac does the TLS itself.
 
@@ -1477,6 +1528,48 @@ def launch_app(path: str, document: Optional[str] = None) -> Dict[str, Any]:
             "path": path,
             "error": str(e)
         }
+
+
+MAC68K_REF_URL = os.environ.get("MAC68K_REF_URL", "http://192.168.3.75:8093")
+
+
+def _mac68k_ref(path: str, params: Dict[str, Any], timeout: int = 30):
+    """GET the Mac68k Reference API (container mac68k-ref on the Xavier, 2026-10-25). Queries are logged there as client=mcp.
+    A service that does not answer is an ERROR, never an empty result (the empty result means 'unknown name')."""
+    import urllib.parse
+    import urllib.request
+    q = urllib.parse.urlencode({k: v for k, v in dict(params, client="mcp").items() if v is not None})
+    with urllib.request.urlopen(f"{MAC68K_REF_URL}{path}?{q}", timeout=timeout) as r:
+        return r.read().decode("utf-8"), r.headers.get("Content-Type", "")
+
+
+def mac_toolbox_lookup(name: str, format: str = "text", platform: str = "68k") -> Dict[str, Any]:
+    """Toolbox call -> declaration + THINK Reference + Inside Macintosh (mac68k_ref/server.py /lookup)."""
+    import json as _json
+    try:
+        body, _ = _mac68k_ref("/lookup", {"name": name, "platform": platform})
+    except Exception as e:
+        return {"success": False, "error": f"Mac68k Reference API unreachable at {MAC68K_REF_URL}: {e}"}
+    r = _json.loads(body)
+    found = bool(r.get("declaration") or r.get("entries") or r.get("inside_macintosh"))
+    out = {"success": True, "found": found, "names": r.get("names"), "version": r.get("version"), "precedence": r.get("precedence")}
+    if format == "json": out["record"] = r
+    else:
+        try: out["text"] = _mac68k_ref("/lookup", {"name": name, "platform": platform, "format": "text"})[0]
+        except Exception as e: return {"success": False, "error": f"text form failed: {e}"}
+    if not found: out["note"] = "unknown to the headers, THINK Reference and Inside Macintosh - most likely not a real Toolbox call"
+    return out
+
+
+def mac_toolbox_search(query: str, limit: int = 10, platform: str = "68k") -> Dict[str, Any]:
+    """Words -> THINK Reference entries + Inside Macintosh sections (mac68k_ref/server.py /search)."""
+    import json as _json
+    try:
+        body, _ = _mac68k_ref("/search", {"q": query, "limit": max(1, min(100, int(limit or 10))), "platform": platform})
+    except Exception as e:
+        return {"success": False, "error": f"Mac68k Reference API unreachable at {MAC68K_REF_URL}: {e}"}
+    r = _json.loads(body)
+    return {"success": True, "query": query, "results": r.get("results", []), "version": r.get("version")}
 
 
 def mac_https_get(url: str, app_dir: str = "MeinMac:TTLS:", tls_version: str = "13",
@@ -2753,6 +2846,8 @@ TOOL_HANDLERS = {
     "mac_fb_screenshot": mac_fb_screenshot,
     "launch_app": launch_app,
     "mac_https_get": mac_https_get,
+    "mac_toolbox_lookup": mac_toolbox_lookup,
+    "mac_toolbox_search": mac_toolbox_search,
     "mac_type": mac_type,
     "mac_key": mac_key,
     "mac_menu": mac_menu,
