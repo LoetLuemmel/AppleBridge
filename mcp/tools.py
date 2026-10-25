@@ -284,8 +284,11 @@ resolve by title ("About the Alias Manager").
 If the sources disagree: headers (what compiles) > THINK Reference > Inside
 Macintosh CD (1994) > Inside Macintosh I-III (1985) — the answer states it.
 Use it BEFORE writing a Toolbox call you are not sure of; quote the sentence
-you rely on. An empty answer (`found: false`) means the name is unknown to all
-three sources — most likely invented; it is logged as a finding.
+you rely on. Also answers result codes by name or number (`-43` -> fnfErr), a
+constant's value (inButton = 10, from the header) and where Apple's Inside
+Macintosh X-Ref index documents a routine, constant or record field. An empty
+answer (`found: false`) means the name is unknown to all sources — most likely
+invented; it is logged as a finding.
 Reference: https://pit.390er.de/harness-tooling/mac68k-reference-api-endpoints-parameters-examples/""",
         "inputSchema": {
             "type": "object",
@@ -1551,13 +1554,14 @@ def mac_toolbox_lookup(name: str, format: str = "text", platform: str = "68k") -
     except Exception as e:
         return {"success": False, "error": f"Mac68k Reference API unreachable at {MAC68K_REF_URL}: {e}"}
     r = _json.loads(body)
-    found = bool(r.get("declaration") or r.get("entries") or r.get("inside_macintosh"))
+    # 2026-10-25: also a result code (-43, fnfErr), a constant's value or Apple's X-Ref index (routine/constant/record field)
+    found = bool(r.get("declaration") or r.get("entries") or r.get("inside_macintosh") or r.get("result_codes") or r.get("constant") or r.get("index"))
     out = {"success": True, "found": found, "names": r.get("names"), "version": r.get("version"), "precedence": r.get("precedence")}
     if format == "json": out["record"] = r
     else:
         try: out["text"] = _mac68k_ref("/lookup", {"name": name, "platform": platform, "format": "text"})[0]
         except Exception as e: return {"success": False, "error": f"text form failed: {e}"}
-    if not found: out["note"] = "unknown to the headers, THINK Reference and Inside Macintosh - most likely not a real Toolbox call"
+    if not found: out["note"] = "unknown to the headers, THINK Reference, Inside Macintosh and its X-Ref index - most likely not a real Toolbox name"
     return out
 
 
