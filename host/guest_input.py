@@ -181,8 +181,11 @@ def build_menu_gesture(title_pt, item_pt):
     """
     tx, ty = title_pt
     ix, iy = item_pt
+    # demo mode (2026-10-24): a GLIDING drag straight from the title to the item crossed the neighbouring title while still
+    # in the menu bar and opened THAT menu (Apple menu -> File -> New). Go straight down into the open menu first, then across.
+    down_first = ["m:%d,%d" % (tx, iy), "w:150"] if demo_easing() and ix != tx else []
     return ["m:%d,%d" % (tx, ty), "w:150",
-            "dd:%d,%d" % (tx, ty), "w:400",
+            "dd:%d,%d" % (tx, ty), "w:400"] + down_first + [
             "m:%d,%d" % (ix, iy), "w:250",
             "du:%d,%d" % (ix, iy)]
 

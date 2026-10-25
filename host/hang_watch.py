@@ -173,7 +173,13 @@ def log(msg):
 
 def say(msg):
     log(msg)
-    subprocess.run(["/usr/bin/lockf", "-k", "/tmp/applebridge_say.lock", "say", "-v", "Anna", msg], capture_output=True)   # one voice at a time: every watcher shares this lock (2026-10-24: two alerts overlapped)
+    # one voice at a time, logged (say_locked.sh, 2026-10-24): the installed copy, else the repo's; neither -> plain lockf + say,
+    # so a machine without the script still speaks instead of crashing the watcher (2026-10-25)
+    sl = next((q for q in (os.path.expanduser("~/Library/Application Support/AppleBridge/say_locked.sh"),
+                           os.path.join(os.path.dirname(os.path.abspath(__file__)), "say_locked.sh")) if os.path.exists(q)), None)
+    cmd = [sl, os.path.basename(sys.argv[0]) + ":" + os.environ.get("APPLEBRIDGE_CTRL_PORT", "9001"), msg] if sl else ["/usr/bin/lockf", "-k", "/tmp/applebridge_say.lock", "say", "-v", "Anna", msg]
+    try: subprocess.run(cmd, capture_output=True)
+    except OSError: pass
 
 
 def restart(pid):
