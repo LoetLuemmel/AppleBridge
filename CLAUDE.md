@@ -47,7 +47,8 @@ Never type blind at boot: a blind Return dismissed a network warning instead of 
 this Mac's one address `.232` on its own **daemon port**; this Mac runs one `host_server.py` per guest on its own
 **control port**. Both come from one table, `host/guests.conf` (untracked; `guests.conf.example`, `docs/MULTI_GUEST.md`):
 `./install_guests.py` writes host server + hang watch + dialog watch per row and removes agents of rows that are gone
-(re-run after every edit; `deploy_host.sh` syncs code, not configuration). The guest's side is `TCPPORT=` and `NAME=` in
+(re-run after every edit; `deploy_host.sh` syncs code, not configuration). A full run restarts **every** guest's
+agents and drops their live links — for one new or changed row use `--guest <name>` (2026-10-26). The guest's side is `TCPPORT=` and `NAME=` in
 its AppleBridge Prefs (daemon 0.8d48+); an instance **refuses a guest reporting another name** (`HELLO: REFUSED`), so a
 guest on the wrong port cannot be served as another guest. The 9001 row keeps the single-guest label and log; other rows
 get `…-<name>` (`/tmp/applebridge_server_<name>.log`). A guest on another Mac runs with `APPLEBRIDGE_REMOTE_GUEST=1`

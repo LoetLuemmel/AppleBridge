@@ -4,6 +4,7 @@
     ./install_guests.py --dry-run     what would be written, started and removed
     ./install_guests.py               write the agents for every row, start them, remove agents of rows that are gone
     ./install_guests.py --remove      boot out and delete every guest agent (host, hangwatch, dialogwatch)
+    ./install_guests.py --guest NAME  only that row (repeatable): the other guests' agents are not restarted
 
 Reads `host/guests.conf` (see guests.conf.example and docs/MULTI_GUEST.md, D-028). Replaces the per-guest logic of
 install_host_service.sh, install_remote_guest_service.sh, install_hang_watch.sh and install_dialog_watch.sh: those
@@ -11,6 +12,10 @@ knew exactly two guests, "local" and "remote", from keys in local.env.
 
 Every agent carries its configuration in its own plist (launchd runs a deployed copy that cannot read the repo), so
 re-run this after editing the table. deploy_host.sh syncs code, not configuration.
+
+A full run bootstraps every row's agents again, so every live link drops and its in-flight command fails. Adding the
+third guest on 2026-10-26 had to be done by hand for that reason, while a session was starting work on the second:
+`--guest` writes and starts only the named rows, and retires nothing (it does not know which rows are gone).
 """
 
 import argparse
@@ -69,9 +74,19 @@ def installed_guest_labels(agents_dir=AGENTS_DIR):
     return sorted(set(out))
 
 
-def plan(table, base_env, agents_dir=AGENTS_DIR):
-    """-> (write: [(guest, kind, plist dict)], remove: [label])"""
+def plan(table, base_env, agents_dir=AGENTS_DIR, only=None):
+    """-> (write: [(guest, kind, plist dict)], remove: [label])
+
+    `only`: names of the rows to install; the rest of the table is left alone and nothing is removed. A name that is
+    not in the table raises GuestTableError rather than installing nothing and reporting success."""
+    if only:
+        unknown = sorted(set(only) - {g.name for g in table})
+        if unknown:
+            raise G.GuestTableError(f"not in the table: {', '.join(unknown)}")
+        table = [g for g in table if g.name in only]
     write = [(g, k, agent_plist(g, k, base_env)) for g in table for k in G.KINDS]
+    if only:
+        return write, []
     wanted = {p["Label"] for _, _, p in write}
     remove = [lbl for lbl in installed_guest_labels(agents_dir) if lbl not in wanted]
     return write, remove
@@ -103,8 +118,13 @@ def main(argv=None):
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--remove", action="store_true", help="remove every guest agent")
     ap.add_argument("--table", help="path of the guest table (default host/guests.conf)")
+    ap.add_argument("--guest", action="append", metavar="NAME",
+                    help="install only this row (repeatable); other guests keep running, nothing is removed")
     args = ap.parse_args(argv)
 
+    if args.remove and args.guest:
+        print("--remove takes every guest agent; --guest does not narrow it", file=sys.stderr)
+        return 2
     if args.remove:
         labels = installed_guest_labels()
         for lbl in labels:
@@ -122,9 +142,13 @@ def main(argv=None):
         print(f"no guest table at {args.table or G.CONF} — copy guests.conf.example and fill it in", file=sys.stderr)
         return 2
     base_env = host_config.launchd_environment()
-    write, remove = plan(table, base_env)
+    try:
+        write, remove = plan(table, base_env, only=args.guest)
+    except G.GuestTableError as e:
+        print(f"--guest: {e}", file=sys.stderr)
+        return 2
 
-    for g in table:
+    for g in [g for g in table if not args.guest or g.name in args.guest]:
         print(f"{g.name}: daemon {base_env.get('APPLEBRIDGE_HOST_IP', '*')}:{g.daemon_port}, control 127.0.0.1:"
               f"{g.ctrl_port}, {'this Mac' if g.local else g.ssh}")
         for kind in G.KINDS:
@@ -157,7 +181,8 @@ def main(argv=None):
             failed.append(f"{pl['Label']}: {out.strip()}")
     for f in failed:
         print("FAILED " + f, file=sys.stderr)
-    print(f"{len(write) - len(failed)} agents started for {len(table)} guests, {len(remove)} removed")
+    n = len(args.guest) if args.guest else len(table)
+    print(f"{len(write) - len(failed)} agents started for {n} guests, {len(remove)} removed")
     return 1 if failed else 0
 
 

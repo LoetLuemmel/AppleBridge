@@ -122,6 +122,23 @@ def test_the_plan_retires_the_two_guest_setups_remote_agents_and_rows_that_are_g
                       "de.390er.applebridge-host-remote"], remove
 
 
+def test_a_single_guest_run_writes_only_that_row_and_retires_nothing():
+    # 2026-10-26: a full run re-bootstraps every row, dropping the live links of guests that were working.
+    d = _agents("de.390er.applebridge-host-remote")      # would be retired by a full run
+    write, remove = I.plan(G.parse(TABLE), {}, agents_dir=d, only=["mbp2013"])
+    assert {g.name for g, _, _ in write} == {"mbp2013"} and len(write) == 3
+    assert remove == [], "a partial run does not know which rows are gone"
+
+
+def test_a_single_guest_run_refuses_a_name_not_in_the_table():
+    try:
+        I.plan(G.parse(TABLE), {}, agents_dir=_agents(), only=["claudia"])
+    except G.GuestTableError as e:
+        assert "claudia" in str(e)
+        return
+    raise AssertionError("an unknown name installed nothing and reported success")
+
+
 def test_installed_labels_do_not_match_a_longer_kind_by_prefix():
     # "de.390er.applebridge-hostX" is not a host agent: only the kind itself or kind + "-<name>".
     d = _agents("de.390er.applebridge-hostX", "de.390er.applebridge-host-a")
