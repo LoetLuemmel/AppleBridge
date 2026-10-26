@@ -64,8 +64,8 @@ import host_config                 # where the host's own address comes from (R1
 # Errno 49 everywhere else. See host_config.py and docs/INSTALLER_REQUIREMENTS.md.
 HOST_INTERFACE, HOST_INTERFACE_SOURCE = host_config.resolve_host_ip()
 HOST_PORT = 9000                   # Mac daemon connects to this
-# A second instance serves a guest on ANOTHER machine (2026-10-01: the 2013 MacBook's guest dials a second alias on this
-# Mac — its single Wi-Fi NIC cannot reach a server on the 2013 itself, D-015). Each instance needs its own control port
+# A second instance serves a guest on ANOTHER machine (2026-10-01: the 2013 MacBook's guest dialled a second address of
+# this Mac — its single Wi-Fi NIC cannot reach a server on the 2013 itself, D-015; that address must be real, D-027). Each instance needs its own control port
 # and log; the defaults are the one-instance values every client assumes.
 CONTROL_PORT = int(os.environ.get("APPLEBRIDGE_CTRL_PORT", "9001"))   # local control clients connect to this
 LOG_PATH = os.environ.get("APPLEBRIDGE_LOG", "/tmp/applebridge_server.log")

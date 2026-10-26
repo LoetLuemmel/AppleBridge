@@ -11,8 +11,9 @@
 #   APPLEBRIDGE_LOG           = /tmp/applebridge_server_remote.log
 #   APPLEBRIDGE_REMOTE_GUEST  = 1   — the HOST* verbs act on THIS Mac's screen and mouse, i.e. on the LOCAL guest;
 #                                     this instance refuses them rather than drive the wrong machine.
-# The alias for APPLEBRIDGE_REMOTE_HOST_IP is placed by start_stack.sh in the same privileged step as the first one.
-# Until it exists the agent retries every 30 s (ThrottleInterval), exactly like the first.
+# APPLEBRIDGE_REMOTE_HOST_IP must be a REAL address of this Mac other than the first instance's (both listen on :9000,
+# the daemon's port is fixed). Nothing places an alias for it any more (D-027); until it exists the agent retries every
+# 30 s (ThrottleInterval), exactly like the first.
 #
 # Usage:  ./install_remote_guest_service.sh            install / refresh
 #         ./install_remote_guest_service.sh --remove   unload and delete the agent

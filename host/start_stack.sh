@@ -51,9 +51,6 @@ set -u
 [ -f "$(dirname "$0")/local.env" ] && . "$(dirname "$0")/local.env"
 WIRED_IF="${APPLEBRIDGE_WIRED_IF:-en8}"     # wired LAN the etherhelper bridges onto
 HOST_IP="${APPLEBRIDGE_HOST_IP:-}"   # from host/local.env or the environment (R1)
-# A guest on ANOTHER machine whose daemon dials a second address on this one (a single-NIC host cannot reach a server on
-# itself, D-015): its alias goes on the same default-route interface, in the same one privileged step.
-REMOTE_IP="${APPLEBRIDGE_REMOTE_HOST_IP:-}"
 EMU_IP="${APPLEBRIDGE_GUEST_IP:-}"   # the emulated Mac, if known (behind MACNAT — never routable)
 NETMASK="255.255.255.0"
 BRIDGE="${APPLEBRIDGE_BRIDGE:-bridge100}"   # REQUIRED by the etherhelper backend
@@ -92,54 +89,34 @@ ETHER_BACKEND="$(awk '/^ether[ \t]/{print $2; exit}' "$HOME/.basilisk_ii_prefs" 
 # it is the one setup which starts without somebody at the keyboard (D-018).
 # This block used to run unconditionally, raising an admin dialog to execute
 # nothing but comments whenever APPLEBRIDGE_HOST_IP was unset.
-NEEDS_PRIV=1
+# The host address is a REAL address of this machine, never an alias placed here (D-027, 2026-10-26). Aliases are
+# held only in memory: every reboot dropped them, and a macOS upgrade reset the wired NIC's service on top, so the bridge
+# failed after each restart until someone re-typed `ifconfig … alias` with sudo. Now the router reserves the default-route
+# interface's own address and local.env names it, so this script only CHECKS - it never changes an interface.
 if [ "$ETHER_BACKEND" = "slirp" ]; then
-    NEEDS_PRIV=0
-    echo "[2/5] Network setup: nothing to do — slirp needs no privileged step."
-    echo "      (no interface alias, no bridge, no password. No AppleTalk either.)"
-elif [ -z "$HOST_IP" ] && [ -z "$EMU_IP" ]; then
-    NEEDS_PRIV=0
-    echo "[2/5] Network setup: nothing to do — no configured address, no guest IP."
-elif [ -n "$HOST_IP" ] && [ -z "$EMU_IP" ] \
-     && ifconfig "$DEFAULT_IF" 2>/dev/null | grep -q "inet ${HOST_IP} " \
-     && ! ifconfig "$WIRED_IF" 2>/dev/null | grep -q "inet ${HOST_IP} " \
-     && { [ -z "$REMOTE_IP" ] || ifconfig "$DEFAULT_IF" 2>/dev/null | grep -q "inet ${REMOTE_IP} "; }; then
-    # The one privileged act on this branch is placing HOST_IP on the default-route
-    # interface. If it is already there (and not stranded on the wired NIC), there is
-    # nothing to do — so skip the admin dialog entirely. The alias persists across
-    # BasiliskII relaunches, so this makes every re-launch within a login session
-    # password-free; only a fresh macOS boot (which drops the alias) prompts once.
-    NEEDS_PRIV=0
-    echo "[2/5] Network setup: ${HOST_IP} already on ${DEFAULT_IF} — no privileged step, no password."
-fi
-
-if [ "$NEEDS_PRIV" = "1" ]; then
-echo "[2/5] Privileged network setup (admin password dialog)…"
-# With no configured address there is no alias to place — the server binds
-# 0.0.0.0 and the guest dials whatever this machine already answers on. The
-# rest of the privileged block still applies, so run it either way.
-if [ -n "$HOST_IP" ]; then
-    echo "      ${HOST_IP} -> ${DEFAULT_IF} (default-route iface, where MACNAT exits)"
-    ALIAS_OPS="
-ifconfig $WIRED_IF -alias $HOST_IP 2>/dev/null || true     # strip a stale alias off the wire
-ifconfig $DEFAULT_IF inet $HOST_IP netmask $NETMASK alias   # put it where the NAT exits
-"
+    echo "[2/5] Network check: nothing to do — slirp needs no host address on an interface."
+    echo "      (no privileged step, no password. No AppleTalk either.)"
+elif [ -z "$HOST_IP" ]; then
+    echo "[2/5] Network check: no APPLEBRIDGE_HOST_IP — the server binds 0.0.0.0."
+elif ifconfig "$WIRED_IF" 2>/dev/null | grep -q "inet ${HOST_IP} "; then
+    echo "[2/5] ERROR: ${HOST_IP} is an address of ${WIRED_IF}, the NIC etherhelper takes over. This Mac cannot reach"
+    echo "      its own address there, so the guest's daemon would hang on CONNECTING. Set APPLEBRIDGE_HOST_IP in"
+    echo "      host/local.env to an address of ${DEFAULT_IF} (the default route), e.g.:"
+    ifconfig "$DEFAULT_IF" 2>/dev/null | awk '/inet /{print "        " $2}'
+    exit 1
+elif ! ifconfig "$DEFAULT_IF" 2>/dev/null | grep -q "inet ${HOST_IP} "; then
+    echo "[2/5] ERROR: ${HOST_IP} (APPLEBRIDGE_HOST_IP) is not an address of ${DEFAULT_IF}, the default-route interface."
+    echo "      Its addresses now:"
+    ifconfig "$DEFAULT_IF" 2>/dev/null | awk '/inet /{print "        " $2}'
+    echo "      Fix the router's reservation for ${DEFAULT_IF} or the value in host/local.env - do not alias it here."
+    exit 1
 else
-    echo "      no APPLEBRIDGE_HOST_IP (host/local.env) — no alias to place, server binds 0.0.0.0"
-    ALIAS_OPS=""
+    echo "[2/5] Network check: ${HOST_IP} is ${DEFAULT_IF}'s own address (default route) — OK."
 fi
-if [ -n "$REMOTE_IP" ]; then
-    echo "      ${REMOTE_IP} -> ${DEFAULT_IF} (second host server, for the guest on another machine)"
-    ALIAS_OPS="$ALIAS_OPS
-ifconfig $DEFAULT_IF inet $REMOTE_IP netmask $NETMASK alias   # the remote guest's daemon dials this
-"
-fi
-# A stale host route to the guest only exists if someone once added one, which
-# needs the guest's address. Unknown -> nothing to clean up.
-if [ -n "$EMU_IP" ]; then
-    ROUTE_OPS="route -n delete -host $EMU_IP 2>/dev/null || true   # guest is behind MACNAT; no host route"
-else
-    ROUTE_OPS=""
+# A stale host route to the guest only exists if someone once added one, which needs the guest's address.
+if [ -n "$EMU_IP" ] && route -n get "$EMU_IP" 2>/dev/null | grep -q "flags:.*HOST"; then
+    echo "      removing a stale host route to the guest ${EMU_IP} (admin password dialog)…"
+    osascript -e "do shell script \"route -n delete -host $EMU_IP\" with administrator privileges" || true
 fi
 # NO bridge handling here, in either direction (D-017). With `etherhelper/<if>`
 # the helper owns the NIC directly and no bridge is on the path — measured both
@@ -147,20 +124,6 @@ fi
 # launcher deliberately creates), then briefly CREATED one (overcorrection). It
 # now only reports, because the bridge belongs to the tap mode and to the
 # operator's launcher, not to this script.
-PRIV="
-# The host address belongs on the DEFAULT-ROUTE interface, not the wired one.
-$ALIAS_OPS
-$ROUTE_OPS
-"
-osascript -e "do shell script \"$PRIV\" with administrator privileges" || {
-    echo "      ERROR: privileged setup failed (cancelled or wrong password)."; exit 1
-}
-
-echo "      ${DEFAULT_IF} addrs:"; ifconfig "$DEFAULT_IF" | grep "inet " | sed 's/^/        /'
-if [ -n "$HOST_IP" ] && ifconfig "$WIRED_IF" 2>/dev/null | grep -q "inet ${HOST_IP} "; then
-    echo "      WARN: ${HOST_IP} is STILL on $WIRED_IF — the freeze bug will return."
-fi
-fi   # NEEDS_PRIV
 if [ "${ETHER_BACKEND%%/*}" = "etherhelper" ]; then
     if ifconfig "$BRIDGE" 2>/dev/null | grep -q "member: $WIRED_IF"; then
         echo "      bridge: $BRIDGE present with $WIRED_IF (harmless; not on the path in this mode)"

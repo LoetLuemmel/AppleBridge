@@ -54,10 +54,9 @@ def test_refusal_precedes_the_daemon_check():
 
 def test_launch_scripts_carry_the_second_instance():
     stack = open(os.path.join(HOST, "start_stack.sh")).read()
-    check("start_stack.sh reads APPLEBRIDGE_REMOTE_HOST_IP", 'REMOTE_IP="${APPLEBRIDGE_REMOTE_HOST_IP:-}"' in stack)
-    check("start_stack.sh places its alias in the privileged step", "inet $REMOTE_IP netmask $NETMASK alias" in stack)
-    check("start_stack.sh skips the password only when BOTH aliases are present",
-          'grep -q "inet ${REMOTE_IP} "' in stack)
+    # D-027 (2026-10-26): no script places an alias for either instance any more - each address must be a real one.
+    check("start_stack.sh places no alias at all", "netmask $NETMASK alias" not in stack)
+    check("start_stack.sh no longer handles the remote address", "APPLEBRIDGE_REMOTE_HOST_IP" not in stack)
     inst = open(os.path.join(HOST, "install_remote_guest_service.sh")).read()
     check("the remote agent sets REMOTE_GUEST=1",
           "<key>APPLEBRIDGE_REMOTE_GUEST</key>\n        <string>1</string>" in inst)

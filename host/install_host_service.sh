@@ -16,10 +16,10 @@
 # re-run this installer — just run ./deploy_host.sh to push the change live.
 #
 # Prerequisite, where an address IS configured: the server binds it on :9000, so
-# that alias must sit on the default-route interface — the one the guest's NAT
-# traffic exits. Until it does, the agent just retries every 30s
-# (ThrottleInterval). start_stack.sh sets the alias up; a boot-persistent alias
-# would need a root LaunchDaemon (separate, needs sudo). With NO address
+# it must be the default-route interface's OWN address — the interface the guest's
+# NAT traffic exits — reserved in the router so it survives a reboot. Nothing here
+# places an alias (D-027); if the address is missing, the agent retries every 30s
+# (ThrottleInterval) and the log names the addresses that do exist. With NO address
 # configured — the slirp branch — the server binds every address and none of
 # this applies.
 #
@@ -100,6 +100,6 @@ echo "                syncs code, not configuration."
 if [ -n "$ENV_BLOCK" ]; then
     # Naming an interface that exists on one machine is the R13 defect; the
     # address is resolved, and where it belongs is stated as a rule, not a NIC.
-    echo "  - Reminder:   that address must be aliased on the DEFAULT-ROUTE"
-    echo "                interface, where the guest's NAT traffic exits."
+    echo "  - Reminder:   that address must be the DEFAULT-ROUTE interface's own"
+    echo "                address (router reservation), not an alias (D-027)."
 fi

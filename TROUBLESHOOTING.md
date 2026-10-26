@@ -15,7 +15,7 @@ printf 'DOCTOR\n\n' | nc localhost 9001       # same report via the control port
 
 It answers even when the host server is down, and it catches the four causes
 that otherwise all present identically as "Mac not connected": a `disable`d
-launchd job, a `.154` alias duplicated onto a second NIC, a `slirp` emulator
+launchd job, the host address duplicated onto a second NIC, a `slirp` emulator
 backend (TCP works, AppleTalk does not — see *Chooser finds no AppleShare
 server* below), and a dead `etherhelpertool`.
 
@@ -159,7 +159,8 @@ below) — the host can be configured perfectly and still see nothing.
      Watch the *outbound* connection instead: `/tmp/applebridge_server.log` should show
      `Mac connected from …`.
    - Confirm the emulator backend is `ether etherhelper/en8` (not slirp) and that the
-     host's `.154` alias is on the default-route interface (`start_stack.sh` does this).
+     host address (`APPLEBRIDGE_HOST_IP`) is the default-route interface's own address
+     (`start_stack.sh` checks this and stops if not).
 
 4. **Check the host firewall**
    ```bash
@@ -170,15 +171,15 @@ below) — the host can be configured perfectly and still see nothing.
    and "wrong NIC" both look like a timeout — diagnose via the log, not a refused connection.
 
 5. **Verify the host IP in prefs**
-   The daemon reads `IP=192.168.3.154` from the `AppleBridge Prefs` file (edit it in place
-   or via AppleBridgeConfig). A compiled-in fallback (`.154`) applies if the file is missing.
+   The daemon reads `IP=` from the `AppleBridge Prefs` file (edit it in place or via
+   AppleBridgeConfig); it must equal `APPLEBRIDGE_HOST_IP` in `host/local.env`.
 
 ### Guest has no network at all — `etherhelpertool` died (adapter unplugged)
 
 **Symptoms:**
 - Daemon console loops `Opening TCP endpoint… / Connecting to host… / connect timeout -
   no reply from host`, then `reconnecting in 30s`. Counters stay at `RX 0 TX 0`.
-- The host side checks out completely: server listening on `:9000`, `.154` aliased on the
+- The host side checks out completely: server listening on `:9000`, the host address on the
   default-route interface, firewall allowing the Python binary.
 - **Re-plugging the network cable does not fix it**, and neither does restarting the host
   server or rebooting the guest.
@@ -226,20 +227,22 @@ see the missing NIC itself. Check the three commands above before touching host 
 **Cause:** a host network-interface mismatch — **not** a crash, **not** the daemon code.
 The emulated Mac sits behind Basilisk's MACNAT (`ether etherhelper/en8`), so it can only
 connect *out*, and its traffic is NAT'd through the host's **default-route interface**
-(normally Wi-Fi, `en0`). The daemon dials the hardcoded host IP `.154`. If `.154` is
-aliased on a *different* interface than the default route (e.g. a wired `en8`), the
+(normally Wi-Fi, `en0`). The daemon dials the configured host address. If that address
+sits on a *different* interface than the default route (e.g. a wired `en8`), the
 conversation is split across NICs: the MACNAT return packet is swallowed by the host's
 own stack, the handshake never completes, and the daemon's **synchronous `OTConnect`**
 blocks without yielding → starves System 7's cooperative scheduler → total freeze.
 
-**Fix:** put `.154` on the **same interface as the default route**.
+**Fix:** configure the host address as the **default-route interface's own address** — never
+an alias (D-027, 2026-10-26). An alias lives in memory only: every reboot dropped it, and the
+bridge then failed until someone re-typed `ifconfig … alias` with sudo.
 ```bash
-# detect the default-route interface (where MACNAT exits)
 DEF=$(route -n get default | awk '/interface:/{print $2}')   # usually en0 (Wi-Fi)
-sudo ifconfig en8 -alias 192.168.3.154 2>/dev/null            # strip stale .154 off other NIC
-sudo ifconfig "$DEF" inet 192.168.3.154 netmask 255.255.255.0 alias
+ifconfig "$DEF" | awk '/inet /{print $2}'                   # its own address, e.g. .232
+# -> APPLEBRIDGE_HOST_IP=<that address> in host/local.env, IP=<same> in the guest's prefs,
+#    and a DHCP reservation for that interface's MAC in the router so it never moves.
 ```
-`host/start_stack.sh` does exactly this. **Tell it's fixed:** the server log shows the
+`host/start_stack.sh` checks exactly this and stops with the addresses it found. **Tell it's fixed:** the server log shows the
 guest's *real* address — `Mac connected from ('192.168.3.244', …)` ESTABLISHED — instead
 of the host's own Wi-Fi IP (`.213`), which is what you see when the path is cross-interface.
 
@@ -340,7 +343,7 @@ no helper is spawned.
 
 ```bash
 sed -i '' 's|^ether slirp$|ether etherhelper/en8|' ~/.basilisk_ii_prefs
-host/start_stack.sh          # also puts .154 back on the default-route interface
+host/start_stack.sh          # also checks the host address is the default route's own
 ```
 
 `bridge_doctor` reports this as the `ether_slirp` finding, and flags any drift

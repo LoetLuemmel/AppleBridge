@@ -8,7 +8,7 @@ BELOW that — and mac_status reports all of them identically as
 `host_server_running=false` / `daemon_connected=false`. Every such session so
 far has been spent hand-probing the same eight things in the same order:
 
-    launchd job -> listening sockets -> .154 alias placement -> default route
+    launchd job -> listening sockets -> host address placement -> default route
     -> BasiliskII -> etherhelpertool -> emulator "ether" backend -> peer IP
 
 This module runs that sweep in one call and, crucially, runs it LOCALLY — it
@@ -18,8 +18,10 @@ thing that is broken.
 Failure modes it names outright (each cost a real session at least once):
   * launchd job booted out / `disable`d  -> ports closed, "bridge kaputt" is a
     deliberate shutdown, not a bug.
-  * `.154` aliased on BOTH en0 and en8   -> the MACNAT return path splits across
+  * the host address on BOTH en0 and en8 -> the MACNAT return path splits across
     interfaces; the daemon's connect blocks and freezes the emulator at 100 %.
+    (The address is the default route's OWN, router-reserved one - never an
+    alias; every fix below is configuration, not `ifconfig … alias`, D-027.)
   * `ether slirp` in the Basilisk prefs  -> guest lands on 10.0.2.x behind an
     IP-only NAT: TCP works, so the bridge looks fine, but AppleTalk frames are
     dropped -> the Chooser finds no AppleShare server, and bulk throughput
@@ -496,12 +498,24 @@ def interpret(probes):
             "server may be crash-looping.",
             "tail /tmp/applebridge_server.log"))
 
-    # --- the .154 alias placement rule -------------------------------------
+    # --- the host address placement rule (D-027) ---------------------------
+    # The address the daemon dials must be the default-route interface's OWN
+    # address (reserved in the router), never an alias: aliases live in memory
+    # only, so every reboot lost them, and the fixes this check used to print
+    # (`ifconfig … alias`) re-created exactly that fragility. Each fix below is
+    # configuration — which address to name — not a change to an interface.
     host_ip = net["host_ip"]
     on = net["host_ip_interfaces"]
     default_if = net["default_route_interface"]
+    own = [a for a in net["interfaces"].get(default_if, [])
+           if not a.startswith("127.")] if default_if else []
+    use_own = (f"set APPLEBRIDGE_HOST_IP={own[0]} in host/local.env ({default_if}'s "
+               "own address; reserve it in the router) and IP= in the guest's "
+               "AppleBridge Prefs to match" if own else
+               f"set APPLEBRIDGE_HOST_IP in host/local.env to {default_if or 'the default-route interface'}'s "
+               "own address and IP= in the guest's AppleBridge Prefs to match")
     if host_ip == BIND_ALL:
-        # A wildcard bind has no alias to place, and treating it as one produced
+        # A wildcard bind has nothing to place, and treating it as one produced
         # a confident ERROR saying the daemon "dials 0.0.0.0" — an address
         # nothing dials. This is the DEFAULT state of a slirp install, where the
         # installer deliberately writes no address (R7), so the wrong reading was
@@ -513,30 +527,32 @@ def interpret(probes):
         out.append(_finding(
             INFO, "host_ip_wildcard",
             "Server binds every address (no APPLEBRIDGE_HOST_IP configured), so "
-            "there is no alias to place and no interface rule to break. The "
+            "there is no address to place and no interface rule to break. The "
             f"guest's `IP=` must name one of: {dialable}."))
     elif not on:
         out.append(_finding(
             ERROR, "host_ip_missing",
-            f"{host_ip} is not aliased on any interface — the daemon dials that "
-            "address and will never reach the host.",
-            "host/start_stack.sh   (sets the alias on the default-route interface)"))
+            f"{host_ip} is not an address of any interface on this machine — the "
+            "daemon dials that address and will never reach the host. (After a "
+            "reboot this means the address was an alias, or the router's "
+            "reservation no longer holds.)",
+            use_own))
     elif len(on) > 1:
         strays = [i for i in on if i != default_if] or on[1:]
         out.append(_finding(
             ERROR, "host_ip_duplicate",
-            f"{host_ip} is aliased on MORE THAN ONE interface ({', '.join(on)}). "
+            f"{host_ip} is an address of MORE THAN ONE interface ({', '.join(on)}). "
             "The MACNAT return path then splits across interfaces: the daemon's "
             "connect never completes and the emulator freezes at 100 % CPU.",
-            " ".join(f"sudo ifconfig {i} -alias {host_ip};" for i in strays)))
+            f"give {', '.join(strays)} a different address in its network service "
+            f"(and in the router's reservation), or {use_own}"))
     elif default_if and on[0] != default_if:
         out.append(_finding(
             ERROR, "host_ip_wrong_interface",
             f"{host_ip} sits on {on[0]}, but the default route exits via "
             f"{default_if}. The guest's NAT'd traffic cannot complete its "
             "handshake — this is the classic emulator freeze.",
-            f"sudo ifconfig {on[0]} -alias {host_ip}; sudo ifconfig {default_if} "
-            f"inet {host_ip} netmask 255.255.255.0 alias"))
+            use_own))
 
     # --- emulator transport backend ----------------------------------------
     ether, intended = emu["ether"], emu["intended"]
@@ -601,7 +617,7 @@ def interpret(probes):
     inst = probes.get("installation")
     if inst:
         # Only slirp needs the wildcard bind. On etherhelper the daemon dials
-        # the aliased address and local.env MUST name it — flagging it there
+        # the configured address and local.env MUST name it — flagging it there
         # advised deleting the one line that keeps the bridge up (2026-09-25).
         if inst["host_ip_assigned"] and (intended or ether) == "slirp":
             out.append(_finding(
@@ -761,7 +777,7 @@ def format_text(report):
                  f"{sk['listen']['daemon_port'] or '—'} / "
                  f"{sk['listen']['control_port'] or '—'}")
     ifaces = ", ".join(net["host_ip_interfaces"]) or "—"
-    lines.append(f"{net['host_ip']} alias:  {ifaces}"
+    lines.append(f"{net['host_ip']} on:  {ifaces}"
                  + ("   [duplicate!]" if len(net["host_ip_interfaces"]) > 1 else ""))
     lines.append(f"default route:    {net['default_route_interface'] or '—'}")
     for name, key in (("BasiliskII", "basilisk"), ("SheepShaver", "sheepshaver"),
@@ -780,7 +796,7 @@ def format_text(report):
         env = "—"
         if inst["local_env_present"]:
             # Judged per branch, like the finding: only slirp wants the
-            # wildcard bind; etherhelper dials the aliased address.
+            # wildcard bind; etherhelper dials the configured address.
             emu = report["probes"].get("emulator_prefs") or {}
             branch = emu.get("intended") or emu.get("ether") or ""
             ip = inst["host_ip_assigned"]

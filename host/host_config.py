@@ -111,16 +111,16 @@ def explain_bind_failure(wanted, addresses=None):
 
     The bare `Errno 49` is accurate and useless. What the operator needs is the
     address that was asked for, where it came from, and the addresses that do
-    exist — at which point a missing `ifconfig ... alias` is self-evident.
+    exist — at which point a stale value (or a router reservation that no longer
+    holds) is self-evident. The fix is configuration, never an alias (D-027).
     """
     addrs = ipv4_addresses() if addresses is None else addresses
     lines = [f"cannot bind {wanted}: no interface on this machine carries that address."]
     if addrs:
         lines.append("  addresses present: "
                      + ", ".join(f"{a} ({i})" for i, a in addrs))
-        lines.append(f"  fix: set {ENV_VAR} to one of them, add {wanted} as an alias")
-        lines.append(f"       (sudo ifconfig <iface> inet {wanted} netmask 255.255.255.0 alias),")
-        lines.append(f"       or unset {ENV_VAR} to bind {BIND_ALL}.")
+        lines.append(f"  fix: set {ENV_VAR} in host/local.env to the default-route interface's own address")
+        lines.append(f"       (reserved in the router so it survives reboots), or unset it to bind {BIND_ALL}.")
     else:
         lines.append("  no non-loopback IPv4 addresses found at all — is the network up?")
     return "\n".join(lines)

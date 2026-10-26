@@ -709,8 +709,9 @@ server itself is dead:
 
   - launchd job (loaded / absent / explicitly disabled)
   - listening sockets :9000 / :9001, plus the guest's OBSERVED peer IP
-  - where the .154 alias lives vs. the default-route interface (a duplicate on
-    a second NIC splits the MACNAT return path and freezes the emulator)
+  - whether the configured host address is the default-route interface's own
+    address (on a second NIC it splits the MACNAT return path and freezes the
+    emulator; it is never an alias, D-027)
   - BasiliskII / SheepShaver and the etherhelpertool child (dead helper =>
     the guest has no NIC at all)
   - the emulator's "ether" backend vs. the intended one (slirp still passes

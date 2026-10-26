@@ -80,7 +80,8 @@ address it wanted nor the interfaces it looked at.
 
 Five further literals carry the same address: `bridge_doctor.py`
 (`DEFAULT_HOST_IP`), `ensure_host_alias.sh`, `start_stack.sh`,
-`install_alias_daemon.sh`, `install_host_service.sh`. `start_stack.sh`
+`install_alias_daemon.sh`, `install_host_service.sh` (the two alias scripts
+were removed on 2026-10-26, D-027). `start_stack.sh`
 additionally hardcodes `en8` and this machine's Basilisk path, so it is not
 merely wrong elsewhere but actively harmful.
 
