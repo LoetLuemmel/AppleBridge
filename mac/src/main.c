@@ -59,6 +59,13 @@ QDGlobals qd;
  * File-scope (not on main's stack) since AppPrefs is ~2 KB. */
 static AppPrefs gPrefs;
 
+/* The port this daemon dials: TCPPORT= from the prefs, else BRIDGE_PORT. One port per guest lets n guests
+ * share the hub's one address (D-028). */
+static unsigned short BridgePort(void)
+{
+    return (gPrefs.tcpPort > 0) ? (unsigned short)gPrefs.tcpPort : (unsigned short)BRIDGE_PORT;
+}
+
 /* Per-connection auth state (protocol v0.2, see docs/PROTOCOL_v0.2.md). Auth is
  * opt-in: it engages only when THIS session's HELLO carried a host nonce AND we
  * hold a TOKEN=. gAuthed gates command flow — true (open) unless auth is needed
@@ -2622,6 +2629,12 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         } else {
             bp = StatStr(bp, ";FEAT=;NONCE=;PROOF=");
         }
+        if (gPrefs.name[0]) {
+            /* The guest's name, so the hub can refuse a guest on another guest's port (D-028).
+             * Last field: a host that predates it ignores an unknown field. */
+            bp = StatStr(bp, ";NAME=");
+            bp = StatStr(bp, gPrefs.name);
+        }
         *bp = '\0';
 
         fp = StatStr(fp, "STATUS:0\rSTDOUT:");
@@ -5076,6 +5089,10 @@ static Boolean MaybeHotSwapTransport(ABConn **connP, Boolean *connectedP)
 
     PrefsDefaults(&np);
     if (!LoadPrefs(&np))              return false;   /* no file / unreadable: keep running */
+    /* Port and name are adopted too (D-028): they take effect at the NEXT connect and the
+     * next HELLO, so a running link is never torn down for them. */
+    gPrefs.tcpPort = np.tcpPort;
+    strcpy(gPrefs.name, np.name);
     if (np.transport == gPrefs.transport) return false;   /* NET= unchanged */
 
     /* NET= changed -> hot-swap the stack. */
@@ -5299,7 +5316,7 @@ int main(void)
             SetActivity("CONNECTING");
             SystemTask();
 
-            err = ABConnect(&conn, hostIP, BRIDGE_PORT);
+            err = ABConnect(&conn, hostIP, BridgePort());
             if (err != noErr) {
                 /* Two separate systems can't synchronise state when no link can
                  * be formed, so each can only ASSUME the other's state. Behind the
@@ -5345,7 +5362,7 @@ int main(void)
                 q = StatStr(q, "connected to ");
                 q = StatStr(q, gPrefs.ip);
                 q = StatStr(q, ":");
-                q = StatDec(q, (long)BRIDGE_PORT);
+                q = StatDec(q, (long)BridgePort());
                 *q = '\0';
                 StatusMessage(line);
             }

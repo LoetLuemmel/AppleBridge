@@ -63,7 +63,12 @@ import host_config                 # where the host's own address comes from (R1
 # A literal here was correct on exactly one machine and produced an unreadable
 # Errno 49 everywhere else. See host_config.py and docs/INSTALLER_REQUIREMENTS.md.
 HOST_INTERFACE, HOST_INTERFACE_SOURCE = host_config.resolve_host_ip()
-HOST_PORT = 9000                   # Mac daemon connects to this
+# n guests, one hub (D-028, 2026-10-26): each guest dials its own daemon port, set in its prefs (TCPPORT=) and here.
+# 9000 stays the default, so a single-guest setup and every daemon without TCPPORT= are unchanged.
+HOST_PORT = int(os.environ.get("APPLEBRIDGE_DAEMON_PORT", "9000"))   # Mac daemon connects to this
+# The name this instance's guest must report in its HELLO reply (NAME= in its prefs). A guest on the wrong port
+# would otherwise be served as another guest while every indicator reads healthy (D-028). Empty = no check.
+GUEST_NAME = os.environ.get("APPLEBRIDGE_GUEST_NAME", "").strip()
 # A second instance serves a guest on ANOTHER machine (2026-10-01: the 2013 MacBook's guest dialled a second address of
 # this Mac — its single Wi-Fi NIC cannot reach a server on the 2013 itself, D-015; that address must be real, D-027). Each instance needs its own control port
 # and log; the defaults are the one-instance values every client assumes.
@@ -583,6 +588,31 @@ def parse_hello_reply(resp):
     return (version, feat, nonce, proof)
 
 
+def parse_hello_name(resp):
+    """-> the guest name a daemon reports in its HELLO reply (';NAME=<name>', daemon 0.8d48+), or '' if none.
+
+    Kept apart from parse_hello_reply so its 4-tuple - and every caller - stays as it is."""
+    idx = (resp or "").find("ABVERSION:")
+    if idx < 0:
+        return ""
+    line = resp[idx:].split("\r")[0].split("\n")[0]
+    for f in line.split(";"):
+        if f.startswith("NAME="):
+            return f[len("NAME="):].strip()
+    return ""
+
+
+def name_verdict(expected, reported):
+    """-> 'ok' | 'unchecked' | 'nameless' | 'mismatch' for a guest's HELLO name against its row (D-028).
+
+    nameless = a daemon too old to report a name: accepted with a warning, so guests can be migrated one at a time."""
+    if not expected:
+        return "unchecked"
+    if not reported:
+        return "nameless"
+    return "ok" if reported == expected else "mismatch"
+
+
 def log(msg):
     line = f"[{time.strftime('%H:%M:%S')}] {msg}"
     print(line, file=sys.stderr, flush=True)
@@ -730,6 +760,7 @@ class AppleBridgeServer:
         self.connected = False
         self.peer_version = 1     # negotiated protocol version (1 = legacy v0.1)
         self.peer_feat = set()    # capability tokens advertised by a v0.2 daemon
+        self.peer_name = ""      # NAME= the daemon reported in HELLO (0.8d48+, D-028); '' = none
         self.authed = True        # command flow permitted (False only mid-auth-fail)
         # Crash black-box: the last verb/command handed to the daemon + when. If the
         # daemon drops right after (a guest fault killing the emulator), we log which
@@ -1403,6 +1434,7 @@ class AppleBridgeServer:
         genuinely wrong token loops, which is the correct fail-closed posture."""
         self.peer_version = 1
         self.peer_feat = set()
+        self.peer_name = ""
         self.authed = not AUTH_TOKEN     # no token => auth not required => open
         if not self.connected or not self.client_socket:
             return
@@ -1449,11 +1481,23 @@ class AppleBridgeServer:
         version, feat, daemon_nonce, daemon_proof = parse_hello_reply(resp or "")
         self.peer_version = min(AB_PROTOCOL_VERSION, version)
         self.peer_feat = feat
+        self.peer_name = parse_hello_name(resp or "")
+        verdict = name_verdict(GUEST_NAME, self.peer_name)
+        if verdict == "mismatch":
+            # Refuse rather than serve the wrong guest: a stale prefs file, a cloned image or an old binary that dropped
+            # TCPPORT= lands a guest on another guest's port, and it would report full health there (D-028).
+            self._mark_disconnected(f"guest name mismatch: expected {GUEST_NAME!r}, got {self.peer_name!r}")
+            log(f"HELLO: REFUSED - this instance (:{self.port}) serves guest {GUEST_NAME!r}, but the daemon reports "
+                f"NAME={self.peer_name!r}. Fix TCPPORT= / NAME= in that guest's AppleBridge Prefs or the guest table.")
+            return
+        if verdict == "nameless":
+            log(f"HELLO: guest reports no NAME= (daemon older than 0.8d48?) - accepted as {GUEST_NAME!r} UNVERIFIED")
 
         if not AUTH_TOKEN:
             if self.peer_version >= 2:
                 log(f"HELLO: negotiated protocol v{self.peer_version} "
-                    f"feat={sorted(self.peer_feat)}")
+                    f"feat={sorted(self.peer_feat)} name={self.peer_name or '-'}"
+                    + (f" (expected {GUEST_NAME})" if GUEST_NAME else ""))
             elif kind == HELLO_LEGACY:
                 log("HELLO: peer answered as v0.1 (Invalid command format) — "
                     "legacy, proceeding without negotiation")

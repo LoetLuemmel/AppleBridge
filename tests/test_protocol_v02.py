@@ -266,6 +266,65 @@ def test_negotiate_no_token_sends_empty_nonce():
     assert srv.client_socket.sent == b"HELLO:2:\n"
 
 
+# --- the guest's name in HELLO (D-028, 2026-10-26) ---------------------------
+# n guests share one hub address, each on its own port. A guest on the WRONG port reaches another guest's server
+# and would be served as that guest with full health, so an instance refuses a daemon reporting another name.
+
+def test_parse_hello_name_reads_the_name_and_leaves_the_4_tuple_alone():
+    reply = "ABVERSION:2;FEAT=;NONCE=;PROOF=;NAME=mbp2013\r"
+    assert host_server.parse_hello_name(reply) == "mbp2013"
+    assert host_server.parse_hello_reply(reply) == (2, set(), "", "")
+
+
+def test_parse_hello_name_is_empty_for_an_old_daemon_and_for_legacy():
+    assert host_server.parse_hello_name("ABVERSION:2;FEAT=;NONCE=;PROOF=\r") == ""
+    assert host_server.parse_hello_name("STATUS:-1\rSTDOUT:0\rSTDERR:21\rInvalid command format\r\r") == ""
+
+
+def test_name_verdicts():
+    v = host_server.name_verdict
+    assert v("", "anything") == "unchecked"
+    assert v("dev2019", "") == "nameless"
+    assert v("dev2019", "dev2019") == "ok"
+    assert v("dev2019", "mbp2013") == "mismatch"
+
+
+def _negotiate_named(expected, stdout):
+    saved = host_server.GUEST_NAME
+    host_server.GUEST_NAME = expected
+    try:
+        srv = _server_with(_status_frame(0, stdout))
+        srv.negotiate_version()
+        return srv
+    finally:
+        host_server.GUEST_NAME = saved
+
+
+def test_negotiate_refuses_a_guest_reporting_another_name():
+    srv = _negotiate_named("dev2019", b"ABVERSION:2;FEAT=;NONCE=;PROOF=;NAME=mbp2013")
+    assert srv.connected is False
+    assert srv.peer_name == "mbp2013"
+
+
+def test_negotiate_accepts_the_right_name_and_a_nameless_old_daemon():
+    srv = _negotiate_named("dev2019", b"ABVERSION:2;FEAT=;NONCE=;PROOF=;NAME=dev2019")
+    assert srv.connected is True and srv.peer_name == "dev2019"
+    srv = _negotiate_named("dev2019", b"ABVERSION:2;FEAT=;NONCE=;PROOF=")
+    assert srv.connected is True and srv.peer_name == ""
+
+
+def test_daemon_port_comes_from_the_environment_with_9000_as_default():
+    import subprocess
+    code = "import host_server; print(host_server.HOST_PORT)"
+    host = os.path.join(os.path.dirname(__file__), "..", "host")
+    env = {k: v for k, v in os.environ.items() if k != "APPLEBRIDGE_DAEMON_PORT"}
+    out = subprocess.run([sys.executable, "-c", code], cwd=host, env=env, capture_output=True, text=True).stdout
+    assert out.strip().splitlines()[-1] == "9000", out
+    env["APPLEBRIDGE_DAEMON_PORT"] = "9010"
+    out = subprocess.run([sys.executable, "-c", code], cwd=host, env=env, capture_output=True, text=True).stdout
+    assert out.strip().splitlines()[-1] == "9010", out
+
+
 # --- a version verdict needs a version reply -------------------------------
 # Found on a Macintosh SE/30 over MacTCP, 2026-07-28. The host sends a priming
 # PING after accept and deliberately discards its reply, because the first packet

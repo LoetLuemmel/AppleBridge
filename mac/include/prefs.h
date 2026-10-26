@@ -25,6 +25,8 @@
 #define PREFS_PATH_LEN  256
 #define PREFS_IP_LEN    64
 #define PREFS_TOKEN_LEN 64
+#define PREFS_NAME_LEN  32
+#define PREFS_EXTRA_LEN 512   /* lines this build does not understand, kept for SavePrefs (D-028) */
 
 typedef struct {
     char    ip[PREFS_IP_LEN];
@@ -41,6 +43,16 @@ typedef struct {
                                     * pre-installer setups keep working. Set by the
                                     * installer; read by the watchdog + config app to
                                     * locate the daemon/watchdog wherever they live. */
+    long    tcpPort;      /* TCPPORT= : the port the daemon dials. 0 ⇒ BRIDGE_PORT (9000), so a
+                           * prefs file without the key behaves as before. One port per guest
+                           * lets n guests share the hub's one address (D-028). */
+    char    name[PREFS_NAME_LEN];  /* NAME= : this guest's name in the hub's guest table, reported
+                                    * in the HELLO reply so the hub can refuse a guest that
+                                    * landed on another guest's port (D-028). Empty ⇒ none. */
+    char    extra[PREFS_EXTRA_LEN]; /* KEY=value lines no case below recognised, each ending in a
+                                     * newline, written back verbatim by SavePrefs. Without this a
+                                     * program built before a key existed DELETES it on its next
+                                     * save - four programs compile this file (D-028). */
     short   winT, winL, winB, winR;  /* WIN= : saved Verbose-window bounds (global,
                                       * content rect). All zero ⇒ unset, so the
                                       * monitor opens at a screen-fitted default. */

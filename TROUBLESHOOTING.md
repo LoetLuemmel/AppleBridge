@@ -933,4 +933,4 @@ When things don't work, check in order:
 ---
 
 **Last Updated:** July 26, 2026
-**Version:** AppleBridge 0.8d47 (wire protocol v0.2) — from `mac/vers.r`, the single source
+**Version:** AppleBridge 0.8d48 (wire protocol v0.2) — from `mac/vers.r`, the single source

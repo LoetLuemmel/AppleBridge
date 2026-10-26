@@ -6,7 +6,11 @@
  * the classic way to tell builds apart (replacing ad-hoc names like
  * "AppleBridge5"). One 'vers' file stamps the whole suite uniformly.
  *
- * This build: 0.8 development — d47 lets LAUNCH open a document: LAUNCH:<app><TAB><doc>
+ * This build: 0.8 development — d48 serves n guests from one hub (D-028): TCPPORT= in the
+ * prefs picks the port the daemon dials (default 9000), NAME= is reported in the HELLO reply so
+ * the hub refuses a guest that landed on another guest's port, and SavePrefs keeps lines it does
+ * not understand, so a key survives programs built before it.
+ * d47 lets LAUNCH open a document: LAUNCH:<app><TAB><doc>
  * hands the app an 'odoc' event in its launch parameters, so the THINK Project Manager
  * starts on a project instead of on a modal Standard File picker nobody can drive.
  * d46 makes a screenshot cost what it shows. SCREENSHOT2
@@ -118,16 +122,16 @@
 
 resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
-    development, 0x36,   /* development stage, non-release revision 38 (BCD) */
+    development, 0x48,   /* development stage, non-release revision 48 (BCD) */
     verUS,
-    "0.8d47",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d47 - LAUNCH opens a document"  /* long -> Get Info */
+    "0.8d48",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d48 - n guests, one hub"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
-    development, 0x36,
+    development, 0x48,
     verUS,
-    "0.8d47",
+    "0.8d48",
     "AppleBridge"        /* the shared/suite version line */
 };
