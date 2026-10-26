@@ -52,10 +52,12 @@ agents and drops their live links — for one new or changed row use `--guest <n
 its AppleBridge Prefs (daemon 0.8d48+); an instance **refuses a guest reporting another name** (`HELLO: REFUSED`), so a
 guest on the wrong port cannot be served as another guest. The 9001 row keeps the single-guest label and log; other rows
 get `…-<name>` (`/tmp/applebridge_server_<name>.log`). A guest on another Mac runs with `APPLEBRIDGE_REMOTE_GUEST=1`
-and **refuses every `HOST*` verb** — they act on this Mac's own screen and mouse. Tools take the guest by control port
-(`APPLEBRIDGE_CTRL_PORT`, `APPLEBRIDGE_GUEST_SSH`); MCP for a second guest: a second server registered LOCALLY, never in
-the shipped `.mcp.json` — `claude mcp add applebridge-remote --scope local -e APPLEBRIDGE_CTRL_PORT=9011 -e
-APPLEBRIDGE_REMOTE_GUEST=1 -- uv run python -m mcp.server`. Cloning
+and **refuses every `HOST*` verb** — they act on this Mac's own screen and mouse. Host scripts take the guest by control port
+(`APPLEBRIDGE_CTRL_PORT`, `APPLEBRIDGE_GUEST_SSH`). **MCP: one server for every guest** (D-028 phase 4, 2026-10-26) —
+every guest-reaching tool takes an optional `guest` (a row name: `mac_screenshot(guest="claudia")`), talks to that
+row's control port for that one call and says `guest` in its result; omitted, it is this server's own guest. Tools that
+act on this Mac's own screen/mouse/stack are refused per call for a guest on another machine. The older second server
+(`applebridge-remote`, `APPLEBRIDGE_CTRL_PORT=9011`, registered locally) still works but is no longer needed. Cloning
 a guest for it: change the clone's own TCP/IP address too, not only `IP=` in AppleBridge Prefs — two guests with one
 address shut each other's TCP/IP down.
 

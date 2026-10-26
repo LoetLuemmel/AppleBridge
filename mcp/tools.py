@@ -11,6 +11,12 @@ import time
 from typing import Any, Dict, List, Optional
 
 from .mac_connection import get_connection
+# The per-call port (D-028 phase 4) comes from the module get_connection lives in, not from the import line above:
+# a dozen test suites load this file by replacing exactly that line with a stub, and a stub knows no ports.
+import contextlib  # noqa: E402
+_conn_module = sys.modules.get(get_connection.__module__)
+using_port = getattr(_conn_module, "using_port", None) or (lambda port: contextlib.nullcontext())
+current_port = getattr(_conn_module, "current_port", None) or (lambda: int(os.environ.get("APPLEBRIDGE_CTRL_PORT", "9001")))
 
 # host/ holds the stdlib-only macbinary helper; make it importable regardless of
 # how the MCP server is launched (mirrors how host_server.py imports it flat).
@@ -22,6 +28,7 @@ import bridge_doctor  # noqa: E402  (stdlib-only host-side stack probes)
 import guest_input  # noqa: E402  (real-mouse driving in guest coordinates)
 import mpw  # noqa: E402  (build-step verification: the artefact is the oracle)
 import loop_guard  # noqa: E402  (repetition made visible for a model-driven loop)
+import guests as guest_table  # noqa: E402  (D-028: host/guests.conf, for the `guest` parameter)
 import pump_probe  # noqa: E402  (is the target reading, before a no-reply send)
 import c89_lint  # noqa: E402  (name the C99 habits MPW's 1994 compiler rejects)
 import fb_export  # noqa: E402  (host-side framebuffer capture from a local Basilisk)
@@ -1003,6 +1010,20 @@ guest for the duration (k compiles), so it is heavier than a single mac_compile.
         }
     }
 ]
+
+# D-028 phase 4: one MCP server for every guest. Every tool that reaches a guest takes an optional `guest` - a row
+# name of host/guests.conf - and talks to that guest's host-server instance for this one call; omitted, it talks to
+# this server's own guest (APPLEBRIDGE_CTRL_PORT), exactly as before. The reference lookups reach no guest.
+NO_GUEST_PARAM = {"mac_toolbox_lookup", "mac_toolbox_search"}
+GUEST_PARAM = {
+    "type": "string",
+    "description": "Which guest: a name from host/guests.conf (e.g. dev2019, mbp2013, claudia). Omitted: this "
+                   "server's own guest. Tools that act on this Mac's own screen, mouse or stack are refused for a "
+                   "guest on another machine.",
+}
+for _t in TOOLS:
+    if _t["name"] not in NO_GUEST_PARAM:
+        _t["inputSchema"].setdefault("properties", {})["guest"] = GUEST_PARAM
 
 
 def _mpw_execute_hint(command: str, stdout) -> Optional[str]:
@@ -2825,8 +2846,10 @@ def mac_generate_compilable(source_prefix: str, dialect: str, k: int = 5,
                "-k", str(int(k)), "--temp", str(float(temp))]
         if item_id:
             cmd += ["--item-id", item_id]
+        # the loop compiles on the guest itself: hand it this call's control port (a `guest` argument, D-028)
+        env = dict(os.environ, APPLEBRIDGE_CTRL_PORT=str(current_port()))
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, env=env)
         except subprocess.TimeoutExpired:
             return {"success": False, "error": "pass@k loop timed out (>30 min)"}
     finally:
@@ -2896,6 +2919,8 @@ _REPEATS = loop_guard.RepeatWatch()
 # It reports; whether a conductor turns it into a refusal is the conductor's
 # decision, and it can, because the flag is in the result.
 _UNCOMPILED = loop_guard.UncompiledWrite()
+# one per named guest: the watch keys on the path, and every guest has a MeinMac:… of its own (D-028)
+_UNCOMPILED_BY_GUEST: Dict[str, Any] = {}
 
 
 # A second MCP server serves a guest on ANOTHER machine (2026-10-01, the 2013 MacBook): its bridge verbs go to that
@@ -2913,19 +2938,52 @@ HOST_LOCAL_TOOLS = {
 }
 
 
+def resolve_guest(name: str):
+    """-> (row of guests.conf, None) or (None, error message)"""
+    try:
+        table = guest_table.load()
+    except guest_table.GuestTableError as e:
+        return None, f"host/guests.conf: {e}"
+    if not table:
+        return None, "no host/guests.conf on this Mac - a single-guest setup; call without `guest`"
+    for g in table:
+        if g.name == name:
+            return g, None
+    return None, f"no guest named {name!r} in host/guests.conf ({', '.join(g.name for g in table)})"
+
+
 def call_tool(name: str, arguments: Dict[str, Any]) -> Any:
     """Call a tool by name with arguments."""
     if name not in TOOL_HANDLERS:
         raise ValueError(f"Unknown tool: {name}")
-    if REMOTE_GUEST and name in HOST_LOCAL_TOOLS:
+    arguments = dict(arguments or {})
+    guest = arguments.pop("guest", None) if name not in NO_GUEST_PARAM else None
+    port, remote = None, REMOTE_GUEST
+    if guest:
+        row, err = resolve_guest(guest)
+        if err:
+            return {"success": False, "error": err}
+        # Per call, not per server: the guest named here decides whether this Mac's own screen and mouse are its.
+        port, remote = row.ctrl_port, not row.local
+    if remote and name in HOST_LOCAL_TOOLS:
+        who = f"guest {guest!r} runs on another machine" if guest else \
+            "this MCP server serves a guest on another machine (APPLEBRIDGE_REMOTE_GUEST=1)"
         return {"success": False, "refused": True,
-                "error": f"{name} acts on this Mac's own screen/mouse/stack, but this MCP server serves a guest on "
-                         f"another machine (APPLEBRIDGE_REMOTE_GUEST=1) — it would act on the wrong guest. "
-                         f"{HOST_LOCAL_TOOLS[name]}."}
+                "error": f"{name} acts on this Mac's own screen/mouse/stack, but {who} — it would act on the "
+                         f"wrong guest. {HOST_LOCAL_TOOLS[name]}."}
 
     handler = TOOL_HANDLERS[name]
-    repeat = _REPEATS.note(name, arguments)
+    # The guest is part of the call's identity: the same mac_key on two guests is not a repeat.
+    repeat = _REPEATS.note(name, dict(arguments, guest=guest) if guest else arguments)
+    with using_port(port):
+        result = _run_handler(handler, name, arguments, repeat, guest)
+    return result
+
+
+def _run_handler(handler, name, arguments, repeat, guest):
     result = handler(**arguments)
+    if guest and isinstance(result, dict) and "guest" not in result:
+        result["guest"] = guest
 
     # Reported, never blocked. Refusing a repeated call would be a guard
     # deciding the caller did not mean what it asked for twice — which it
@@ -2937,7 +2995,8 @@ def call_tool(name: str, arguments: Dict[str, Any]) -> Any:
     # Same route, same reason: the rule arrives at the moment its case is true,
     # in the place the caller is already reading. Fed AFTER the handler, so a
     # write that failed does not claim an uncompiled change.
-    hint = _UNCOMPILED.note(name, arguments, result if isinstance(result, dict) else None)
+    watch = _UNCOMPILED_BY_GUEST.setdefault(guest, loop_guard.UncompiledWrite()) if guest else _UNCOMPILED
+    hint = watch.note(name, arguments, result if isinstance(result, dict) else None)
     if hint and isinstance(result, dict) and "uncompiled_write" not in result:
         result["uncompiled_write"] = hint
 
