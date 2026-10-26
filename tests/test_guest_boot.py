@@ -27,6 +27,9 @@ check("a near miss (> 3 % different) is not taken for it", GB.which_dialog(f_clo
 GB.REFS = os.path.join(tmp, "absent")
 check("no reference directory -> nothing recognised", GB.which_dialog(f_dialog) is None)
 stack = open(os.path.join(HOST, "start_stack.sh")).read()
+run_boot = stack.index('"$SERVER_DIR/guest_boot.py" 420')   # the invocation, not prose naming the file (2026-10-26)
 check("start_stack.sh runs guest_boot.py after launching the emulator",
-      stack.index('open "$BASILISK_APP"') < stack.index("guest_boot.py") and 'if [ -n "$BASILISK_APP" ]' in stack[stack.index("SKIPPED"):stack.index("guest_boot.py")])
+      stack.index("if ! launch_emulator") < run_boot and 'if [ -n "$BASILISK_APP" ]' in stack[stack.index("SKIPPED"):run_boot])
+check("start_stack.sh exits with guest_boot.py's status, not sed's",
+      "BOOT_RC=${PIPESTATUS[0]}" in stack[run_boot:run_boot + 200] and 'exit "$BOOT_RC"' in stack[run_boot:])
 print(f"\n{PASS}/{PASS + FAIL} passed"); sys.exit(1 if FAIL else 0)

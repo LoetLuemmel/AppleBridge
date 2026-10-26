@@ -1201,6 +1201,18 @@ def test_the_launcher_says_so_instead_of_launching_nothing():
     assert "SKIPPED" in tail and "install_bridge.py" in tail
 
 
+def test_the_launcher_verifies_the_emulator_is_running():
+    # Hub reboot, 2026-10-26: `open` returned 0 twice and no emulator ever ran; the script then waited 7 minutes
+    # for a guest that did not exist. `open` only hands LaunchServices a request, so the process is the evidence.
+    text = _start_stack()
+    fn = text[text.index("launch_emulator() {"):]
+    fn = fn[:fn.index("\n}\n")]
+    assert "pgrep -x BasiliskII" in text, "match the process NAME - a command-line match finds watcher shells too"
+    assert "for attempt in" in fn, "a launch that did not take must be retried"
+    assert "return 1" in fn and "if ! launch_emulator" in text, "and a launch that never takes must fail the script"
+    assert "already running" in fn, "a running emulator must not get a second one"
+
+
 def test_the_plan_does_not_promise_an_emulator_it_did_not_find():
     # The plan step read "…and the discovered emulator" while the header two
     # lines above said `— not found —`. Text asserting something it did not
