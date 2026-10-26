@@ -3,10 +3,12 @@ AppleBridge Mac Connection
 Connects to MacintoshBridgeHost server on localhost.
 """
 
+import contextlib
+import contextvars
+import os
 import socket
 import subprocess
 import time
-import os
 import sys
 from typing import Optional, Tuple
 
@@ -280,15 +282,34 @@ class MacConnection:
 
 
 
-# Singleton connection instance
-_connection: Optional[MacConnection] = None
+# One connection per control port. The port is DEFAULT_PORT unless a tool call names a guest (D-028 phase 4): then
+# call_tool sets that guest's control port for the duration of the call, and every tool - they all reach the bridge
+# through get_connection() - talks to that guest's host-server instance without knowing it.
+_connections: dict = {}
+_port_override = contextvars.ContextVar("applebridge_ctrl_port", default=None)
+
+
+def current_port() -> int:
+    """The control port this call talks to."""
+    return _port_override.get() or DEFAULT_PORT
+
+
+@contextlib.contextmanager
+def using_port(port: Optional[int]):
+    """Route every get_connection() inside the block to `port` (None: the default)."""
+    token = _port_override.set(port)
+    try:
+        yield
+    finally:
+        _port_override.reset(token)
 
 
 def get_connection() -> MacConnection:
-    """Get or create the global Mac connection."""
-    global _connection
-    if _connection is None:
-        _connection = MacConnection()
-    return _connection
+    """Get or create the connection to the current control port."""
+    port = current_port()
+    conn = _connections.get(port)
+    if conn is None:
+        conn = _connections[port] = MacConnection(port=port)
+    return conn
 
 

@@ -184,7 +184,8 @@ def test_no_resource_fork_is_sent():
 def test_the_declared_schema_offers_type_and_creator():
     spec = next(t for t in tools.TOOLS if t["name"] == "mac_write_file")
     props = spec["inputSchema"]["properties"]
-    assert set(props) == {"path", "content", "type", "creator"}
+    # `guest` is every guest-reaching tool's (D-028 phase 4, tests/test_mcp_guest_param.py), not this tool's own
+    assert set(props) == {"path", "content", "type", "creator", "guest"}
     assert spec["inputSchema"]["required"] == ["path", "content"]
 
 
