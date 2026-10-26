@@ -139,6 +139,36 @@ def test_a_single_guest_run_refuses_a_name_not_in_the_table():
     raise AssertionError("an unknown name installed nothing and reported success")
 
 
+LSOF = ("Python 680 pit 5u IPv4 0x1 0t0 TCP 192.168.3.232:9000 (LISTEN)\n"
+        "Python 680 pit 6u IPv4 0x2 0t0 TCP 127.0.0.1:9001 (LISTEN)\n"
+        "Python 681 pit 5u IPv4 0x3 0t0 TCP 192.168.3.232:9010 (LISTEN)\n"
+        "Python 681 pit 6u IPv4 0x4 0t0 TCP 127.0.0.1:9011 (LISTEN)\n")
+
+
+def test_listener_check_passes_healthy_rows_and_leaves_the_first_to_start_stack():
+    res = I.G.listener_check(G.parse(TABLE), "192.168.3.232", LSOF)
+    assert [(g.name, ok) for g, ok, _ in res] == [("mbp2013", True)], res
+
+
+def test_listener_check_names_a_daemon_port_on_the_wrong_address_and_a_silent_control_port():
+    wrong = LSOF.replace("192.168.3.232:9010", "192.168.3.154:9010").replace("127.0.0.1:9011 (LISTEN)", "x")
+    (g, ok, line), = I.G.listener_check(G.parse(TABLE), "192.168.3.232", wrong)
+    assert not ok and "192.168.3.232:9010 (daemon)" in line and ":9011 (control)" in line, line
+    assert "install_guests.py --guest mbp2013" in line and "applebridge_server_mbp2013.log" in line, line
+
+
+def test_listener_check_reads_a_wildcard_bind_the_way_lsof_prints_it():
+    star = LSOF.replace("192.168.3.232:9010", "*:9010")
+    assert all(ok for _, ok, _ in I.G.listener_check(G.parse(TABLE), "0.0.0.0", star))
+
+
+def test_start_stack_checks_every_row_before_the_launch_and_does_not_stop_on_it():
+    stack = open(os.path.join(os.path.dirname(__file__), "..", "host", "start_stack.sh")).read()
+    call = stack.index('guests.py" --check-listeners "$EXPECT_BIND"')
+    assert stack.index("[4/5]") < call < stack.index("[5/5]")
+    assert "exit" not in stack[call:stack.index("[5/5]")], "another Mac's guest being off must not stop this Mac's launch"
+
+
 def test_installed_labels_do_not_match_a_longer_kind_by_prefix():
     # "de.390er.applebridge-hostX" is not a host agent: only the kind itself or kind + "-<name>".
     d = _agents("de.390er.applebridge-hostX", "de.390er.applebridge-host-a")
