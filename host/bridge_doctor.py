@@ -56,6 +56,10 @@ try:
     BIND_ALL = host_config.BIND_ALL
 except ImportError:            # deployed copy predating the module
     DEFAULT_HOST_IP = os.environ.get("APPLEBRIDGE_HOST_IP", BIND_ALL)
+try:
+    import guests as guest_table   # D-028: the guest table, host/guests.conf
+except ImportError:                # deployed copy predating the table
+    guest_table = None
 LAUNCHD_LABEL = "de.390er.applebridge-host"
 DAEMON_PORT = 9000
 CONTROL_PORT = 9001
@@ -199,6 +203,80 @@ def probe_sockets(run):
             break
 
     return {"listen": listen, "guest_peer_ip": peer}
+
+
+def _tail(path, size=65536):
+    """the last `size` bytes of a log as text, '' if unreadable - a server log grows for weeks"""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - size))
+            return fh.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def _last_hello(log_text):
+    """-> {"state": ok|refused|nameless|none, "name": the name the guest last reported}
+
+    Read from the instance's own log, the only place the reported name is kept: the latest HELLO line wins, so a
+    guest that was refused and then fixed reads as ok."""
+    for line in reversed(log_text.splitlines()):
+        if "HELLO: REFUSED" in line:
+            m = re.search(r"NAME='([^']*)'", line)
+            return {"state": "refused", "name": m.group(1) if m else None}
+        if "HELLO: guest reports no NAME=" in line:
+            return {"state": "nameless", "name": None}
+        m = re.search(r"HELLO: negotiated protocol v\d+ .*name=(\S+)", line)
+        if m:
+            name = None if m.group(1) == "-" else m.group(1)
+            return {"state": "ok" if name else "nameless", "name": name}
+    return {"state": "none", "name": None}
+
+
+def probe_guests(run, table=None, read_log=None):
+    """One entry per row of the guest table (D-028): agent, both listeners, the connected peer and the name the guest
+    last reported. `table=None` loads host/guests.conf; [] means a single-guest setup without a table.
+
+    The rest of the doctor looks at the first guest only (:9000/:9001); every other guest is a host-server instance
+    of its own, and until this probe a dead one was invisible here (2026-10-26)."""
+    read_log = read_log or _tail
+    if table is None:
+        if guest_table is None:
+            return {"rows": [], "error": None}
+        try:
+            table = guest_table.load()
+        except guest_table.GuestTableError as e:
+            return {"rows": [], "error": str(e)}
+    if not table:
+        return {"rows": [], "error": None}
+    listing = run(["launchctl", "list"])
+    listen = {}
+    for line in run(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"]).splitlines():
+        m = re.search(r"(\S+):(\d+)\s+\(LISTEN\)", line)
+        if m:
+            listen.setdefault(int(m.group(2)), m.group(1))
+    rows = []
+    for g in table:
+        label = g.label("host")
+        loaded, pid = False, None
+        for line in listing.splitlines():
+            if line.rstrip().split("\t")[-1] == label:
+                loaded = True
+                first = line.split("\t")[0].strip()
+                pid = int(first) if first.isdigit() else None
+                break
+        peer = None
+        for line in run(["lsof", "-nP", f"-iTCP:{g.daemon_port}", "-sTCP:ESTABLISHED"]).splitlines():
+            m = re.search(rf"\s(\S+):{g.daemon_port}->(\S+):\d+", line)
+            if m:
+                peer = m.group(2)
+                break
+        rows.append({"name": g.name, "primary": g.primary, "ssh": g.ssh, "daemon_port": g.daemon_port,
+                     "ctrl_port": g.ctrl_port, "label": label, "loaded": loaded, "pid": pid,
+                     "listen_daemon": listen.get(g.daemon_port), "listen_ctrl": listen.get(g.ctrl_port),
+                     "peer": peer, "log": g.server_log(), "hello": _last_hello(read_log(g.server_log()))})
+    return {"rows": rows, "error": None}
 
 
 LOCAL_ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -680,6 +758,52 @@ def interpret(probes):
                 f"cd host && ./install_bridge.py --seed-guest-prefs "
                 f"'{gip['image']}'   # rewrites IP= with the emulator powered off"))
 
+    # --- every other guest of the table (D-028) ------------------------------
+    # The checks above cover the first guest (:9000/:9001, the single-guest label). Each further row is an instance of
+    # its own, with its own agent, ports and name; the name check applies to every row, the first included.
+    gs = probes.get("guests") or {}
+    if gs.get("error"):
+        out.append(_finding(
+            WARN, "guest_table_invalid",
+            f"host/guests.conf could not be read: {gs['error']} — no guest beyond the first is checked.",
+            "fix the line it names, then: cd host && ./install_guests.py --dry-run"))
+    for r in gs.get("rows") or []:
+        n, where = r["name"], f"guest {r['name']} (:{r['daemon_port']}/:{r['ctrl_port']})"
+        if not r["primary"]:
+            if not r["loaded"]:
+                out.append(_finding(
+                    ERROR, f"guest_agent_down:{n}",
+                    f"{where}: its host-server agent {r['label']} is not loaded — that guest cannot reach the hub.",
+                    f"cd host && ./install_guests.py --guest {n}"))
+                continue
+            if not (r["listen_daemon"] and r["listen_ctrl"]):
+                silent = [f":{p}" for p, a in ((r["daemon_port"], r["listen_daemon"]),
+                                               (r["ctrl_port"], r["listen_ctrl"])) if not a]
+                out.append(_finding(
+                    ERROR, f"guest_ports:{n}",
+                    f"{where}: the agent is loaded but nothing listens on {' and '.join(silent)} — the instance is "
+                    "crash-looping or another process holds the port.",
+                    f"tail /tmp/applebridge_host_{n}_launchd.log; lsof -nP -iTCP:{r['daemon_port']}"))
+                continue
+        h = r["hello"]
+        if h["state"] == "refused":
+            out.append(_finding(
+                ERROR, f"guest_name_refused:{n}",
+                f"{where}: a guest reporting NAME={h['name']!r} dialled this instance and was refused — a guest is "
+                "on the wrong port (stale prefs, a cloned image, an old binary that dropped TCPPORT=).",
+                f"set TCPPORT={r['daemon_port']} and NAME={n} in that guest's AppleBridge Prefs, or fix the table"))
+        elif h["state"] == "nameless" and r["peer"]:
+            out.append(_finding(
+                WARN, f"guest_unverified:{n}",
+                f"{where}: the connected guest reports no NAME= (daemon older than 0.8d48) and is served UNVERIFIED.",
+                f"update that guest's daemon and set NAME={n} in its AppleBridge Prefs"))
+        if not r["primary"] and not r["peer"]:
+            out.append(_finding(
+                INFO, f"guest_not_connected:{n}",
+                f"{where}: the instance listens, but no guest is connected — "
+                + (f"is the emulator on {r['ssh']} running? " if r["ssh"] else "")
+                + "the daemon retries roughly every 30 s."))
+
     return out
 
 
@@ -694,7 +818,8 @@ def verdict(findings):
 # public entry point
 # --------------------------------------------------------------------------
 def collect(run=None, read=None, uid=None, host_ip=DEFAULT_HOST_IP,
-            prefs_path=None, netmode_path=None, exists=None, service=None):
+            prefs_path=None, netmode_path=None, exists=None, service=None,
+            guests=None, read_log=None):
     """Run the full sweep and return {probes, findings, verdict, ok}.
 
     `run`/`read` are injectable so the test suite can drive every failure mode
@@ -728,6 +853,7 @@ def collect(run=None, read=None, uid=None, host_ip=DEFAULT_HOST_IP,
         "processes": processes,
         "emulator_prefs": probe_emulator_prefs(read, prefs_path, netmode_path),
         "installation": probe_installation(read, exists),
+        "guests": probe_guests(run, guests, read_log),
     }
     probes["guest_ip"] = probe_guest_ip(
         run, probes["emulator_prefs"]["disks"],
@@ -819,6 +945,16 @@ def format_text(report):
         lines.append(f"guest dials:      {gip['ip'] or '— (' + gip['why'] + ')'}")
     elif gip.get("why"):
         lines.append(f"guest dials:      not read ({gip['why']})")
+    rows = (report["probes"].get("guests") or {}).get("rows") or []
+    if rows:
+        lines.append("guests (guests.conf):")
+        mark = {"ok": "", "refused": "  REFUSED", "nameless": "  (no NAME=)", "none": ""}
+        for r in rows:
+            agent = "agent " + (f"pid {r['pid']}" if r["pid"] else ("loaded" if r["loaded"] else "DOWN"))
+            ports = f":{r['daemon_port']} {'up' if r['listen_daemon'] else 'DOWN'} / :{r['ctrl_port']} {'up' if r['listen_ctrl'] else 'DOWN'}"
+            h = r["hello"]
+            lines.append(f"  {r['name']:<10} {ports:<24} {agent:<14} peer {r['peer'] or '—':<15} "
+                         f"name {h['name'] or '—'}{mark.get(h['state'], '')}")
     lines.append("")
     lines.append(f"verdict: {report['verdict']}")
     for f in report["findings"]:

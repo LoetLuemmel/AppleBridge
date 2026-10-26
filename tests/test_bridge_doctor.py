@@ -120,13 +120,125 @@ def report(**kw):
     # These cases are ABOUT a macOS host (launchd, ~/Library, `route -n get
     # default`), so they say so rather than inheriting whatever platform the
     # suite runs on — the seam exists precisely so that is a value.
-    return bd.collect(run=make_run(**kw), read=make_read(**read_kw), uid=UID,
+    # The guest table: [] (no table) unless a case states one, so the developer's own host/guests.conf never leaks
+    # into a case - CI has none, and a test that read it would pass here and fail there.
+    guests = kw.pop("guests", [])
+    logs = kw.pop("logs", {})
+    run = make_run(**kw)
+    if guests:
+        run = guest_run(run, **{**GUEST_RUN_DEFAULTS, **GUEST_RUN.pop("kw", {})})
+    return bd.collect(run=run, read=make_read(**read_kw), uid=UID,
                       host_ip=host_ip, exists=exists,
-                      service=platform_seam.service(platform_name="darwin"))
+                      service=platform_seam.service(platform_name="darwin"),
+                      guests=guests, read_log=lambda path: logs.get(path, ""))
 
 
 def keys(rep):
     return {f["key"] for f in rep["findings"]}
+
+
+# --- the guest table (D-028) --------------------------------------------------
+import guests as G  # noqa: E402
+
+TABLE = G.parse("dev2019 9000 9001 -\nmbp2013 9010 9011 pit@192.0.2.158 /x\nclaudia 9020 9021 cf@192.0.2.171 /y")
+GUEST_RUN_DEFAULTS = {"loaded": ("mbp2013", "claudia"), "listening": (9010, 9011, 9020, 9021),
+                      "peers": {9010: "192.0.2.245", 9020: "192.0.2.246"}}
+GUEST_RUN = {}
+
+
+def guest_run(base, loaded, listening, peers):
+    """the base fake plus the further rows' agents, listeners and peers"""
+    def run(argv, timeout=4.0):
+        cmd = " ".join(argv)
+        out = base(argv, timeout)
+        if cmd == "launchctl list":
+            out += "".join(f"{700 + i}\t0\tde.390er.applebridge-host-{n}\n" for i, n in enumerate(loaded))
+        elif "-sTCP:LISTEN" in cmd:
+            out += "".join(f"Python 681 pit 5u IPv4 0x1 0t0 TCP 192.168.3.154:{p} (LISTEN)\n" for p in listening)
+        elif "-sTCP:ESTABLISHED" in cmd:
+            port = int(argv[2].split(":")[1])
+            if port in peers:
+                out = f"Python 681 pit 6u IPv4 0x2 0t0 TCP 192.168.3.154:{port}->{peers[port]}:2049 (ESTABLISHED)\n"
+        return out
+    return run
+
+
+def guest_report(logs=None, **guest_kw):
+    GUEST_RUN["kw"] = guest_kw
+    logs = logs if logs is not None else {
+        "/tmp/applebridge_server.log": "[1] HELLO: negotiated protocol v2 feat=[] name=dev2019 (expected dev2019)",
+        "/tmp/applebridge_server_mbp2013.log": "[1] HELLO: negotiated protocol v2 feat=[] name=mbp2013 (expected mbp2013)",
+        "/tmp/applebridge_server_claudia.log": "[1] HELLO: negotiated protocol v2 feat=[] name=claudia (expected claudia)"}
+    return report(guests=TABLE, logs=logs)
+
+
+def guest_keys(rep):
+    return {k for k in keys(rep) if k.startswith("guest")}
+
+
+def test_three_healthy_guests_add_no_finding_and_are_listed():
+    rep = guest_report()
+    assert guest_keys(rep) == set(), rep["findings"]
+    text = bd.format_text(rep)
+    for line in ("guests (guests.conf):", "mbp2013", ":9010 up / :9011 up", "peer 192.0.2.245", "name claudia"):
+        assert line in text, (line, text)
+
+
+def test_no_table_changes_nothing():
+    rep = report()
+    assert rep["probes"]["guests"] == {"rows": [], "error": None}
+    assert "guests (guests.conf)" not in bd.format_text(rep)
+
+
+def test_a_guest_whose_agent_is_not_loaded_is_an_error_with_the_single_row_install():
+    rep = guest_report(loaded=("claudia",))
+    f = [f for f in rep["findings"] if f["key"] == "guest_agent_down:mbp2013"]
+    assert f and f[0]["level"] == bd.ERROR and f[0]["fix"].endswith("install_guests.py --guest mbp2013"), rep["findings"]
+    assert "guest_agent_down:claudia" not in keys(rep)
+
+
+def test_a_loaded_agent_with_a_silent_port_is_named_per_port():
+    rep = guest_report(listening=(9010, 9011, 9020))
+    f = [f for f in rep["findings"] if f["key"] == "guest_ports:claudia"]
+    assert f and "nothing listens on :9021 —" in f[0]["message"], rep["findings"]
+
+
+def test_a_refused_name_is_an_error_naming_both_sides_and_the_latest_hello_wins():
+    refused = ("[1] HELLO: REFUSED - this instance (:9010) serves guest 'mbp2013', but the daemon reports "
+               "NAME='claudia'. Fix TCPPORT= / NAME= in that guest's AppleBridge Prefs or the guest table.")
+    rep = guest_report(logs={"/tmp/applebridge_server_mbp2013.log": refused})
+    f = [f for f in rep["findings"] if f["key"] == "guest_name_refused:mbp2013"]
+    assert f and "'claudia'" in f[0]["message"] and "TCPPORT=9010" in f[0]["fix"], rep["findings"]
+    fixed = refused + "\n[2] HELLO: negotiated protocol v2 feat=[] name=mbp2013 (expected mbp2013)"
+    assert "guest_name_refused:mbp2013" not in keys(guest_report(logs={"/tmp/applebridge_server_mbp2013.log": fixed}))
+
+
+def test_a_nameless_connected_guest_is_a_warning_the_first_row_included():
+    logs = {"/tmp/applebridge_server.log": "[1] HELLO: guest reports no NAME= (daemon older than 0.8d48?) - accepted"}
+    rep = guest_report(logs=logs)
+    f = [f for f in rep["findings"] if f["key"] == "guest_unverified:dev2019"]
+    assert f and f[0]["level"] == bd.WARN, rep["findings"]
+
+
+def test_a_listening_instance_without_a_guest_is_informational_and_names_the_machine():
+    rep = guest_report(peers={9010: "192.0.2.245"})
+    f = [f for f in rep["findings"] if f["key"] == "guest_not_connected:claudia"]
+    assert f and f[0]["level"] == bd.INFO and "cf@192.0.2.171" in f[0]["message"], rep["findings"]
+    assert rep["verdict"] != bd.ERROR
+
+
+def test_an_unreadable_table_is_reported_not_raised():
+    def bad():
+        raise G.GuestTableError("line 3: duplicate control port 9011")
+    orig = bd.guest_table.load
+    bd.guest_table.load = bad
+    try:
+        rep = bd.collect(run=make_run(), read=make_read(), uid=UID, host_ip=HOST_IP, exists=lambda p: True,
+                         service=platform_seam.service(platform_name="darwin"), guests=None)
+    finally:
+        bd.guest_table.load = orig
+    f = [f for f in rep["findings"] if f["key"] == "guest_table_invalid"]
+    assert f and "duplicate control port" in f[0]["message"], rep["findings"]
 
 
 # --- the healthy stack ------------------------------------------------------
