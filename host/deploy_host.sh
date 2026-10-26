@@ -82,16 +82,21 @@ fi
 if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
     launchctl kickstart -k "gui/$(id -u)/$LABEL"
     echo "[deploy] kicked $LABEL (restarted on the fresh copy)."
-    # the second instance (a guest on another machine, install_remote_guest_service.sh) runs the SAME deployed copy —
-    # restart it when the code CHANGED, or the two servers drift apart. Only then: start_stack.sh deploys on every
-    # local relaunch, and restarting the remote server each time cut the other machine's running work (2026-10-01).
-    if [ "$CHANGED" = "1" ] && launchctl print "gui/$(id -u)/$LABEL-remote" >/dev/null 2>&1; then
-        launchctl kickstart -k "gui/$(id -u)/$LABEL-remote"
-        echo "[deploy] kicked $LABEL-remote (restarted on the fresh copy)."
-    elif launchctl print "gui/$(id -u)/$LABEL-remote" >/dev/null 2>&1; then
-        echo "[deploy] $LABEL-remote left running (runtime unchanged)."
-    fi
 else
     launchctl bootstrap "gui/$(id -u)" "$PLIST"
     echo "[deploy] bootstrapped $LABEL."
 fi
+# Every other guest's instance (D-028: one per row of host/guests.conf, labels $LABEL-<name>; the two-guest setup's
+# $LABEL-remote matches too). Restarted only when the runtime changed, so a deploy that changes nothing does not drop
+# every guest's link at once.
+for p in "$HOME/Library/LaunchAgents/$LABEL"-*.plist; do
+    [ -f "$p" ] || continue
+    l="$(basename "$p" .plist)"
+    launchctl print "gui/$(id -u)/$l" >/dev/null 2>&1 || continue
+    if [ "$CHANGED" = "1" ]; then
+        launchctl kickstart -k "gui/$(id -u)/$l"
+        echo "[deploy] kicked $l (restarted on the fresh copy)."
+    else
+        echo "[deploy] $l left running (runtime unchanged)."
+    fi
+done

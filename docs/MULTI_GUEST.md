@@ -59,7 +59,9 @@ claudia     9020    9021     claudiaforster@192.168.3.171  /Users/…/BasiliskII
   with `APPLEBRIDGE_REMOTE_GUEST=1`, which refuses the `HOST*` verbs (they act on the hub's own screen).
 - `name` is the guest's identity everywhere: launchd labels (`de.390er.applebridge-host-<name>`,
   `…-hangwatch-<name>`, `…-dialogwatch-<name>`), log files (`/tmp/applebridge_server_<name>.log`), the wish
-  runs' guest list, and the identity check below.
+  runs' guest list, and the identity check below. **Except the row with control port 9001**, which keeps the
+  single-guest names (`de.390er.applebridge-host`, `/tmp/applebridge_server.log`): `start_stack.sh`,
+  `deploy_host.sh`, `bridge_doctor` and every note name those, and a rename would break them for no gain.
 
 The table **replaces** the `APPLEBRIDGE_REMOTE_*` and `APPLEBRIDGE_LOCAL_GUEST_*` keys in `local.env` and
 `install_remote_guest_service.sh`; `local.env` keeps what is about the hub (`APPLEBRIDGE_HOST_IP`, the AFP
@@ -97,7 +99,7 @@ other machine and reports full health — the "reports success, does nothing" cl
 
 - `host_server.py`: `HOST_PORT` from `APPLEBRIDGE_DAEMON_PORT` (default 9000); expected name from
   `APPLEBRIDGE_GUEST_NAME`; the HELLO parse reads `NAME=`.
-- **`host/install_guests.sh`** reads the table and writes, per row, the host-server, hang-watch and
+- **`host/install_guests.py`** reads the table and writes, per row, the host-server, hang-watch and
   dialog-watch agents with that row's environment; rows removed from the table have their agents booted out.
   It replaces `install_host_service.sh`'s single agent, `install_remote_guest_service.sh`, and the per-port
   logic in `install_hang_watch.sh` / `install_dialog_watch.sh`.
@@ -123,7 +125,7 @@ server. This is a phase of its own — the bridge does not depend on it.
    seeded with `TCPPORT=9010`, connects to an instance on `.232:9010`; with a wrong `NAME=` the link is
    refused and both names are logged; an untouched guest without the keys still connects on 9000; saving
    prefs in the rebuilt AppleBridgeConfig keeps a foreign test key.
-2. **The table and the generated agents.** `guests.conf`, `install_guests.sh`, migration of `local.env`.
+2. **The table and the generated agents.** `guests.conf`, `install_guests.py`, migration of `local.env`.
    *Accept:* two rows (hub + 2013) come up from the table alone after a reboot of the hub, both answer `Echo`
    on their control ports, removing a row removes its agents.
 3. **Consumers.** doctor per guest, `start_stack.sh`, `deploy_host.sh`, the wish runs' `GUESTS`.

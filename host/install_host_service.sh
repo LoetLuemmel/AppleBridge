@@ -26,6 +26,12 @@
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
+# With a guest table, every guest's agents - this one included - come from install_guests.py (D-028): writing the
+# single-guest agent here would drop the row's port and name.
+if [ -f "$SRC/guests.conf" ]; then
+    echo "host/guests.conf exists - handing over to install_guests.py (one agent set per guest, D-028)"
+    exec /usr/bin/python3 "$SRC/install_guests.py" "$@"
+fi
 DEST="$HOME/Library/Application Support/AppleBridge"
 LABEL="de.390er.applebridge-host"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"

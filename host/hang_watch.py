@@ -29,7 +29,7 @@ Configuration (environment, or host/local.env):
                                 (for a remote guest: APPLEBRIDGE_GUEST_EMULATOR_APP, so local.env can hold both)
   APPLEBRIDGE_HANG_SILENT_S     default 300      APPLEBRIDGE_HANG_CPU   default 90      APPLEBRIDGE_HANG_INTERVAL  default 60
   APPLEBRIDGE_HANG_LOG          default /tmp/applebridge_hang_watch_<port>.log
-Run:  hang_watch.py            watch forever (the LaunchAgent: install_hang_watch.sh)
+Run:  hang_watch.py            watch forever (the LaunchAgents: install_guests.py, one per guest)
       hang_watch.py --once     one observation, printed — what the judge would see right now"""
 import hashlib
 import os

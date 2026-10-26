@@ -57,14 +57,15 @@ def test_launch_scripts_carry_the_second_instance():
     # D-027 (2026-10-26): no script places an alias for either instance any more - each address must be a real one.
     check("start_stack.sh places no alias at all", "netmask $NETMASK alias" not in stack)
     check("start_stack.sh no longer handles the remote address", "APPLEBRIDGE_REMOTE_HOST_IP" not in stack)
-    inst = open(os.path.join(HOST, "install_remote_guest_service.sh")).read()
-    check("the remote agent sets REMOTE_GUEST=1",
-          "<key>APPLEBRIDGE_REMOTE_GUEST</key>\n        <string>1</string>" in inst)
-    check("the remote agent refuses control port 9001", '"$CTRL_PORT" = "9001"' in inst)
+    # D-028 (2026-10-26): the remote instance is a row of the guest table, written by install_guests.py.
+    sys.path.insert(0, HOST)
+    import guests as G
+    remote = G.parse("dev 9000 9001 -\nother 9010 9011 u@192.0.2.1 /x")[1]
+    check("a remote row's instance sets REMOTE_GUEST=1", remote.server_env({}).get("APPLEBRIDGE_REMOTE_GUEST") == "1")
     deploy = open(os.path.join(HOST, "deploy_host.sh")).read()
-    check("deploy_host.sh restarts the remote agent too", '"gui/$(id -u)/$LABEL-remote"' in deploy)
+    check("deploy_host.sh restarts every other guest's instance", '"$HOME/Library/LaunchAgents/$LABEL"-*.plist' in deploy)
     check("…but only when the runtime changed (a local relaunch must not cut the remote guest's work)",
-          '[ "$CHANGED" = "1" ] && launchctl print "gui/$(id -u)/$LABEL-remote"' in deploy)
+          'if [ "$CHANGED" = "1" ]; then' in deploy)
 
 
 def test_mcp_side():
