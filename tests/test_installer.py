@@ -1102,6 +1102,14 @@ def _start_stack():
     return open(path, encoding="utf-8").read()
 
 
+def test_run_survives_macroman_names_and_round_trips_them():
+    # 2026-10-26: `hls` on the dev guest printed a MacRoman `™` (0xAA) and the strict UTF-8 decode raised, so
+    # --seed-guest-prefs died before it wrote anything. The bytes must survive AND go back out unchanged.
+    out = ib._run(["printf", "Disk\\252 Tools"])
+    assert out == "Disk\udcaa Tools", repr(out)
+    assert ib._run(["printf", "%s", out]).encode("utf-8", "surrogateescape") == b"Disk\xaa Tools"
+
+
 def test_the_launcher_asks_for_no_password_on_slirp():
     # D-018's argument is that this branch starts without somebody at the
     # keyboard. The privileged block used to run unconditionally, raising an
