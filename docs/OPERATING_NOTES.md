@@ -2729,3 +2729,28 @@ took the front and gave it back, and changed nothing. The host server now
   covered the screen. A Return on that guest's control port dismisses it;
   `AFPMOUNT` restores the volumes. After any sleep: look at the screen and run
   `DISKINFO` before trusting the guest again.
+
+## 2026-10-26 — two commands that "succeeded" and did nothing, and a swap that would have run the old file
+
+* **zsh reads `$A:A…` as a modifier.** With `A="AppleShare:AppleBridge - alt"`, the
+  argument `"$A:AppleBridge Kit"` expanded `:A` (absolute path) and sent
+  `/Users/…/host/AppleShare:…` to the guest. MPW answered `STATUS:0` with no output
+  — a volume of that name does not exist, and ToolServer swallows the error. Any
+  variable followed by `:` and a letter is exposed (`:A :a :h :t :r :e :l :u …`), and
+  a Mac path is *made* of colons. Build MPW commands in Python and send them over
+  :9001 without a shell, or write `${A}:` with braces.
+* **A quoted `≈` is a literal, not a wildcard.** `Move -y "AppleShare:AppleBridge
+  Kit:≈" …` moved nothing, `STATUS:0`. A path with a space needs quotes and the
+  wildcard must stay outside them; MPW joins adjacent words:
+  `"AppleShare:AppleBridge Kit:"≈`.
+* **Swapping the watchdog: the autostart alias follows the FILE, not the name.**
+  Renaming the running `AppleBridgeWatchdog` aside and copying a new one into its
+  place leaves the Startup Items alias pointing at the renamed old file — the next
+  boot runs the old watchdog. Re-create the alias after the swap (AppleBridgeConfig:
+  *Remove Autostart*, then *Install Autostart*; *Install* alone skips an existing
+  alias). Proof it worked: deleting the old file succeeds, deleting the new one
+  fails with `-47` (file busy) — check the negative too, a delete of a mere copy
+  proves nothing.
+* **Copying a mounted kit volume with `≈` takes its `Desktop DB` / `Desktop DF`
+  along.** They are the volume's invisible Finder database; delete them from a
+  folder copy.

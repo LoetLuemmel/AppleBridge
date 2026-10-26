@@ -7,4 +7,5 @@
 SC -i :include: :src:watchdog.c -o :obj:watchdog.c.o
 Link -model far -o :bin:AppleBridgeWatchdog :obj:watchdog.c.o :obj:prefs.c.o :obj:mystring.c.o "{Libraries}Interface.o" "{Libraries}MacRuntime.o"
 Rez watchdog_res.r -a -o :bin:AppleBridgeWatchdog
+Rez vers.r -a -o :bin:AppleBridgeWatchdog
 SetFile -t APPL -c 'ABwd' :bin:AppleBridgeWatchdog
