@@ -76,7 +76,9 @@ def test_mcp_side():
             "print(C.DEFAULT_PORT, T.REMOTE_GUEST, r.get('refused'), sorted(T.HOST_LOCAL_TOOLS) == sorted(set(T.HOST_LOCAL_TOOLS) & set(T.TOOL_HANDLERS)))") % root
     e = {k: v for k, v in os.environ.items() if not k.startswith("APPLEBRIDGE_")}
     e.update({"APPLEBRIDGE_CTRL_PORT": "9011", "APPLEBRIDGE_REMOTE_GUEST": "1"})
-    r = subprocess.run(["uv", "run", "python", "-c", code], capture_output=True, text=True, env=e, cwd=root, timeout=120)
+    # sys.executable, not `uv run`: mcp/tools.py is stdlib-only, and CI has no uv - the suite died there with
+    # FileNotFoundError while passing on every Mac that has uv installed (2026-10-26)
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=e, cwd=root, timeout=120)
     got = (r.stdout.strip().splitlines() or [r.stderr[-200:]])[-1]
     check("MCP: port 9011, remote on, mac_host_click refused, every guarded name is a real tool", got == "9011 True True True", got)
     # the remote server is registered LOCALLY (claude mcp add --scope local): a fresh clone has no second guest, and a
