@@ -12,7 +12,9 @@ from typing import Optional, Tuple
 
 # Default configuration
 DEFAULT_HOST = "localhost"
-DEFAULT_PORT = 9001
+# 9001 = the guest on THIS Mac. A second MCP server for a guest on another machine (2026-10-01) points at that guest's
+# host-server instance through the environment, e.g. APPLEBRIDGE_CTRL_PORT=9011 in .mcp.json.
+DEFAULT_PORT = int(os.environ.get("APPLEBRIDGE_CTRL_PORT", "9001"))
 SHARE_FOLDER = "/Users/pitforster/Desktop/Share"
 
 # Opt-in control-port secret. When set (and the host server has a matching
@@ -23,7 +25,7 @@ CTRL_TOKEN = os.environ.get("APPLEBRIDGE_CTRL_TOKEN", "")
 
 class MacConnection:
     """
-    Connection to the AppleBridge control port (localhost:9001).
+    Connection to the AppleBridge control port (localhost:9001, or $APPLEBRIDGE_CTRL_PORT).
 
     The control port is served by the hardened host_server.py (the proven
     path) or, in the native setup, by the Swift MacintoshBridgeHost. It

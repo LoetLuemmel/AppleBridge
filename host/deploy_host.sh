@@ -36,7 +36,7 @@ PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 # without anybody noticing the feature is simply not there.
 #
 # Entries may name a subdirectory; the loop creates it.
-RUNTIME_FILES=(host_server.py screenshot_decode.py macbinary.py bridge_doctor.py host_config.py
+RUNTIME_FILES=(host_server.py screenshot_decode.py macbinary.py bridge_doctor.py host_config.py guest_remote.py
                platform_seam.py guest_input.py run_server.sh tools/notes.py)
 
 RESTART=1
@@ -46,6 +46,10 @@ echo "[deploy] repo:  $SRC"
 echo "[deploy] dest:  $DEST"
 mkdir -p "$DEST"
 
+CHANGED=0       # did any runtime file actually change? (decides whether the remote-guest agent is restarted)
+for f in "${RUNTIME_FILES[@]}"; do
+    [ -f "$DEST/$f" ] && cmp -s "$SRC/$f" "$DEST/$f" || CHANGED=1
+done
 for f in "${RUNTIME_FILES[@]}"; do
     if [ ! -f "$SRC/$f" ]; then
         echo "[deploy] ERROR: missing runtime file $SRC/$f" >&2
@@ -78,6 +82,15 @@ fi
 if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
     launchctl kickstart -k "gui/$(id -u)/$LABEL"
     echo "[deploy] kicked $LABEL (restarted on the fresh copy)."
+    # the second instance (a guest on another machine, install_remote_guest_service.sh) runs the SAME deployed copy —
+    # restart it when the code CHANGED, or the two servers drift apart. Only then: start_stack.sh deploys on every
+    # local relaunch, and restarting the remote server each time cut the other machine's running work (2026-10-01).
+    if [ "$CHANGED" = "1" ] && launchctl print "gui/$(id -u)/$LABEL-remote" >/dev/null 2>&1; then
+        launchctl kickstart -k "gui/$(id -u)/$LABEL-remote"
+        echo "[deploy] kicked $LABEL-remote (restarted on the fresh copy)."
+    elif launchctl print "gui/$(id -u)/$LABEL-remote" >/dev/null 2>&1; then
+        echo "[deploy] $LABEL-remote left running (runtime unchanged)."
+    fi
 else
     launchctl bootstrap "gui/$(id -u)" "$PLIST"
     echo "[deploy] bootstrapped $LABEL."

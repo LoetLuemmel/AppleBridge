@@ -147,9 +147,13 @@ REFUSE, STEP, NOTE = "refuse", "step", "note"
 # plumbing — every probe degrades to empty rather than raising
 # --------------------------------------------------------------------------
 def _run(argv, timeout=8.0):
+    # Bytes, decoded with surrogateescape: hfsutils prints a classic volume's names in MacRoman, and strict UTF-8
+    # raised on the first `™` (0xAA) — `--seed-guest-prefs` died inside `hls` on the dev guest (2026-10-26). The
+    # escaped bytes also round-trip: a name read here and passed back to `hcopy` reaches it byte for byte.
     try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        return (p.stdout or "") + (p.stderr or "")
+        p = subprocess.run(argv, capture_output=True, timeout=timeout)
+        return (p.stdout or b"").decode("utf-8", "surrogateescape") + \
+            (p.stderr or b"").decode("utf-8", "surrogateescape")
     except (OSError, subprocess.SubprocessError):
         return ""
 

@@ -193,24 +193,36 @@ def test_loaded_but_no_control_port_flags_crash_loop():
     assert "control_port_closed" in keys(rep)
 
 
-# --- the .154 alias placement rule -----------------------------------------
-def test_duplicate_alias_is_an_error_with_a_removal_command():
+# --- the host address placement rule (D-027) -------------------------------
+# Every fix names CONFIGURATION, never an alias: aliases live in memory only, and
+# the old fixes (`ifconfig … alias`) re-created the fragility that lost the bridge
+# after every reboot (2026-10-26).
+def _fix(rep, key):
+    return [x for x in rep["findings"] if x["key"] == key][0]["fix"]
+
+
+def test_duplicate_address_is_an_error_whose_fix_moves_the_stray_by_configuration():
     rep = report(en8=(HOST_IP,))
     assert "host_ip_duplicate" in keys(rep)
     f = [x for x in rep["findings"] if x["key"] == "host_ip_duplicate"][0]
     assert f["level"] == "error"
-    assert f"ifconfig en8 -alias {HOST_IP}" in f["fix"]     # strip the stray one
-    assert "en0" not in f["fix"].split(";")[0]              # keep the good one
+    assert "en8" in f["fix"] and "network service" in f["fix"]   # the stray one
+    assert "alias" not in f["fix"]
 
 
-def test_alias_on_wrong_interface_is_flagged():
+def test_address_on_wrong_interface_is_flagged_and_names_the_default_routes_own():
     rep = report(en0=("192.168.3.240",), en8=(HOST_IP,), default_if="en0")
     assert "host_ip_wrong_interface" in keys(rep)
+    fix = _fix(rep, "host_ip_wrong_interface")
+    assert "APPLEBRIDGE_HOST_IP=192.168.3.240" in fix and "alias" not in fix
 
 
-def test_missing_alias_is_flagged():
+def test_missing_address_is_flagged_and_the_fix_is_configuration():
     rep = report(en0=("192.168.3.240",))
     assert "host_ip_missing" in keys(rep)
+    fix = _fix(rep, "host_ip_missing")
+    assert "APPLEBRIDGE_HOST_IP=192.168.3.240" in fix
+    assert "ifconfig" not in fix and "alias" not in fix
 
 
 # --- emulator transport backend --------------------------------------------

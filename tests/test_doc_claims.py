@@ -60,7 +60,10 @@ CURRENT_DOCS = ["README.md", "ARCHITECTURE.md", "CLAUDE.md", "docs/SETUP.md"]
 # 2026-06-29) lived in CLAUDE.md's status narrative, which moved to the ledger.
 # The test below noticed the sentence had gone and required this entry to go with
 # it — an exemption may not outlive the sentence it exempts.
-HISTORICAL_COUNTS = {}
+HISTORICAL_COUNTS = {
+    # dated (2026-08-01): what a fresh clone had in its first session - a past state, not today's count
+    "README.md": ["had all 33 tools available in its very first session"],
+}
 
 # The authoritative enumeration an agent reads first.
 INVENTORY_DOC = "CLAUDE.md"

@@ -50,6 +50,9 @@ if __name__ == "__main__":
         sys.exit(1)
 
     cmd = ' '.join(sys.argv[1:])
-    print(f"Sending: {cmd}")
-    response = send_command(cmd)
+    # 2026-10-19: honour APPLEBRIDGE_CTRL_PORT like the other tools (CLAUDE.md: a guest on another Mac is addressed that way);
+    # this script always used 9001, so a "second guest" check silently tested the first guest
+    port = int(os.environ.get("APPLEBRIDGE_CTRL_PORT", "9001"))
+    print(f"Sending (port {port}): {cmd}")
+    response = send_command(cmd, port=port)
     print(f"Response:\n{response}")

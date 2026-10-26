@@ -113,7 +113,10 @@ def test_bind_failure_names_the_address_and_the_alternatives():
         "192.168.3.154", addresses=[("en0", "192.168.3.158")])
     assert "192.168.3.154" in text, "the address that failed must appear"
     assert "192.168.3.158" in text, "the addresses that exist must appear"
-    assert "alias" in text, "the fix (an alias) must be named"
+    # D-027 (2026-10-26): the fix is configuration, never an alias - an alias lives in memory only and every reboot
+    # lost it, which is how the bridge kept failing after restarts.
+    assert "APPLEBRIDGE_HOST_IP" in text, "the fix (which address to configure) must be named"
+    assert "alias" not in text, "an alias must not be offered as the fix"
     assert "APPLEBRIDGE_HOST_IP" in text, "where to configure it must be named"
 
 
@@ -129,8 +132,7 @@ def test_bind_failure_still_says_something_with_no_addresses_at_all():
 _IP_RE = re.compile(r"192\.168\.3\.\d+")
 _RUNTIME_FILES = [
     "host/host_server.py", "host/bridge_doctor.py", "host/run_server.sh",
-    "host/start_stack.sh", "host/ensure_host_alias.sh",
-    "host/install_alias_daemon.sh", "host/install_host_service.sh",
+    "host/start_stack.sh", "host/install_host_service.sh",
     "host/deploy_host.sh",
 ]
 

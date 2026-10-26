@@ -1102,16 +1102,26 @@ def _start_stack():
     return open(path, encoding="utf-8").read()
 
 
+def test_run_survives_macroman_names_and_round_trips_them():
+    # 2026-10-26: `hls` on the dev guest printed a MacRoman `™` (0xAA) and the strict UTF-8 decode raised, so
+    # --seed-guest-prefs died before it wrote anything. The bytes must survive AND go back out unchanged.
+    out = ib._run(["printf", "Disk\\252 Tools"])
+    assert out == "Disk\udcaa Tools", repr(out)
+    assert ib._run(["printf", "%s", out]).encode("utf-8", "surrogateescape") == b"Disk\xaa Tools"
+
+
 def test_the_launcher_asks_for_no_password_on_slirp():
     # D-018's argument is that this branch starts without somebody at the
     # keyboard. The privileged block used to run unconditionally, raising an
-    # admin dialog to execute nothing but comments.
+    # admin dialog to execute nothing but comments. Since D-027 (2026-10-26) the
+    # network step only CHECKS the configured address on either branch; the one
+    # remaining osascript (a stale host route) needs a guest address slirp never has.
     text = _start_stack()
-    guard = text.index('NEEDS_PRIV" = "1"')
-    assert guard < text.index("osascript"), \
-        "the privileged block must sit behind the backend guard"
     slirp = text.index('ETHER_BACKEND" = "slirp"')
-    assert "NEEDS_PRIV=0" in text[slirp:slirp + 200]
+    assert "no privileged step" in text[slirp:slirp + 300]
+    assert "netmask $NETMASK alias" not in text, "the launcher must not place an alias (D-027)"
+    route = text.index('route -n delete -host')
+    assert '[ -n "$EMU_IP" ]' in text[route - 400:route], "the only privileged act needs a known guest address"
 
 
 def test_the_launcher_reads_local_env_before_it_uses_the_values():

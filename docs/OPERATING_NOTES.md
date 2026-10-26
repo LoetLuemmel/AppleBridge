@@ -2703,3 +2703,29 @@ front application read scrap size 0 after `CLIPSET` while the daemon's own
 app before theorising; the per-layer-scrap theory produced a daemon build that
 took the front and gave it back, and changed nothing. The host server now
 `pbcopy`s the plain text after `CLIPSET`; plain text is what the import reads.
+
+## 2026-10-03 — a remote guest that goes quiet
+
+* **A closed lid on the second emulator host looks like a hung guest.** The 2013
+  MacBook sleeps with its lid closed although `pmset sleep 0` is set. What you see:
+  the remote host server logs `heartbeat missed (2/2)` and `Mac disconnected`,
+  `PROCLIST` on its control port (9011) answers "no daemon connected", the guest's
+  framebuffer — still readable over SSH with `fb_export.py` — shows a clean desktop
+  with zero dirty tiles, and `screencapture` on that Mac fails with "could not
+  create image from display". Nothing is wrong with the guest: reopen the lid and
+  the daemon dials in again within a minute. Check the lid before restarting
+  anything; a restart would have cost a clean guest for nothing.
+* **A liveness check must look at the machine the job ran on.** After a harness
+  fault the wish bench checks whether the emulator is alive before it retries —
+  by looking for *this* Mac's BasiliskII. For a job on the remote guest it found
+  the local emulator, concluded "running but failed outside the code", and
+  stopped instead of retrying (xavier-eval `e2e_bench.recover`, open). Any
+  recovery logic added for one guest has to be asked: *which* guest?
+* **The lid's second effect shows up later.** The AFP session to the AppleShare
+  server breaks during the sleep. Two hours after the daemon had reconnected, the
+  2013 guest still carried a modal Finder alert ("The file server's connection has
+  unexpectedly closed down") and had lost its three AppleShare volumes — and the
+  next THINK build ended UNKNOWN, "project window not found", because the alert
+  covered the screen. A Return on that guest's control port dismisses it;
+  `AFPMOUNT` restores the volumes. After any sleep: look at the screen and run
+  `DISKINFO` before trusting the guest again.

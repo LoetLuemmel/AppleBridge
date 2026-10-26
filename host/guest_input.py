@@ -44,6 +44,7 @@ Usage
     --dry-run       print what would run, touch nothing
 """
 
+import guest_remote  # run on another Mac when APPLEBRIDGE_GUEST_SSH is set (2026-10-01)
 import argparse
 import os
 import re
@@ -180,8 +181,11 @@ def build_menu_gesture(title_pt, item_pt):
     """
     tx, ty = title_pt
     ix, iy = item_pt
+    # demo mode (2026-10-24): a GLIDING drag straight from the title to the item crossed the neighbouring title while still
+    # in the menu bar and opened THAT menu (Apple menu -> File -> New). Go straight down into the open menu first, then across.
+    down_first = ["m:%d,%d" % (tx, iy), "w:150"] if demo_easing() and ix != tx else []
     return ["m:%d,%d" % (tx, ty), "w:150",
-            "dd:%d,%d" % (tx, ty), "w:400",
+            "dd:%d,%d" % (tx, ty), "w:400"] + down_first + [
             "m:%d,%d" % (ix, iy), "w:250",
             "du:%d,%d" % (ix, iy)]
 
@@ -223,8 +227,12 @@ def demo_easing():
     person watching can follow; the file's content is the easing factor (empty: 200). Absent = unchanged, fast gestures.
     Measurement runs refuse to start while it is set (it changes gesture timing)."""
     try:
-        if not os.path.exists(DEMO_FLAG): return []
-        v = open(DEMO_FLAG).read().strip()
+        # 2026-10-24: a per-guest flag `/tmp/applebridge_demo_mouse.<host>` (host of APPLEBRIDGE_GUEST_SSH) glides only
+        # the gestures into that guest, so a demo on one guest leaves the other guest's runs at normal speed.
+        host = os.environ.get("APPLEBRIDGE_GUEST_SSH", "").rsplit("@", 1)[-1]
+        flag = next((f for f in ([DEMO_FLAG + "." + host] if host else []) + [DEMO_FLAG] if os.path.exists(f)), None)
+        if not flag: return []
+        v = open(flag).read().strip()
         return ["-e", str(int(v) if v.isdigit() else 200)]
     except Exception:
         return []
@@ -232,7 +240,9 @@ def demo_easing():
 
 def _run(argv, check=True, timeout=None):
     try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        # a guest on another Mac (APPLEBRIDGE_GUEST_SSH): the gesture happens THERE — guest_remote.py
+        p = guest_remote.run(argv, timeout=timeout) if guest_remote.active() else \
+            subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise InputError(f"{argv[0]} did not finish within {timeout}s")
     if check and p.returncode != 0:
@@ -249,8 +259,9 @@ def running_emulator(explicit=None):
     if explicit:
         return explicit
     for name in EMULATORS:
-        if subprocess.run(["pgrep", "-x", name],
-                          capture_output=True).returncode == 0:
+        probe = guest_remote.run(["pgrep", "-x", name]) if guest_remote.active() else \
+            subprocess.run(["pgrep", "-x", name], capture_output=True)
+        if probe.returncode == 0:
             return name
     raise InputError("no emulator process found (BasiliskII / SheepShaver)")
 
@@ -488,7 +499,11 @@ def _capture_rect(x, y, w, h, out_path, dry_run=False, timeout=None):
     if dry_run:
         print(" ".join(argv))
         return out_path
-    _run(argv, timeout=timeout)
+    if guest_remote.active():                 # capture on the remote Mac, bring the file here
+        remote = "/tmp/ab_guest_capture.png"
+        _run(argv[:-1] + [remote], timeout=timeout); guest_remote.fetch(remote, out_path)
+    else:
+        _run(argv, timeout=timeout)
     to_guest_scale(out_path, w, h)
     return out_path
 
