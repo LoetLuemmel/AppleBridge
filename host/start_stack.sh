@@ -203,6 +203,11 @@ if lsof -nP -iTCP:9000 -sTCP:LISTEN 2>/dev/null | grep -q "${LSOF_PATTERN}"; the
 else
     echo "      WARN: not listening. Last log lines:"; tail -n 6 /tmp/applebridge_server.log | sed 's/^/        /'
 fi
+# Every other guest of the table (D-028): its instance is a launchd agent this script never started and, until
+# 2026-10-26, never looked at. A WARN, not a stop: those guests run on other Macs and may be off.
+if [ -f "$SERVER_DIR/guests.conf" ]; then
+    /usr/bin/python3 "$SERVER_DIR/guests.py" --check-listeners "$EXPECT_BIND" | sed 's/^/      /'
+fi
 
 echo "[5/5] Launching Basilisk II…"
 BOOT_RC=0

@@ -139,8 +139,47 @@ def by_name(guests, name):
     raise GuestTableError(f"no guest named {name!r} in the table")
 
 
+def listener_check(table, bind, lsof_listen):
+    """-> [(guest, ok, line)] for every row but the 9001 one, which start_stack.sh checks itself.
+
+    A row's daemon port must listen on the hub's address (a wildcard bind prints as `*` in lsof), its control port
+    on any address. start_stack.sh launches only this Mac's emulator; the other guests' instances are launchd agents
+    that it used to start without ever looking at them (2026-10-26)."""
+    listening = set()
+    for line in lsof_listen.splitlines():
+        m = re.search(r"(\S+):(\d+)\s+\(LISTEN\)", line)
+        if m:
+            listening.add((m.group(1), int(m.group(2))))
+    shown = "*" if bind in ("", "0.0.0.0") else bind
+    out = []
+    for g in table:
+        if g.primary:
+            continue
+        missing = []
+        if (shown, g.daemon_port) not in listening:
+            missing.append(f"{shown}:{g.daemon_port} (daemon)")
+        if not any(port == g.ctrl_port for _, port in listening):
+            missing.append(f":{g.ctrl_port} (control)")
+        if missing:
+            out.append((g, False, f"WARN: {g.name} — not listening on {' and '.join(missing)}. "
+                                  f"Fix: ./install_guests.py --guest {g.name}; log {g.server_log()}"))
+        else:
+            out.append((g, True, f"OK — {g.name} on {shown}:{g.daemon_port} (+ control :{g.ctrl_port})"))
+    return out
+
+
 if __name__ == "__main__":
     import sys
+    if sys.argv[1:2] == ["--check-listeners"]:      # start_stack.sh step 4: the other rows' instances
+        import subprocess
+        try:
+            table = load()
+        except GuestTableError as e:
+            sys.exit(f"WARN: guests.conf: {e}")
+        lsof = subprocess.run(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"], capture_output=True, text=True).stdout
+        for _, ok, line in listener_check(table, sys.argv[2] if len(sys.argv) > 2 else "", lsof):
+            print(line)
+        sys.exit(0)
     try:
         table = load(sys.argv[1] if len(sys.argv) > 1 else None)
     except GuestTableError as e:
