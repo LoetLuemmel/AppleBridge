@@ -130,14 +130,6 @@ server. This is a phase of its own — the bridge does not depend on it.
    *Accept:* a wish run on the second guest addressed by name; the doctor names a guest that dials the wrong port.
 4. **MCP `guest` parameter.** *Accept:* one MCP server drives two guests; a `HOST*` tool on a remote row is refused.
 
-## Proposed decision (D-028, to be entered in DECISIONS.md once accepted)
+## Decision
 
-- **Decision:** n guests, one emulator per machine, all dialling the hub's one router-reserved address; one
-  `host_server` process per guest on its own daemon/control port pair from a guest table; the daemon reads its
-  port and name from its prefs and the hub refuses a guest that reports the wrong name.
-- **Why not the alternatives:** an address per guest needs aliases (D-027) or one real address per guest; a
-  multiplexing server rebuilds the hardened single-link code and shares one fate across all guests; a host
-  server on each guest machine is impossible over `etherhelper` on a single-NIC machine (D-015), and slirp
-  would cost those guests AppleTalk.
-- **Revisit if:** the guest count makes per-process cost visible (memory, launchd), two emulators per machine
-  become a requirement, or a guest machine with two NICs makes a local host server worth having.
+Accepted as **D-028** in `DECISIONS.md` (2026-10-26), with the evidence, the alternatives and the falsifier.
