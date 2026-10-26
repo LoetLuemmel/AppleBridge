@@ -13,32 +13,37 @@
 # On that branch this host is dual-homed: en0 (Wi-Fi) and en8 (wired Thunderbolt).
 # Two interfaces are a PRECONDITION, not a detail — see D-015 and the note at the
 # foot of this file.
-# The emulated Mac (.244) sits BEHIND Basilisk's MACNAT (prefs: "ether etherhelper/en8"),
+# The emulated Mac (here .244) sits BEHIND Basilisk's MACNAT (prefs: "ether etherhelper/en8"),
 # so it can only connect OUT, and its outbound traffic is NAT'd through the host's
-# DEFAULT-ROUTE interface — normally Wi-Fi (en0, .213). The Mac daemon dials the
+# DEFAULT-ROUTE interface — normally Wi-Fi (en0, here .232). The Mac daemon dials the
 # address configured in host/local.env (APPLEBRIDGE_HOST_IP); unset means 0.0.0.0.
 #
 # THE RULE (learned the hard way, 2026-06-21):
-#   that address must live on the SAME interface the NAT exits — i.e. the default-route
-#   interface (en0). Then the daemon's connection is a clean same-interface path and
-#   the MACNAT return packet gets back to the guest.
+#   that address must be the default-route interface's OWN address — en0's, never
+#   en8's. en8 belongs to etherhelper (its Manual .154 is the helper's, not ours).
+#   On en0 the daemon's connection is a clean same-interface path and the MACNAT
+#   return packet gets back to the guest. On en8 the conversation is split across
+#   interfaces, the reply is swallowed by the host's own stack, and the daemon
+#   hangs on CONNECTING (a synchronous OTConnect then froze the whole emulator at
+#   100% CPU — fixed in the daemon since, the wrong address still breaks the link).
 #
-#   If it is instead aliased on the WIRED en8, the conversation is split across
-#   interfaces: the reply from .154 (en8) to the NAT source (.213, en0) is swallowed
-#   by the host's own stack, the handshake never completes, and the daemon's
-#   synchronous OTConnect blocks → starves System 7's cooperative scheduler → the
-#   whole emulator freezes at 100% CPU (looks like a crash; it isn't).
-#
-# THE BRIDGE IS REQUIRED (corrected 2026-07-27). The etherhelper backend needs
-# bridge100 with the wired NIC as a member, and it must exist BEFORE the emulator
-# starts — as Emaculation documents and as the operator's own launcher does. This
-# script previously DESTROYED it, citing an etherhelpertool SIGSEGV ("fret == -10").
-# That crash is real but comes from touching the bridge WHILE the helper owns the
-# NIC; the prohibition was the wrong lesson. See D-016 and R15.
+# NO ALIAS (D-027, 2026-10-26): the address is a real one, reserved in the router.
+#   This script used to place it as an `ifconfig … alias` with sudo; aliases live in
+#   memory only, so every host reboot lost the bridge. Step 2 now only CHECKS.
+# NO BRIDGE (D-017, measured both ways 2026-07-27): with `etherhelper/<if>` the
+#   helper owns the NIC directly. A bridge belongs to the tap mode; step 2 reports
+#   one if present and never creates or destroys it.
+# THE LAUNCH IS VERIFIED (2026-10-26): `open` returns 0 when LaunchServices has the
+#   request, not when the app runs — see launch_emulator below.
 #
 # See: https://pit.390er.de/applebridge/anatomy-of-a-freeze-macnat-return-path/
 #
-# Idempotent: safe to re-run. One admin password dialog covers the privileged ops.
+# Idempotent: safe to re-run; an emulator that is already running is not started
+# twice. The script asks for no password itself (the one exception: removing a
+# stale host route to a known guest address). BasiliskII may still ask on the
+# etherhelper branch when it elevates its own helper; slirp asks for nothing.
+# Exit status: non-zero when a check fails, the emulator does not start, or the
+# guest does not come up (guest_boot.py's verdict).
 #
 # Usage:  ./start_stack.sh
 #
@@ -70,7 +75,36 @@ if [ -z "$BASILISK_APP" ] && [ -d "/Users/pitforster/Documents/Basilisk/Basilisk
 fi
 SERVER_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# The interface .154 must live on = the host's default-route interface (where the
+# `open` returns 0 once LaunchServices has the request, not once the app runs. After the hub's reboot on 2026-10-26 it
+# returned 0 twice and no emulator ever ran (no crash report, nothing in the unified log), while the same `open` from
+# another shell started it at once. So the launch is judged by the process - which must still be alive 5 s after it
+# appears, since a pid was seen to come and go - and retried. Any BasiliskII counts as running: two emulators on one
+# machine fight over the same disk image and NIC.
+# By process NAME: `pgrep -f MacOS/BasiliskII` also matched a watcher shell whose command line held that string.
+emulator_pid() { pgrep -x BasiliskII | head -1; }
+launch_emulator() {
+    local attempt t pid rc
+    pid="$(emulator_pid)"
+    if [ -n "$pid" ]; then
+        echo "      already running: $(ps -o command= -p "$pid") (pid $pid) — not starting a second one"
+        return 0
+    fi
+    for attempt in 1 2 3; do
+        open "$BASILISK_APP"; rc=$?
+        for t in $(seq 1 30); do
+            sleep 1
+            pid="$(emulator_pid)"; [ -n "$pid" ] || continue
+            sleep 5
+            pid="$(emulator_pid)"; [ -n "$pid" ] || continue
+            echo "      running (pid $pid, attempt $attempt)"
+            return 0
+        done
+        echo "      attempt $attempt: open returned $rc, but no emulator process is running after 30 s"
+    done
+    return 1
+}
+
+# The host address must be the default-route interface's own (where the
 # guest's MACNAT traffic exits). Detect it instead of hardcoding; fall back to en0.
 DEFAULT_IF="$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')"
 DEFAULT_IF="${DEFAULT_IF:-en0}"
@@ -171,12 +205,15 @@ else
 fi
 
 echo "[5/5] Launching Basilisk II…"
+BOOT_RC=0
 if [ -n "$BASILISK_APP" ]; then
-    # `open <path>`, NOT `open -a <path>`: -a resolves by bundle id, and with
-    # two copies of BasiliskII on disk (published bundle + fb-export fork
-    # build) it launched the OTHER one — twice, 2026-08-31. A plain path
-    # opens exactly the named bundle.
-    open "$BASILISK_APP"
+    # `open <path>`, NOT `open -a`: -a resolves by bundle id and launched the
+    # OTHER of two BasiliskII copies on disk, twice, 2026-08-31.
+    if ! launch_emulator; then
+        echo "      ERROR: $BASILISK_APP did not start after 3 attempts. Launch it by hand"
+        echo "             (open \"$BASILISK_APP\") and run guest_boot.py, or see Console.app."
+        exit 1
+    fi
 else
     echo "      SKIPPED — no emulator bundle configured on this machine."
     echo "      Everything above is up; launch the emulator yourself, or:"
@@ -191,6 +228,7 @@ if [ -n "$BASILISK_APP" ]; then
     if [ -d "$SERVER_DIR/refs" ] && ls "$SERVER_DIR"/refs/*.json >/dev/null 2>&1; then
         echo "      shepherding the boot (guest_boot.py: screen -> login / alerts -> volumes -> tidy desktop)…"
         /usr/bin/python3 "$SERVER_DIR/guest_boot.py" 420 | sed 's/^/        /'
+        BOOT_RC=${PIPESTATUS[0]}   # the pipe's status is sed's: a guest that never came up exited 0 (2026-10-26)
     else
         echo "      no host/refs/ — the AppleShare login and boot alerts are left to you"
     fi
@@ -234,4 +272,11 @@ else
     echo "  wrong interface — it must be on ${DEFAULT_IF} (the default route). On a"
     echo "  machine with only ONE interface, etherhelper cannot reach the host at all"
     echo "  and the backend must be slirp (D-015)."
+fi
+
+# Last, so the advice above is still printed on a failed boot - it is the advice a failed boot needs.
+if [ "$BOOT_RC" -ne 0 ]; then
+    echo
+    echo "  FAILED: the guest did not come up (guest_boot.py exit $BOOT_RC) — see its lines under [5/5]."
+    exit "$BOOT_RC"
 fi

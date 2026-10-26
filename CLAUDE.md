@@ -43,14 +43,19 @@ IP conflict → stops and says so aloud. Then it checks the volumes and tidies t
 closed) for screen reading. A guest on another Mac: the same script with `APPLEBRIDGE_CTRL_PORT`/`APPLEBRIDGE_GUEST_SSH`.
 Never type blind at boot: a blind Return dismissed a network warning instead of the login (2026-10-01).
 
-**A guest on a second machine (2026-10-01).** A host with one NIC cannot reach a server on itself (D-015), so a guest
-emulated on such a machine dials a **second address on this Mac**, served by a second host-server instance:
-`APPLEBRIDGE_REMOTE_HOST_IP` / `APPLEBRIDGE_REMOTE_CTRL_PORT` (default 9011) in `host/local.env` — that address must be
-a REAL second address of this Mac, since both instances listen on :9000 and nothing places an alias any more (D-027) —, agent installed by `host/install_remote_guest_service.sh` (deploys restart
-both). MCP for it: a second server registered LOCALLY, never in the shipped `.mcp.json` — `claude mcp add
-applebridge-remote --scope local -e APPLEBRIDGE_CTRL_PORT=9011 -e APPLEBRIDGE_REMOTE_GUEST=1 -- uv run python -m mcp.server`;
-it refuses the tools that act on this Mac (framebuffer, real mouse, host screen, AppleScript, doctor). That instance runs with `APPLEBRIDGE_REMOTE_GUEST=1` and **refuses every `HOST*` verb** — they act on this Mac's
-own screen and mouse, i.e. on the local guest. Its control port is the remote guest's; 9001 stays the local one. Cloning
+**Many guests, one hub (D-028, 2026-10-26).** Every guest runs on its own Mac (one emulator per machine) and dials
+this Mac's one address `.232` on its own **daemon port**; this Mac runs one `host_server.py` per guest on its own
+**control port**. Both come from one table, `host/guests.conf` (untracked; `guests.conf.example`, `docs/MULTI_GUEST.md`):
+`./install_guests.py` writes host server + hang watch + dialog watch per row and removes agents of rows that are gone
+(re-run after every edit; `deploy_host.sh` syncs code, not configuration). A full run restarts **every** guest's
+agents and drops their live links — for one new or changed row use `--guest <name>` (2026-10-26). The guest's side is `TCPPORT=` and `NAME=` in
+its AppleBridge Prefs (daemon 0.8d48+); an instance **refuses a guest reporting another name** (`HELLO: REFUSED`), so a
+guest on the wrong port cannot be served as another guest. The 9001 row keeps the single-guest label and log; other rows
+get `…-<name>` (`/tmp/applebridge_server_<name>.log`). A guest on another Mac runs with `APPLEBRIDGE_REMOTE_GUEST=1`
+and **refuses every `HOST*` verb** — they act on this Mac's own screen and mouse. Tools take the guest by control port
+(`APPLEBRIDGE_CTRL_PORT`, `APPLEBRIDGE_GUEST_SSH`); MCP for a second guest: a second server registered LOCALLY, never in
+the shipped `.mcp.json` — `claude mcp add applebridge-remote --scope local -e APPLEBRIDGE_CTRL_PORT=9011 -e
+APPLEBRIDGE_REMOTE_GUEST=1 -- uv run python -m mcp.server`. Cloning
 a guest for it: change the clone's own TCP/IP address too, not only `IP=` in AppleBridge Prefs — two guests with one
 address shut each other's TCP/IP down.
 
@@ -60,13 +65,13 @@ address shut each other's TCP/IP down.
 - **Re-run `Rez AppleBridge_res.r` after every link** — the `SIZE` resource (`isHighLevelEventAware`) is required or every command fails with `-903`.
 - **Never `2>&1`** in MPW (crashes the shell) — use `≥ file.err` to capture stderr (learned 2026-04-06, error-capture notes in `~/.claude/CLAUDE.md`).
 - **Build off the running daemon**: link to `:bin:AppleBridge.new`, then swap; a heavy link in the same ToolServer that serves the bridge can take it (and the AE layer) down (observed 2026-07-02: the 0.8d2 link dropped the bridge mid-command).
-- **Never hard-kill BasiliskII** — the clean stop is **`mac_shutdown`** (the `SHUTDOWN` verb, Shutdown Manager `ShutDwnPower`) or Special → Shut Down in the guest. **Except a HUNG guest** (bridge silent, ≥ 90 % CPU, static screen): that one is stopped and relaunched automatically by `host/hang_watch.py` — installed per guest by `host/install_hang_watch.sh`, logs in `/tmp/applebridge_hang_watch_<port>.log` (2026-10-04). Why, and when to revisit: D-004 in `DECISIONS.md`.
+- **Never hard-kill BasiliskII** — the clean stop is **`mac_shutdown`** (the `SHUTDOWN` verb, Shutdown Manager `ShutDwnPower`) or Special → Shut Down in the guest. **Except a HUNG guest** (bridge silent, ≥ 90 % CPU, static screen): that one is stopped and relaunched automatically by `host/hang_watch.py` — installed per guest by `host/install_guests.py`, logs in `/tmp/applebridge_hang_watch_<port>.log` (2026-10-04). Why, and when to revisit: D-004 in `DECISIONS.md`.
 - **Encoding**: host UTF-8/LF ↔ Mac MacRoman/CR — use `host/encoding_convert.py`.
 - Long commands (e.g. `Link`) may return `-1712` (AE timeout) **yet still complete** — verify by the artifact, not the status (recurring since 2026-04-06; the artifact check is the only reliable signal).
 - **The host address (`APPLEBRIDGE_HOST_IP`) is the default-route interface's OWN address** (where the guest's MACNAT exits — normally Wi-Fi `en0`, here `.232`, reserved in the router), *not* a second NIC and **never an alias** (D-027, 2026-10-26: aliases live in memory only, so every reboot of the host lost the bridge until someone re-typed `ifconfig … alias` with sudo). On the wrong interface the daemon hangs on "CONNECTING" and freezes the emulator at 100% CPU (synchronous `OTConnect` starving the cooperative scheduler). `host/start_stack.sh` and `bridge_doctor` check it; neither changes an interface. The wired NIC `etherhelper` takes over (`en8`, the dock) keeps its own Manual address for the helper — that address is not AppleBridge's. **No bridge with `etherhelper/<if>` — the helper owns that NIC directly** and passes AppleTalk too; tooling neither creates nor destroys one. A bridge belongs to the **tap** mode (`etherhelper/tap0/bridge0/en0`), where it joins tap to the physical NIC. This rule has now been wrong twice in both directions — first "never pre-create" from a real `etherhelpertool` SIGSEGV, then "required" from the operator's launcher — so it is settled by measurement in D-017 (2026-07-27, both ways) and not by inference. **The `etherhelper` path costs two interactive password prompts per launch** (the bridge, and BasiliskII elevating its built-in helper), so it cannot start unattended; **slirp costs none**. The guest is behind MACNAT, so it is **never pingable** — diagnose via the *outbound* connection, not ICMP. See `TROUBLESHOOTING.md` → "Daemon hangs on CONNECTING". **This rule presupposes two interfaces**; on a single-NIC host `etherhelper` cannot form a guest→host connection at all (the guest reaches the whole world *except* the machine it runs in) and the backend must be `slirp`: D-015 in `DECISIONS.md`, requirements in `docs/INSTALLER_REQUIREMENTS.md`.
 
 ## Where things stand
-AppleBridge runs as a **System 7 background service** with an optional on-screen monitor. The daemon speaks **wire protocol v0.2** (version negotiation + optional mutual auth); the host server auto-starts via launchd. Current daemon **0.8d47** (`mac/vers.r` is the single source for that number); the MCP surface is **35 tools** (`len(TOOLS)` in `mcp/tools.py`). Validated live on **both** Basilisk II (System 7.6.1) and SheepShaver (PowerPC / Mac OS 9), and on real hardware — a Macintosh **SE/30** over RS-422.
+AppleBridge runs as a **System 7 background service** with an optional on-screen monitor. The daemon speaks **wire protocol v0.2** (version negotiation + optional mutual auth); the host server auto-starts via launchd. Current daemon **0.8d48** (`mac/vers.r` is the single source for that number); the MCP surface is **35 tools** (`len(TOOLS)` in `mcp/tools.py`). Validated live on **both** Basilisk II (System 7.6.1) and SheepShaver (PowerPC / Mac OS 9), and on real hardware — a Macintosh **SE/30** over RS-422.
 
 **Progress and roadmap live on the [ledger](https://pit.390er.de/applebridge/applebridge-roadmap-ledger-progress-and-status-tracker/), not in this file.** What shipped when, which PR carried it, what is still open, what is blocked — that is the ledger's job, and `host/tools/ledger_diff.py` keeps it in step with the merged PRs. This file holds what an agent needs in order to *work*: the rules, the mechanisms, and the gotchas that each cost somebody a session. Where the two disagree about status, **the ledger wins** — a status narrative kept in two places drifts, which is precisely how a finished milestone sat here for three weeks marked as outstanding.
 

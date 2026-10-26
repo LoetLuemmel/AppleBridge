@@ -36,6 +36,7 @@ uv.lock
 # bridge100) that the installer exists to stop shipping. Ignoring only the live
 # file was never enough; anything derived from it is the same secret.
 host/local.env
+host/guests.conf
 host/local.env.bak-*
 host/local.env.bak.*
 host/local.env.bak_*

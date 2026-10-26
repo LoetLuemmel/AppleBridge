@@ -32,6 +32,9 @@ void PrefsDefaults(AppPrefs *p)
     p->serialBaud = 9600;          /* default serial line rate (safe first-contact) */
     p->home[0] = '\0';             /* empty ⇒ legacy hardcoded path (pre-installer setups) */
     p->token[0] = '\0';            /* empty ⇒ auth disabled (opt-in; see docs/PROTOCOL_v0.2.md) */
+    p->tcpPort = 0;                /* 0 ⇒ BRIDGE_PORT (D-028) */
+    p->name[0] = '\0';
+    p->extra[0] = '\0';
     p->appCount = 0;
 }
 
@@ -57,6 +60,13 @@ static void CopyValue(char *dst, const char *src, short n)
         i++;
     }
     dst[i] = '\0';
+}
+
+/* True if the line has a '=' (a KEY=value line); mystring.h has no strchr. */
+static Boolean HasEquals(const char *line)
+{
+    while (*line) { if (*line == '=') return true; line++; }
+    return false;
 }
 
 /* Apply one "KEY=value" line to the prefs struct. */
@@ -88,6 +98,12 @@ static void ParseLine(AppPrefs *p, const char *line)
             CopyValue(p->apps[p->appCount], line + 4, PREFS_PATH_LEN);
             if (p->apps[p->appCount][0]) p->appCount++;
         }
+    } else if (strncmp(line, "TCPPORT=", 8) == 0) {
+        long v = 0; short k = 8;
+        while (line[k] >= '0' && line[k] <= '9') v = v * 10 + (line[k++] - '0');
+        p->tcpPort = (v > 0 && v < 65536L) ? v : 0;   /* out of range ⇒ the default, never a wrap */
+    } else if (strncmp(line, "NAME=", 5) == 0) {
+        CopyValue(p->name, line + 5, PREFS_NAME_LEN);
     } else if (strncmp(line, "WIN=", 4) == 0) {
         /* WIN=<top>,<left>,<bottom>,<right> — saved Verbose-window bounds. */
         short vals[4]; short vi = 0, k = 4;
@@ -103,6 +119,15 @@ static void ParseLine(AppPrefs *p, const char *line)
         if (vi == 4) {
             p->winT = vals[0]; p->winL = vals[1];
             p->winB = vals[2]; p->winR = vals[3];
+        }
+    } else if (HasEquals(line)) {
+        /* A key this build does not know: keep it, so SavePrefs writes it back. A file
+         * written by a newer program then survives an older one (D-028). Too long to fit
+         * is dropped whole rather than cut, since half a line would be a different value. */
+        long have = (long)strlen(p->extra), need = (long)strlen(line) + 1;
+        if (have + need < PREFS_EXTRA_LEN) {
+            strcat(p->extra, line);
+            strcat(p->extra, "\r");
         }
     }
 }
@@ -141,8 +166,9 @@ Boolean LoadPrefsFrom(AppPrefs *p, const FSSpec *spec)
     if (count <= 0) return false;
     buf[count] = '\0';
 
-    /* The APP list rebuilds entirely from the file. */
+    /* The APP list and the unknown lines rebuild entirely from the file. */
     p->appCount = 0;
+    p->extra[0] = '\0';
 
     /* Split on CR/LF and parse each non-comment line. */
     lineStart = 0;
@@ -231,6 +257,12 @@ OSErr SavePrefs(const AppPrefs *p)
     if (p->token[0]) {
         strcat(buf, "TOKEN="); strcat(buf, p->token); strcat(buf, "\r");
     }
+    if (p->tcpPort > 0) {
+        strcat(buf, "TCPPORT="); AppendNum(buf, p->tcpPort); strcat(buf, "\r");
+    }
+    if (p->name[0]) {
+        strcat(buf, "NAME="); strcat(buf, p->name); strcat(buf, "\r");
+    }
     for (n = 0; n < p->appCount; n++) {
         strcat(buf, "APP="); strcat(buf, p->apps[n]); strcat(buf, "\r");
     }
@@ -241,6 +273,7 @@ OSErr SavePrefs(const AppPrefs *p)
         AppendNum(buf, p->winB); strcat(buf, ",");
         AppendNum(buf, p->winR); strcat(buf, "\r");
     }
+    strcat(buf, p->extra);   /* keys this build does not know, verbatim (D-028) */
 
     count = (long)strlen(buf);
     err = FSWrite(refNum, &count, buf);
