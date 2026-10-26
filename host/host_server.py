@@ -195,7 +195,11 @@ SERIAL_BAUD = int(os.environ.get("APPLEBRIDGE_BAUD", "9600"))
 SERIAL_CHUNK = int(os.environ.get("APPLEBRIDGE_SERIAL_CHUNK", "0"))
 SERIAL_GAP = float(os.environ.get("APPLEBRIDGE_SERIAL_GAP", "0.015"))
 
-_logf = open(LOG_PATH, "a", buffering=1)  # line-buffered
+# Opened by main(), not at import: every program that imports this module - the test suite, a tool reusing a helper -
+# used to append to the RUNNING server's log. Test fixtures wrote "Mac disconnected: screenshot delta without base" into
+# /tmp/applebridge_server.log nine times on 2026-10-26 and were read as a real link drop; bridge_doctor reads the last
+# HELLO name from that same file. Until main() runs, log() goes to stderr only.
+_logf = None
 
 
 def _framed_failure(text):
@@ -616,10 +620,11 @@ def name_verdict(expected, reported):
 def log(msg):
     line = f"[{time.strftime('%H:%M:%S')}] {msg}"
     print(line, file=sys.stderr, flush=True)
-    try:
-        _logf.write(line + "\n")
-    except Exception:
-        pass
+    if _logf is not None:
+        try:
+            _logf.write(line + "\n")
+        except Exception:
+            pass
 
 
 def build_stamp():
@@ -2735,6 +2740,8 @@ def interactive_mode(server):
 
 
 def main():
+    global _logf
+    _logf = open(LOG_PATH, "a", buffering=1)  # line-buffered
     log("=== AppleBridge Host Server (hardened) ===")
     log(build_stamp())
     # Before ANY socket is opened: an exposed control port with no token must
