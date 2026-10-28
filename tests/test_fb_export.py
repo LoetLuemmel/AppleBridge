@@ -166,6 +166,32 @@ def test_tool_fail_fast_when_fallback_off():
     assert not r["success"] and r["fb_export_unavailable"] == "no_emulator"
 
 
+def test_dump_paths_explicit_env_names_one_file():
+    old = os.environ.pop("BASILISK_FB_DUMP", None)
+    try:
+        assert fb_export.dump_paths() == [fb_export.RAMDISK_DUMP, fb_export.DEFAULT_DUMP]
+        os.environ["BASILISK_FB_DUMP"] = "/x/y.bin"
+        assert fb_export.dump_paths() == ["/x/y.bin"]
+    finally:
+        os.environ.pop("BASILISK_FB_DUMP", None)
+        if old is not None:
+            os.environ["BASILISK_FB_DUMP"] = old
+
+
+def test_request_dump_reads_whichever_file_the_emulator_wrote():
+    """A reader without the variable cannot know whether the running emulator dumps to the RAM disk or to /tmp
+    (2026-10-28): it watches both and reads the one that changed - not a stale copy of the other."""
+    d = tempfile.mkdtemp()
+    ram, tmp = os.path.join(d, "ram.bin"), os.path.join(d, "tmp.bin")
+    open(ram, "wb").write(b"stale")                          # an older dump left on the RAM disk
+    for target in (ram, tmp):
+        def kill(pid, sig, target=target):
+            open(target + ".new", "wb").write(_synthetic_dump()); os.replace(target + ".new", target)
+        with _patched(os, "kill", kill), _patched(fb_export, "dump_paths", lambda: [ram, tmp]):
+            frame = fb_export.parse_dump(fb_export.request_dump(os.getpid(), timeout=1.0))
+        assert frame["width"] == 8, target
+
+
 def test_tool_rejects_malformed_region():
     tools = _load_tools()
     r = tools.mac_fb_screenshot(region=[1, 2, 3])

@@ -31,6 +31,16 @@ The env var is shared: the emulator reads $BASILISK_FB_DUMP from ITS
 environment at dump time, this module from its own. Launch both with the same
 value (or neither — the default matches) or the reader waits on a file the
 emulator never writes.
+
+RAM disk (2026-10-28): every dump is a full ~787 KB file write, and the watchers
+plus the build gates wrote about 2 GB a day to each emulator Mac's SSD (article
+"SSD wears"). host/fb_ramdisk.sh keeps an 8 MB RAM disk RAMDISK_VOLUME mounted
+and sets BASILISK_FB_DUMP for the user's launchd domain, so an emulator started
+by LaunchServices (`open`, the Finder, hang_watch) dumps there. A reader whose
+own environment does not carry the variable — a launchd watcher, an SSH command
+from the Xavier — therefore cannot know which of the two files the running
+emulator writes: it waits for EITHER (`dump_paths`), on the machine that runs
+the emulator. An explicit $BASILISK_FB_DUMP still names exactly one file.
 """
 
 import os
@@ -50,8 +60,18 @@ import screenshot_decode  # noqa: E402
 MARKER = b"BASILISK_FB_DUMP"
 
 
+DEFAULT_DUMP = "/tmp/basilisk_fb.bin"
+RAMDISK_VOLUME = "/Volumes/ABFB"
+RAMDISK_DUMP = RAMDISK_VOLUME + "/basilisk_fb.bin"
+
+
 def dump_path():
-    return os.environ.get("BASILISK_FB_DUMP", "/tmp/basilisk_fb.bin")
+    return os.environ.get("BASILISK_FB_DUMP", DEFAULT_DUMP)
+
+
+def dump_paths():
+    """the files a dump may land in: the explicit one, else the RAM disk's and the default (see the module note)"""
+    return [os.environ["BASILISK_FB_DUMP"]] if os.environ.get("BASILISK_FB_DUMP") else [RAMDISK_DUMP, DEFAULT_DUMP]
 
 
 class FbExportError(Exception):
@@ -152,8 +172,9 @@ def request_dump(pid, path=None, timeout=5.0):
 
     Freshness is the mtime changing: the emulator writes to a temp name and
     renames, so a changed mtime is always a complete file. The dump happens on
-    the next video refresh tick (~10 Hz), hence the poll."""
-    path = path or dump_path()
+    the next video refresh tick (~10 Hz), hence the poll. Without `path`, every
+    file of `dump_paths()` is watched and the first that changes is read."""
+    paths = [path] if path else dump_paths()
     if guest_remote.active():
         # ONE round trip: remove the old dump, signal, wait for the new file (the emulator writes a temp name and
         # renames, so an existing file is complete), send it back on stdout
@@ -161,40 +182,44 @@ def request_dump(pid, path=None, timeout=5.0):
         # 2026-10-08: several readers (the build tool, the wish service's live view, dialog_watch) dump the same remote
         # emulator; one reader's `rm` deleted the file between another's wait and its `cat` ("No such file" -> a build
         # without a verdict, twice). A mkdir lock serialises them; a lock older than 10 s is taken over (a killed reader).
-        script = (f"L={shlex.quote(path)}.lock; j=0; until mkdir \"$L\" 2>/dev/null; do j=$((j+1)); "
+        # 2026-10-28: the lock keeps the default file's name whatever the dump path, so readers of either version
+        # serialise on one lock during a rollout; the dump may land in any of `paths` (RAM disk or default)
+        files = " ".join(shlex.quote(p) for p in paths)
+        script = (f"L={shlex.quote(path or DEFAULT_DUMP)}.lock; j=0; until mkdir \"$L\" 2>/dev/null; do j=$((j+1)); "
                   f"[ $j -gt 200 ] && {{ rmdir \"$L\" 2>/dev/null; j=0; }}; sleep 0.05; done; trap 'rmdir \"$L\"' EXIT; "
-                  f"f={shlex.quote(path)}; rm -f \"$f\"; kill -USR1 {int(pid)} || exit 3; i=0; "
-                  f"while [ ! -f \"$f\" ]; do i=$((i+1)); [ $i -gt {steps} ] && exit 4; sleep 0.01; done; cat \"$f\"")
+                  f"rm -f {files}; kill -USR1 {int(pid)} || exit 3; i=0; "
+                  f"while :; do for f in {files}; do [ -f \"$f\" ] && {{ cat \"$f\"; exit 0; }}; done; "
+                  f"i=$((i+1)); [ $i -gt {steps} ] && exit 4; sleep 0.01; done")
         r = guest_remote.shell(script, timeout=timeout + 15, text=False)
         if r.returncode == 3:
             raise FbExportError("signal_failed", f"cannot signal remote pid {pid}")
         if r.returncode == 4:
-            raise FbExportError("timeout", f"no dump at {path} on {guest_remote.TARGET} within {timeout:g}s")
+            raise FbExportError("timeout", f"no dump at {' or '.join(paths)} on {guest_remote.TARGET} within {timeout:g}s")
         if r.returncode != 0:
             raise FbExportError("signal_failed", f"remote dump failed: {r.stderr.decode(errors='replace')[:160]}")
         return r.stdout
-    try:
-        before = os.stat(path).st_mtime_ns
-    except OSError:
-        before = -1
+    def mtime(p):
+        try:
+            return os.stat(p).st_mtime_ns
+        except OSError:
+            return -1
+    before = {p: mtime(p) for p in paths}
     t0 = time.monotonic()
     try:
         os.kill(pid, signal.SIGUSR1)
     except (ProcessLookupError, PermissionError) as e:
         raise FbExportError("signal_failed", f"cannot signal pid {pid}: {e}")
     while True:
-        try:
-            if os.stat(path).st_mtime_ns != before:
-                break
-        except OSError:
-            pass
+        fresh = next((p for p in paths if mtime(p) not in (before[p], -1)), None)
+        if fresh:
+            break
         if time.monotonic() - t0 > timeout:
             raise FbExportError(
                 "timeout",
-                f"no dump at {path} within {timeout:g}s — emulator paused, "
+                f"no dump at {' or '.join(paths)} within {timeout:g}s — emulator paused, "
                 "or launched with a different $BASILISK_FB_DUMP")
         time.sleep(0.002)
-    with open(path, "rb") as fh:
+    with open(fresh, "rb") as fh:
         return fh.read()
 
 
