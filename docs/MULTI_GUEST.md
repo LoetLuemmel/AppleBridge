@@ -120,6 +120,27 @@ used: after a client disconnected, it killed the display.
   above for why it is not set to a fixed address.
 - **Watchdogs**: `hangwatch` and `dialogwatch` are macOS-only (`cliclick`/`osascript`). Their agents for
   this row are installed but disabled. Only the host agent runs.
+- **Gestures and host screenshots (2026-11-08)**: the hub runs `cliclick`, `osascript`, `screencapture` and
+  `sips` *on the guest's machine* over SSH (`guest_remote.py`). The first THINK wish on the C2 failed with
+  `osascript: command not found`. `host/linux_guest/ab_linux_shim.py` now answers to all four names on the C2:
+  - `cliclick` becomes an `xdotool` chain run with `docker exec` in the container;
+  - `osascript` handles exactly the scripts the hub sends: window geometry, frontmost, raise, and Cmd-Q;
+  - `screencapture` takes the frame from the `fb-export` dump;
+  - `sips` handles the size query.
+
+  Any other form exits 1 with "unsupported". `host/linux_guest/install.sh user@host` installs it with no sudo:
+  - `~/.applebridge/` holds the config, a `lib/` folder, and a copy of the emulator binary for the
+    `fb-export` marker check;
+  - `cliclick` is linked into `~/Documents/BasiliskII/tools/`;
+  - the other three are linked into `~/.applebridge/bin`, which a line at the **top** of `~/.bashrc` puts on
+    the PATH.
+
+  `fb_export.py` reads `~/.applebridge/fb_dump` on the guest, if present, for the dump path. It resolves the
+  bare binary name that Linux `ps` returns in `~/.applebridge`. Mac guests have neither, so nothing changes
+  for them. **Keys**: off macOS, BasiliskII swaps Option and Command (`swap_opt_cmd` defaults to true), so
+  Command is X11 `alt`. Results:
+  - wish `Fakultaet` (S14) built on odroid-c2 and passed 4/4 tests in 209 s;
+  - `project_build.host_cmd_q`'s osascript Cmd-Q quit a launched SimpleText (PROCLIST before/after).
 
 - **Port pairs by convention, explicit in the table:** guest k gets `9000+10k` (daemon) and `9001+10k`
   (control). This keeps today's `9000/9001` for the first guest and `9011` for the 2013's control port. Ten

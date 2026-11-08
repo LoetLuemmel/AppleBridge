@@ -118,7 +118,10 @@ def binary_has_export(exe):
         # the binary is on the other Mac: grep there, -a so the Mach-O counts as text (plain grep declined to match)
         key = ("remote", guest_remote.TARGET, exe)
         if key not in _marker_cache:
-            r = guest_remote.shell(f"LC_ALL=C grep -a -c {MARKER.decode()} {shlex.quote(exe)}")
+            # 2026-11-08 (Linux guest odroid-c2): Linux `ps -o comm=` gives the bare name "BasiliskII", and the binary
+            # sits inside a container. A guest host like that keeps a copy at ~/.applebridge/BasiliskII; the cd makes the
+            # bare name resolve there. A Mac guest has no such folder and passes an absolute path, so nothing changes.
+            r = guest_remote.shell(f"cd ~/.applebridge 2>/dev/null; LC_ALL=C grep -a -c {MARKER.decode()} {shlex.quote(exe)}")
             _marker_cache[key] = r.stdout.strip().isdigit() and int(r.stdout.strip()) > 0
         return _marker_cache[key]
     try:
@@ -161,9 +164,12 @@ def request_dump(pid, path=None, timeout=5.0):
         # 2026-10-08: several readers (the build tool, the wish service's live view, dialog_watch) dump the same remote
         # emulator; one reader's `rm` deleted the file between another's wait and its `cat` ("No such file" -> a build
         # without a verdict, twice). A mkdir lock serialises them; a lock older than 10 s is taken over (a killed reader).
-        script = (f"L={shlex.quote(path)}.lock; j=0; until mkdir \"$L\" 2>/dev/null; do j=$((j+1)); "
+        # 2026-11-08: a guest host whose emulator dumps elsewhere (odroid-c2: the container writes /data/fb, a bind mount)
+        # names that file in ~/.applebridge/fb_dump; without the file the hub's path is used, as before.
+        script = (f"f=$(cat ~/.applebridge/fb_dump 2>/dev/null || echo {shlex.quote(path)}); "
+                  f"L=\"$f\".lock; j=0; until mkdir \"$L\" 2>/dev/null; do j=$((j+1)); "
                   f"[ $j -gt 200 ] && {{ rmdir \"$L\" 2>/dev/null; j=0; }}; sleep 0.05; done; trap 'rmdir \"$L\"' EXIT; "
-                  f"f={shlex.quote(path)}; rm -f \"$f\"; kill -USR1 {int(pid)} || exit 3; i=0; "
+                  f"rm -f \"$f\"; kill -USR1 {int(pid)} || exit 3; i=0; "
                   f"while [ ! -f \"$f\" ]; do i=$((i+1)); [ $i -gt {steps} ] && exit 4; sleep 0.01; done; cat \"$f\"")
         r = guest_remote.shell(script, timeout=timeout + 15, text=False)
         if r.returncode == 3:
