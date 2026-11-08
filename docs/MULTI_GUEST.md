@@ -76,6 +76,16 @@ odroid-c2 therefore uses DHCP. Its MAC is `fe:fd:00:00:00:07`: under `ether tun`
 from its PID, and inside the container that PID is always 7. The MAC is therefore stable, so a router
 reservation for it is possible if a fixed address is ever wanted.
 
+**The `etherhelper` guests stay on fixed addresses: DHCP works there, but it hands out the wrong address.**
+On 2026-11-08 the dev2019 guest was switched to *Using DHCP Server*. The router answered, and the guest got
+`192.168.3.154`, which is **`en8`'s own address**, the NIC that `etherhelper` drives. The likely cause: under
+`etherhelper` the guest sits behind Basilisk's MACNAT, so the router sees `en8`'s MAC
+(`00:0c:6c:0b:0e:ad`) and not a MAC of the guest's own. Host and guest then share one IP. The daemon
+reconnected from `.154` and AppleShare stayed mounted, so nothing failed visibly, but the address was taken
+twice. The guest was set back to *Manually* `.244`. Expect the same on every `etherhelper` guest (mbp2013,
+claudia). The rule: **Linux guests on `ether tun` have their own MAC and can use DHCP. macOS guests on
+`etherhelper` do not have their own MAC and need a fixed address outside the DHCP pool.**
+
 ### The Linux guest (odroid-c2, since 2026-11-08)
 
 BasiliskII (macemu fork, `fb-export` branch, built for arm64 without JIT) runs in Docker on the C2.
