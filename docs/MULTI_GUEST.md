@@ -103,6 +103,19 @@ used: after a client disconnected, it killed the display.
   with `SCHED_FIFO`, which the container refuses, and the container crash-loops.
 - **Firewall**: Docker sets `FORWARD DROP` and loads `br_netfilter`, so bridged guest traffic needs
   `ufw route allow in on br0 out on br0`.
+- **Keep LAN multicast away from the guest, or it freezes.** The bridge hands the guest everything the LAN
+  floods: about 15 frames/s here, almost all mDNS/Bonjour (`01:00:5e:00:00:fb`, `33:33:00:00:00:fb`) plus
+  IPv6, SSDP and STP. The emulated Mac on the C2 (no JIT) processes each frame in its Ethernet interrupt.
+  Under that load it stops draining `tun0`: the guest sends a few frames and then nothing, `tx_dropped`
+  on `tun0` climbs into the thousands, and the daemon hangs at `connect: open endpoint`, together with
+  the whole emulator. Measured on 2026-11-08 with everything else unchanged: without the filter the guest
+  hung (1889 frames dropped, no HELLO after 150 s); with it the guest said HELLO after 21 s with 0 frames
+  dropped. It had run unfiltered earlier that morning, while the LAN was quiet, which is why this hides.
+  The fix is an nftables `bridge` table on the host. Towards `tun*` it passes broadcast, AppleTalk
+  multicast (`09:00:07:…`) and unicast, and drops every other multicast. It lives in
+  `/etc/nftables.d/basilisk-tun-filter.nft` and is loaded at boot by `basilisk-tun-filter.service`. The
+  drop counters (`nft list table bridge basilisk_tun_filter`) show it working: 651 frames kept away within
+  a minute of boot.
 - **DHCP from the router works** on this backend, and the guest uses it. See the guest address table
   above for why it is not set to a fixed address.
 - **Watchdogs**: `hangwatch` and `dialogwatch` are macOS-only (`cliclick`/`osascript`). Their agents for
