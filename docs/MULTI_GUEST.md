@@ -50,7 +50,53 @@ R1: no addresses in tracked runtime files). One line per guest:
 dev2019     9000    9001     -                             /Users/…/Basilisk/BasiliskII-ab.app
 mbp2013     9010    9011     pitforster@192.168.3.158      /Users/…/BasiliskII/BasiliskII-ab.app
 claudia     9020    9021     claudiaforster@192.168.3.171  /Users/…/BasiliskII/BasiliskII-ab.app
+odroid-c2   9030    9031     pit@192.168.3.4               /home/pit/basilisk (docker: basilisk-odroid-c2)
 ```
+
+**Guest addresses** (the guests' own Open Transport TCP/IP, set *Manually*; the addresses the hub log shows in
+`Mac connected from (…)`):
+
+| guest | machine | guest IP | network backend |
+|---|---|---|---|
+| dev2019 | dev2019 (hub, `.232`) | `192.168.3.244` | `etherhelper` |
+| mbp2013 | MacBook Pro 2013 (`.158`) | `192.168.3.245` | `etherhelper` |
+| claudia | `.171` | `192.168.3.246` | `etherhelper` |
+| odroid-c2 | ODROID-C2, Linux/arm64 (`.4`) | **DHCP** from the router (seen: `192.168.3.56`) | `ether tun`, bridged to the LAN |
+
+**Do not choose a fixed address because it does not answer a ping.** On 2026-11-08 odroid-c2 was set to
+`.247`, the next number after `.246`. `.247` did not answer a ping then, but it belonged to another LAN device
+(MAC `44:e4:ee:ce:81:7c`, AirPlay on port 7000, nginx on port 80). That device was asleep, or the router
+handed out the address later. Open Transport then reported *"Another device … is using the same IP address"*.
+The daemon lost its heartbeat again and again, and in the end OT shut the interface down. A fixed guest
+address has to come from the router: a reservation, or a range outside the DHCP pool. Do not guess it. The
+daemon dials the hub and the hub identifies the guest by name, so AppleBridge itself never needs a fixed
+guest address.
+
+odroid-c2 therefore uses DHCP. Its MAC is `fe:fd:00:00:00:07`: under `ether tun`, BasiliskII builds the MAC
+from its PID, and inside the container that PID is always 7. The MAC is therefore stable, so a router
+reservation for it is possible if a fixed address is ever wanted.
+
+### The Linux guest (odroid-c2, since 2026-11-08)
+
+BasiliskII (macemu fork, `fb-export` branch, built for arm64 without JIT) runs in Docker on the C2.
+The display is Xvfb, input is `xdotool`, and screenshots come from the `fb-export` dump. VNC is TigerVNC
+`X0tigervnc` on `127.0.0.1:5900`, reached through an ssh tunnel. The Debian `x0vncserver` wrapper is not
+used: after a client disconnected, it killed the display.
+
+- **AppleTalk works**: the AppleShare volumes mount at boot. On Linux the guest is bridged instead of
+  using `etherhelper`. The prefs say `ether tun`. BasiliskII creates `tun0` (TAP mode), and a
+  systemd-networkd rule on the host (`Name=tun*` → `Bridge=br0`) puts it into the LAN bridge `br0`,
+  which also holds the C2's own address. The `etherconfig` script is a no-op, because iproute2 drops
+  file capabilities when it does not run as root.
+- **Rights**: the container uses `--network host`, `--cap-add NET_ADMIN` and `--device /dev/net/tun`.
+  BasiliskII runs as an unprivileged user with `setcap cap_net_admin+ep`. As root it starts its threads
+  with `SCHED_FIFO`, which the container refuses, and the container crash-loops.
+- **Firewall**: Docker sets `FORWARD DROP` and loads `br_netfilter`, so bridged guest traffic needs
+  `ufw route allow in on br0 out on br0`.
+- **DHCP from the router works** on this backend, and the guest uses it. See the guest address table
+  above for why it is not set to a fixed address.
+- **Watchdogs**: `hangwatch` and `dialogwatch` are macOS-only (`cliclick`/`osascript`). Their agents for
+  this row are installed but disabled. Only the host agent runs.
 
 - **Port pairs by convention, explicit in the table:** guest k gets `9000+10k` (daemon) and `9001+10k`
   (control). This keeps today's `9000/9001` for the first guest and `9011` for the 2013's control port. Ten
