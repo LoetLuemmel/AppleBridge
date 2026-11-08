@@ -84,13 +84,39 @@ def pt(s):
     return m.group(1), m.group(2)
 
 
+def glide(chain, cur, x, y, factor):
+    """cliclick -e (demo mode, guest_input.demo_easing): the pointer GLIDES to (x, y) instead of jumping (2026-11-08,
+    operator: the pointer jumped from point to point on odroid-c2). Ease-in-out in small mousemove steps inside the same
+    xdotool chain; duration grows with the distance and the easing factor (200 -> about 0.5 s across the screen)."""
+    if cur is None:
+        return
+    x0, y0 = cur; dist = ((int(x) - x0) ** 2 + (int(y) - y0) ** 2) ** 0.5
+    if dist < 4:
+        return
+    dur = min(1.2, max(0.15, factor / 400 * min(1.0, dist / 600)))
+    n = max(6, int(dur / 0.02))
+    for k in range(1, n):
+        t = k / n; e = 4 * t ** 3 if t < 0.5 else 1 - (-2 * t + 2) ** 3 / 2
+        chain += ["mousemove", round(x0 + (int(x) - x0) * e), round(y0 + (int(y) - y0) * e), "sleep", "%.3f" % (dur / n)]
+
+
 def cliclick(argv):
-    chain, i = [], 0
+    chain, i, ease, cur = [], 0, 0, None
+    if "-e" in argv:
+        try:
+            ease = int(argv[argv.index("-e") + 1])
+            loc = dict(re.findall(r"(\w+):(-?\d+)", xdo(["getmouselocation"])))
+            cur = (int(loc["x"]), int(loc["y"]))
+        except (ValueError, IndexError, KeyError):
+            ease = 0
     while i < len(argv):
         a = argv[i]
-        if a in ("-e", "-w"):          # easing / default wait: the gesture is the same without them
+        if a in ("-e", "-w"):          # easing is read above; default wait: the gesture is the same without it
             i += 2
             continue
+        verb0, _, arg0 = a.partition(":")
+        if ease and verb0 in ("m", "c", "dc", "tc", "dd", "du", "dm"):
+            x, y = pt(arg0); glide(chain, cur, x, y, ease); cur = (int(x), int(y))
         if a.startswith("-"):
             die(f"unsupported option {a}")
         verb, _, arg = a.partition(":")
