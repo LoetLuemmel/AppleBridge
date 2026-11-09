@@ -74,12 +74,28 @@ def test_an_unknown_guest_is_an_error_naming_the_table_and_runs_nothing(conn):
 
 @with_stubs
 def test_host_local_tools_are_refused_per_call_for_a_guest_on_another_machine(conn):
+    """the ones that act on THIS Mac only (AppleScript, the stack probe, the Route-B trigger) stay refused"""
     called = []
-    T.TOOL_HANDLERS["mac_host_click"] = lambda **kw: called.append(kw) or {"success": True}
-    r = T.call_tool("mac_host_click", {"x": 1, "y": 1, "guest": "far"})
+    T.TOOL_HANDLERS["run_applescript"] = lambda **kw: called.append(kw) or {"success": True}
+    r = T.call_tool("run_applescript", {"script": "x", "guest": "far"})
     assert r.get("refused") and "'far' runs on another machine" in r["error"] and not called, r
-    r = T.call_tool("mac_host_click", {"x": 1, "y": 1, "guest": "dev"})
-    assert r.get("success") and called == [{"x": 1, "y": 1}], (r, called)
+    r = T.call_tool("run_applescript", {"script": "x", "guest": "dev"})
+    assert r.get("success") and called == [{"script": "x"}], (r, called)
+
+
+@with_stubs
+def test_gestures_and_frames_of_a_guest_with_ssh_run_on_its_own_machine(conn):
+    """host click, menu, screenshot and fb screenshot go to the row's ssh target for that call, then back"""
+    seen = []
+    for name in T.REMOTE_CAPABLE:
+        T.TOOL_HANDLERS[name] = lambda _n=name, **kw: seen.append((_n, T.guest_remote.TARGET)) or {"success": True}
+    before = T.guest_remote.TARGET
+    r = T.call_tool("mac_host_click", {"x": 1, "y": 1, "guest": "far"})
+    assert r.get("success") and r.get("via") == "ssh u@192.0.2.1" and r.get("guest") == "far", r
+    assert seen == [("mac_host_click", "u@192.0.2.1")] and T.guest_remote.TARGET == before, (seen, before)
+    T.call_tool("mac_fb_screenshot", {"guest": "far"})
+    T.call_tool("mac_host_click", {"x": 1, "y": 1, "guest": "dev"})   # the local guest: this Mac, no ssh
+    assert seen[1:] == [("mac_fb_screenshot", "u@192.0.2.1"), ("mac_host_click", before)], seen
 
 
 def test_without_a_table_a_named_guest_is_explained_not_guessed():
