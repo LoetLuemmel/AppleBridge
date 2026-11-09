@@ -322,6 +322,12 @@ class Session:
         self._geom = None
 
     def guest_size(self):
+        if guest_remote.active():               # the guest's own machine has its prefs, not this one
+            try:
+                p = guest_remote.shell("cat ~/.basilisk_ii_prefs 2>/dev/null", timeout=10)
+            except Exception:                   # noqa: BLE001  (no prefs there, e.g. a Linux container)
+                return DEFAULT_GUEST_SIZE
+            return parse_guest_size(p.stdout) if p.returncode == 0 else DEFAULT_GUEST_SIZE
         try:
             with open(PREFS_PATH) as fh:
                 return parse_guest_size(fh.read())

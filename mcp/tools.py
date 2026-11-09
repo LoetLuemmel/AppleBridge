@@ -32,6 +32,7 @@ import guests as guest_table  # noqa: E402  (D-028: host/guests.conf, for the `g
 import pump_probe  # noqa: E402  (is the target reading, before a no-reply send)
 import c89_lint  # noqa: E402  (name the C99 habits MPW's 1994 compiler rejects)
 import fb_export  # noqa: E402  (host-side framebuffer capture from a local Basilisk)
+import guest_remote  # noqa: E402  (the same tools on a guest's own machine, over SSH)
 
 
 def _ostype(value, default="????") -> bytes:
@@ -2938,6 +2939,28 @@ HOST_LOCAL_TOOLS = {
 }
 
 
+# These four have an SSH road (guest_remote.py, and host/linux_guest's shim on a Linux host): framebuffer export,
+# cliclick and screencapture run on the guest's OWN machine. For a guest whose guests.conf row names an ssh target they
+# go there instead of being refused (2026-11-09) - the bridge-only fallbacks are the slow path that made remote guests
+# look slow: a bridge screenshot is ~140 ms a look and blind while a menu or modal dialog tracks, and a menu without a
+# shortcut or a modal button cannot be reached at all. The other three stay refused: they act on this Mac only.
+REMOTE_CAPABLE = {"mac_fb_screenshot", "mac_host_click", "mac_host_menu", "mac_host_screenshot"}
+
+
+@contextlib.contextmanager
+def on_guest_machine(ssh):
+    """guest_input and fb_export act on `ssh`'s machine for the duration (None: unchanged)"""
+    if not ssh:
+        yield
+        return
+    saved = guest_remote.TARGET
+    guest_remote.TARGET = ssh
+    try:
+        yield
+    finally:
+        guest_remote.TARGET = saved
+
+
 def resolve_guest(name: str):
     """-> (row of guests.conf, None) or (None, error message)"""
     try:
@@ -2958,13 +2981,22 @@ def call_tool(name: str, arguments: Dict[str, Any]) -> Any:
         raise ValueError(f"Unknown tool: {name}")
     arguments = dict(arguments or {})
     guest = arguments.pop("guest", None) if name not in NO_GUEST_PARAM else None
-    port, remote = None, REMOTE_GUEST
+    port, remote, ssh = None, REMOTE_GUEST, guest_remote.TARGET or None
     if guest:
         row, err = resolve_guest(guest)
         if err:
             return {"success": False, "error": err}
         # Per call, not per server: the guest named here decides whether this Mac's own screen and mouse are its.
-        port, remote = row.ctrl_port, not row.local
+        port, remote, ssh = row.ctrl_port, not row.local, row.ssh
+    if remote and name in REMOTE_CAPABLE and ssh:
+        with on_guest_machine(ssh):                    # its own machine does it, over SSH
+            handler = TOOL_HANDLERS[name]
+            repeat = _REPEATS.note(name, dict(arguments, guest=guest) if guest else arguments)
+            with using_port(port):
+                result = _run_handler(handler, name, arguments, repeat, guest)
+        if isinstance(result, dict) and "via" not in result:
+            result["via"] = f"ssh {ssh}"
+        return result
     if remote and name in HOST_LOCAL_TOOLS:
         who = f"guest {guest!r} runs on another machine" if guest else \
             "this MCP server serves a guest on another machine (APPLEBRIDGE_REMOTE_GUEST=1)"

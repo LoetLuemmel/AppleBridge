@@ -142,6 +142,16 @@ used: after a client disconnected, it killed the display.
   - wish `Fakultaet` (S14) built on odroid-c2 and passed 4/4 tests in 209 s;
   - `project_build.host_cmd_q`'s osascript Cmd-Q quit a launched SimpleText (PROCLIST before/after).
 
+- **The hub's MCP server drives them too (2026-11-09).** With `guest` set to a row that has an ssh target,
+  `mac_fb_screenshot`, `mac_host_click`, `mac_host_menu` and `mac_host_screenshot` run on that guest's own machine
+  through `guest_remote.py` for the duration of the call; the result says `via: ssh user@host`. They were refused
+  before, which left remote guests with the bridge screenshot (blind while a menu or modal dialog tracks) and with
+  no way to reach a menu item without a shortcut or a modal button. `mac_menu_front`, `run_applescript` and
+  `bridge_doctor` act on the hub alone and stay refused. The guest's screen size for the title-bar arithmetic
+  comes from `~/.basilisk_ii_prefs` on its machine (the default 1024x768 where there is none, as on the C2).
+  Measured on odroid-c2 from the hub: a framebuffer screenshot 0.19 s once the SSH master is up (0.31 s cold,
+  bridge screenshot 0.56 s), a host click 1.3 s.
+
 - **Port pairs by convention, explicit in the table:** guest k gets `9000+10k` (daemon) and `9001+10k`
   (control). This keeps today's `9000/9001` for the first guest and `9011` for the 2013's control port. Ten
   guests use 9000–9091. The table, not the rule, is authoritative; the installer refuses duplicates.
