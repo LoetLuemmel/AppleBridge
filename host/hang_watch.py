@@ -66,11 +66,24 @@ LOG = local_env("APPLEBRIDGE_HANG_LOG", f"/tmp/applebridge_hang_watch_{PORT}.log
 WHERE = guest_remote.TARGET if REMOTE else "this Mac"
 
 
+RELAUNCH_CRASHED = local_env("APPLEBRIDGE_HANG_RELAUNCH_CRASHED", "1") == "1"
+CRASH_DIR = "$HOME/Library/Logs/DiagnosticReports"
+
+
 class HangJudge:
-    """observe(pid, answered, cpu, frame) -> "ok" | "booting" | "quiet" | "silent" | "kill"
+    """observe(pid, answered, cpu, frame, crashed) -> "ok" | "booting" | "quiet" | "silent" | "kill" | "gone" | "relaunch"
 
     answered: True (PROCLIST shows Finder), False (no answer / no Finder), None (control port refused: no evidence)
-    cpu: percent, or None if unknown;  frame: a hash of the framebuffer, or None if it cannot be read"""
+    cpu: percent, or None if unknown;  frame: a hash of the framebuffer, or None if it cannot be read
+    crashed: only looked at while no emulator process exists - True if a BasiliskII crash report was written since the
+             process was last seen alive, False if none, None if the reports cannot be read (no evidence)
+
+    DEAD (2026-11-15): the 2013 guest's emulator died of a SIGSEGV on 2026-11-12 20:08 (a generated program wrote through
+    a wild pointer outside the guest's RAM; Basilisk maps guest memory directly, so the host process dies instead of the
+    Mac showing a bomb). With no process this judge said "quiet", and the guest stayed dead for 2.5 days. Now: a process
+    that had answered and then vanished WITH a new crash report -> "relaunch", once; without a crash report it was quit
+    on purpose (operator, guest_boot, a kill above) -> "gone", never relaunched. After a relaunch the next one needs a new
+    process that has answered first, as after a kill - no relaunch loop."""
 
     def __init__(self, silent_s=SILENT_S, cpu_min=CPU_MIN):
         self.silent_s, self.cpu_min = silent_s, cpu_min
@@ -78,13 +91,25 @@ class HangJudge:
         self.armed = False          # the bridge answered since this process started
         self.since = None           # start of the current silent, busy, frozen window
         self.frame = None
+        self.lost = None            # (pid, last time seen alive) of an ANSWERED process that has vanished
+        self.alive_at = None        # last observation with this process alive
 
-    def observe(self, pid, answered, cpu, frame, now=None):
+    def observe(self, pid, answered, cpu, frame, now=None, crashed=None):
         now = time.time() if now is None else now
         if pid != self.pid:                      # a new emulator process: wait until it has answered once
+            if pid is None and self.pid is not None and self.armed:
+                self.lost = (self.pid, self.alive_at)
+            elif pid is not None:
+                self.lost = None
             self.pid, self.armed, self.since, self.frame = pid, False, None, None
         if pid is None:
-            return "quiet"
+            if self.lost is None:
+                return "quiet"
+            if crashed is None:                  # reports unreadable: wait, decide on a later look
+                return "quiet"
+            self.lost = None                     # decided once per lost process
+            return "relaunch" if crashed else "gone"
+        self.alive_at = now
         if answered:
             self.armed, self.since, self.frame = True, None, frame
             return "ok"
@@ -182,6 +207,24 @@ def say(msg):
     except OSError: pass
 
 
+def crash_report_since(t_alive):
+    """True if a BasiliskII crash report (.crash or .ips) on the emulator's machine was written at or after t_alive minus
+    one interval (the report appears seconds after the death, which lies between the last alive look and now); False if
+    none; None if the folder cannot be read. Epoch mtimes, so the two machines' time zones do not matter."""
+    # /bin/sh explicitly: the remote login shell is zsh, which aborts on a glob without a match before END (2026-11-15)
+    script = f'for f in {CRASH_DIR}/BasiliskII*.crash {CRASH_DIR}/BasiliskII*.ips; do [ -f "$f" ] && stat -f %m "$f"; done; echo END'
+    try:
+        r = (guest_remote.shell("/bin/sh -c '" + script + "'", timeout=20) if REMOTE
+             else subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True, timeout=20))
+    except Exception:
+        return None
+    lines = (r.stdout or "").split()
+    if not lines or lines[-1] != "END":
+        return None
+    newest = max((int(x) for x in lines[:-1] if x.isdigit()), default=0)
+    return newest >= (t_alive or 0) - INTERVAL
+
+
 def restart(pid):
     guest = "Der Gast auf dem zweiten Mac" if REMOTE else "Der lokale Gast"
     say(f"{guest} hängt seit {int(SILENT_S / 60)} Minuten bei voller Last. Ich beende Basilisk und starte neu.")
@@ -194,6 +237,11 @@ def restart(pid):
         log(f"pid {pid} survived TERM - KILL")
         sh(["kill", "-9", str(pid)])
     time.sleep(3)
+    relaunch(guest)
+
+
+def relaunch(guest=None):
+    guest = guest or ("Der Gast auf dem zweiten Mac" if REMOTE else "Der lokale Gast")
     if not APP:
         say("Kein Emulatorpfad konfiguriert. Basilisk ist beendet, aber nicht neu gestartet.")
         return
@@ -225,7 +273,8 @@ def observe_once(judge):
     answered = bridge_answers() if pid else None
     cpu = emulator_cpu(pid) if pid and not answered else None
     frame = frame_hash() if pid and answered is False else None
-    verdict = judge.observe(pid, answered, cpu, frame)
+    crashed = crash_report_since(judge.lost[1]) if pid is None and judge.lost else None
+    verdict = judge.observe(pid, answered, cpu, frame, crashed=crashed)
     return verdict, pid, answered, cpu, frame
 
 
@@ -247,6 +296,15 @@ def main(argv):
                     f"for {0 if judge.since is None else time.time() - judge.since:.0f} s")
             if verdict == "kill":
                 restart(pid)
+            elif verdict == "gone":
+                log("the emulator process is gone without a crash report (quit on purpose) - left closed")
+            elif verdict == "relaunch":
+                if RELAUNCH_CRASHED:
+                    guest = "Der Gast auf dem zweiten Mac" if REMOTE else "Der lokale Gast"
+                    say(f"{guest}: Basilisk ist abgestürzt. Ich starte neu.")
+                    relaunch(guest)
+                else:
+                    log("the emulator crashed (new crash report) - relaunch disabled (APPLEBRIDGE_HANG_RELAUNCH_CRASHED=0)")
         except Exception as e:                   # the watcher itself must not die of one bad observation
             log(f"observation failed: {e!r}")
         time.sleep(INTERVAL)

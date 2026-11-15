@@ -39,4 +39,26 @@ check("a new emulator process starts unarmed (relaunched, booting)", "kill" not 
 v = run([(None, None, None, None)] * 5)
 check("no emulator running -> quiet", set(v) == {"quiet"}, v)
 
+# DEAD (2026-11-15): the process vanished. steps: (pid, answered, cpu, frame, crashed) - crashed only matters without a pid
+def run_dead(steps):
+    j = HW.HangJudge(300, 90)
+    return [j.observe(p, a, c, f, now=i * 60, crashed=k) for i, (p, a, c, f, k) in enumerate(steps)]
+up = [(1, True, 5, None, None)] * 2
+v = run_dead(up + [(None, None, None, None, True)] * 5)
+check("answered, then vanished WITH a crash report -> relaunch, exactly once", v[2] == "relaunch" and v.count("relaunch") == 1, v)
+v = run_dead(up + [(None, None, None, None, False)] * 5)
+check("vanished WITHOUT a crash report (quit on purpose) -> gone, never relaunch", "relaunch" not in v and v.count("gone") == 1, v)
+v = run_dead(up + [(None, None, None, None, None)] * 2 + [(None, None, None, None, True)])
+check("crash reports unreadable -> wait, decide on a later look", v[2:4] == ["quiet", "quiet"] and v[4] == "relaunch", v)
+v = run_dead([(1, False, 100, "x", None)] * 3 + [(None, None, None, None, True)] * 3)
+check("a process that never answered (crashed while booting) -> no relaunch (no loop)", "relaunch" not in v, v)
+v = run_dead(up + [(None, None, None, None, True)] + [(2, False, 100, "x", None)] * 2 + [(None, None, None, None, True)] * 3)
+check("relaunched process dies again before answering -> no second relaunch", v.count("relaunch") == 1, v)
+v = run_dead(up + [(None, None, None, None, True)] + [(2, True, 5, None, None)] * 2 + [(None, None, None, None, True)] * 2)
+check("relaunched process answered, then crashed again -> a second relaunch is allowed", v.count("relaunch") == 2, v)
+v = run_dead(up + [(1, False, 100, "x", None)] * 6 + [(None, None, None, None, True)] * 3)
+check("after the watcher's own kill (unarmed) the vanished process is not relaunched a second time", v.count("kill") == 1 and "relaunch" not in v, v)
+v = run_dead([(None, None, None, None, True)] * 4)
+check("watcher started with the emulator already dead (old crash) -> quiet, no relaunch", set(v) == {"quiet"}, v)
+
 print(f"\n{PASS} passed, {FAIL} failed"); sys.exit(1 if FAIL else 0)
