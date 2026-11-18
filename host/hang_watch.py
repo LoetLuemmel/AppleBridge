@@ -256,6 +256,14 @@ def relaunch(guest=None):
         say("Kein Emulatorpfad konfiguriert. Basilisk ist beendet, aber nicht neu gestartet.")
         return
     r = sh(["open", APP], timeout=30)
+    if r.returncode == 0:
+        # 2026-11-18 (claudia, after `kill -9`): `open` answered 0 and started nothing - LaunchServices still counted the
+        # killed bundle as running; guest_boot then waited 7 minutes for a guest that never came. Trust only a process.
+        for _ in range(15):
+            if emulator_pid(): break
+            time.sleep(1)
+        else:
+            r = subprocess.CompletedProcess(r.args, 1, "", "open answered 0 but no BasiliskII process appeared within 15 s")
     if r.returncode != 0:                        # LaunchServices can answer -600 after a bundle died (2026-10-01)
         log(f"open failed ({(r.stderr or '').strip()}) - starting the binary directly")
         exe = os.path.join(APP, "Contents", "MacOS", "BasiliskII")
