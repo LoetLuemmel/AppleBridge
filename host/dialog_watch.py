@@ -11,9 +11,20 @@ Every CHECK_S seconds, from the framebuffer (fb_export: no bridge traffic, works
   known dialog (host/refs/*.json, the boot shepherd's matcher)
      appletalk_interrupted -> Return (harmless, transient)          ; screenshot + log
      empty_trash           -> Escape = Cancel (never delete)        ; screenshot + log
-     appleshare_login / ip_conflict -> NO input, spoken alert        ; screenshot + log
+     appleshare_login / ip_conflict -> NO input, spoken alert        ; screenshot + log + notification
+     system_error (the bomb)  -> click Restart, guest_boot.py        ; screenshot + log + notification (2026-11-17, see below)
   bridge silent on THREE checks in a row (two fired twice on 2026-10-09 during a daemon reconnect), emulator present and NOT busy (cpu < 50 %)
-     -> an unknown modal is likely: screenshot + spoken alert, NO input (a person decides what to click)
+     -> an unknown modal is likely: screenshot + spoken alert + notification, NO input (a person decides what to click)
+
+The bomb (2026-11-17: S19's "Begruessung" stopped mbp2013 with "error type 10" at 09:13; nothing reacted - this watcher
+skipped it because its unknown-modal rule wants < 50 % CPU and a bombed Basilisk spins at 100 %, hang_watch would have
+killed the emulator after 5 minutes; the operator clicked Restart by hand). The system-error dialog is answered at once:
+its two text lines (the program's name and the error type) are read with xavier-eval's bitmap_reader where it is
+installed, the operator gets a notification (operator_notify.py, APPLEBRIDGE_NOTIFY_CMD) naming the machine, the program
+and the error, the guest's real mouse clicks
+Restart (refs/system_error.json "click", guest_input -> cliclick, on a remote guest its tools copy),
+and guest_boot.py brings the restarted System 7 back (AppleShare login, volumes). A program that bombs a guest must be
+found and stopped - the message says so.
 Screenshots: /tmp/dialog_watch_<port>/<time>_<what>.png. Log: /tmp/applebridge_dialog_watch_<port>.log.
 A guest on another Mac: APPLEBRIDGE_CTRL_PORT=9011 APPLEBRIDGE_GUEST_SSH=user@host (same as guest_boot.py).
 stdlib only; run with /usr/bin/python3."""
@@ -21,6 +32,7 @@ import os, subprocess, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 import fb_export, guest_remote, screenshot_decode
 import guest_boot as GB
+import operator_notify
 
 PORT = GB.PORT
 CHECK_S = int(os.environ.get("DIALOG_WATCH_S", "45"))
@@ -38,6 +50,65 @@ def shot(f, what):
     return p
 
 
+def notify(msg):
+    return operator_notify.notify(msg, log=log)
+
+
+def bomb_text(f, ref):
+    """the bomb's lines after the first ('"Begruessung"', 'error type 10') via bitmap_reader, or []"""
+    try:
+        sys.path.insert(0, os.environ.get("APPLEBRIDGE_TEXT_READER_DIR", os.path.expanduser("~/Documents/Dev/xavier-eval")))
+        import bitmap_reader
+
+        class _Frame:                                         # the fields bitmap_reader takes from think_project_gate.Frame
+            pass
+        fr = _Frame(); fr.f = f; fr.px = f["pixels"]; fr.rb = f["row_bytes"]; fr.w = f["width"]; fr.h = f["height"]
+        x0, y0, x1, y1 = ref.get("text_rect") or ref["rect"]
+        lines = [l["text"].strip() for l in bitmap_reader.read(fr, (x0, y0, x1 - x0, y1 - y0)) if l.get("text", "").strip()][1:]
+        # 2026-11-18: the program name in curly quotes read as "Bo??????bRe????" - a line that is mostly unread is left out
+        return [l for l in lines if l.count("?") <= len(l) // 4]
+    except Exception as e:
+        log(f"bomb text unreadable ({type(e).__name__}: {str(e)[:60]})")
+        return []
+
+
+def answer_bomb(f):
+    import json
+    ref = json.load(open(os.path.join(GB.REFS, "system_error.json")))
+    p = shot(f, "system_error"); lines = bomb_text(f, ref); what = " / ".join(lines) or "Text nicht gelesen"
+    log(f"system-error bomb: {what} ({p})")
+    GB.say(f"Systemfehler im Gast {WHERE}. Ich klicke auf Neustart.")
+    notify(f"Systemfehler-Bombe ({what}). Ich klicke 'Restart'. Das Programm muss gefunden und gestoppt werden.")
+    # 2026-11-18 (claudia, second test bomb): the click was sent and logged, the bomb stayed - hang_watch killed the emulator
+    # 5 minutes later. A click counts only when the bomb is GONE afterwards; up to three tries.
+    gone = False
+    for attempt in range(1, 4):
+        try:
+            import guest_input
+            with guest_input.Session() as s:
+                s.cliclick(guest_input.build_click(s.point(*ref["click"])))
+        except Exception as e:
+            log(f"bomb: Restart click {attempt} failed ({type(e).__name__}: {str(e)[:100]})")
+            continue
+        time.sleep(3)
+        try: gone = GB.which_dialog(GB.frame()) != "system_error"
+        except Exception: gone = True          # no frame: the emulator is restarting
+        log(f"bomb: Restart click {attempt} - the bomb is {'gone' if gone else 'STILL UP'}")
+        if gone: break
+    if not gone:
+        notify("Klick auf 'Restart' wirkte dreimal nicht. hang_watch beendet den Emulator nach 5 Minuten, oder bitte von Hand klicken.")
+        return
+    time.sleep(25)                                            # System 7 restarts inside the same emulator process
+    try:
+        GB.main(420); back = GB.ctrl("PROCLIST", 12).startswith("STATUS:0")
+    except SystemExit as e:
+        back = not e.code
+    except Exception as e:
+        log(f"bomb: guest_boot failed ({type(e).__name__})"); back = False
+    log(f"bomb: guest {'back' if back else 'NOT back'} after the restart")
+    notify("nach dem Bomben-Neustart wieder da." if back else "kommt nach dem Bomben-Neustart NICHT zurück - bitte nachsehen.")
+
+
 def emulator_cpu():
     """-> cpu % of the emulator, or None when no emulator runs (on the guest's own Mac)"""
     cmd = ["sh", "-c", "ps -Ao %cpu,comm | grep '[B]asiliskII' | head -1"]
@@ -48,7 +119,7 @@ def emulator_cpu():
 
 
 def main():
-    silent = 0; alerted = None
+    silent = 0; alerted = None; waiting = 0; waiting_d = None
     log(f"watching control port {PORT} every {CHECK_S} s")
     while True:
         try: f = GB.frame()
@@ -60,11 +131,17 @@ def main():
         if d == "empty_trash":                                    # the Finder's "Empty Trash?" alert: never OK - Escape is Cancel
             p = shot(f, d); GB.keys([GB.FRONT, "delay 0.6", 'tell application "System Events" to key code 53'])
             log(f"Empty-Trash alert CANCELLED with Escape ({p})"); time.sleep(5); continue
+        if d == "system_error":
+            answer_bomb(f); alerted = None; silent = 0; time.sleep(CHECK_S); continue
         if d in ("appleshare_login", "ip_conflict"):
+            waiting = waiting + 1 if waiting_d == d else 1; waiting_d = d
+            if waiting == 2:                                  # still there one check later: guest_boot did not take it
+                notify(f"wartet auf {'die AppleShare-Anmeldung' if d == 'appleshare_login' else 'einen IP-Adresskonflikt-Dialog'} - bitte prüfen.")
             if alerted != d:
                 p = shot(f, d); log(f"{d} waiting - no input given ({p})"); alerted = d
                 GB.say(f"Auf dem Gast {WHERE} wartet ein Dialog: {'AppleShare-Anmeldung' if d == 'appleshare_login' else 'IP-Adresskonflikt'}. Bitte prüfen.")
             time.sleep(CHECK_S); continue
+        waiting_d = None
         answered = GB.ctrl("PROCLIST", 12).startswith("STATUS:0")
         silent = 0 if answered else silent + 1
         if answered: alerted = None
@@ -73,6 +150,7 @@ def main():
             if cpu is not None and cpu < 50:                      # a hang (>= 90 %) belongs to hang_watch.py
                 p = shot(f, "bridge_silent"); log(f"bridge silent on {silent} checks, emulator at {cpu:.0f} % CPU - a modal is likely ({p})")
                 GB.say(f"Der Gast {WHERE} antwortet nicht, der Emulator ist aber ruhig. Vermutlich wartet ein Dialog. Ein Bildschirmfoto liegt bereit.")
+                notify(f"antwortet nicht, Emulator ruhig ({cpu:.0f} % CPU) - vermutlich wartet ein Dialog. Bildschirmfoto: {p}")
                 alerted = "unknown"
         time.sleep(CHECK_S)
 

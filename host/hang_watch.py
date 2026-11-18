@@ -29,6 +29,8 @@ Configuration (environment, or host/local.env):
                                 (for a remote guest: APPLEBRIDGE_GUEST_EMULATOR_APP, so local.env can hold both)
   APPLEBRIDGE_HANG_SILENT_S     default 300      APPLEBRIDGE_HANG_CPU   default 90      APPLEBRIDGE_HANG_INTERVAL  default 60
   APPLEBRIDGE_HANG_LOG          default /tmp/applebridge_hang_watch_<port>.log
+  APPLEBRIDGE_NOTIFY_CMD        every crash, kill and relaunch result is also handed to this command, naming the machine
+                                (2026-11-17, operator_notify.py: any channel - notification, ntfy, mail, a messenger)
 Run:  hang_watch.py            watch forever (the LaunchAgents: install_guests.py, one per guest)
       hang_watch.py --once     one observation, printed — what the judge would see right now"""
 import hashlib
@@ -41,6 +43,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import guest_remote  # noqa: E402
+import operator_notify  # noqa: E402
 
 
 def local_env(key, default=""):
@@ -66,6 +69,7 @@ LOG = local_env("APPLEBRIDGE_HANG_LOG", f"/tmp/applebridge_hang_watch_{PORT}.log
 WHERE = guest_remote.TARGET if REMOTE else "this Mac"
 
 
+NAME = operator_notify.machine_name()
 RELAUNCH_CRASHED = local_env("APPLEBRIDGE_HANG_RELAUNCH_CRASHED", "1") == "1"
 CRASH_DIR = "$HOME/Library/Logs/DiagnosticReports"
 
@@ -207,6 +211,11 @@ def say(msg):
     except OSError: pass
 
 
+def notify(msg):
+    """a message to the operator naming this machine (operator_notify.py, APPLEBRIDGE_NOTIFY_CMD; never raises)"""
+    return operator_notify.notify(msg, log=log, name=NAME)
+
+
 def crash_report_since(t_alive):
     """True if a BasiliskII crash report (.crash or .ips) on the emulator's machine was written at or after t_alive minus
     one interval (the report appears seconds after the death, which lies between the last alive look and now); False if
@@ -228,6 +237,7 @@ def crash_report_since(t_alive):
 def restart(pid):
     guest = "Der Gast auf dem zweiten Mac" if REMOTE else "Der lokale Gast"
     say(f"{guest} hängt seit {int(SILENT_S / 60)} Minuten bei voller Last. Ich beende Basilisk und starte neu.")
+    notify(f"Basilisk hing {int(SILENT_S / 60)} Minuten bei voller Last (pid {pid}) - beendet, Neustart läuft.")
     sh(["kill", str(pid)])
     for _ in range(10):
         time.sleep(1)
@@ -246,6 +256,14 @@ def relaunch(guest=None):
         say("Kein Emulatorpfad konfiguriert. Basilisk ist beendet, aber nicht neu gestartet.")
         return
     r = sh(["open", APP], timeout=30)
+    if r.returncode == 0:
+        # 2026-11-18 (claudia, after `kill -9`): `open` answered 0 and started nothing - LaunchServices still counted the
+        # killed bundle as running; guest_boot then waited 7 minutes for a guest that never came. Trust only a process.
+        for _ in range(15):
+            if emulator_pid(): break
+            time.sleep(1)
+        else:
+            r = subprocess.CompletedProcess(r.args, 1, "", "open answered 0 but no BasiliskII process appeared within 15 s")
     if r.returncode != 0:                        # LaunchServices can answer -600 after a bundle died (2026-10-01)
         log(f"open failed ({(r.stderr or '').strip()}) - starting the binary directly")
         exe = os.path.join(APP, "Contents", "MacOS", "BasiliskII")
@@ -266,6 +284,8 @@ def relaunch(guest=None):
             os.replace(flag, f"{LOG}.flag-{time.strftime('%Y%m%d-%H%M%S')}")
             log(f"cleared {flag} (the build tool's hang flag for the hang just ended)")
     say(f"{guest} ist wieder da." if back else f"{guest} kommt nach dem Neustart nicht zurück.")
+    notify("nach dem Neustart wieder da (guest_boot: " + ((boot.stdout.strip().splitlines() or ["keine Ausgabe"])[-1].strip()[:80]) + ")."
+           if back else "kommt nach dem Neustart NICHT zurück - bitte nachsehen.")
 
 
 def observe_once(judge):
@@ -280,6 +300,8 @@ def observe_once(judge):
 
 def main(argv):
     judge = HangJudge()
+    if "--notify-test" in argv:                  # one test message, then exit
+        return 0 if notify(" ".join(a for a in argv if a != "--notify-test") or "Testnachricht von hang_watch.") else 1
     if "--once" in argv:
         print(observe_once(judge)[:4])
         return 0
@@ -302,9 +324,12 @@ def main(argv):
                 if RELAUNCH_CRASHED:
                     guest = "Der Gast auf dem zweiten Mac" if REMOTE else "Der lokale Gast"
                     say(f"{guest}: Basilisk ist abgestürzt. Ich starte neu.")
+                    notify("Basilisk ist abgestürzt (neuer Crash-Report in ~/Library/Logs/DiagnosticReports). Neustart läuft. "
+                           "Ursache klären: welches Programm lief gerade?")
                     relaunch(guest)
                 else:
                     log("the emulator crashed (new crash report) - relaunch disabled (APPLEBRIDGE_HANG_RELAUNCH_CRASHED=0)")
+                    notify("Basilisk ist abgestürzt (neuer Crash-Report). Kein automatischer Neustart (abgeschaltet).")
         except Exception as e:                   # the watcher itself must not die of one bad observation
             log(f"observation failed: {e!r}")
         time.sleep(INTERVAL)
