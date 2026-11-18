@@ -64,7 +64,9 @@ def bomb_text(f, ref):
             pass
         fr = _Frame(); fr.f = f; fr.px = f["pixels"]; fr.rb = f["row_bytes"]; fr.w = f["width"]; fr.h = f["height"]
         x0, y0, x1, y1 = ref.get("text_rect") or ref["rect"]
-        return [l["text"].strip() for l in bitmap_reader.read(fr, (x0, y0, x1 - x0, y1 - y0)) if l.get("text", "").strip()][1:]
+        lines = [l["text"].strip() for l in bitmap_reader.read(fr, (x0, y0, x1 - x0, y1 - y0)) if l.get("text", "").strip()][1:]
+        # 2026-11-18: the program name in curly quotes read as "Bo??????bRe????" - a line that is mostly unread is left out
+        return [l for l in lines if l.count("?") <= len(l) // 4]
     except Exception as e:
         log(f"bomb text unreadable ({type(e).__name__}: {str(e)[:60]})")
         return []
@@ -77,14 +79,24 @@ def answer_bomb(f):
     log(f"system-error bomb: {what} ({p})")
     GB.say(f"Systemfehler im Gast {WHERE}. Ich klicke auf Neustart.")
     notify(f"Systemfehler-Bombe ({what}). Ich klicke 'Restart'. Das Programm muss gefunden und gestoppt werden.")
-    try:
-        import guest_input
-        with guest_input.Session() as s:
-            s.cliclick(guest_input.build_click(s.point(*ref["click"])))
-        log("bomb: Restart clicked")
-    except Exception as e:
-        log(f"bomb: Restart click failed ({type(e).__name__}: {str(e)[:100]})")
-        notify(f"Klick auf 'Restart' fehlgeschlagen ({str(e)[:80]}). Bitte von Hand klicken.")
+    # 2026-11-18 (claudia, second test bomb): the click was sent and logged, the bomb stayed - hang_watch killed the emulator
+    # 5 minutes later. A click counts only when the bomb is GONE afterwards; up to three tries.
+    gone = False
+    for attempt in range(1, 4):
+        try:
+            import guest_input
+            with guest_input.Session() as s:
+                s.cliclick(guest_input.build_click(s.point(*ref["click"])))
+        except Exception as e:
+            log(f"bomb: Restart click {attempt} failed ({type(e).__name__}: {str(e)[:100]})")
+            continue
+        time.sleep(3)
+        try: gone = GB.which_dialog(GB.frame()) != "system_error"
+        except Exception: gone = True          # no frame: the emulator is restarting
+        log(f"bomb: Restart click {attempt} - the bomb is {'gone' if gone else 'STILL UP'}")
+        if gone: break
+    if not gone:
+        notify("Klick auf 'Restart' wirkte dreimal nicht. hang_watch beendet den Emulator nach 5 Minuten, oder bitte von Hand klicken.")
         return
     time.sleep(25)                                            # System 7 restarts inside the same emulator process
     try:
