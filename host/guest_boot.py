@@ -20,9 +20,6 @@ import fb_export, guest_remote
 
 REFS = os.path.join(HERE, "refs")
 PORT = int(os.environ.get("APPLEBRIDGE_CTRL_PORT", "9001"))
-EXPECT = [v.strip() for v in os.environ.get("APPLEBRIDGE_EXPECT_VOLUMES", "AppleShare").split(",") if v.strip()]
-
-
 def local_env(key):
     v = os.environ.get(key)
     if v: return v
@@ -31,6 +28,14 @@ def local_env(key):
             if l.strip().startswith(key + "="): return l.split("=", 1)[1].strip().strip('"')
     except OSError: pass
     return ""
+
+
+# A guest without AppleShare (e.g. one in an isolated network) expects no volume, never types the password and cancels
+# the login dialog (Cmd-.) if it still comes up. Site setting, not a default: APPLEBRIDGE_NO_APPLESHARE=1 for this run,
+# or the guest's control port listed in APPLEBRIDGE_NO_APPLESHARE_PORTS (local.env, comma-separated).
+NO_APPLESHARE = (local_env("APPLEBRIDGE_NO_APPLESHARE") == "1"
+                 or str(PORT) in [x.strip() for x in local_env("APPLEBRIDGE_NO_APPLESHARE_PORTS").split(",") if x.strip()])
+EXPECT = [v.strip() for v in os.environ.get("APPLEBRIDGE_EXPECT_VOLUMES", "" if NO_APPLESHARE else "AppleShare").split(",") if v.strip()]
 
 
 def ctrl(cmd, timeout=15):
@@ -99,6 +104,11 @@ def main(timeout=420):
             time.sleep(3); continue
         d = which_dialog(f)
         if d != last: print(f"{time.time() - t0:5.1f}s screen: {d or 'no known dialog'}", flush=True); last = d
+        if d == "appleshare_login" and NO_APPLESHARE:
+            if typed >= 2: say("Der AppleShare-Anmeldedialog lässt sich nicht abbrechen. Bitte auf dem Gast prüfen."); return 1
+            keys([FRONT, "delay 0.6", 'tell application "System Events" to keystroke "." using command down']); typed += 1
+            print(f"{time.time() - t0:5.1f}s AppleShare login cancelled (this guest has no AppleShare)", flush=True)
+            time.sleep(4); continue
         if d == "appleshare_login":
             pw = local_env("APPLEBRIDGE_AFP_PASSWORD")
             if not pw: say("Der AppleShare-Anmeldedialog wartet, aber in local.env steht kein APPLEBRIDGE_AFP_PASSWORD."); return 1
@@ -118,7 +128,7 @@ def main(timeout=420):
                 time.sleep(4); continue
             ctrl("MONITOR:0"); ctrl("CLICK:1000:720"); time.sleep(1.0)            # the empty desktop corner -> Finder front
             ctrl("KEY:119:13:2304"); time.sleep(1.5)                             # Cmd-Option-W: close every Finder window
-            print(f"{time.time() - t0:5.1f}s READY: bridge up, volumes {', '.join(EXPECT)}, desktop tidied", flush=True)
+            print(f"{time.time() - t0:5.1f}s READY: bridge up, volumes {', '.join(EXPECT) or '(none expected)'}, desktop tidied", flush=True)
             return 0
         time.sleep(3)
     say("Der Gast ist nach sieben Minuten nicht bereit."); return 2
