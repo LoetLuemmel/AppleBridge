@@ -167,6 +167,40 @@ OSErr QuitAppBySignature(OSType signature)
 	return err;
 }
 
+/* The reply text straight into TEMPORARY memory (diet, 0.8d50). The old path,
+ * AEGetParamDesc(typeChar), makes a second copy of the reply in the daemon's own
+ * heap while the Apple Event still holds the first: measured on dev2019, a 155 KB
+ * MPW listing took the heap from 118 K to 429 K. Here the size is asked first
+ * and the text is copied into a block OUTSIDE the partition, so the heap holds
+ * the reply once, and only until the event is disposed. Returns false -- and the
+ * caller takes the old path -- when the parameter is not plain text, absent, or
+ * there is no temporary memory to borrow. */
+static Boolean ReplyTextToTemp(const AppleEvent *reply, Handle *outH, long *outLen, Boolean *capped)
+{
+	DescType type;
+	Size     size, got;
+	long     n;
+	OSErr    err, e;
+	Handle   h;
+
+	err = AESizeOfParam(reply, keyDirectObject, &type, &size);
+	if (err != noErr || type != typeChar || size <= 0) return false;
+	n = size;
+	if (n > MAX_DYNAMIC_RESPONSE) n = MAX_DYNAMIC_RESPONSE;
+	h = TempNewHandle((Size)n, &e);
+	if (h == NULL || e != noErr) return false;
+	HLock(h);
+	err = AEGetParamPtr(reply, keyDirectObject, typeChar, &type, *h, (Size)n, &got);
+	HUnlock(h);
+	NoteHeap();
+	if (err != noErr) { DisposeHandle(h); return false; }
+	if (got < n) { n = got; SetHandleSize(h, (Size)n); }
+	*outH = h;
+	*outLen = n;
+	*capped = (size > MAX_DYNAMIC_RESPONSE);
+	return true;
+}
+
 /*
  * Send DoScript event to target app (instrumented).
  *
@@ -223,6 +257,12 @@ static OSErr SendDoScript(ProcessSerialNumber *psn, const char *script,
 	AEDisposeDesc(&event);
 	if (err != noErr) return err;
 
+	if (ReplyTextToTemp(&reply, outH, outLen, capped)) {
+		Trace(diag, "temp len=", *outLen);
+		AEDisposeDesc(&reply);
+		return noErr;
+	}
+
 	/* Grab the reply data as a coerced typeChar descriptor. Try keyDirectObject
 	 * first; only fall back to '----' if the parameter is genuinely absent. */
 	dataDesc.descriptorType = typeNull;
@@ -235,6 +275,7 @@ static OSErr SendDoScript(ProcessSerialNumber *psn, const char *script,
 
 	if (err == noErr && dataDesc.dataHandle != NULL) {
 		size = GetHandleSize(dataDesc.dataHandle);
+		NoteHeap();   /* the reply is extracted and the AE copy not yet gone: the peak */
 		Trace(diag, "rsize=", size);
 		if (size > MAX_DYNAMIC_RESPONSE) {
 			SetHandleSize(dataDesc.dataHandle, MAX_DYNAMIC_RESPONSE);
@@ -431,6 +472,11 @@ static OSErr SendGenericAE(ProcessSerialNumber *psn, OSType evtClass, OSType evt
 		handlerMsg[gotSize] = '\0';
 	}
 
+	if (ReplyTextToTemp(&reply, outH, outLen, capped)) {
+		AEDisposeDesc(&reply);
+		return noErr;
+	}
+
 	dataDesc.descriptorType = typeNull;
 	dataDesc.dataHandle = NULL;
 	err = AEGetParamDesc(&reply, keyDirectObject, typeChar, &dataDesc);
@@ -439,6 +485,7 @@ static OSErr SendGenericAE(ProcessSerialNumber *psn, OSType evtClass, OSType evt
 
 	if (err == noErr && dataDesc.dataHandle != NULL) {
 		size = GetHandleSize(dataDesc.dataHandle);
+		NoteHeap();   /* peak: extracted reply alongside the AE's own copy */
 		if (size > MAX_DYNAMIC_RESPONSE) {
 			SetHandleSize(dataDesc.dataHandle, MAX_DYNAMIC_RESPONSE);
 			size = MAX_DYNAMIC_RESPONSE;

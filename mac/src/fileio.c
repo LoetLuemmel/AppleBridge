@@ -547,7 +547,7 @@ Boolean ListDirVerb(ABConn *conn, char *request, long requestLen)
         line[p++] = '\r';
         {
             long oldSize = GetHandleSize(h);
-            SetHandleSize(h, oldSize + p);
+            SetHandleSize(h, oldSize + p); NoteHeap();
             if (MemError() == noErr) {
                 HLock(h);
                 BlockMoveData(line, *h + oldSize, p);
@@ -737,7 +737,7 @@ Boolean DiskInfoVerb(ABConn *conn, char *request, long requestLen)
 
         {
             long oldSize = GetHandleSize(h);
-            SetHandleSize(h, oldSize + p);
+            SetHandleSize(h, oldSize + p); NoteHeap();
             if (MemError() == noErr) {
                 HLock(h);
                 BlockMoveData(line, *h + oldSize, p);
@@ -876,7 +876,7 @@ Boolean ProcListVerb(ABConn *conn, char *request, long requestLen)
 
         {
             long oldSize = GetHandleSize(h);
-            SetHandleSize(h, oldSize + p);
+            SetHandleSize(h, oldSize + p); NoteHeap();
             if (MemError() == noErr) {
                 HLock(h);
                 BlockMoveData(line, *h + oldSize, p);

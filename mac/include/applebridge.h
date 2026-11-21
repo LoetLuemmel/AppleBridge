@@ -230,6 +230,16 @@ OSErr InjectClick(short h, short v);
 OSErr InjectClickMod(short h, short v, short count, short modifiers);
 
 /* Utility functions */
+/* Heap watermark (diet, 2026-11-21). NoteHeap() samples the heap and keeps the
+ * PEAK of bytes in use; it is called where the big buffers are live
+ * (an extracted ToolServer reply, the screenshot buffers, a READFILE handle) and
+ * after every request, so STAT's heappeak= says what the partition really had to
+ * hold, not what it was sized for. */
+void NoteHeap(void);
+long HeapPeak(void);      /* most bytes in use at once since launch */
+long HeapLimit(void);     /* bytes the heap may grow to (partition minus stack) */
+long HeapZoneSize(void);
+
 void LogMessage(const char *message);
 void LogError(const char *message, OSStatus err);
 
