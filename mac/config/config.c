@@ -584,6 +584,11 @@ int main(void)
 
     PrefsDefaults(&gPrefs);
     LoadPrefs(&gPrefs);
+    /* 0.8d49: the daemon's window position moved out of the shared prefs into
+     * "AppleBridge Window", and SavePrefs no longer writes WIN=. Carry an old
+     * WIN= across BEFORE this panel's first save drops it — but only when that
+     * file does not exist yet, so the daemon's own newer value always wins. */
+    if (!LoadWinPrefs(&gPrefs)) (void)SaveWinPrefs(&gPrefs);
 
     SetRect(&bounds, 40, 60, 500, 420);
     gWin = NewCWindow(NULL, &bounds, "\pAppleBridge Config", true,

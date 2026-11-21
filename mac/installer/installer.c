@@ -1135,6 +1135,10 @@ static void DoInstallRun(void)
             (void)LoadPrefsFrom(&gPrefs, &kitPrefs);   /* absent is fine */
     }
     LoadPrefs(&gPrefs);
+    /* Carry an old WIN= into "AppleBridge Window" before SavePrefs below drops
+     * it (0.8d49). Without this the Duo's daemon lost its window position on the
+     * first install of 0.8d49 (2026-11-21). An existing window file wins. */
+    if (!LoadWinPrefs(&gPrefs)) (void)SaveWinPrefs(&gPrefs);
     mystrncpy(gPrefs.home, gDestPath, PREFS_PATH_LEN - 1);
     gPrefs.home[PREFS_PATH_LEN - 1] = '\0';
     /* Prefer a detected TCP stack; on an Ethernet-less machine fall to serial
