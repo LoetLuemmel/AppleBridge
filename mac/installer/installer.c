@@ -401,8 +401,14 @@ static void RunChecks(void)
     if (Gestalt(kGestaltPRAM, &v) == noErr || Gestalt(kGestaltLRAM, &v) == noErr) {
         char d[48];
         gPhysRAM = v;
-        if (v <= 16L * 1024L * 1024L)      { gProfilePrefK = 4000; gProfileMinK = 3000; }
-        else if (v <= 32L * 1024L * 1024L) { gProfilePrefK = 8000; gProfileMinK = 6000; }
+        /* Sizes from the 0.8d50 measurements (dev2019, 2026-11-21): ~120 K in
+         * use at idle; screenshot buffers and ToolServer replies are borrowed
+         * from temporary memory, so the partition holds the base plus ONE copy
+         * of the largest MPW reply (a 225 KB listing peaked at 350 K). 1,000 K
+         * leaves ~800 KB for a reply; a larger one fails with a memory error.
+         * Before the diet the Duo needed 4,000 K. */
+        if (v <= 16L * 1024L * 1024L)      { gProfilePrefK = 1000; gProfileMinK = 600; }
+        else if (v <= 32L * 1024L * 1024L) { gProfilePrefK = 2000; gProfileMinK = 1000; }
         else                               { gProfilePrefK = 0;    gProfileMinK = 0; }
         d[0] = '\0';
         CatNum(d, v / (1024L * 1024L)); mystrcat(d, " MB -> daemon ");
