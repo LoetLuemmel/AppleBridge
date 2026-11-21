@@ -272,7 +272,8 @@ def probe_guests(run, table=None, read_log=None):
             if m:
                 peer = m.group(2)
                 break
-        rows.append({"name": g.name, "primary": g.primary, "ssh": g.ssh, "daemon_port": g.daemon_port,
+        rows.append({"name": g.name, "primary": g.primary, "ssh": g.ssh, "hardware": g.hardware,
+                     "daemon_port": g.daemon_port,
                      "ctrl_port": g.ctrl_port, "label": label, "loaded": loaded, "pid": pid,
                      "listen_daemon": listen.get(g.daemon_port), "listen_ctrl": listen.get(g.ctrl_port),
                      "peer": peer, "log": g.server_log(), "hello": _last_hello(read_log(g.server_log()))})
@@ -801,7 +802,8 @@ def interpret(probes):
             out.append(_finding(
                 INFO, f"guest_not_connected:{n}",
                 f"{where}: the instance listens, but no guest is connected — "
-                + (f"is the emulator on {r['ssh']} running? " if r["ssh"] else "")
+                + (f"is the emulator on {r['ssh']} running? " if r["ssh"] else
+                   "is that Mac switched on and on the network? " if r.get("hardware") else "")
                 + "the daemon retries roughly every 30 s."))
 
     return out
