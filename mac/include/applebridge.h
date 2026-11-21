@@ -74,6 +74,8 @@
 #define PROTO_AUTH2 "AUTH2:"           /* host->daemon: host's proof of the shared token (v0.2) */
 #define PROTO_SWAPSELF "SWAPSELF"      /* host->daemon: rename the staged '<name> new' binary over the running daemon (self-update) */
 #define PROTO_SHUTDOWN "SHUTDOWN"      /* host->daemon: clean System 7 power-off via the Shutdown Manager (ShutDwnPower) */
+#define PROTO_DELETE   "DELETE:"       /* host->daemon: delete one file or an EMPTY folder, no ToolServer (0.8d49) */
+#define PROTO_MKDIR    "MKDIR:"        /* host->daemon: create one folder, no ToolServer (0.8d49) */
 #define PROTO_NBPLOOK "NBPLOOK"        /* host->daemon: AppleTalk NBP name lookup (no Chooser, no ToolServer) */
 #define PROTO_AFPMOUNT "AFPMOUNT"      /* host->daemon: mount an AppleShare volume (PBVolumeMount; 5th field is a PASSWORD) */
 #define PROTO_AFPUNMOUNT "AFPUNMOUNT"  /* host->daemon: unmount a volume by name */

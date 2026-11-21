@@ -6,7 +6,12 @@
  * the classic way to tell builds apart (replacing ad-hoc names like
  * "AppleBridge5"). One 'vers' file stamps the whole suite uniformly.
  *
- * This build: 0.8 development — d48 serves n guests from one hub (D-028): TCPPORT= in the
+ * This build: 0.8 development — d49 makes the daemon a reader of the shared prefs, never a
+ * writer: its window position moves to a file of its own ("AppleBridge Window"), and it no
+ * longer writes a default prefs file. DELETE:/MKDIR: work without ToolServer, LAUNCH failures
+ * carry the OSErr, REBOOT answers "Reboot requested", and the footer's error tag expires after
+ * ten minutes. All of it found on a PowerBook Duo 230 (2026-11-21).
+ * d48 serves n guests from one hub (D-028): TCPPORT= in the
  * prefs picks the port the daemon dials (default 9000), NAME= is reported in the HELLO reply so
  * the hub refuses a guest that landed on another guest's port, and SavePrefs keeps lines it does
  * not understand, so a key survives programs built before it.
@@ -122,16 +127,16 @@
 
 resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
-    development, 0x48,   /* development stage, non-release revision 48 (BCD) */
+    development, 0x49,   /* development stage, non-release revision 49 (BCD) */
     verUS,
-    "0.8d48",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d48 - n guests, one hub"  /* long -> Get Info */
+    "0.8d49",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d49 - prefs read, not written"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
-    development, 0x48,
+    development, 0x49,
     verUS,
-    "0.8d48",
+    "0.8d49",
     "AppleBridge"        /* the shared/suite version line */
 };

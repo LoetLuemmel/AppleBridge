@@ -192,6 +192,7 @@ static Boolean gLastWasReal = false;  /* was the last request a real command (no
                                        * PING/STAT heartbeat)? gates the latency capture
                                        * so ~0-tick heartbeats don't clobber gLastLat. */
 static char gLastErr[48] = "";        /* short tag of the most recent error (for id) */
+static long gLastErrTick = 0;          /* TickCount of it: the footer shows it for 10 min only */
 
 /* Route B: the installed global _MenuSelect patch block (system heap, layout in
  * mac/journal/mspatch.a). 0 = not installed. The RESIDENT daemon installs it so
@@ -933,7 +934,7 @@ static void SaveMonitorBounds(void)
     gPrefs.winL = tl.h;
     gPrefs.winB = (short)(tl.v + (pr.bottom - pr.top));
     gPrefs.winR = (short)(tl.h + (pr.right - pr.left));
-    SavePrefs(&gPrefs);
+    SaveWinPrefs(&gPrefs);       /* its own file: the shared prefs stay untouched */
 }
 
 static void DrawWelcome(void)
@@ -1541,6 +1542,7 @@ static void NoteErr(const char *tag)
 {
     short i;
     gErrCount++;
+    gLastErrTick = TickCount();
     for (i = 0; tag[i] && i < (short)sizeof(gLastErr) - 1; i++) gLastErr[i] = tag[i];
     gLastErr[i] = '\0';
 }
@@ -1560,6 +1562,7 @@ static void NoteErrCode(const char *tag, long code)
     Boolean neg = false;
 
     gErrCount++;
+    gLastErrTick = TickCount();
     while (tag[i] && i < (short)sizeof(gLastErr) - 8) { gLastErr[i] = tag[i]; i++; }
     gLastErr[i++] = ' ';
 
@@ -1570,6 +1573,63 @@ static void NoteErrCode(const char *tag, long code)
     if (neg) gLastErr[i++] = '-';
     while (j > 0 && i < (short)sizeof(gLastErr) - 1) gLastErr[i++] = nb[--j];
     gLastErr[i] = '\0';
+}
+
+/* "STATUS:-1 ... STDERR:<n>\r<text> <code>\r\r" — a failure reply that carries
+ * the OSErr. "Launch failed" alone left the Duo's two memory failures to be
+ * diagnosed by somebody double-clicking in the Finder (2026-11-21). */
+static void FailResponse(char *out, const char *text, long code)
+{
+    char msg[80];
+    char *m = msg;
+    char *p = out;
+    m = StatStr(m, text);
+    m = StatStr(m, " ");
+    m = StatDec(m, code);
+    *m = '\0';
+    p = StatStr(p, "STATUS:-1\rSTDOUT:0\rSTDERR:");
+    p = StatDec(p, (long)(m - msg));
+    *p++ = '\r';
+    p = StatStr(p, msg);
+    p = StatStr(p, "\r\r");
+    *p = '\0';
+}
+
+/* DELETE:<path>  — one file, or an EMPTY folder (FSpDelete; a full folder is
+ *                  refused with fBsyErr -47, never emptied: no recursion here).
+ * MKDIR:<path>   — one folder (FSpDirCreate; an existing name is dupFNErr -48).
+ * Both work without ToolServer, which a small real Mac may not have: on the Duo
+ * cleaning up a full disk needed the operator's hands (2026-11-21). A trailing
+ * ':' on a folder path is accepted and dropped. */
+static void DoFileVerb(const char *request, char *out)
+{
+    Str255 pPath;
+    FSSpec spec;
+    OSErr  err;
+    long   dirID;
+    short  n, skip;
+    Boolean isDelete = (strncmp(request, PROTO_DELETE, strlen(PROTO_DELETE)) == 0);
+
+    skip = (short)strlen(isDelete ? PROTO_DELETE : PROTO_MKDIR);
+    for (n = 0; request[skip + n] && request[skip + n] != '\r' &&
+                request[skip + n] != '\n' && n < 254; n++)
+        pPath[n + 1] = (unsigned char)request[skip + n];
+    if (n > 1 && pPath[n] == ':') n--;          /* "Vol:Folder:" -> "Vol:Folder" */
+    pPath[0] = (unsigned char)n;
+    if (n == 0) { FailResponse(out, isDelete ? "DELETE needs a path" : "MKDIR needs a path", (long)paramErr);
+                  NoteErrCode(isDelete ? "delete" : "mkdir", (long)paramErr); return; }
+
+    err = FSMakeFSSpec(0, 0, pPath, &spec);
+    if (isDelete) {
+        if (err == noErr) err = FSpDelete(&spec);
+        if (err == noErr) { strcpy(out, "STATUS:0\rSTDOUT:7\rDeleted\rSTDERR:0\r\r"); SetActivity("DELETE"); return; }
+        FailResponse(out, "Delete failed", (long)err); NoteErrCode("delete", (long)err);
+    } else {
+        if (err == fnfErr) err = FSpDirCreate(&spec, 0, &dirID);
+        else if (err == noErr) err = dupFNErr;   /* the name exists already */
+        if (err == noErr) { strcpy(out, "STATUS:0\rSTDOUT:7\rCreated\rSTDERR:0\r\r"); SetActivity("MKDIR"); return; }
+        FailResponse(out, "Mkdir failed", (long)err); NoteErrCode("mkdir", (long)err);
+    }
 }
 
 /*
@@ -1650,8 +1710,11 @@ static void DrawTelemetry(void)
     RGBForeColor(&cBlack);
     FrameRect(&bar);
 
-    /* --- last error tag (identification), only once something has failed --- */
-    if (gErrCount > 0 && gLastErr[0]) {
+    /* --- last error tag (identification), only once something has failed ---
+     * and only for ten minutes after it. A footer that kept "err:launch" for the
+     * rest of the session was read on the Duo as a CURRENT fault (2026-11-21);
+     * the count stays in ERR n and in STAT's lasterr for anyone who wants history. */
+    if (gErrCount > 0 && gLastErr[0] && TickCount() - gLastErrTick < 36000L) {
         char  eb[80];
         char *ep = eb;
         ep = StatStr(ep, "  err:");
@@ -3558,7 +3621,10 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
      * daemon). Ack first, then trigger the restart; the connection then drops
      * and the watchdog brings the new daemon up after the reboot. */
     if (strncmp(request, "REBOOT", 6) == 0) {
-        strcpy(responseBuffer, "STATUS:0\rSTDOUT:6\rReboot\rSTDERR:0\r\r");
+        /* "requested", not "done": an application may still cancel the shutdown
+         * (on the Duo the installer did, 2026-11-21), and then the Mac stays up
+         * with the watchdog gone. Only the reconnect confirms a restart. */
+        strcpy(responseBuffer, "STATUS:0\rSTDOUT:16\rReboot requested\rSTDERR:0\r\r");
         ABSend(conn, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();
         gTXCount++;
@@ -3617,6 +3683,17 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         return true;
     }
 
+    /* DELETE:<path> / MKDIR:<path> (0.8d49): file operations that need no
+     * ToolServer. Own function: ProcessRequest sits at the 68K 32 KB frame edge. */
+    if (strncmp(request, PROTO_DELETE, strlen(PROTO_DELETE)) == 0 ||
+        strncmp(request, PROTO_MKDIR, strlen(PROTO_MKDIR)) == 0) {
+        DoFileVerb(request, responseBuffer);
+        ABSend(conn, responseBuffer, strlen(responseBuffer));
+        gLastTX = TickCount();
+        gTXCount++;
+        return true;
+    }
+
     /* LAUNCH:<MacPath> verb: bring a GUI app to the foreground */
     if (strncmp(request, "LAUNCH:", 7) == 0) {
         char launchPath[MAX_COMMAND_LENGTH];
@@ -3640,7 +3717,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         if (lerr == noErr) {
             strcpy(responseBuffer, "STATUS:0\rSTDOUT:8\rLaunched\rSTDERR:0\r\r");
         } else {
-            strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:13\rLaunch failed\r\r"); NoteErr("launch");
+            FailResponse(responseBuffer, "Launch failed", (long)lerr); NoteErrCode("launch", (long)lerr);
             SetActivity("LAUNCH failed");
         }
         ABSend(conn, responseBuffer, strlen(responseBuffer));
@@ -5216,9 +5293,12 @@ int main(void)
      * compiled-in fallback IP is seeded first, so a missing/corrupt file never
      * breaks connectivity; a default file is written on first run. */
     PrefsDefaults(&gPrefs);
-    if (!LoadPrefs(&gPrefs)) {
-        SavePrefs(&gPrefs);
-    }
+    /* The daemon READS the shared prefs and never writes them (0.8d49). It used
+     * to write a default file when none existed — with an empty IP=, which is the
+     * half-empty file a later save then completed without port and name. The
+     * window position, its one own setting, has a file of its own. */
+    (void)LoadPrefs(&gPrefs);
+    (void)LoadWinPrefs(&gPrefs);
 
     /* NOT here. Opening the welcome window during startup hung the guest on the
      * boot splash: Startup Items run before the desktop is up, and a daemon that

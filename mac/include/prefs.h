@@ -75,7 +75,15 @@ Boolean LoadPrefs(AppPrefs *p);
  * file has actually been opened, so a missing file changes nothing at all. */
 Boolean LoadPrefsFrom(AppPrefs *p, const FSSpec *spec);
 
-/* Write prefs to the Preferences folder, creating the file if needed. */
+/* Write prefs to the Preferences folder, creating the file if needed. Since
+ * 0.8d49 the DAEMON never calls this: only the config panel and the installer
+ * write the shared file. WIN= is no longer written here. */
 OSErr SavePrefs(const AppPrefs *p);
+
+/* The Verbose window's position, in its own file "AppleBridge Window" in the
+ * Preferences folder — the daemon's only write to that folder (0.8d49). Load
+ * touches nothing but the four win fields; a missing file returns false. */
+Boolean LoadWinPrefs(AppPrefs *p);
+OSErr   SaveWinPrefs(const AppPrefs *p);
 
 #endif /* PREFS_H */

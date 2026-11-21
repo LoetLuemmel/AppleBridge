@@ -14,6 +14,14 @@
 
 #define kPrefCreator    'ABrg'
 #define kPrefFileName   "\pAppleBridge Prefs"
+/* The Verbose window's position, in a file of its own (0.8d49). It used to be the
+ * WIN= key of the shared prefs file, which made the DAEMON a writer of that file:
+ * every move of its window rewrote the whole file from the daemon's in-memory copy,
+ * and an edit made underneath it, or a key an older build did not know, was gone
+ * (R14; on a PowerBook Duo 230 TCPPORT= and NAME= were lost twice, 2026-11-21).
+ * Now the daemon writes only this file, and the shared one is written by the config
+ * panel and the installer alone, when somebody changes something on purpose. */
+#define kWinFileName    "\pAppleBridge Window"
 #define PREFS_BUF_SIZE  4096
 /* No default host address, deliberately (R2 in docs/INSTALLER_REQUIREMENTS.md).
  * A seeded address is not a harmless guess: on a LAN where it happens to answer,
@@ -38,8 +46,8 @@ void PrefsDefaults(AppPrefs *p)
     p->appCount = 0;
 }
 
-/* Resolve the prefs file's FSSpec in the Preferences folder. */
-static OSErr PrefsSpec(FSSpec *spec)
+/* Resolve a file's FSSpec in the Preferences folder. */
+static OSErr PrefsFolderSpec(ConstStr255Param name, FSSpec *spec)
 {
     OSErr err;
     short vRefNum;
@@ -48,7 +56,12 @@ static OSErr PrefsSpec(FSSpec *spec)
     err = FindFolder(kOnSystemDisk, kPreferencesFolderType,
                      kDontCreateFolder, &vRefNum, &dirID);
     if (err != noErr) return err;
-    return FSMakeFSSpec(vRefNum, dirID, kPrefFileName, spec);
+    return FSMakeFSSpec(vRefNum, dirID, name, spec);
+}
+
+static OSErr PrefsSpec(FSSpec *spec)
+{
+    return PrefsFolderSpec(kPrefFileName, spec);
 }
 
 /* Copy src up to a CR/LF/end into dst (<= n-1 chars, NUL-terminated). */
@@ -266,15 +279,61 @@ OSErr SavePrefs(const AppPrefs *p)
     for (n = 0; n < p->appCount; n++) {
         strcat(buf, "APP="); strcat(buf, p->apps[n]); strcat(buf, "\r");
     }
-    if (p->winB > p->winT && p->winR > p->winL) {
-        strcat(buf, "WIN=");
-        AppendNum(buf, p->winT); strcat(buf, ",");
-        AppendNum(buf, p->winL); strcat(buf, ",");
-        AppendNum(buf, p->winB); strcat(buf, ",");
-        AppendNum(buf, p->winR); strcat(buf, "\r");
-    }
+    /* No WIN= any more: the window position lives in "AppleBridge Window" (see
+     * kWinFileName). A WIN= still found in an older prefs file is read once, as
+     * the starting position, and then dropped from this file on its next save. */
     strcat(buf, p->extra);   /* keys this build does not know, verbatim (D-028) */
 
+    count = (long)strlen(buf);
+    err = FSWrite(refNum, &count, buf);
+    FSClose(refNum);
+    return err;
+}
+
+/* The window position, in "AppleBridge Window". Only the four win fields of `p`
+ * are touched, so a missing or unreadable file leaves whatever LoadPrefs found. */
+Boolean LoadWinPrefs(AppPrefs *p)
+{
+    FSSpec spec;
+    short  refNum;
+    long   count;
+    char   buf[64];
+    OSErr  err;
+
+    if (PrefsFolderSpec(kWinFileName, &spec) != noErr) return false;
+    if (FSpOpenDF(&spec, fsRdPerm, &refNum) != noErr) return false;
+    count = sizeof(buf) - 1;
+    err = FSRead(refNum, &count, buf);
+    FSClose(refNum);
+    if ((err != noErr && err != eofErr) || count <= 4) return false;
+    buf[count] = '\0';
+    if (strncmp(buf, "WIN=", 4) != 0) return false;
+    ParseLine(p, buf);              /* the WIN= branch, nothing else */
+    return true;
+}
+
+OSErr SaveWinPrefs(const AppPrefs *p)
+{
+    FSSpec spec;
+    short  refNum;
+    long   count;
+    char   buf[64];
+    OSErr  err;
+
+    if (!(p->winB > p->winT && p->winR > p->winL)) return paramErr;
+    err = PrefsFolderSpec(kWinFileName, &spec);
+    if (err != noErr && err != fnfErr) return err;
+    err = FSpCreate(&spec, kPrefCreator, 'TEXT', 0);
+    if (err != noErr && err != dupFNErr) return err;
+    err = FSpOpenDF(&spec, fsRdWrPerm, &refNum);
+    if (err != noErr) return err;
+    SetEOF(refNum, 0L);
+    buf[0] = '\0';
+    strcat(buf, "WIN=");
+    AppendNum(buf, p->winT); strcat(buf, ",");
+    AppendNum(buf, p->winL); strcat(buf, ",");
+    AppendNum(buf, p->winB); strcat(buf, ",");
+    AppendNum(buf, p->winR); strcat(buf, "\r");
     count = (long)strlen(buf);
     err = FSWrite(refNum, &count, buf);
     FSClose(refNum);
