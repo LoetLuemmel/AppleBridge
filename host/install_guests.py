@@ -84,7 +84,7 @@ def plan(table, base_env, agents_dir=AGENTS_DIR, only=None):
         if unknown:
             raise G.GuestTableError(f"not in the table: {', '.join(unknown)}")
         table = [g for g in table if g.name in only]
-    write = [(g, k, agent_plist(g, k, base_env)) for g in table for k in G.KINDS]
+    write = [(g, k, agent_plist(g, k, base_env)) for g in table for k in g.kinds]
     if only:
         return write, []
     wanted = {p["Label"] for _, _, p in write}
@@ -150,8 +150,8 @@ def main(argv=None):
 
     for g in [g for g in table if not args.guest or g.name in args.guest]:
         print(f"{g.name}: daemon {base_env.get('APPLEBRIDGE_HOST_IP', '*')}:{g.daemon_port}, control 127.0.0.1:"
-              f"{g.ctrl_port}, {'this Mac' if g.local else g.ssh}")
-        for kind in G.KINDS:
+              f"{g.ctrl_port}, {'this Mac' if g.local else 'real hardware' if g.hardware else g.ssh}")
+        for kind in g.kinds:
             print(f"    {g.label(kind)}")
     for lbl in remove:
         print(f"remove (no longer in the table): {lbl}")

@@ -5,8 +5,10 @@
 #   name     = NAME= in that guest's AppleBridge Prefs; 1-31 of A-Z a-z 0-9 _ -
 #   daemon   = TCPPORT= in that guest's prefs (9000 for a guest without the key)
 #   control  = the port Claude, MCP and the watchdogs talk to (9001 keeps the single-guest names)
-#   ssh      = - for the guest on this Mac, user@host for a guest on another Mac
+#   ssh      = - for the guest on this Mac, user@host for a guest on another Mac,
+#              hw for a real Mac (no emulator: host server only, no hang/dialog watch; emulator column empty)
 # Convention: guest k gets 9000+10k / 9001+10k.
 #
 #dev       9000    9001     -                         /Users/you/Documents/Basilisk/BasiliskII.app
 #second    9010    9011     you@192.0.2.20            /Users/you/Documents/BasiliskII/BasiliskII.app
+#duo       9040    9041     hw

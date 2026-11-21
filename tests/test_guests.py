@@ -51,6 +51,7 @@ def test_bad_values_are_refused():
     _raises("a.b 9000 9001 -", "must be 1-31")
     _raises("a" * 32 + " 9000 9001 -", "must be 1-31")
     _raises("a 9000 9001 somehost", "user@host")
+    _raises("a 9000 9001 HW", "user@host")
     _raises("a 9000 9001", "need name")
 
 
@@ -137,6 +138,44 @@ def test_a_single_guest_run_refuses_a_name_not_in_the_table():
         assert "claudia" in str(e)
         return
     raise AssertionError("an unknown name installed nothing and reported success")
+
+
+# --- a real Mac (ssh = hw) -----------------------------------------------------------------------------------------
+
+HW = TABLE + "duo         9040    9041     hw\n"
+
+
+def test_a_real_mac_is_neither_the_hub_nor_reachable_by_ssh():
+    duo = G.parse(HW)[2]
+    assert duo.hardware and not duo.local and duo.ssh is None
+    assert not G.parse(HW)[0].hardware
+
+
+def test_a_real_mac_gets_the_host_server_only():
+    # 2026-11-21, the Duo 230: both watchdogs stop and relaunch an EMULATOR. A real Mac has none, and with ssh '-'
+    # they would have acted on the hub's own Basilisk.
+    duo = G.parse(HW)[2]
+    assert duo.kinds == ("host",)
+    write, _ = I.plan(G.parse(HW), {}, agents_dir=_agents(), only=["duo"])
+    assert [(g.name, k) for g, k, _ in write] == [("duo", "host")]
+    host = write[0][2]["EnvironmentVariables"]
+    assert host["APPLEBRIDGE_DAEMON_PORT"] == "9040" and host["APPLEBRIDGE_GUEST_NAME"] == "duo"
+    assert host["APPLEBRIDGE_REMOTE_GUEST"] == "1", "a real Mac is not this Mac: the HOST* verbs act on the hub"
+
+
+def test_a_full_run_retires_watchdogs_a_real_mac_should_not_have():
+    d = _agents("de.390er.applebridge-host-duo", "de.390er.applebridge-hangwatch-duo",
+                "de.390er.applebridge-dialogwatch-duo")
+    _, remove = I.plan(G.parse(HW), {}, agents_dir=d)
+    assert remove == ["de.390er.applebridge-dialogwatch-duo", "de.390er.applebridge-hangwatch-duo"], remove
+
+
+def test_a_real_mac_does_not_count_as_the_hubs_one_emulator():
+    assert len(G.parse("a 9000 9001 -\nduo 9040 9041 hw\nse30 9050 9051 hw")) == 3
+
+
+def test_a_real_mac_with_an_emulator_path_is_refused():
+    _raises("duo 9040 9041 hw /Applications/BasiliskII.app", "has no emulator")
 
 
 LSOF = ("Python 680 pit 5u IPv4 0x1 0t0 TCP 192.168.3.232:9000 (LISTEN)\n"

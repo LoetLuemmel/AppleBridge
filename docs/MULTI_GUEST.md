@@ -157,6 +157,11 @@ used: after a client disconnected, it killed the display.
   guests use 9000–9091. The table, not the rule, is authoritative; the installer refuses duplicates.
 - `ssh = -` marks the guest on the hub itself. Every other row is a guest on another Mac; its instance runs
   with `APPLEBRIDGE_REMOTE_GUEST=1`, which refuses the `HOST*` verbs (they act on the hub's own screen).
+- `ssh = hw` marks **a real Mac** — a PowerBook, an SE/30 — that dials the hub over its own network card
+  (2026-11-21, a PowerBook Duo 230). Its row installs the **host server only**: the hang and dialog watchdogs
+  stop and relaunch an *emulator*, and a real Mac has none to relaunch and no shell to reach. Its instance also
+  runs with `APPLEBRIDGE_REMOTE_GUEST=1`, and the MCP server treats it as a guest off the hub. The emulator
+  column stays empty (the parser refuses a path there). It does not count as the hub's one emulator.
 - `name` is the guest's identity everywhere: launchd labels (`de.390er.applebridge-host-<name>`,
   `…-hangwatch-<name>`, `…-dialogwatch-<name>`), log files (`/tmp/applebridge_server_<name>.log`), the wish
   runs' guest list, and the identity check below. **Except the row with control port 9001**, which keeps the

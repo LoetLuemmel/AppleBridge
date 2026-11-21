@@ -10,6 +10,11 @@ Whitespace-separated; the emulator path is the rest of the line, so it may conta
 the hub itself (one emulator per machine, so at most one such row). Every other row is a guest on another Mac: its
 host-server instance refuses the HOST* verbs, which act on the hub's own screen and mouse.
 
+`ssh = hw` is a real Mac — a PowerBook, an SE/30 — that dials the hub itself (2026-11-21, the Duo 230). It has no
+emulator to stop and relaunch and no shell to reach, so its row installs the host server only: no hang watch, no dialog
+watch (both stop and relaunch an *emulator*; with `ssh = -` they would act on the hub's own Basilisk). Like any guest
+off the hub it refuses the HOST* verbs. Its emulator column stays empty.
+
 The row with control port 9001 keeps the labels and log paths of the single-guest setup (`de.390er.applebridge-host`,
 `/tmp/applebridge_server.log`), because start_stack.sh, deploy_host.sh, bridge_doctor and the notes all name those.
 Every other row gets `…-<name>`.
@@ -27,6 +32,7 @@ PRIMARY_CTRL_PORT = 9001
 # part of launchd labels and file names, so it is kept to characters that are safe in all three.
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,31}$")
 KINDS = ("host", "hangwatch", "dialogwatch")
+HARDWARE = "hw"     # the ssh column's value for a real Mac: no emulator, no shell, host server only
 
 
 class GuestTableError(ValueError):
@@ -36,12 +42,19 @@ class GuestTableError(ValueError):
 class Guest:
     def __init__(self, name, daemon_port, ctrl_port, ssh, emulator, line):
         self.name, self.daemon_port, self.ctrl_port = name, daemon_port, ctrl_port
-        self.ssh = None if ssh == "-" else ssh
+        self.hardware = ssh == HARDWARE
+        self.ssh = None if ssh in ("-", HARDWARE) else ssh
         self.emulator, self.line = emulator, line
 
     @property
     def local(self):
-        return self.ssh is None
+        """The guest on the hub itself. A real Mac is never local: it is a machine of its own."""
+        return self.ssh is None and not self.hardware
+
+    @property
+    def kinds(self):
+        """The agents this row gets. The two watchdogs restart an emulator, which real hardware does not have."""
+        return ("host",) if self.hardware else KINDS
 
     @property
     def primary(self):
@@ -80,7 +93,8 @@ class Guest:
         return env
 
     def __repr__(self):
-        return f"Guest({self.name!r}, {self.daemon_port}/{self.ctrl_port}, ssh={self.ssh!r})"
+        where = "hardware" if self.hardware else f"ssh={self.ssh!r}"
+        return f"Guest({self.name!r}, {self.daemon_port}/{self.ctrl_port}, {where})"
 
 
 def parse(text):
@@ -111,8 +125,12 @@ def parse(text):
         for p in (d, c):
             if p in ports:
                 raise GuestTableError(f"line {n}: port {p} already used on line {ports[p]}")
-        if ssh != "-" and "@" not in ssh:
-            raise GuestTableError(f"line {n}: ssh must be '-' (this Mac) or user@host, got {ssh!r}")
+        if ssh not in ("-", HARDWARE) and "@" not in ssh:
+            raise GuestTableError(f"line {n}: ssh must be '-' (this Mac), '{HARDWARE}' (a real Mac) or user@host, "
+                                  f"got {ssh!r}")
+        if ssh == HARDWARE and emulator:
+            raise GuestTableError(f"line {n}: a real Mac ('{HARDWARE}') has no emulator; leave that column empty, "
+                                  f"got {emulator!r}")
         names[name] = n
         ports[d] = ports[c] = n
         guests.append(Guest(name, d, c, ssh, emulator, n))
@@ -186,4 +204,4 @@ if __name__ == "__main__":
         sys.exit(f"guests.conf: {e}")
     for g in table:
         print(f"{g.name:12} daemon {g.daemon_port}  control {g.ctrl_port}  "
-              f"{'this Mac' if g.local else g.ssh:30} {g.label('host')}")
+              f"{'this Mac' if g.local else 'real hardware' if g.hardware else g.ssh:30} {g.label('host')}")
