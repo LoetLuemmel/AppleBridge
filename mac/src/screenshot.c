@@ -14,6 +14,52 @@ extern void StatusMessage(const char *msg);
 /* Refuse anything bigger than this (keeps us inside the app partition). */
 #define MAX_SHOT_BYTES (4L * 1024L * 1024L)
 
+/* ---- big buffers: temporary memory first (diet, 0.8d50) -----------------
+ * Measured on dev2019 (2026-11-21): idle the daemon uses ~120 K of its heap; one
+ * full screenshot leaves 886 K in use (the retained previous frame is a whole
+ * screen) and a delta capture peaks at 2,454 K -- three screens at once. On a
+ * 1152x870 PowerBook Duo that is ~3 MB, which is why its partition needed 4 MB.
+ * These buffers now come from TEMPORARY memory (TempNewHandle): free memory
+ * OUTSIDE the partition that the Process Manager lends out, locked while held.
+ * When there is none, the daemon's own heap, as before. ShotFree() knows which
+ * was which. The small per-row scratch stays a plain NewPtr. */
+#define kShotSlots 6
+static Ptr    gShotP[kShotSlots];
+static Handle gShotH[kShotSlots];
+
+static Ptr ShotAlloc(long size)
+{
+    OSErr  e;
+    Handle h;
+    short  i;
+
+    for (i = 0; i < kShotSlots; i++) if (gShotP[i] == NULL) break;
+    if (i < kShotSlots) {
+        h = TempNewHandle((Size)size, &e);
+        if (h != NULL && e == noErr) {
+            HLock(h);
+            gShotH[i] = h;
+            gShotP[i] = *h;
+            return *h;
+        }
+    }
+    return NewPtr(size);                  /* no temporary memory: the old way */
+}
+
+static void ShotFree(Ptr p)
+{
+    short i;
+    if (p == NULL) return;
+    for (i = 0; i < kShotSlots; i++)
+        if (gShotP[i] == p) {
+            DisposeHandle(gShotH[i]);
+            gShotP[i] = NULL; gShotH[i] = NULL;
+            return;
+        }
+    DisposePtr(p);
+}
+
+
 /*
  * Capture the main screen from its GDevice PixMap.
  *
@@ -63,7 +109,8 @@ BridgeResult CaptureScreenshot(ScreenshotData *screenshot)
     }
 
     StatusMessage("Allocating screenshot buffer...");
-    screenshot->data = NewPtr(imageSize);
+    screenshot->data = ShotAlloc(imageSize);
+    NoteHeap();
     if (screenshot->data == NULL) {
         StatusMessage("FAIL: NewPtr screenshot");
         return kBridgeCommandErr;
@@ -99,7 +146,7 @@ BridgeResult CaptureScreenshot(ScreenshotData *screenshot)
 void CleanupScreenshot(ScreenshotData *screenshot)
 {
     if (screenshot->data != NULL) {
-        DisposePtr(screenshot->data);
+        ShotFree(screenshot->data);
         screenshot->data = NULL;
     }
     screenshot->width = 0;
@@ -273,7 +320,7 @@ BridgeResult CaptureScreenshot2(ScreenshotData *s, short rx, short ry,
     /* Copy the band (or the whole screen) out of the framebuffer first, so the
        encoding below reads a still image rather than one the guest is drawing. */
     bandSize = (long)rh * rowBytes;
-    cur = NewPtr(full ? fullSize : bandSize);
+    cur = ShotAlloc(full ? fullSize : bandSize);
     if (cur == NULL) { StatusMessage("FAIL: NewPtr screenshot"); return kBridgeCommandErr; }
     BlockMoveData((*pm)->baseAddr + (full ? 0 : (long)ry * rowBytes), cur, full ? fullSize : bandSize);
     base = (unsigned char *)cur + (full ? (long)ry * rowBytes : 0);
@@ -286,17 +333,18 @@ BridgeResult CaptureScreenshot2(ScreenshotData *s, short rx, short ry,
     emit = pack ? PackRow : RawRow;
     if (!wantDelta && pack && (flags & SHOT2_UP)) {
         xrow = (unsigned char *)NewPtr(subRB);
-        if (xrow == NULL) { DisposePtr(cur); StatusMessage("FAIL: NewPtr up row"); return kBridgeCommandErr; }
+        if (xrow == NULL) { ShotFree(cur); StatusMessage("FAIL: NewPtr up row"); return kBridgeCommandErr; }
     }
 
     /* Output: worst case PackBits grows a row by 1/128 + 1; plus 2 bytes per
        row and 4 per delta run. */
     outCap = (long)rh * (subRB + subRB / 64 + 8) + 64;
-    out = (unsigned char *)NewPtr(outCap);
-    if (out == NULL) { DisposePtr(cur); StatusMessage("FAIL: NewPtr shot buffer"); return kBridgeCommandErr; }
+    out = (unsigned char *)ShotAlloc(outCap);
+    NoteHeap();   /* current frame + output (+ the retained previous frame) are all live */
+    if (out == NULL) { ShotFree(cur); StatusMessage("FAIL: NewPtr shot buffer"); return kBridgeCommandErr; }
     if (wantDelta) {
         xrow = (unsigned char *)NewPtr(rowBytes);
-        if (xrow == NULL) { DisposePtr(cur); DisposePtr((Ptr)out); StatusMessage("FAIL: NewPtr xor row"); return kBridgeCommandErr; }
+        if (xrow == NULL) { ShotFree(cur); ShotFree((Ptr)out); StatusMessage("FAIL: NewPtr xor row"); return kBridgeCommandErr; }
     }
 
     pos = 0;
@@ -350,13 +398,13 @@ BridgeResult CaptureScreenshot2(ScreenshotData *s, short rx, short ry,
 
     /* Retain a full frame as the base for the next delta; a region is not one. */
     if (full) {
-        if (gPrevFrame != NULL) DisposePtr(gPrevFrame);
+        if (gPrevFrame != NULL) ShotFree(gPrevFrame);
         gPrevFrame = cur;  cur = NULL;
         gPrevSize = fullSize; gPrevW = width; gPrevH = height;
         gPrevDepth = depth; gPrevRB = rowBytes;
         gGen++;
     }
-    if (cur != NULL) DisposePtr(cur);
+    if (cur != NULL) ShotFree(cur);
     if (xrow != NULL) DisposePtr((Ptr)xrow);
 
     s->gen = gGen;

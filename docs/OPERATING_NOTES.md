@@ -2754,3 +2754,34 @@ took the front and gave it back, and changed nothing. The host server now
 * **Copying a mounted kit volume with `≈` takes its `Desktop DB` / `Desktop DF`
   along.** They are the volume's invisible Finder database; delete them from a
   folder copy.
+
+## 2026-11-21 — a real PowerBook: SYNC-OK with no host, a busy guest that is not hung, and the zsh colon again
+
+* **"SYNC-OK", then "no reply from host", and nothing in this host's log** meant the
+  guest dialled a port whose instance was already **serving another guest**. The
+  server `accept()`s only while no daemon is connected, so the OS completed the
+  handshake (the guest's SYNC-OK), the connection waited in the listen backlog, no
+  HELLO came, and the guest timed out. A PowerBook Duo without `TCPPORT=` had dialled
+  the dev guest's 9000. The dead connection sat in the backlog for hours and was
+  "connected" — already closed — the moment the dev guest restarted. Since 0.8d50
+  the host refuses such a second daemon at once and logs `second daemon from <ip>
+  refused … check that machine's TCPPORT=`; before that, check `TCPPORT=` first.
+* **A real guest that answers nothing during an MPW command is busy, not hung.** The
+  daemon waits synchronously for ToolServer's reply (up to the 5-minute AE timeout),
+  so PING goes unanswered and an `mpw_execute` client may give up first and report a
+  short, empty result. Wait for `PONG` before concluding anything. On the Duo (ToolServer
+  at 1 MB, 33 MHz) a recursive `Files -r -l` over a 23 MB folder did not finish inside
+  the 5 minutes and came back as `COMMAND -1712`, while the daemon's own heap stayed at
+  126 K: ToolServer is the limit for large outputs on a small machine. For inventories
+  use the native verbs (`LISTDIR`, `DISKINFO`), which need neither ToolServer nor its
+  memory.
+* **The zsh `$K:A` trap struck twice more** in one afternoon (a kit path, an AFP
+  server name in a loop): `"$K:AppleBridgeInstaller"` and `"$s:Archive"` both expanded
+  `:A`. Same fix as on 2026-10-26: `${K}:` with braces, or no shell at all.
+* **An HFS name has at most 31 characters, and netatalk does not refuse a longer one**
+  — it stores it mangled (`AppleBridge 0.8d48 p#1EE55…`), so `NewFolder` "succeeds"
+  and the next `Duplicate` into the intended name fails with "is not a directory".
+* **A guest login on an AFP volume is read-only, and `Duplicate` says so only in the
+  error file.** All 33 items of a backup "succeeded" with `STATUS:0` in 1.5 minutes;
+  the `≥≥` file held 33 × `OS error -46` (`volLockErr`). 100 MB over 10 Mbit Ethernet in
+  90 seconds is the tell. Check the error file and the target, never the status.

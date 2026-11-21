@@ -33,8 +33,11 @@ New wire verb **`SWAPSELF`** (daemon, `SwapSelf()` in `mac/src/fileio.c`):
 6. On step-5 failure, roll back (`<name> old` → `<name>`) and report the error.
 
 The running process keeps executing from its now-renamed file. The caller then
-**reboots**; the watchdog launches the current `<name>` — the new binary. One
-rollback copy (`<name> old`) is left behind.
+**reboots**; the watchdog launches the current `<name>` — the new binary. The
+rollback copy (`<name> old`) is left behind until that start, when the new daemon
+removes it together with an `AppleBridgeWatchdog old` / `AppleBridgeConfig old` an
+installer left (`RemoveOldBinaries`, daemon 0.8d50). A copy still open refuses the
+delete and stays.
 
 `STAT` now also reports `home=<install folder>` so the host can locate where to stage.
 

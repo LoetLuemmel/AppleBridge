@@ -179,6 +179,7 @@ Boolean ReadFileVerb(ABConn *conn, char *request, long requestLen);
  * `Files` path). One line per entry: name<TAB>type<TAB>creator<TAB>size<TAB>modSecs<CR> */
 Boolean ListDirVerb(ABConn *conn, char *request, long requestLen);
 OSErr SwapSelf(void);   /* self-update: rename '<name> new' over the running daemon */
+short RemoveOldBinaries(void);   /* at startup: delete '<self> old', watchdog/config 'old' (0.8d50) */
 
 /* AppleTalk name lookup (nbp.c): list the entities the Chooser would show —
  * file servers, printers, workstations — via NBP instead of driving the Chooser
@@ -230,6 +231,16 @@ OSErr InjectClick(short h, short v);
 OSErr InjectClickMod(short h, short v, short count, short modifiers);
 
 /* Utility functions */
+/* Heap watermark (diet, 2026-11-21). NoteHeap() samples the heap and keeps the
+ * PEAK of bytes in use; it is called where the big buffers are live
+ * (an extracted ToolServer reply, the screenshot buffers, a READFILE handle) and
+ * after every request, so STAT's heappeak= says what the partition really had to
+ * hold, not what it was sized for. */
+void NoteHeap(void);
+long HeapPeak(void);      /* most bytes in use at once since launch */
+long HeapLimit(void);     /* bytes the heap may grow to (partition minus stack) */
+long HeapZoneSize(void);
+
 void LogMessage(const char *message);
 void LogError(const char *message, OSStatus err);
 

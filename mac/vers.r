@@ -6,7 +6,12 @@
  * the classic way to tell builds apart (replacing ad-hoc names like
  * "AppleBridge5"). One 'vers' file stamps the whole suite uniformly.
  *
- * This build: 0.8 development — d49 makes the daemon a reader of the shared prefs, never a
+ * This build: 0.8 development — d50 starts the memory diet by MEASURING it: STAT reports heap=,
+ * heapfree= and heaplow= (the lowest free heap seen where the big buffers are live), and STAT
+ * runs in its own function (its larger buffers tipped ProcessRequest over the 32 KB frame).
+ * Screenshot buffers and ToolServer replies come from temporary memory (1,000 K instead of
+ * 4,000 K on a 12 MB PowerBook), and at startup it deletes the '... old' files an update left.
+ * d49 makes the daemon a reader of the shared prefs, never a
  * writer: its window position moves to a file of its own ("AppleBridge Window"), and it no
  * longer writes a default prefs file. DELETE:/MKDIR: work without ToolServer, LAUNCH failures
  * carry the OSErr, REBOOT answers "Reboot requested", and the footer's error tag expires after
@@ -127,16 +132,16 @@
 
 resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
-    development, 0x49,   /* development stage, non-release revision 49 (BCD) */
+    development, 0x50,   /* development stage, non-release revision 50 (BCD) */
     verUS,
-    "0.8d49",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d49 - prefs read, not written"  /* long -> Get Info */
+    "0.8d50",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d50 - heap watermark"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
-    development, 0x49,
+    development, 0x50,
     verUS,
-    "0.8d49",
+    "0.8d50",
     "AppleBridge"        /* the shared/suite version line */
 };

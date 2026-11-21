@@ -18,6 +18,7 @@ files=(test_macbinary.py test_screenshot_decode.py test_screenshot_v2.py test_en
        test_host_input_tools.py test_afp_mount.py
        test_native_verbs.py test_clipset_host_mirror.py test_fb_export.py test_doc_claims.py test_hardware_findings.py
        test_process_mutations.py test_remote_guest_instance.py test_guest_boot.py test_hang_watch.py test_operator_notify.py
+       test_extra_daemon_refused.py
        test_host_ip_config.py test_installer.py test_emulator_prefs.py test_platform_seam.py test_ae_wait_bound.py
        test_command_timeout.py test_decider_coverage.py
        test_build_file_list.py test_make_test_guest.py test_write_file.py

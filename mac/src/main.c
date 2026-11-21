@@ -2591,6 +2591,42 @@ static Boolean PropagateScrapToFront(void)
     return same && gotBack;
 }
 
+/* STAT, in its own function (0.8d50): the heap fields made its buffers larger,
+ * and inside ProcessRequest that tipped the 68K 32 KB frame over the edge --
+ * SC answered "Internal error compiling ProcessRequest" (2026-11-21). */
+static void StatVerb(ABConn *conn)
+{
+    char frame[512];
+    char body[448];   /* counters + net= + heap= + the install path (home=, up to 256) */
+    char *b = body;
+    char *f = frame;
+    long now = TickCount();
+    b = StatStr(b, "uptime=");      b = StatDec(b, (now - gStartTick) / 60);
+    b = StatStr(b, ";rx=");         b = StatDec(b, gRXCount);
+    b = StatStr(b, ";tx=");         b = StatDec(b, gTXCount);
+    b = StatStr(b, ";err=");        b = StatDec(b, gErrCount);
+    b = StatStr(b, ";lat=");        b = StatDec(b, gLastLat * 1000 / 60);   /* last RX->TX, ms */
+    b = StatStr(b, ";lasterr=");    b = StatStr(b, gLastErr);               /* tag of most recent error */
+    b = StatStr(b, ";toolserver="); b = StatDec(b, IsAppRunning('MPSX') ? 1 : 0);
+    b = StatStr(b, ";net=");        b = StatStr(b, ABTransportName());
+    b = StatStr(b, ";home=");       b = StatStr(b, gPrefs.home);   /* install folder; empty on legacy setups */
+    /* Heap, in bytes (diet, 0.8d50): in use now, the most in use at once at the
+     * big-buffer sites since launch, and how far the heap may grow. */
+    b = StatStr(b, ";heapused=");   b = StatDec(b, HeapZoneSize() - FreeMem());
+    b = StatStr(b, ";heappeak=");   b = StatDec(b, HeapPeak());
+    b = StatStr(b, ";heaplimit=");  b = StatDec(b, HeapLimit());
+    *b = '\0';
+    f = StatStr(f, "STATUS:0\rSTDOUT:");
+    f = StatDec(f, (long)(b - body));
+    *f++ = '\r';
+    f = StatStr(f, body);
+    f = StatStr(f, "\rSTDERR:0\r\r");
+    SetActivity("STAT");
+    ABSend(conn, frame, (long)(f - frame));
+    gLastTX = TickCount();
+    gTXCount++;
+}
+
 Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
 {
     char responseBuffer[RESP_SCRATCH];   /* small: fixed verb/error strings only (was 64 KB on the stack) */
@@ -3920,30 +3956,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
      * and exposes the whole thing as mac_status. */
     if (strncmp(request, PROTO_STAT, strlen(PROTO_STAT)) == 0 &&
         (request[4] == '\0' || request[4] == '\r' || request[4] == '\n')) {
-        char frame[448];
-        char body[384];   /* holds the counters + net= + the install path (home=) */
-        char *b = body;
-        char *f = frame;
-        long now = TickCount();
-        b = StatStr(b, "uptime=");      b = StatDec(b, (now - gStartTick) / 60);
-        b = StatStr(b, ";rx=");         b = StatDec(b, gRXCount);
-        b = StatStr(b, ";tx=");         b = StatDec(b, gTXCount);
-        b = StatStr(b, ";err=");        b = StatDec(b, gErrCount);
-        b = StatStr(b, ";lat=");        b = StatDec(b, gLastLat * 1000 / 60);   /* last RX->TX, ms */
-        b = StatStr(b, ";lasterr=");    b = StatStr(b, gLastErr);               /* tag of most recent error */
-        b = StatStr(b, ";toolserver="); b = StatDec(b, IsAppRunning('MPSX') ? 1 : 0);
-        b = StatStr(b, ";net=");        b = StatStr(b, ABTransportName());
-        b = StatStr(b, ";home=");       b = StatStr(b, gPrefs.home);   /* install folder; empty on legacy setups */
-        *b = '\0';
-        f = StatStr(f, "STATUS:0\rSTDOUT:");
-        f = StatDec(f, (long)(b - body));
-        *f++ = '\r';
-        f = StatStr(f, body);
-        f = StatStr(f, "\rSTDERR:0\r\r");
-        SetActivity("STAT");
-        ABSend(conn, frame, (long)(f - frame));
-        gLastTX = TickCount();
-        gTXCount++;
+        StatVerb(conn);
         return true;
     }
 
@@ -5299,6 +5312,9 @@ int main(void)
      * window position, its one own setting, has a file of its own. */
     (void)LoadPrefs(&gPrefs);
     (void)LoadWinPrefs(&gPrefs);
+    /* What the last update renamed aside is not running now: remove it, so it
+     * cannot be started by accident (0.8d50). */
+    (void)RemoveOldBinaries();
 
     /* NOT here. Opening the welcome window during startup hung the guest on the
      * boot splash: Startup Items run before the desktop is up, and a daemon that
@@ -5518,6 +5534,7 @@ int main(void)
         /* Each verb handler updates the top-bar activity (SCREENSHOT / LAUNCH /
          * QUIT / the command) and the console body itself. */
         requestBuffer[bytesReceived] = '\0';
+        NoteHeap();
         if (!ProcessRequest(conn, requestBuffer, bytesReceived)) {
             /* A streamed response failed mid-send: the wire is desynced. Drop
              * the link and reconnect rather than misframe every later command. */
