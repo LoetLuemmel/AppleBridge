@@ -358,7 +358,8 @@ ROUTED_VERBS = ("PING", "STATUS-via-mac_status", "DISKINFO", "LISTDIR", "MONITOR
                 "HOSTSHOT", "HOSTKEY:", "KEYSTAT",
                 "PROCLIST", "SCREENSHOT", "NBPLOOK", "AFPMOUNT", "AFPUNMOUNT",
                 "CLIPGET", "CLIPSET", "LAUNCH:", "QUIT:", "KEY:", "TYPE:",
-                "CLICK:", "REBOOT", "SHUTDOWN", "SWAPSELF", "QUITDAEMON")
+                "CLICK:", "REBOOT", "SHUTDOWN", "SWAPSELF", "QUITDAEMON",
+                "DELETE:", "MKDIR:")
 
 
 def looks_like_verb(cmd):
@@ -2659,7 +2660,11 @@ def run_control_server(server):
                           or cmd == "PROCLIST" or cmd == "KEYSTAT"
                           or cmd.startswith("LAUNCH:") or cmd.startswith("QUIT:")
                           or cmd.startswith("KEY:") or cmd.startswith("TYPE:")
-                          or cmd.startswith("CLICK:")):
+                          or cmd.startswith("CLICK:")
+                          # 0.8d49: file operations without ToolServer. Unrouted,
+                          # they would reach ToolServer as an MPW command — and on
+                          # a guest that has none, vanish with STATUS:0.
+                          or cmd.startswith("DELETE:") or cmd.startswith("MKDIR:")):
                         log(f"verb: {cmd[:60]!r}")
                         resp = server.send_raw(cmd)   # raw, not COMMAND-wrapped
                         out = resp if resp is not None else "No response"
