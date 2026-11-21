@@ -24,6 +24,10 @@ resource 'SIZE' (-1) {
     reserved,
     reserved,
     reserved,
-    1024 * 1024,        /* preferred: 1 MB */
-    512 * 1024          /* minimum: 512 KB */
+    /* 128 K / 64 K (2026-11-21). It was 1 MB / 512 K, which on a 12 MB PowerBook
+     * Duo 230 was a twelfth of the machine for a loop that calls GetNextProcess
+     * once a second; at 128 K it ran there for the rest of the day (117 K free
+     * in its own heap). The emulators never showed the cost. */
+    128 * 1024,         /* preferred: 128 KB */
+    64 * 1024           /* minimum: 64 KB */
 };

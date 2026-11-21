@@ -53,6 +53,7 @@ QDGlobals qd;
 #define kGestaltAEAttr    'evnt'
 #define kGestaltAddrMode  'addr'
 #define kGestaltLRAM      'lram'
+#define kGestaltPRAM      'ram '   /* PHYSICAL RAM - 'lram' counts virtual memory too */
 #define kGestaltOT        'otan'   /* Open Transport attributes */
 #define kGestaltMacTCP    'mtcp'   /* MacTCP version */
 
@@ -109,6 +110,18 @@ static char    gStatus4[160];   /* line 4: the optional extra */
  * none, which is normal and silent; anything else is worth telling, because an
  * install that quietly lacks it answers every journal verb with fnfErr. */
 static OSErr   gJournalErr = fnfErr;
+
+/* Memory profile (2026-11-21). The daemon's SIZE asks 12 MB preferred / 8 MB
+ * minimum — headroom for 4 MB replies on the emulators. On a 12 MB PowerBook
+ * Duo 230 that took every free byte and nothing else could launch; the same
+ * daemon ran all day at 4,000 K. So the installer sizes the INSTALLED copy to
+ * the machine's physical RAM, the way Get Info would, and says which profile it
+ * chose, written to SIZE 0 (what Get Info edits and the Process Manager reads
+ * first). 0 = leave the built-in SIZE alone (big machines, emulators). */
+static long    gProfilePrefK = 0, gProfileMinK = 0;
+static long    gPhysRAM = 0;               /* bytes, from Gestalt 'ram ' */
+static OSErr   gProfileErr = 1;            /* 1 = not attempted */
+static long    gNeedBytes = 0, gFreeBytes = 0;
 
 /* ---- install log -------------------------------------------------------
  * Everything this program knows is drawn and then forgotten: the preflight
@@ -279,6 +292,41 @@ static void AddCheck(const char *label, short status, Boolean critical, const ch
 
 /* ---- preflight --------------------------------------------------------- */
 
+static OSErr MyFolder(short *vRef, long *dirID);
+
+/* Data + resource fork bytes of `leaf` in (vRef, dirID); 0 if absent. */
+static long ForkBytes(short vRef, long dirID, const char *leaf)
+{
+    HParamBlockRec pb;
+    Str255 name;
+    CtoP(leaf, name);
+    pb.fileParam.ioCompletion = NULL;
+    pb.fileParam.ioNamePtr = name;
+    pb.fileParam.ioVRefNum = vRef;
+    pb.fileParam.ioDirID = dirID;
+    pb.fileParam.ioFDirIndex = 0;
+    if (PBHGetFInfoSync(&pb) != noErr) return 0;
+    return pb.fileParam.ioFlLgLen + pb.fileParam.ioFlRLgLen;
+}
+
+/* The existing destination folder's dirID, WITHOUT creating it (preflight must
+ * not change the disk). fnfErr when there is no earlier install. */
+static OSErr DestDirID(short vRef, long *dirID)
+{
+    CInfoPBRec pb;
+    Str255 nm;
+    BlockMoveData(DEST_FOLDER_NAME, nm, DEST_FOLDER_NAME[0] + 1);
+    pb.dirInfo.ioCompletion = NULL;
+    pb.dirInfo.ioNamePtr = nm;
+    pb.dirInfo.ioVRefNum = vRef;
+    pb.dirInfo.ioDrDirID = fsRtDirID;
+    pb.dirInfo.ioFDirIndex = 0;
+    if (PBGetCatInfoSync(&pb) != noErr) return fnfErr;
+    if (!(pb.dirInfo.ioFlAttrib & 0x10)) return fnfErr;   /* a file, not a folder */
+    *dirID = pb.dirInfo.ioDrDirID;
+    return noErr;
+}
+
 static void RunChecks(void)
 {
     long v;
@@ -344,14 +392,56 @@ static void RunChecks(void)
     else
         AddCheck("32-bit addressing", ST_WARN, false, "24-bit - caps usable RAM");
 
-    /* RAM >= 12 MB (daemon partition 8 min / 12 pref) (advisory) */
-    if (Gestalt(kGestaltLRAM, &v) == noErr) {
-        char mb[24];
-        mb[0] = '\0';
-        CatNum(mb, v / (1024L * 1024L)); mystrcat(mb, " MB");
-        AddCheck("RAM 12 MB or more", (v >= 12L * 1024L * 1024L) ? ST_PASS : ST_WARN, false, mb);
+    /* RAM -> memory profile. PHYSICAL RAM ('ram '), not 'lram': the Duo's
+     * 12 MB with virtual memory on reported 14 MB through 'lram' and passed a
+     * 12 MB check it could not meet (2026-11-21). The profile is applied to
+     * the installed daemon's SIZE 0 after the copy; nothing is refused here,
+     * because the smallest profile is what a 12 MB Duo ran on all day. It goes
+     * into the installed daemon's SIZE 0, see ApplyMemoryProfile. */
+    if (Gestalt(kGestaltPRAM, &v) == noErr || Gestalt(kGestaltLRAM, &v) == noErr) {
+        char d[48];
+        gPhysRAM = v;
+        if (v <= 16L * 1024L * 1024L)      { gProfilePrefK = 4000; gProfileMinK = 3000; }
+        else if (v <= 32L * 1024L * 1024L) { gProfilePrefK = 8000; gProfileMinK = 6000; }
+        else                               { gProfilePrefK = 0;    gProfileMinK = 0; }
+        d[0] = '\0';
+        CatNum(d, v / (1024L * 1024L)); mystrcat(d, " MB -> daemon ");
+        if (gProfilePrefK) { CatNum(d, gProfilePrefK); mystrcat(d, " K"); }
+        else               mystrcat(d, "12 MB (built-in)");
+        AddCheck("Memory profile", (v >= 8L * 1024L * 1024L) ? ST_PASS : ST_WARN, false, d);
     } else {
-        AddCheck("RAM", ST_WARN, false, "unknown");
+        AddCheck("Memory profile", ST_WARN, false, "RAM unknown - built-in sizes");
+    }
+
+    /* Free space on the startup volume: the payload, plus room for the prefs,
+     * the log and the Finder's desktop file. A REQUIRED check: on the Duo the
+     * disk had 598 KB free and every copy came out short while the log said
+     * "copied" (2026-11-21). What the install replaces is counted as free. */
+    {
+        short srcV, sysV;
+        long  srcD, sysD, destD;
+        HParamBlockRec vp;
+        char  d[48];
+        static const char *kPay[4] = { LEAF_DAEMON, LEAF_WATCHDOG, LEAF_CONFIG, LEAF_JOURNAL };
+        short k;
+        gNeedBytes = 256L * 1024L;
+        gFreeBytes = 0;
+        if (MyFolder(&srcV, &srcD) == noErr)
+            for (k = 0; k < 4; k++) gNeedBytes += ForkBytes(srcV, srcD, kPay[k]);
+        if (FindFolder(kOnSystemDisk, kSystemFolderType, kDontCreateFolder, &sysV, &sysD) == noErr) {
+            vp.volumeParam.ioCompletion = NULL;
+            vp.volumeParam.ioNamePtr = NULL;
+            vp.volumeParam.ioVRefNum = sysV;
+            vp.volumeParam.ioVolIndex = 0;
+            if (PBHGetVInfoSync(&vp) == noErr)
+                gFreeBytes = (long)vp.volumeParam.ioVFrBlk * vp.volumeParam.ioVAlBlkSiz;
+            if (DestDirID(sysV, &destD) == noErr)
+                for (k = 0; k < 4; k++) gFreeBytes += ForkBytes(sysV, destD, kPay[k]);
+        }
+        d[0] = '\0';
+        CatNum(d, gFreeBytes / 1024L); mystrcat(d, " K free, need ");
+        CatNum(d, gNeedBytes / 1024L); mystrcat(d, " K");
+        AddCheck("Disk space", (gFreeBytes >= gNeedBytes) ? ST_PASS : ST_FAIL, true, d);
     }
 
     /* ToolServer: no Gestalt; located optionally during install (advisory) */
@@ -485,6 +575,11 @@ static OSErr CopyOneFork(const FSSpec *src, const FSSpec *dst, Boolean resFork)
     DisposePtr(buf);
     FSClose(sref);
     FSClose(dref);
+    /* A copy that stopped early is a FAILED copy. The loop above leaves on
+     * eofErr with err still noErr, so a fork could come out short and this
+     * returned success: on the Duo the installer logged "copied" for three
+     * programs that then failed to open with -39 (2026-11-21). */
+    if (err == noErr && done != total) err = eofErr;
     return err;
 }
 
@@ -538,6 +633,101 @@ static OSErr ClearDestination(const FSSpec *dst)
     return FSpRename(dst, aside);
 }
 
+/* Read the copy back instead of trusting the writes (2026-11-21).
+ *   1. both fork lengths equal the source's (a source without a resource fork
+ *      is skipped there: FSpCreateResFile gave the copy an empty map);
+ *   2. for an application, its resource map opens and CODE 0 is in it. The
+ *      map sits at the END of the fork, so a truncated fork fails here even
+ *      when the SOURCE was already short and the lengths agree.
+ * -> noErr, eofErr (a fork is short) or the Resource Manager's error. */
+/* 1 if the file's resource map opens and holds CODE 0, 0 if it opens without
+ * one, -1 if the map cannot be opened at all. */
+static short HasCode0(const FSSpec *spec)
+{
+    short ref, saved, has;
+    saved = CurResFile();
+    ref = FSpOpenResFile(spec, fsRdPerm);
+    if (ref == -1) return -1;
+    UseResFile(ref);
+    SetResLoad(false);
+    has = (Get1Resource('CODE', 0) != NULL) ? 1 : 0;
+    SetResLoad(true);
+    CloseResFile(ref);
+    UseResFile(saved);
+    return has;
+}
+
+static OSErr VerifyCopy(const FSSpec *src, const FSSpec *dst, OSType type)
+{
+    HParamBlockRec a, b;
+    OSErr err;
+
+    a.fileParam.ioCompletion = b.fileParam.ioCompletion = NULL;
+    a.fileParam.ioNamePtr = (StringPtr)src->name; a.fileParam.ioVRefNum = src->vRefNum;
+    a.fileParam.ioDirID = src->parID;             a.fileParam.ioFDirIndex = 0;
+    b.fileParam.ioNamePtr = (StringPtr)dst->name; b.fileParam.ioVRefNum = dst->vRefNum;
+    b.fileParam.ioDirID = dst->parID;             b.fileParam.ioFDirIndex = 0;
+    if ((err = PBHGetFInfoSync(&a)) != noErr) return err;
+    if ((err = PBHGetFInfoSync(&b)) != noErr) return err;
+    if (a.fileParam.ioFlLgLen != b.fileParam.ioFlLgLen) return eofErr;
+    if (a.fileParam.ioFlRLgLen > 0 && a.fileParam.ioFlRLgLen != b.fileParam.ioFlRLgLen) return eofErr;
+
+    /* Only what the SOURCE has can be asked of the copy. ABJournalDRVR is typed
+     * APPL but holds a DRVR and no CODE 0, and the first version of this check
+     * reported it "not copied (error -192)" on the Duo while the file was whole
+     * (2026-11-21). So: the copy's map must open whenever the source's does,
+     * and CODE 0 is required only when the source carries one. */
+    if (type != 'APPL' || a.fileParam.ioFlRLgLen == 0) return noErr;
+    {
+        short srcHasCode = HasCode0(src);
+        short dstHasCode;
+        if (srcHasCode < 0) return noErr;            /* the source's own map is unreadable: nothing to compare */
+        dstHasCode = HasCode0(dst);
+        if (dstHasCode < 0) return mapReadErr;       /* a truncated fork loses its map: it sits at the end */
+        if (srcHasCode && !dstHasCode) return resNotFound;
+    }
+    return noErr;
+}
+
+/* Size the installed daemon the way Get Info does: in SIZE 0. The Process
+ * Manager reads ID 0 FIRST and falls back to ID -1 only when there is no 0
+ * ("the Finder stores the new size in a 'SIZE' resource with a resource ID of
+ * 0 ... looks first for a 'SIZE' resource with an ID of 0", THINK Reference,
+ * The Size Resource). The first version of this wrote -1; the daemon ships its
+ * own SIZE 0 (12 MB / 8 MB), so the 4,000 K were ignored and the Duo's daemon
+ * came up at 8,519 K with no room left for ToolServer (2026-11-21). ID 0 is
+ * created from -1 when the binary has none. Bytes 2-5 preferred, 6-9 minimum. */
+static OSErr ApplyMemoryProfile(const FSSpec *app, long prefK, long minK)
+{
+    short ref, saved;
+    Handle h;
+    OSErr err;
+
+    saved = CurResFile();
+    ref = FSpOpenResFile(app, fsRdWrPerm);
+    if (ref == -1) { err = ResError(); return err ? err : mapReadErr; }
+    UseResFile(ref);
+    h = Get1Resource('SIZE', 0);
+    if (h == NULL) {
+        Handle dev = Get1Resource('SIZE', -1);
+        if (dev != NULL) {
+            h = dev;
+            HandToHand(&h);
+            if (h != NULL) AddResource(h, 'SIZE', 0, "\p");
+        }
+    }
+    if (h == NULL || GetHandleSize(h) < 10) { CloseResFile(ref); UseResFile(saved); return resNotFound; }
+    HNoPurge(h);
+    *(long *)(*h + 2) = prefK * 1024L;
+    *(long *)(*h + 6) = minK * 1024L;
+    ChangedResource(h);
+    WriteResource(h);
+    err = ResError();
+    CloseResFile(ref);
+    UseResFile(saved);
+    return err;
+}
+
 static OSErr CopyForks(const FSSpec *src, const FSSpec *dst)
 {
     FInfo fi;
@@ -559,7 +749,7 @@ static OSErr CopyForks(const FSSpec *src, const FSSpec *dst)
     if (err != noErr) return err;
 
     FSpSetFInfo(dst, &fi);   /* carry type/creator/flags */
-    return noErr;
+    return VerifyCopy(src, dst, fi.fdType);
 }
 
 /* Drop a Startup Items alias to the installed watchdog (same recipe as the
@@ -740,13 +930,29 @@ static void WriteInstallLog(void)
             if (gCopyErr[i] == 1)           mystrcat(buf, "not reached");
             else if (gCopyErr[i] == noErr)  mystrcat(buf, "copied");
             else if (gCopyErr[i] == fnfErr) mystrcat(buf, "MISSING - not beside the installer");
-            else { mystrcat(buf, "FAILED - error "); LogErrNum(buf, gCopyErr[i]); }
+            else { mystrcat(buf, "FAILED - error "); LogErrNum(buf, gCopyErr[i]);
+                   if (gCopyErr[i] == eofErr) mystrcat(buf, " (copy came out SHORT - disk full?)"); }
             LogLine(buf, "");
         }
         LogPad(buf, LEAF_JOURNAL, 24);
         if (gJournalErr == noErr)       mystrcat(buf, "copied");
         else if (gJournalErr == fnfErr) mystrcat(buf, "not in this payload (normal)");
         else { mystrcat(buf, "FAILED - error "); LogErrNum(buf, gJournalErr); }
+        LogLine(buf, "");
+        mystrcat(buf, "physical RAM: ");
+        CatNum(buf, gPhysRAM / (1024L * 1024L)); mystrcat(buf, " MB; daemon memory: ");
+        if (!gProfilePrefK)            mystrcat(buf, "built-in SIZE (12 MB / 8 MB)");
+        else {
+            CatNum(buf, gProfilePrefK); mystrcat(buf, " K / min ");
+            CatNum(buf, gProfileMinK);  mystrcat(buf, " K");
+            if (gProfileErr == noErr)  mystrcat(buf, " - set");
+            else if (gProfileErr == 1) mystrcat(buf, " - not reached");
+            else { mystrcat(buf, " - FAILED, error "); LogErrNum(buf, gProfileErr); }
+        }
+        LogLine(buf, "");
+        mystrcat(buf, "disk: ");
+        CatNum(buf, gFreeBytes / 1024L); mystrcat(buf, " K free, ");
+        CatNum(buf, gNeedBytes / 1024L); mystrcat(buf, " K needed");
         LogLine(buf, "");
         LogLine(buf, gInstalled ? "result: installed" : "result: DID NOT COMPLETE");
     }
@@ -869,6 +1075,8 @@ static void DoInstallRun(void)
                 else          { CatNum(gStatus, (long)cerr); }
                 if (cerr == fBsyErr || cerr == opWrErr || cerr == permErr)
                     mystrcat(gStatus, " (in use, and could not be renamed aside)");
+                if (cerr == eofErr)
+                    mystrcat(gStatus, " (the copy came out short - is the disk full?)");
                 mystrcat(gStatus, ".");
             }
             return;
@@ -886,6 +1094,17 @@ static void DoInstallRun(void)
      * does nothing" shape this project keeps paying for. It does not abort the
      * install: an optional extra must not cost somebody their bridge. */
     gJournalErr = CopyBinary(srcV, srcD, dstV, dstD, LEAF_JOURNAL);
+
+    /* Size the installed daemon to this machine (see gProfilePrefK). A failure
+     * here does not fail the install — the daemon still runs with its built-in
+     * SIZE — but it is logged, because on a small machine that built-in SIZE is
+     * exactly what keeps everything else from launching. */
+    if (gProfilePrefK) {
+        FSSpec dmn;
+        CtoP(LEAF_DAEMON, pName);
+        if (FSMakeFSSpec(dstV, dstD, pName, &dmn) == noErr)
+            gProfileErr = ApplyMemoryProfile(&dmn, gProfilePrefK, gProfileMinK);
+    }
 
     /* Seed prefs in three LAYERS, weakest first. The order is the whole point.
      *
