@@ -602,7 +602,8 @@ static OSErr MakeSibling(const FSSpec *base, const char *suffix, FSSpec *out)
  *   5. rename "<selfName> new" -> "<selfName>"
  *   6. on step-5 failure, roll back (rename "old" back) so the daemon still
  *      relaunches, and report the error.
- * One rollback copy ("<selfName> old") is left behind on success.
+ * The rollback copy ("<selfName> old") is left behind on success and removed
+ * by RemoveOldBinaries at the next start (0.8d50).
  */
 OSErr SwapSelf(void)
 {
@@ -968,4 +969,41 @@ OSErr FindAppFileBySignature(OSType creator, FSSpec *spec)
         }
     }
     return fnfErr;
+}
+
+/*
+ * RemoveOldBinaries -- at startup, delete what an update renamed aside (0.8d50).
+ *
+ * SwapSelf and the installer cannot overwrite a RUNNING daemon or watchdog, so
+ * they rename it "<name> old" and leave it there; nothing ever removed it. On a
+ * PowerBook Duo 230 (2026-11-21) an "AppleBridge old" was started by hand after
+ * an update and, being an older build, cost the prefs their TCPPORT=/NAME=. At
+ * the daemon's own startup none of these can be running: the daemon is the new
+ * file, and the watchdog that launched it is the new watchdog. A copy that IS
+ * open (an alias still pointing at it) refuses with fBsyErr and is left alone.
+ * -> how many files were removed.
+ */
+short RemoveOldBinaries(void)
+{
+    static const char *kOthers[2] = { "AppleBridgeWatchdog old", "AppleBridgeConfig old" };
+    ProcessSerialNumber psn;
+    ProcessInfoRec      info;
+    FSSpec              self, old;
+    Str255              selfName, name;
+    short               removed = 0, k, i;
+
+    if (GetCurrentProcess(&psn) != noErr) return 0;
+    info.processInfoLength = sizeof(ProcessInfoRec);
+    info.processName       = selfName;
+    info.processAppSpec    = &self;
+    if (GetProcessInformation(&psn, &info) != noErr) return 0;
+
+    if (MakeSibling(&self, " old", &old) == noErr && FSpDelete(&old) == noErr) removed++;
+    for (k = 0; k < 2; k++) {
+        for (i = 0; kOthers[k][i] && i < 63; i++) name[i + 1] = (unsigned char)kOthers[k][i];
+        name[0] = (unsigned char)i;
+        if (FSMakeFSSpec(self.vRefNum, self.parID, name, &old) == noErr && FSpDelete(&old) == noErr)
+            removed++;
+    }
+    return removed;
 }

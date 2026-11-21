@@ -9,6 +9,8 @@
  * This build: 0.8 development — d50 starts the memory diet by MEASURING it: STAT reports heap=,
  * heapfree= and heaplow= (the lowest free heap seen where the big buffers are live), and STAT
  * runs in its own function (its larger buffers tipped ProcessRequest over the 32 KB frame).
+ * Screenshot buffers and ToolServer replies come from temporary memory (1,000 K instead of
+ * 4,000 K on a 12 MB PowerBook), and at startup it deletes the '... old' files an update left.
  * d49 makes the daemon a reader of the shared prefs, never a
  * writer: its window position moves to a file of its own ("AppleBridge Window"), and it no
  * longer writes a default prefs file. DELETE:/MKDIR: work without ToolServer, LAUNCH failures

@@ -866,6 +866,47 @@ class AppleBridgeServer:
         log(f"Mac connected from {addr} (link {self.link_epoch}:{self.link_generation})")
         return addr
 
+    def refuse_extra_daemons(self):
+        """While a daemon is connected, take any FURTHER connection on the daemon
+        port, say whose it was, and close it. -> how many were refused.
+
+        The listener is accept()ed only while no daemon is connected, so a second
+        daemon dialling the same port used to wait in the kernel backlog: its
+        connect succeeded (the OS completes the handshake), it saw no HELLO, and
+        it timed out with "no reply from host" while this server logged nothing.
+        The dead connection then sat there until the first daemon dropped and was
+        accepted hours later, already closed. Measured 2026-11-21: a PowerBook Duo
+        whose prefs lacked TCPPORT= dialled the dev guest's 9000, reported
+        SYNC-OK and then a timeout; at 16:17:38, when that guest restarted, the
+        server "connected" the Duo's morning attempt and found it closed. Refusing
+        at once turns that into an immediate disconnect on the guest and one log
+        line here that names the address and the likely cause."""
+        if self.serial_dev or self.server_socket is None or not self.connected:
+            return 0
+        refused = 0
+        while True:
+            try:
+                ready, _, _ = select.select([self.server_socket], [], [], 0)
+            except (OSError, ValueError):
+                return refused
+            if not ready:
+                return refused
+            try:
+                extra, addr = self.server_socket.accept()
+            except OSError:
+                return refused
+            try:
+                current = "%s:%s" % self.client_socket.getpeername()[:2]
+            except (OSError, AttributeError, TypeError):
+                current = "another guest"
+            log(f"second daemon from {addr[0]}:{addr[1]} refused: port {self.port} is serving "
+                f"{current} (guest {GUEST_NAME!r}) - check that machine's TCPPORT= in AppleBridge Prefs")
+            try:
+                extra.close()
+            except OSError:
+                pass
+            refused += 1
+
     def _mark_disconnected(self, reason):
         # Idempotent: callers of _drain() follow a False with their own generic
         # "drain detected closed socket", which would replace a specific reason
@@ -2171,6 +2212,7 @@ def run_control_server(server):
                 # Idle tick (~1 s). If the link has been quiet, emit a heartbeat
                 # so the daemon's watchdog stays fed and we notice a dead/replaced
                 # connection. Skip while a real command is obviously not in flight.
+                server.refuse_extra_daemons()   # a second daemon on this port: say so, close it
                 if server.connected and time.monotonic() - last_io >= HEARTBEAT_INTERVAL:
                     if server.heartbeat():
                         missed = 0

@@ -5312,6 +5312,9 @@ int main(void)
      * window position, its one own setting, has a file of its own. */
     (void)LoadPrefs(&gPrefs);
     (void)LoadWinPrefs(&gPrefs);
+    /* What the last update renamed aside is not running now: remove it, so it
+     * cannot be started by accident (0.8d50). */
+    (void)RemoveOldBinaries();
 
     /* NOT here. Opening the welcome window during startup hung the guest on the
      * boot splash: Startup Items run before the desktop is up, and a daemon that
