@@ -116,7 +116,8 @@ static OSErr   gJournalErr = fnfErr;
  * Duo 230 that took every free byte and nothing else could launch; the same
  * daemon ran all day at 4,000 K. So the installer sizes the INSTALLED copy to
  * the machine's physical RAM, the way Get Info would, and says which profile it
- * chose. 0 = leave the built-in SIZE alone (big machines, emulators). */
+ * chose, written to SIZE 0 (what Get Info edits and the Process Manager reads
+ * first). 0 = leave the built-in SIZE alone (big machines, emulators). */
 static long    gProfilePrefK = 0, gProfileMinK = 0;
 static long    gPhysRAM = 0;               /* bytes, from Gestalt 'ram ' */
 static OSErr   gProfileErr = 1;            /* 1 = not attempted */
@@ -394,8 +395,9 @@ static void RunChecks(void)
     /* RAM -> memory profile. PHYSICAL RAM ('ram '), not 'lram': the Duo's
      * 12 MB with virtual memory on reported 14 MB through 'lram' and passed a
      * 12 MB check it could not meet (2026-11-21). The profile is applied to
-     * the installed daemon's SIZE -1 after the copy; nothing is refused here,
-     * because the smallest profile is what a 12 MB Duo ran on all day. */
+     * the installed daemon's SIZE 0 after the copy; nothing is refused here,
+     * because the smallest profile is what a 12 MB Duo ran on all day. It goes
+     * into the installed daemon's SIZE 0, see ApplyMemoryProfile. */
     if (Gestalt(kGestaltPRAM, &v) == noErr || Gestalt(kGestaltLRAM, &v) == noErr) {
         char d[48];
         gPhysRAM = v;
@@ -638,12 +640,27 @@ static OSErr ClearDestination(const FSSpec *dst)
  *      map sits at the END of the fork, so a truncated fork fails here even
  *      when the SOURCE was already short and the lengths agree.
  * -> noErr, eofErr (a fork is short) or the Resource Manager's error. */
+/* 1 if the file's resource map opens and holds CODE 0, 0 if it opens without
+ * one, -1 if the map cannot be opened at all. */
+static short HasCode0(const FSSpec *spec)
+{
+    short ref, saved, has;
+    saved = CurResFile();
+    ref = FSpOpenResFile(spec, fsRdPerm);
+    if (ref == -1) return -1;
+    UseResFile(ref);
+    SetResLoad(false);
+    has = (Get1Resource('CODE', 0) != NULL) ? 1 : 0;
+    SetResLoad(true);
+    CloseResFile(ref);
+    UseResFile(saved);
+    return has;
+}
+
 static OSErr VerifyCopy(const FSSpec *src, const FSSpec *dst, OSType type)
 {
     HParamBlockRec a, b;
-    short ref, saved;
     OSErr err;
-    Handle h;
 
     a.fileParam.ioCompletion = b.fileParam.ioCompletion = NULL;
     a.fileParam.ioNamePtr = (StringPtr)src->name; a.fileParam.ioVRefNum = src->vRefNum;
@@ -655,22 +672,31 @@ static OSErr VerifyCopy(const FSSpec *src, const FSSpec *dst, OSType type)
     if (a.fileParam.ioFlLgLen != b.fileParam.ioFlLgLen) return eofErr;
     if (a.fileParam.ioFlRLgLen > 0 && a.fileParam.ioFlRLgLen != b.fileParam.ioFlRLgLen) return eofErr;
 
-    if (type != 'APPL') return noErr;
-    saved = CurResFile();
-    ref = FSpOpenResFile(dst, fsRdPerm);
-    if (ref == -1) { err = ResError(); return err ? err : mapReadErr; }
-    UseResFile(ref);
-    SetResLoad(false);
-    h = Get1Resource('CODE', 0);
-    SetResLoad(true);
-    err = (h == NULL) ? resNotFound : noErr;
-    CloseResFile(ref);
-    UseResFile(saved);
-    return err;
+    /* Only what the SOURCE has can be asked of the copy. ABJournalDRVR is typed
+     * APPL but holds a DRVR and no CODE 0, and the first version of this check
+     * reported it "not copied (error -192)" on the Duo while the file was whole
+     * (2026-11-21). So: the copy's map must open whenever the source's does,
+     * and CODE 0 is required only when the source carries one. */
+    if (type != 'APPL' || a.fileParam.ioFlRLgLen == 0) return noErr;
+    {
+        short srcHasCode = HasCode0(src);
+        short dstHasCode;
+        if (srcHasCode < 0) return noErr;            /* the source's own map is unreadable: nothing to compare */
+        dstHasCode = HasCode0(dst);
+        if (dstHasCode < 0) return mapReadErr;       /* a truncated fork loses its map: it sits at the end */
+        if (srcHasCode && !dstHasCode) return resNotFound;
+    }
+    return noErr;
 }
 
-/* Size the installed daemon like Get Info would: SIZE -1, created from SIZE 0
- * when the binary has none. Bytes 2-5 preferred, 6-9 minimum. */
+/* Size the installed daemon the way Get Info does: in SIZE 0. The Process
+ * Manager reads ID 0 FIRST and falls back to ID -1 only when there is no 0
+ * ("the Finder stores the new size in a 'SIZE' resource with a resource ID of
+ * 0 ... looks first for a 'SIZE' resource with an ID of 0", THINK Reference,
+ * The Size Resource). The first version of this wrote -1; the daemon ships its
+ * own SIZE 0 (12 MB / 8 MB), so the 4,000 K were ignored and the Duo's daemon
+ * came up at 8,519 K with no room left for ToolServer (2026-11-21). ID 0 is
+ * created from -1 when the binary has none. Bytes 2-5 preferred, 6-9 minimum. */
 static OSErr ApplyMemoryProfile(const FSSpec *app, long prefK, long minK)
 {
     short ref, saved;
@@ -681,16 +707,15 @@ static OSErr ApplyMemoryProfile(const FSSpec *app, long prefK, long minK)
     ref = FSpOpenResFile(app, fsRdWrPerm);
     if (ref == -1) { err = ResError(); return err ? err : mapReadErr; }
     UseResFile(ref);
-    h = Get1Resource('SIZE', -1);
+    h = Get1Resource('SIZE', 0);
     if (h == NULL) {
-        Handle z = Get1Resource('SIZE', 0);
-        if (z != NULL) {
-            h = z;
+        Handle dev = Get1Resource('SIZE', -1);
+        if (dev != NULL) {
+            h = dev;
             HandToHand(&h);
-            if (h != NULL) AddResource(h, 'SIZE', -1, "\p");
+            if (h != NULL) AddResource(h, 'SIZE', 0, "\p");
         }
     }
-    err = ResError();
     if (h == NULL || GetHandleSize(h) < 10) { CloseResFile(ref); UseResFile(saved); return resNotFound; }
     HNoPurge(h);
     *(long *)(*h + 2) = prefK * 1024L;
