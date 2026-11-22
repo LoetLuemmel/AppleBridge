@@ -56,6 +56,25 @@ reboot — that stays an explicit step (Basilisk needs the AppleShare boot login
 host-side). Failure reports the File Manager code: **`-43`** = the staged binary was
 missing; any other code = the OS refused the rename.
 
+## Small Macs: the update replaces the memory setting
+
+SWAPSELF swaps the **whole file**, and with it the memory setting the installer
+wrote into the running daemon (SIZE 0 — 600 K / 1,000 K up to 16 MB of RAM,
+1,000 K / 2,000 K up to 32 MB). A freshly linked daemon asks for 8 MB / 12 MB.
+On a Mac with 32 MB or less that means the new daemon takes all the memory, or
+does not start and the watchdog's relaunch fails silently (PowerBook Duo 230,
+2026-11-22).
+
+`mac_update_daemon` compares the two before anything restarts: what the daemon
+runs in now (`STAT heaplimit=`) and what the staged binary asks for (its SIZE 0,
+else SIZE -1). If the new one asks for more, the result carries `memory_warning`
+with the step for the user, and `next` says to do it **before** `mac_reboot`:
+set Minimum / Preferred size on the new `AppleBridge` in the Finder's Get Info —
+it is not running yet, so Get Info can still change it. A binary that already
+carries the right SIZE 0 (patched on the host before staging) passes silently.
+Recovery when the restart has already happened: `TROUBLESHOOTING.md` →
+*After a daemon update a small Mac has no memory left*.
+
 ## Verification (System 7)
 
 Built the daemon at 0.8d4 (with `SWAPSELF`), ran it, staged a 0.8d5-stamped copy as

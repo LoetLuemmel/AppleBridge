@@ -935,7 +935,14 @@ mac_get_file) as '<install>/AppleBridge new', then send SWAPSELF.
 
 It does NOT reboot. After it returns success, call mac_reboot so the watchdog
 launches the new binary, then verify the daemon's vers. mac_dir defaults to the
-daemon's reported install folder (mac_status home=).""",
+daemon's reported install folder (mac_status home=).
+
+SMALL MACS (16-32 MB and less, e.g. a PowerBook Duo, an SE/30): the installer sized
+the running daemon (SIZE 0, 1,000 K on 12 MB), and the swap replaces that file. A
+freshly linked binary asks for 12 MB / 8 MB and takes all memory or does not start.
+When the new binary asks for more than the daemon runs in now, the result carries
+'memory_warning': relay it to the user and have them set the size in Get Info on
+the Mac BEFORE calling mac_reboot.""",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -2785,6 +2792,45 @@ def mac_shutdown() -> Dict[str, Any]:
         return {"success": True, "note": f"shutdown triggered (connection dropped: {e})"}
 
 
+def _macbinary_size_request(host_path: str) -> Optional[tuple]:
+    """(preferred, minimum) bytes the MacBinary's application asks for: SIZE 0 if it has
+    one (what Get Info and the installer write), else SIZE -1 (the built-in one). None if
+    the file is no MacBinary with a SIZE resource. Plain resource-map walk, no dependency."""
+    import struct
+    try:
+        b = open(host_path, "rb").read()
+        dlen, rlen = struct.unpack(">II", b[83:91])
+        r0 = 128 + ((dlen + 127) // 128) * 128
+        rf = b[r0:r0 + rlen]
+        data_off, map_off = struct.unpack(">II", rf[0:8])
+        tl = map_off + struct.unpack(">H", rf[map_off + 24:map_off + 26])[0]
+        found = {}
+        for i in range(struct.unpack(">H", rf[tl:tl + 2])[0] + 1):
+            rtype, n, ref = struct.unpack(">4sHH", rf[tl + 2 + 8 * i:tl + 10 + 8 * i])
+            if rtype != b"SIZE":
+                continue
+            for k in range(n + 1):
+                e = tl + ref + 12 * k
+                rid = struct.unpack(">h", rf[e:e + 2])[0]
+                off = data_off + (struct.unpack(">I", rf[e + 4:e + 8])[0] & 0xFFFFFF) + 4
+                found[rid] = struct.unpack(">II", rf[off + 2:off + 10])
+        return found.get(0) or found.get(-1)
+    except Exception:
+        return None
+
+
+# What the installer writes into SIZE 0 (mac/installer/installer.c, physical RAM -> profile).
+_SMALL_MAC_STEPS = (
+    "BEFORE the restart that activates it, on the Mac: select the new 'AppleBridge' in "
+    "{folder} (the running copy is now 'AppleBridge old'), File > Get Info (Cmd-I), and set "
+    "Minimum size / Preferred size to what the installer chose for this Mac's RAM - "
+    "600 K / 1,000 K up to 16 MB, 1,000 K / 2,000 K up to 32 MB - then close the window and "
+    "restart. Without it the new daemon asks for {pref_k} K (minimum {min_k} K): it takes all "
+    "the memory (ToolServer fails with -108) or does not start at all, and the watchdog's "
+    "relaunch fails silently. Get Info cannot change a running application, so do it now, "
+    "while the new file is not running.")
+
+
 def mac_update_daemon(host_path: str, mac_dir: Optional[str] = None,
                       staged_name: str = "AppleBridge new") -> Dict[str, Any]:
     """Self-update the running daemon, entirely over the bridge.
@@ -2800,8 +2846,9 @@ def mac_update_daemon(host_path: str, mac_dir: Optional[str] = None,
         conn = get_connection()
         if not conn.is_connected():
             return {"success": False, "error": "Mac not connected"}
+        st = mac_status()
         if not mac_dir:
-            mac_dir = mac_status().get("home")
+            mac_dir = st.get("home")
             if not mac_dir:
                 return {"success": False,
                         "error": "daemon reported no install folder (home=); pass mac_dir"}
@@ -2819,8 +2866,23 @@ def mac_update_daemon(host_path: str, mac_dir: Optional[str] = None,
             return {"success": False, "stage": "swapself", "staged": staged,
                     "status": status, "error": stderr or stdout or "swap failed",
                     "hint": "err -43 = staged binary missing; other = OS refused the rename"}
-        return {"success": True, "staged": staged, "message": stdout or "Swapped",
-                "next": "call mac_reboot to activate, then verify the daemon's vers"}
+        result = {"success": True, "staged": staged, "message": stdout or "Swapped",
+                  "next": "call mac_reboot to activate, then verify the daemon's vers"}
+        # A small Mac runs the daemon in the installer's memory profile (SIZE 0). The new file
+        # replaces it, so a freshly linked binary arrives with the built-in 12 MB / 8 MB: on the
+        # 12 MB Duo it took all memory and the watchdog could not relaunch it (2026-11-22).
+        limit = None
+        for tok in (st.get("raw") or "").split(";"):
+            if tok.startswith("heaplimit=") and tok[10:].isdigit():
+                limit = int(tok[10:])
+        req = _macbinary_size_request(host_path)
+        if limit and req and req[0] > limit * 1.25:
+            result["memory_warning"] = _SMALL_MAC_STEPS.format(
+                folder=mac_dir, pref_k=req[0] // 1024, min_k=req[1] // 1024)
+            result["memory"] = {"running_heaplimit_k": limit // 1024,
+                                "new_preferred_k": req[0] // 1024, "new_minimum_k": req[1] // 1024}
+            result["next"] = "memory_warning first (Get Info on the Mac), THEN mac_reboot"
+        return result
     except Exception as e:
         return {"success": False, "error": str(e)}
 

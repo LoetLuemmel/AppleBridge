@@ -52,6 +52,7 @@ nothing behind at all.
 - [Network and Connection](#network-and-connection)
 - [Emulator (Basilisk II) Crashes](#emulator-basilisk-ii-crashes)
 - [A boot extension wedges the guest](#a-boot-extension-wedges-the-guest--hold-shift)
+- [After a daemon update a small Mac has no memory left](#after-a-daemon-update-a-small-mac-has-no-memory-left)
 - [Compilation and Linking](#compilation-and-linking)
 - [File System and Encoding](#file-system-and-encoding)
 - [ToolServer vs MPW Shell](#toolserver-vs-mpw-shell)
@@ -562,6 +563,53 @@ renames the *daemon* aside in its own home directory; an extension is neither
 the daemon nor in that path, so the self-update route cannot reach it. And a
 disk-image backup restores everything, including whatever else changed since —
 Shift-boot costs nothing by comparison, which is why it is listed first.
+
+---
+
+## After a daemon update a small Mac has no memory left
+
+**Symptoms** (PowerBook Duo 230, 12 MB, 2026-11-22): after `mac_update_daemon` and a
+restart the bridge does not come back, or comes back and ToolServer will not open —
+*"'ToolServer' needs 768K, but only 3K is available. … quitting 'AppleBridge'"*, the
+footer shows `err:launch -108`. After a `QUITDAEMON` the watchdog does not restart the
+daemon. Nothing crashed and there is no bomb.
+
+**Cause.** The installer sizes the daemon for the Mac's RAM and writes that into the
+program's own memory setting (SIZE 0, what Get Info shows): 600 K / 1,000 K up to 16 MB,
+1,000 K / 2,000 K up to 32 MB. An update replaces the whole file, and a freshly built
+daemon asks for **8 MB minimum / 12 MB preferred**. It then takes all the memory, or
+cannot start at all — and the watchdog's relaunch fails without a word.
+Machines with more than 32 MB (all the emulators here) are not affected: they run on
+the built-in size anyway.
+
+**Prevent it — before the restart that activates an update** (`mac_update_daemon`
+says so itself: its result carries `memory_warning` when the new binary asks for more
+than the daemon runs in now):
+
+1. In the Finder open the AppleBridge folder. The new program is **AppleBridge**; the
+   one still running has been renamed **AppleBridge old**.
+2. Select **AppleBridge**, choose **File ▸ Get Info** (⌘I; German: *Ablage ▸ Information*).
+3. Under *Memory Requirements* set **Minimum size** and **Preferred size**:
+   600 K / 1,000 K on a Mac with up to 16 MB, 1,000 K / 2,000 K up to 32 MB.
+4. Close the window, then restart (`mac_reboot`, or *Special ▸ Restart*).
+
+Get Info cannot change a program that is running, which is why this has to happen
+in the window between the update and the restart.
+
+**Repair it — when the restart has already happened:**
+
+- *AppleBridge is not running* (it is not in the application menu at the right end of
+  the menu bar): do steps 1–3 on **AppleBridge**, then double-click it, or restart.
+- *AppleBridge is running and holds the memory*: Get Info refuses while it runs, and
+  quitting it is no help — the watchdog starts it again within seconds, with the same
+  12 MB. Restart and **hold Shift from the startup chime until the desktop appears**:
+  extensions and Startup Items stay off, so neither the watchdog nor AppleBridge
+  starts. Do steps 1–3, then restart normally.
+- Running the **AppleBridgeInstaller** from the kit again also restores the size
+  (it re-applies the profile), at the price of a full reinstall.
+
+The values are the installer's (`mac/installer/installer.c`, from the 0.8d50
+measurements: ~120 K in use at idle, room for one large ToolServer reply).
 
 ---
 
