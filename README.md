@@ -530,7 +530,7 @@ AppleBridge/
 
 ## Status
 
-**Current daemon:** 0.8d51 ("clipboard both ways") — the version the
+**Current daemon:** 0.8d52 ("a console that keeps up") — the version the
 daemon itself reports, from `mac/vers.r`.
 
 - TCP bridge, NAT-reversed (the guest dials OUT), with an asynchronous connect

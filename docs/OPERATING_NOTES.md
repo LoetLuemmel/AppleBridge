@@ -2824,3 +2824,12 @@ took the front and gave it back, and changed nothing. The host server now
   the MacBinary before staging on any machine the installer sized.
 
 
+* **On a slow Mac the Verbose console was the bottleneck, not the network.** Every
+  command on the Duo took up to 7.8 s in a long `LISTDIR` walk — it looked like
+  MacTCP. It was `SyncLogTE`: after each command it rebuilt the whole field, restyled
+  every command line with its own `TESetStyle` and repainted the body; with the ring
+  full that is seconds at 33 MHz on a 1152×870 screen. Measured, 40× `LISTDIR` of the
+  root: 1.0 → 3.3 s per call with the console shown, flat 1.0 s hidden (`MONITOR:0`).
+  0.8d52 appends only the new lines in their own style (`TEStyleInsert`) and drops the
+  oldest: flat 0.7–0.9 s with the console shown. If a command is slow on a real Mac,
+  time it once with `MONITOR:0` before suspecting the transport.

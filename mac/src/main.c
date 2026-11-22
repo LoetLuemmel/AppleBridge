@@ -156,6 +156,9 @@ static ControlHandle gScroll = NULL;   /* vertical scrollbar for the log */
 static short gLineHeight = 11;          /* log line height; a STYLED TERec reports
                                         * lineHeight as -1, so we keep our own. */
 static char     gTEBuf[LOG_LINES * LOG_W];
+static short    gLogAdded = 0;     /* lines AddLogLine stored since the last sync */
+static Boolean  gLogFull = true;   /* structural change: rebuild the TE wholesale */
+static short    gTELines = 0;      /* lines currently in the TE (fast path's count) */
 static Boolean gLogDirty = false;  /* redraw the body from ShowAlive's good
                                     * context (drawing from ProcessRequest, right
                                     * after an OT receive, doesn't render) */
@@ -335,7 +338,7 @@ static short LogMaxScroll(void)
  * in-progress mouse selection, but only fires on NEW traffic (gLogDirty) — while
  * the bridge is idle (the usual time you read/copy a result) the selection is
  * stable. */
-void SyncLogTE(void)
+static void SyncLogTEFull(void)
 {
     short line, idx, k;
     long n = 0;
@@ -350,6 +353,7 @@ void SyncLogTE(void)
     wasAtBottom = (gScroll == NULL) ||
                   (GetControlValue(gScroll) >= GetControlMaximum(gScroll));
 
+    gTELines = 0;
     for (line = 0; line < gLogN; line++) {
         long lineStart;
         idx = (gLogHead - gLogN + line + 2 * LOG_LINES) % LOG_LINES;
@@ -359,6 +363,7 @@ void SyncLogTE(void)
         if (gLogKind[idx] == 2 && nCmd < LOG_LINES) {       /* a command line -> bold */
             cmdS[nCmd] = lineStart; cmdE[nCmd] = n; nCmd++;
         }
+        gTELines++;
         gTEBuf[n++] = '\n';                       /* TE line break: MPW C '\n' is
                                                    * 0x0D (CR), the char TextEdit
                                                    * breaks on; '\r' is 0x0A (LF),
@@ -407,6 +412,103 @@ void SyncLogTE(void)
     }
 }
 
+/* Append ONE ring line to the end of the TE in its own style, in one call.
+ * TEStyleInsert carries the style with the text, so nothing is restyled and
+ * TextEdit redraws only the new line. */
+static void TEAppendLine(const char *s, Boolean isCommand)
+{
+    TextStyle    ts;
+    short        lh, asc, k;
+    long         end;
+    StScrpHandle st;
+    char         buf[LOG_W + 1];
+
+    for (k = 0; s[k] && k < LOG_W - 1; k++) buf[k] = s[k];
+    buf[k++] = '\n';                              /* TE line break (0x0D in MPW C) */
+    end = (**gLogTE).teLength;
+    TEGetStyle(0, &ts, &lh, &asc, gLogTE);        /* the field's font, size, colour */
+    st = (StScrpHandle)NewHandle(sizeof(StScrpRec));
+    if (st == NULL) return;
+    (**st).scrpNStyles = 1;
+    (**st).scrpStyleTab[0].scrpStartChar = 0;
+    (**st).scrpStyleTab[0].scrpHeight    = lh;
+    (**st).scrpStyleTab[0].scrpAscent    = asc;
+    (**st).scrpStyleTab[0].scrpFont      = ts.tsFont;
+    (**st).scrpStyleTab[0].scrpFace      = isCommand ? bold : 0;
+    (**st).scrpStyleTab[0].scrpSize      = ts.tsSize;
+    (**st).scrpStyleTab[0].scrpColor     = ts.tsColor;
+    TESetSelect(end, end, gLogTE);
+    TEStyleInsert(buf, (long)k, st, gLogTE);
+    DisposeHandle((Handle)st);
+    gTELines++;
+}
+
+/* Remove the oldest line from the top of the TE. */
+static void TEDropFirstLine(void)
+{
+    long  n = (**gLogTE).teLength, i;
+    char *p;
+    HLock((**gLogTE).hText);
+    p = *(**gLogTE).hText;
+    for (i = 0; i < n && p[i] != '\n'; i++) ;
+    HUnlock((**gLogTE).hText);
+    TESetSelect(0, (i < n) ? i + 1 : n, gLogTE);
+    TEDelete(gLogTE);
+    gTELines--;
+}
+
+/* Bring the TE in step with the ring after new traffic.
+ *
+ * It used to rebuild the whole field every time (SyncLogTEFull): set all 60
+ * ring lines again, restyle the whole text and then each command line with its
+ * own TESetStyle, and repaint the body. On a PowerBook Duo 230 (33 MHz, a
+ * 1152x870 screen) that grew with the ring's fill to 3.3 s per command, and to
+ * 7.8 s per LISTDIR in a long walk; with the console hidden the same command
+ * stayed at 1.0 s (2026-11-22). Now only the new lines are appended in their
+ * own style and the oldest dropped; a wholesale rebuild remains for structural
+ * changes (open, show, resize, details on/off) and for a burst larger than the
+ * field. */
+void SyncLogTE(void)
+{
+    short   j, idx, add;
+    Boolean wasAtBottom;
+
+    if (gLogTE == NULL) return;
+    add = gLogAdded;
+    if (gLogFull || add > LOG_LINES / 2 || gTELines == 0) {
+        SyncLogTEFull();
+        gLogFull = false;
+        gLogAdded = 0;
+        return;
+    }
+    wasAtBottom = (gScroll == NULL) ||
+                  (GetControlValue(gScroll) >= GetControlMaximum(gScroll));
+    {
+        RGBColor cWhite = { 0xFFFF, 0xFFFF, 0xFFFF };
+        RGBBackColor(&cWhite);                     /* TE draws on the port's background */
+    }
+    for (j = add - 1; j >= 0; j--) {               /* oldest new line first */
+        idx = (short)((gLogHead - 1 - j + 2 * LOG_LINES) % LOG_LINES);
+        if (!gShowDetails && gLogKind[idx] == 1) continue;   /* collapsed detail */
+        TEAppendLine(gLog[idx], (Boolean)(gLogKind[idx] == 2));
+    }
+    while (gTELines > LOG_LINES) TEDropFirstLine();
+    gLogAdded = 0;
+
+    {
+        short mx = LogMaxScroll();
+        if (gScroll != NULL) SetControlMaximum(gScroll, mx);
+        if (wasAtBottom) {
+            long n = (**gLogTE).teLength;
+            TESetSelect(n, n, gLogTE);
+            TESelView(gLogTE);
+            if (gScroll != NULL) SetControlValue(gScroll, mx);
+        } else if (gScroll != NULL) {
+            ScrollLogTo(GetControlValue(gScroll));
+        }
+    }
+}
+
 /* Redraw the log body. With the TE field present (window open) this is a
  * TEUpdate; the old ring-DrawString path is kept only as a guard. */
 void RedrawLog(void)
@@ -447,6 +549,7 @@ static void AddLogLine(const char *msg, short kind)
     gLogHead = (short)((gLogHead + 1) % LOG_LINES);
     if (gLogN < LOG_LINES) gLogN++;
 
+    if (gLogAdded < 32000) gLogAdded++;
     gLogDirty = true;   /* ShowAlive redraws the body from a context that renders */
 }
 
@@ -786,7 +889,7 @@ void HandleMenuCommand(long menuResult)
             } else if (menuItem == DETAILS_ITEM) {
                 gShowDetails = !gShowDetails;
                 CheckItem(gEditMenu, DETAILS_ITEM, gShowDetails);
-                gLogDirty = true;   /* re-sync to expand/collapse detail lines */
+                gLogDirty = gLogFull = true;   /* re-sync to expand/collapse detail lines */
                 if (gShowDetails) ShowVolumeDetails();  /* surface the mounted volumes */
             }
             break;
@@ -1091,7 +1194,7 @@ void OpenMonitor(void)
     }
 
     StatusMessage("--- Verbose: live bridge traffic ---");
-    gLogDirty = true;
+    gLogDirty = gLogFull = true;
     gTickCounter = 0;                 /* force the next ShowAlive to redraw */
     InvalRect(&gStatusWindow->portRect);
 }
@@ -1249,7 +1352,7 @@ Boolean CheckUserAbort(void)
                                     MonitorBodyRect(&body);
                                     (**gLogTE).viewRect = body;
                                     (**gLogTE).destRect = body;
-                                    gLogDirty = true;
+                                    gLogDirty = gLogFull = true;
                                 }
                                 InvalRect(&window->portRect);
                                 SaveMonitorBounds();
@@ -1276,7 +1379,7 @@ Boolean CheckUserAbort(void)
                                 MonitorBodyRect(&body);
                                 (**gLogTE).viewRect = body;
                                 (**gLogTE).destRect = body;
-                                gLogDirty = true;
+                                gLogDirty = gLogFull = true;
                             }
                             InvalRect(&window->portRect);
                             SaveMonitorBounds();
@@ -1806,7 +1909,7 @@ static void SetMonitorVisible(Boolean show)
             SetWTitle(gStatusWindow, "\pAppleBridge - Verbose");
             SetPort(gStatusWindow);
             InvalRect(&gStatusWindow->portRect);
-            gLogDirty = true;
+            gLogDirty = gLogFull = true;
             gTickCounter = 0;              /* force the next ShowAlive to redraw */
         }
     } else {
