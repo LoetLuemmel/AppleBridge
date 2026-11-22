@@ -11,7 +11,7 @@ panel was photographed on 2026-07-31 at 16:46; its editable host-address field
 landed at 17:42, and the image went on showing a panel without that field in
 `docs/SETUP.md` for a day, under a caption that never mentioned it. Where a file
 depicts something versioned, the version is in its **name**
-(`config-panel-0.8d33.png`), so the mismatch is visible in a directory listing
+(`config-panel-0.8d52.png`), so the mismatch is visible in a directory listing
 rather than only to someone who reads the pixels.
 
 ## Deliberately unreferenced

@@ -621,6 +621,11 @@ static void SyncLogTEFull(void)
             TESetSelect(cmdS[c], cmdE[c], gLogTE);
             TESetStyle(doFace + doColor, &ts, false, gLogTE);
         }
+        /* TESetText laid the text out in the PORT's font - after the strip was
+         * drawn that is Chicago 12, 16 px a line - and TESetStyle without a
+         * redraw does not lay it out again: the log stood 16 px apart after a
+         * night-mode switch (2026-11-22). Recompute the line breaks/heights. */
+        TECalText(gLogTE);
     }
 
     /* Match the scrollbar to the new line count, then either follow the bottom
