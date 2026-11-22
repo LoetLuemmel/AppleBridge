@@ -582,9 +582,13 @@ cannot start at all — and the watchdog's relaunch fails without a word.
 Machines with more than 32 MB (all the emulators here) are not affected: they run on
 the built-in size anyway.
 
-**Prevent it — before the restart that activates an update** (`mac_update_daemon`
-says so itself: its result carries `memory_warning` when the new binary asks for more
-than the daemon runs in now):
+**`mac_update_daemon` prevents it by itself:** it reads the installed daemon and
+copies its memory setting into the new binary (`memory_carried` in the result).
+The manual step below is for every other way a daemon gets replaced — `SWAPSELF`
+sent directly, a copy from the Finder or a server — and for the case the tool
+reports `memory_warning` (it could not read the installed daemon).
+
+**Prevent it by hand — before the restart that activates the new daemon:**
 
 1. In the Finder open the AppleBridge folder. The new program is **AppleBridge**; the
    one still running has been renamed **AppleBridge old**.

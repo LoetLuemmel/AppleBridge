@@ -65,15 +65,24 @@ On a Mac with 32 MB or less that means the new daemon takes all the memory, or
 does not start and the watchdog's relaunch fails silently (PowerBook Duo 230,
 2026-11-22).
 
-`mac_update_daemon` compares the two before anything restarts: what the daemon
-runs in now (`STAT heaplimit=`) and what the staged binary asks for (its SIZE 0,
-else SIZE -1). If the new one asks for more, the result carries `memory_warning`
-with the step for the user, and `next` says to do it **before** `mac_reboot`:
-set Minimum / Preferred size on the new `AppleBridge` in the Finder's Get Info —
-it is not running yet, so Get Info can still change it. A binary that already
-carries the right SIZE 0 (patched on the host before staging) passes silently.
-Recovery when the restart has already happened: `TROUBLESHOOTING.md` →
-*After a daemon update a small Mac has no memory left*.
+`mac_update_daemon` therefore reads the installed daemon first (one `READFILE`,
+1.7 s on the Duo over MacTCP) and, when its SIZE 0 differs from its own SIZE -1 —
+someone sized it on purpose, the installer or Get Info — copies those two sizes
+into the new binary before staging it. Only the sizes travel; the new build's
+flags belong to its code. It is an 8-byte patch in place, so the MacBinary keeps
+its length and header. The result says `memory_carried`; a never-sized daemon (a
+big guest) keeps the built-in size and the result says so in `memory_note`.
+Measured 2026-11-22 with a raw 12 MB build: the Duo kept 1,000 K / 600 K and its
+watchdog relaunched the daemon after `QUITDAEMON` without help; a System 7.0
+guest installed by the installer kept 2,000 K / 1,000 K.
+
+If the installed daemon cannot be read, the tool falls back to comparing what
+the daemon runs in now (`STAT heaplimit=`) with what the staged binary asks for,
+and returns `memory_warning` with the manual step — set Minimum / Preferred size
+on the new `AppleBridge` in the Finder's Get Info **before** `mac_reboot`.
+`SWAPSELF` sent directly, and a daemon copied over by hand, get none of this:
+for those the manual step stands. Recovery when the restart has already
+happened: `TROUBLESHOOTING.md` → *After a daemon update a small Mac has no memory left*.
 
 ## Verification (System 7)
 

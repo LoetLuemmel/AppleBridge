@@ -170,17 +170,36 @@ def _macbinary_with_size(sizes):
     return f.name
 
 
-def _update_with(stat_extra, sizes):
+def _update_with(stat_extra, sizes, installed=None, staged_out=None):
+    """installed: {id: (pref, min)} of the daemon already on the Mac (None: reading it fails).
+    staged_out: a dict that receives the bytes that were staged."""
     path = _macbinary_with_size(sizes)
+    inst_path = _macbinary_with_size(installed) if installed else None
     conn = FakeConn(stat_body="toolserver=1;net=MacTCP;home=Duo 120 MB:AppleBridge:;daemon_responding=1;" + stat_extra)
     tools.get_connection = lambda: conn
-    orig = tools.mac_put_file
-    tools.mac_put_file = lambda *a, **k: {"success": True}
+
+    def fake_put(host_path, mac_path, **k):
+        if staged_out is not None:
+            staged_out["bytes"] = open(host_path, "rb").read()
+            staged_out["mac_path"] = mac_path
+        return {"success": True}
+
+    def fake_get(mac_path, host_path, format="auto"):
+        if inst_path is None:
+            return {"success": False, "error": "no such file"}
+        assert mac_path == "Duo 120 MB:AppleBridge:AppleBridge", mac_path
+        open(host_path, "wb").write(open(inst_path, "rb").read())
+        return {"success": True}
+
+    orig_put, orig_get = tools.mac_put_file, tools.mac_get_file
+    tools.mac_put_file, tools.mac_get_file = fake_put, fake_get
     try:
         return tools.mac_update_daemon(path)
     finally:
-        tools.mac_put_file = orig
+        tools.mac_put_file, tools.mac_get_file = orig_put, orig_get
         os.unlink(path)
+        if inst_path:
+            os.unlink(inst_path)
 
 
 def test_size_request_reads_size0_over_size_minus1():
@@ -213,6 +232,45 @@ def test_a_big_guest_does_not_warn():
 def test_an_old_daemon_without_heaplimit_does_not_warn():
     r = _update_with("", {0: (12582912, 8388608)})
     assert "memory_warning" not in r and r["success"] is True, r
+
+
+RAW = {-1: (12582912, 8388608), 0: (12582912, 8388608)}       # a fresh build
+SIZED = {-1: (12582912, 8388608), 0: (1024000, 614400)}       # installed by the installer on a 12 MB Duo
+
+
+def test_installed_profile_is_carried_into_a_raw_build():
+    out = {}
+    r = _update_with("heaplimit=974884", RAW, installed=SIZED, staged_out=out)
+    assert r["success"] is True
+    assert r.get("memory_carried", "").startswith("1000 K preferred / 600 K minimum"), r
+    assert "memory_warning" not in r, r                      # carried, so nothing left to warn about
+    sizes = tools._macbinary_size_entries(out["bytes"])
+    assert (sizes[0][2], sizes[0][3]) == (1024000, 614400), sizes
+    assert (sizes[-1][2], sizes[-1][3]) == (12582912, 8388608), sizes   # SIZE -1 untouched
+    assert out["mac_path"] == "Duo 120 MB:AppleBridge:AppleBridge new"
+
+
+def test_carry_changes_only_the_sizes():
+    raw = open(_p := _macbinary_with_size(RAW), "rb").read(); os.unlink(_p)
+    inst = open(_q := _macbinary_with_size(SIZED), "rb").read(); os.unlink(_q)
+    patched, carried = tools._carry_size0(inst, raw)
+    assert carried == (1024000, 614400)
+    assert len(patched) == len(raw) and patched[:128] == raw[:128]          # header (and CRC) untouched
+    assert sum(1 for a, b in zip(raw, patched) if a != b) <= 8
+
+
+def test_a_never_sized_daemon_keeps_the_built_in_size():
+    out = {}
+    r = _update_with("heaplimit=12257280", RAW, installed=RAW, staged_out=out)
+    assert "memory_carried" not in r and "never sized" in r.get("memory_note", ""), r
+    sizes = tools._macbinary_size_entries(out["bytes"])
+    assert (sizes[0][2], sizes[0][3]) == (12582912, 8388608)
+
+
+def test_unreadable_installed_daemon_falls_back_to_the_warning():
+    r = _update_with("heaplimit=974884", RAW, installed=None)
+    assert "could not read" in r.get("memory_note", ""), r
+    assert "Get Info" in r.get("memory_warning", ""), r
 
 
 if __name__ == "__main__":
