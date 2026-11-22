@@ -57,7 +57,8 @@ daemon → "installed and running" → bridge traffic from `battery.py` → Abou
 - **7.0's Disk Tools System is 6.0.7**, and 7.0's `Install 1:System` is incomplete without `Cerulean Data` —
   `build_disk.py` merges it.
 - **Icons stack at (0,0)** when files are copied "inited" without their positions; `build_disk.py` clears the bit.
-- **On System 7.0 the daemon cannot hand the front back.** `SetFrontProcess` back to the Finder never lands
-  (also with repeated requests and a settled switch-in; 0.8d50 the same): CLIPSET/CLIPGET leave the daemon in
-  front there. The text itself travels correctly (0.8d51). 7.5 hands it back (Duo, `b=1`).
+- **A pump inside a verb must answer update and activate events.** The clipboard's front round trip swallowed
+  them, an unanswered `updateEvt` is posted again on every `WaitNextEvent`, and the switch back to the Finder
+  stalled: never landed on 7.0, took 10–12 s on the Duo. It looked like a System 7.0 limit for an afternoon —
+  with `ServiceWindowEvent` in the pump it lands in 10–13 ticks on 7.0 as well (`cliptest.py` 3/3).
 - **The fb dump goes to the process by name** (`pkill -USR1 -x BasiliskII`); its PID is not stable.

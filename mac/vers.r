@@ -9,7 +9,9 @@
  * This build: 0.8 development — d51 makes the clipboard work in both directions while another
  * application is in front: CLIPGET takes the front for an instant, as CLIPSET already did, so it
  * reads the front application's scrap instead of the daemon's own (empty) layer, and a successful
- * CLIPSET no longer counts an error (an unbraced else ran NoteErr every time). Both found while
+ * CLIPSET no longer counts an error (an unbraced else ran NoteErr every time). The front round trip
+ * now answers update/activate events while it waits -- swallowed, they stalled the switch back to
+ * the Finder (never on 7.0, 10-12 s on the Duo) -- and waits by time, not by iterations. Found while
  * measuring the System 7 floor: 7.0 and 7.0.1 with MacTCP 2.0.6 (2026-11-22).
  * d50 starts the memory diet by MEASURING it: STAT reports heap=,
  * heapfree= and heaplow= (the lowest free heap seen where the big buffers are live), and STAT

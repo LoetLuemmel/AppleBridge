@@ -2806,3 +2806,16 @@ took the front and gave it back, and changed nothing. The host server now
   its deploy step kicks all `de.390er.applebridge-host*` agents. Bringing dev2019 back
   dropped mbp2013, claudia and the Duo for 30 s and cost one wish job its compile
   evidence. To start only the dev emulator, launch it and run `guest_boot.py`.
+* **A pump inside a verb must answer `updateEvt`/`activateEvt`.** The clipboard's front
+  round trip pumped `WaitNextEvent(everyEvent…)` and dropped what came back. An update
+  that is never answered with `BeginUpdate`/`EndUpdate` is posted again on every call,
+  and the switch back to the Finder stalled: never on System 7.0, 10–12 s on the Duo.
+  It passed for a System 7.0 limit until the events were answered (`ServiceWindowEvent`)
+  — then 10–13 ticks on 7.0. Asking `SetFrontProcess` again does not help; it restarts
+  a switch already under way.
+* **On the Duo, the watchdog did not restart the daemon after `QUITDAEMON`** (twice,
+  2026-11-22, 0.8d51 swapped in with SWAPSELF just before; no error, no bomb), and a
+  `REBOOT` stalled before the daemon came back. Both times the operator started
+  AppleBridge by hand. Not yet explained; until it is, a daemon update on the Duo needs
+  someone at the machine.
+
