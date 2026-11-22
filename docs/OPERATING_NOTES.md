@@ -2813,9 +2813,14 @@ took the front and gave it back, and changed nothing. The host server now
   It passed for a System 7.0 limit until the events were answered (`ServiceWindowEvent`)
   — then 10–13 ticks on 7.0. Asking `SetFrontProcess` again does not help; it restarts
   a switch already under way.
-* **On the Duo, the watchdog did not restart the daemon after `QUITDAEMON`** (twice,
-  2026-11-22, 0.8d51 swapped in with SWAPSELF just before; no error, no bomb), and a
-  `REBOOT` stalled before the daemon came back. Both times the operator started
-  AppleBridge by hand. Not yet explained; until it is, a daemon update on the Duo needs
-  someone at the machine.
+* **`mac_update_daemon` throws away the installer's memory profile.** SWAPSELF replaces
+  the whole file, and a freshly linked daemon carries the built-in SIZE (12 MB preferred,
+  8 MB minimum) instead of the 1,000 K the installer wrote into SIZE 0 on the 12 MB Duo.
+  The new daemon then took all memory: ToolServer would not open (-108, "768K needed, 3K
+  available — quit AppleBridge"), and after `QUITDAEMON` the watchdog could not relaunch
+  it, which looked like a watchdog fault for two rounds. With SIZE 0 set back to
+  1,000 K / 600 K in the staged binary the watchdog relaunched it within seconds.
+  Until `mac_update_daemon` carries the installed SIZE 0 over (ledger), patch it into
+  the MacBinary before staging on any machine the installer sized.
+
 
