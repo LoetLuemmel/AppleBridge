@@ -6,7 +6,14 @@
  * the classic way to tell builds apart (replacing ad-hoc names like
  * "AppleBridge5"). One 'vers' file stamps the whole suite uniformly.
  *
- * This build: 0.8 development — d50 starts the memory diet by MEASURING it: STAT reports heap=,
+ * This build: 0.8 development — d51 makes the clipboard work in both directions while another
+ * application is in front: CLIPGET takes the front for an instant, as CLIPSET already did, so it
+ * reads the front application's scrap instead of the daemon's own (empty) layer, and a successful
+ * CLIPSET no longer counts an error (an unbraced else ran NoteErr every time). The front round trip
+ * now answers update/activate events while it waits -- swallowed, they stalled the switch back to
+ * the Finder (never on 7.0, 10-12 s on the Duo) -- and waits by time, not by iterations. Found while
+ * measuring the System 7 floor: 7.0 and 7.0.1 with MacTCP 2.0.6 (2026-11-22).
+ * d50 starts the memory diet by MEASURING it: STAT reports heap=,
  * heapfree= and heaplow= (the lowest free heap seen where the big buffers are live), and STAT
  * runs in its own function (its larger buffers tipped ProcessRequest over the 32 KB frame).
  * Screenshot buffers and ToolServer replies come from temporary memory (1,000 K instead of
@@ -132,16 +139,16 @@
 
 resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
-    development, 0x50,   /* development stage, non-release revision 50 (BCD) */
+    development, 0x51,   /* development stage, non-release revision 51 (BCD) */
     verUS,
-    "0.8d50",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d50 - heap watermark"  /* long -> Get Info */
+    "0.8d51",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d51 - clipboard both ways"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
-    development, 0x50,
+    development, 0x51,
     verUS,
-    "0.8d50",
+    "0.8d51",
     "AppleBridge"        /* the shared/suite version line */
 };

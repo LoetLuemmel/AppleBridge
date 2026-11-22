@@ -1,0 +1,16 @@
+rom /data/Mac.ROM
+disk /data/s7.img
+screen win/640/480
+displaycolordepth 8
+ramsize 33554432
+modelid 5
+cpu 3
+fpu false
+ether slirp
+udptunnel false
+nosound true
+frameskip 0
+idlewait true
+ignoresegv true
+jit false
+nogui true

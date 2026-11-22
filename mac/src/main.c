@@ -1101,6 +1101,43 @@ void OpenMonitor(void)
  * open (or re-foreground) the monitor window when it changes. Cheap: one deref
  * and compare. No-op when the MenuLED INIT isn't installed (gMonReqCell NULL).
  */
+/* The two window events every pump must answer -- the main loop AND the short
+ * pumps inside a verb (the clipboard's front round trip). An updateEvt left
+ * without BeginUpdate/EndUpdate is posted again on every WaitNextEvent, so a
+ * pump that swallows it never idles; the Process Manager then held the switch
+ * back to the Finder for 10-12 s on the Duo 230 (2026-11-22, the first 0.8d51
+ * build). */
+static void ServiceWindowEvent(EventRecord *event)
+{
+    if (event->what == activateEvt) {
+        if ((WindowPtr)event->message == gStatusWindow) {
+            Boolean act = (event->modifiers & activeFlag) != 0;
+            if (gLogTE != NULL) { if (act) TEActivate(gLogTE);
+                                  else      TEDeactivate(gLogTE); }
+            /* Keep the scrollbar always active (hilite 0) so it remains
+             * clickable even while this background app's window is not the
+             * system-frontmost — a deactivated control is skipped by
+             * FindControl, which made clicks do nothing. */
+            if (gScroll != NULL) HiliteControl(gScroll, 0);
+        }
+    } else if (event->what == updateEvt) {
+        BeginUpdate((WindowPtr)event->message);
+        /* Guarded by window. DrawLEDs/RedrawLog paint the MONITOR's
+         * contents; they used to run for any update event, which was
+         * harmless only while the daemon had exactly one window. The
+         * welcome window made that assumption false. */
+        if ((WindowPtr)event->message == gStatusWindow) {
+            DrawLEDs();    /* top bar (activity) */
+            RedrawLog();   /* console body (TEUpdate) — else updates wipe it */
+            DrawControls(gStatusWindow);   /* the scrollbar */
+            DrawGrowIcon(gStatusWindow);   /* size box / bottom frame */
+        } else if ((WindowPtr)event->message == gWelcomeWindow) {
+            DrawWelcome();
+        }
+        EndUpdate((WindowPtr)event->message);
+    }
+}
+
 void PollMonitorRequest(void)
 {
     if (gMonReqCell == NULL) return;
@@ -1309,33 +1346,8 @@ Boolean CheckUserAbort(void)
                 break;
 
             case activateEvt:
-                if ((WindowPtr)event.message == gStatusWindow) {
-                    Boolean act = (event.modifiers & activeFlag) != 0;
-                    if (gLogTE != NULL) { if (act) TEActivate(gLogTE);
-                                          else      TEDeactivate(gLogTE); }
-                    /* Keep the scrollbar always active (hilite 0) so it remains
-                     * clickable even while this background app's window is not the
-                     * system-frontmost — a deactivated control is skipped by
-                     * FindControl, which made clicks do nothing. */
-                    if (gScroll != NULL) HiliteControl(gScroll, 0);
-                }
-                break;
-
             case updateEvt:
-                BeginUpdate((WindowPtr)event.message);
-                /* Guarded by window. DrawLEDs/RedrawLog paint the MONITOR's
-                 * contents; they used to run for any update event, which was
-                 * harmless only while the daemon had exactly one window. The
-                 * welcome window made that assumption false. */
-                if ((WindowPtr)event.message == gStatusWindow) {
-                    DrawLEDs();    /* top bar (activity) */
-                    RedrawLog();   /* console body (TEUpdate) — else updates wipe it */
-                    DrawControls(gStatusWindow);   /* the scrollbar */
-                    DrawGrowIcon(gStatusWindow);   /* size box / bottom frame */
-                } else if ((WindowPtr)event.message == gWelcomeWindow) {
-                    DrawWelcome();
-                }
-                EndUpdate((WindowPtr)event.message);
+                ServiceWindowEvent(&event);
                 break;
         }
     }
@@ -2559,36 +2571,86 @@ static Boolean Screenshot2Verb(ABConn *conn, const char *request)
  * lands in the daemon's own layer and the front application never sees it --
  * measured 2026-08-30: after CLIPSET the daemon's GetScrap returned the text
  * while the front app read scrap size 0 (the "Clipboard holds no text" WebPeek
- * defect). So after writing, take the front for an instant and hand it back:
- * two major switches, and the scrap travels with them. SetFrontProcess is
- * asynchronous (see JSF above), so each leg is pumped and bounded (~2 s). */
-static short gPropFront, gPropBack, gPropTicks;   /* diagnostics for the CLIPSET reply */
-static Boolean PropagateScrapToFront(void)
+ * defect). So CLIPSET takes the front for an instant, writes, and hands it
+ * back: the scrap travels with the switch away. SetFrontProcess is
+ * asynchronous (see JSF above), so each leg is pumped and bounded (~2 s).
+ *
+ * READING has the same constraint the other way round (2026-11-22, System 7.0
+ * guest on the odroid C2 and the real Duo 230 on 7.5, both with the Finder in
+ * front): the daemon's own layer is EMPTY once its scrap has moved on to the
+ * front app, and it never holds what the user copied in another application.
+ * CLIPGET came back "" every time -- it only ever worked while the daemon
+ * itself was front. So a read takes the front too: the front application's
+ * scrap arrives with the major switch, is read, and the front goes back.
+ * The two legs are separate functions so CLIPSET and CLIPGET share them; each
+ * leg waits up to kPropWait ticks for the switch to land (b=1 in the CLIPSET
+ * reply; 0: it did not land in time). Both pumps answer the window events
+ * (ServiceWindowEvent): with them swallowed, the way back stalled -- on System
+ * 7.0 it never landed, on the Duo it took 10-12 s; answered, 10-13 ticks on 7.0
+ * (2026-11-22). Asking again does not help: it restarts a switch under way. */
+static short gPropFront, gPropBack, gPropTicks;   /* diagnostics for the CLIPSET/CLIPGET reply */
+static ProcessSerialNumber gPropPrev;             /* whom ScrapTakeFront took the front from */
+static Boolean gPropOwed;                         /* true: ScrapGiveBack has a front to return */
+static unsigned long gPropT0;                     /* TickCount at ScrapTakeFront */
+
+#define kPropWait 120UL                           /* ticks (~2 s) each leg may take */
+
+static Boolean ScrapTakeFront(void)
 {
-    ProcessSerialNumber selfPSN, prevPSN, frontPSN;
-    Boolean same = false, gotBack = false;
-    short guard;
-    OSErr e1, e2;
+    ProcessSerialNumber selfPSN, frontPSN;
+    Boolean same = false;
+    OSErr e1;
     EventRecord ev;
-    unsigned long t0 = TickCount();
-    gPropFront = gPropBack = 0; gPropTicks = 0;
-    if (GetCurrentProcess(&selfPSN) != noErr || GetFrontProcess(&prevPSN) != noErr) { gPropFront = -1; return false; }
-    SameProcess(&prevPSN, &selfPSN, &same);
-    if (same) { gPropFront = gPropBack = 2; return true; }   /* we ARE front: nothing to propagate */
+    gPropFront = gPropBack = 0; gPropTicks = 0; gPropT0 = TickCount(); gPropOwed = false;
+    if (GetCurrentProcess(&selfPSN) != noErr || GetFrontProcess(&gPropPrev) != noErr) { gPropFront = -1; return false; }
+    SameProcess(&gPropPrev, &selfPSN, &same);
+    if (same) { gPropFront = gPropBack = 2; return true; }   /* we ARE front: the scrap is already ours */
+    gPropOwed = true;
     e1 = SetFrontProcess(&selfPSN);
-    for (guard = 0, same = false; guard < 120 && !same; guard++) {
-        WaitNextEvent(everyEvent, &ev, 1L, NULL);
+    /* Bounded by TIME, not by iterations: with events pending WaitNextEvent
+     * returns at once, and 120 iterations were gone in 6 ticks -- long before
+     * the switch landed (System 7.0, 2026-11-22). */
+    for (same = false; !same && TickCount() - gPropT0 < kPropWait; ) {
+        if (WaitNextEvent(everyEvent, &ev, 1L, NULL)) ServiceWindowEvent(&ev);
         if (GetFrontProcess(&frontPSN) == noErr) SameProcess(&frontPSN, &selfPSN, &same);
     }
     gPropFront = same ? 1 : (e1 ? (short)e1 : 0);
-    e2 = SetFrontProcess(&prevPSN);
-    for (guard = 0; guard < 120 && !gotBack; guard++) {
-        WaitNextEvent(everyEvent, &ev, 1L, NULL);
-        if (GetFrontProcess(&frontPSN) == noErr) SameProcess(&frontPSN, &prevPSN, &gotBack);
+    return same;
+}
+
+static Boolean ScrapGiveBack(void)
+{
+    ProcessSerialNumber frontPSN;
+    Boolean gotBack = false;
+    unsigned long t0;
+    OSErr e2;
+    EventRecord ev;
+    if (!gPropOwed) { gPropTicks = (short)(TickCount() - gPropT0); return gPropFront == 2; }
+    gPropOwed = false;
+    e2 = SetFrontProcess(&gPropPrev);
+    /* ONE request. Asking again restarts a switch that is still under way: on the
+     * Duo (7.5) a re-ask every 30 ticks kept the Finder from ever landing inside
+     * the wait (b=0 after 160 ticks), where a single request lands in ~30. */
+    t0 = TickCount();
+    while (!gotBack && TickCount() - t0 < kPropWait) {
+        if (WaitNextEvent(everyEvent, &ev, 1L, NULL)) ServiceWindowEvent(&ev);
+        if (GetFrontProcess(&frontPSN) == noErr) SameProcess(&frontPSN, &gPropPrev, &gotBack);
     }
     gPropBack = gotBack ? 1 : (e2 ? (short)e2 : 0);
-    gPropTicks = (short)(TickCount() - t0);
-    return same && gotBack;
+    gPropTicks = (short)(TickCount() - gPropT0);
+    return gotBack;
+}
+
+/* CLIPGET's read: the front application's TEXT scrap, fetched by a round trip
+ * through the front (see above). Returns GetScrap's result: >= 0 length, or a
+ * negative error (noTypeErr: the scrap holds no TEXT). */
+static long ReadFrontScrap(Handle h)
+{
+    long off = 0, n;
+    (void)ScrapTakeFront();
+    n = GetScrap(h, 'TEXT', &off);
+    (void)ScrapGiveBack();
+    return n;
 }
 
 /* STAT, in its own function (0.8d50): the heap fields made its buffers larger,
@@ -4786,7 +4848,7 @@ msinstall_reply:
     if (strncmp(request, PROTO_CLIPGET, strlen(PROTO_CLIPGET)) == 0 &&
         (request[7] == '\0' || request[7] == '\r' || request[7] == '\n')) {
         Handle h;
-        long off = 0, n;
+        long n;
         SetActivity("CLIPGET");
         cmdResult.exitCode = 0;
         cmdResult.outData = NULL;
@@ -4794,7 +4856,7 @@ msinstall_reply:
         cmdResult.errData[0] = '\0';
         h = NewHandle(0);
         if (h != NULL) {
-            n = GetScrap(h, 'TEXT', &off);     /* >=0 length, or negative error */
+            n = ReadFrontScrap(h);             /* the FRONT app's scrap: >=0 length, or negative error */
             if (n >= 0) { cmdResult.outData = h; cmdResult.outLen = n; }
             else { DisposeHandle(h); }         /* no TEXT on the scrap: empty reply */
         }
@@ -4830,11 +4892,16 @@ msinstall_reply:
         }
         if (clipLen > requestLen - headerEnd) clipLen = requestLen - headerEnd;
         if (clipLen < 0) clipLen = 0;
+        /* Write AS the front process, then hand the front back: the switch away
+         * carries the daemon's changed scrap to the application that returns.
+         * Writing first and switching after lost the text on System 7.0 -- the
+         * switch IN handed the daemon the front app's old scrap over it. */
+        (void)ScrapTakeFront();
         ZeroScrap();
         serr = (OSErr)PutScrap(clipLen, 'TEXT', request + headerEnd);
+        (void)ScrapGiveBack();         /* always: a failed PutScrap still returns the front */
         if (serr == noErr) {
             char body[64], *b; long blen;
-            (void)PropagateScrapToFront();
             /* ClipSet f=<1 ok|0 no|err> b=<1|0|err> t=<ticks> -- the two legs of the front round-trip */
             strcpy(body, "ClipSet f="); b = body + strlen(body); b = StatDec(b, (long)gPropFront);
             strcpy(b, " b="); b += 3; b = StatDec(b, (long)gPropBack);
@@ -4843,8 +4910,12 @@ msinstall_reply:
             strcpy(responseBuffer, "STATUS:0\rSTDOUT:"); b = responseBuffer + strlen(responseBuffer);
             b = StatDec(b, blen); *b++ = '\r'; strcpy(b, body); b += blen; strcpy(b, "\rSTDERR:0\r\r");
         }
-        else
-            strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:13\rPutScrap error\r\r"); NoteErr("clipboard");
+        else {
+            /* Braced 2026-11-22: unbraced, NoteErr ran after EVERY CLIPSET, so each
+             * successful one counted an error and set lasterr=clipboard. */
+            strcpy(responseBuffer, "STATUS:-1\rSTDOUT:0\rSTDERR:13\rPutScrap error\r\r");
+            NoteErr("clipboard");
+        }
         ABSend(conn, responseBuffer, strlen(responseBuffer));
         gLastTX = TickCount();
         gTXCount++;
