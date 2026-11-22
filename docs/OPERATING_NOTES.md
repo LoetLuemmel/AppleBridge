@@ -2833,3 +2833,13 @@ took the front and gave it back, and changed nothing. The host server now
   0.8d52 appends only the new lines in their own style (`TEStyleInsert`) and drops the
   oldest: flat 0.7–0.9 s with the console shown. If a command is slow on a real Mac,
   time it once with `MONITOR:0` before suspecting the transport.
+* **A tool run on a real Mac must yield and carry a time limit.** `ListApps` v1 walked
+  the Duo's disk with `PBGetCatInfo` and never yielded: on dev2019 it took 0.9 s, on the
+  Duo's 1993 disk minutes — and for those minutes the whole Mac was frozen (System 7
+  multitasks cooperatively), ⌘-. could not stop it, and no other program ran, the daemon
+  included. There is no remote kill to fall back on: System 7 has no call that ends
+  another process (`KillProcess` came later). So an MPW tool calls `SpinCursor`
+  regularly (that yields and makes ⌘-. work), stops itself after a fixed time, and is
+  tried on dev2019 first only as a smoke test — its speed there says nothing about a
+  real disk. Recovery when it happens anyway: wait, or `REBOOT` once the daemon answers
+  again (2026-11-22, the Duo came back unaided in 1:45).
