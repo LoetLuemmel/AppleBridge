@@ -35,6 +35,13 @@ to run continuously, so this app is where a human configures and supervises it.
   `NET=` hot-swaps live, but `PORT=`/`BAUD=` are read at startup.
 - **Quit** — quits the config app.
 
+Keys the daemon itself writes into the same file (no field in the config app):
+`WIN=` (the Verbose window's position), `CONSOLE=classic|dark` (the half-moon button
+or **Edit → Night mode**) and, set by hand, `FONT=<name> <size>` for the console log
+(e.g. `FONT=Geneva 9`, `FONT=Courier 10`; without it Monaco 9). The daemon re-reads
+the file every few seconds and applies `CONSOLE=`/`FONT=` live (0.8d52). Until 0.8d51
+`WIN=` lived in a separate `AppleBridge Window` file; 0.8d52 merges it in and deletes it.
+
 There are intentionally **no Launch/Stop Daemon buttons**: the daemon is a
 continuously-running service. Start it via autostart (or the Finder); it is not
 designed to be stopped and restarted from the UI.

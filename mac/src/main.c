@@ -89,6 +89,7 @@ static char    gDaemonNonceHex[17] = "";  /* nonce we handed the host; AUTH2 pro
 #define COPY_ITEM       1
 #define DETAILS_ITEM    3      /* Edit: Copy(1), (divider 2), Show details(3) */
 #define CONSOLE_ITEM    4      /* Edit: Console(4) — show/hide the Verbose window */
+#define NIGHT_ITEM      5      /* Edit: Night mode(5) — CONSOLE=dark, saved in "AppleBridge Window" */
 
 /* Declared here, not beside the definitions: HandleMenuCommand calls them ~900
  * lines earlier, and MPW C takes an undeclared call as `int f()` — so the real
@@ -153,6 +154,8 @@ static short gLogN    = 0;   /* lines currently stored */
  * ring is flattened into for TESetText (LOG_LINES*LOG_W ~ under TE's 32 KB cap). */
 static TEHandle gLogTE = NULL;
 static ControlHandle gScroll = NULL;   /* vertical scrollbar for the log */
+static short gLogFont = kLogFontID;     /* the log's font and size: FONT= (2026-11-22) */
+static short gLogSize = 9;
 static short gLineHeight = 11;          /* log line height; a STYLED TERec reports
                                         * lineHeight as -1, so we keep our own. */
 static char     gTEBuf[LOG_LINES * LOG_W];
@@ -218,59 +221,285 @@ static void DrawTelemetry(void);
  */
 #define DEFAULT_HOST_IP "192.168.1.100"
 
+/* ---- The console's NeXT-style chrome (0.8d52) -------------------------------
+ * Four grays, bevels (light top-left / dark bottom-right = raised, the reverse =
+ * sunken), a raised activity strip, the scroller on the LEFT with both arrows
+ * together at the bottom, a sunken text area and a footer of sunken fields.
+ * CONSOLE= picks the text area: classic (white) or dark. On a 1-bit screen (an
+ * SE/30) the panels stay white and only the scroller track and the meter use a
+ * gray pattern - text over a dithered gray is not readable at 9 pt. */
+#define kStripH  24        /* activity strip */
+#define kFootH   22        /* footer */
+#define kSbW     16        /* scroller width */
+#define kChromeFont 3      /* Geneva: present on every System 7 */
+
+enum { kShBlack = 0, kShDark, kShLight, kShWhite };
+static Boolean gMono = false;     /* set in OpenMonitor: no Color QuickDraw or a 1-bit screen */
+static Boolean ScreenIsMono(void);
+
+static void PenShade(short s)
+{
+    static RGBColor k[4] = { {0, 0, 0}, {0x5555, 0x5555, 0x5555},
+                             {0xAAAA, 0xAAAA, 0xAAAA}, {0xFFFF, 0xFFFF, 0xFFFF} };
+    if (gMono) RGBForeColor(s <= kShDark ? &k[kShBlack] : &k[kShWhite]);
+    else       RGBForeColor(&k[s]);
+}
+
+static void Shade(const Rect *r, short s)
+{
+    if (gMono && s == kShDark) {                  /* the one gray a 1-bit screen keeps */
+        RGBColor b = { 0, 0, 0 };
+        RGBForeColor(&b);
+        FillRect(r, &qd.gray);
+    } else {
+        PenShade(s);
+        PaintRect(r);
+    }
+    PenShade(kShBlack);
+}
+
+static void Bevel(const Rect *r, Boolean raised)
+{
+    short l = r->left, tp = r->top, rr = r->right - 1, b = r->bottom - 1;
+    PenShade(raised ? kShWhite : kShDark);
+    MoveTo(l, b); LineTo(l, tp); LineTo(rr, tp);
+    PenShade(raised ? kShBlack : kShWhite);
+    MoveTo(l, b); LineTo(rr, b); LineTo(rr, tp);
+    PenShade(kShBlack);
+}
+
+/* Text-area colours for CONSOLE=classic|dark: background, output, commands. */
+static void ConsoleColors(RGBColor *bg, RGBColor *out, RGBColor *cmd)
+{
+    Boolean dark = (gPrefs.console == 1);
+    bg->red = bg->green = bg->blue = dark ? (gMono ? 0x0000 : 0x1010) : 0xFFFF;
+    /* without bold, commands and output differ by brightness alone - so far apart */
+    out->red = out->green = out->blue = dark ? (gMono ? 0xFFFF : 0xA0A0) : (gMono ? 0x0000 : 0x5555);
+    cmd->red = cmd->green = cmd->blue = dark ? 0xFFFF : 0x0000;
+}
+
+static void ConsoleBack(void)
+{
+    RGBColor bg, o, c;
+    ConsoleColors(&bg, &o, &c);
+    RGBBackColor(&bg);
+}
+
+/* The four areas of the window, from its current size. */
+static void ConsoleRects(Rect *strip, Rect *track, Rect *frame, Rect *foot)
+{
+    short w = gStatusWindow->portRect.right - gStatusWindow->portRect.left;
+    short h = gStatusWindow->portRect.bottom - gStatusWindow->portRect.top;
+    SetRect(strip, 0, 0, w, kStripH);
+    SetRect(foot,  0, (short)(h - kFootH), (short)(w - 15), h);   /* stops before the size box */
+    SetRect(track, 4, kStripH + 4, 4 + kSbW, (short)(h - kFootH - 4));
+    SetRect(frame, 4 + kSbW + 4, kStripH + 4, (short)(w - 4), (short)(h - kFootH - 4));
+}
+
+/* The night-mode button at the right end of the top strip (2026-11-22). */
+static void NightButtonRect(Rect *r)
+{
+    Rect strip, tr, fr, ft;
+    ConsoleRects(&strip, &tr, &fr, &ft);
+    SetRect(r, (short)(strip.right - 25), 4, (short)(strip.right - 7), (short)(strip.bottom - 4));
+}
+
+/* A half moon on a NeXT button: raised in classic, pressed in when night mode is on. */
+static void DrawNightButton(void)
+{
+    Rect r, moon;
+    Boolean on = (gPrefs.console == 1);
+    NightButtonRect(&r);
+    Shade(&r, on ? kShDark : kShLight);
+    SetRect(&moon, (short)(r.left + 4), (short)(r.top + 3), (short)(r.left + 14), (short)(r.top + 13));
+    PenShade(on ? kShWhite : kShBlack);
+    PaintOval(&moon);
+    OffsetRect(&moon, 3, -2);                     /* carve the crescent with the button face */
+    PenShade(on ? kShDark : kShLight);
+    PaintOval(&moon);
+    Bevel(&r, !on);
+    PenShade(kShBlack);
+}
+
+/* Paint the text area's well (inside the sunken frame) in the console background. */
+static void ClearTextArea(void)
+{
+    Rect s, tr, fr, ft;
+    ConsoleRects(&s, &tr, &fr, &ft);
+    InsetRect(&fr, 2, 2);
+    ConsoleBack();
+    EraseRect(&fr);
+}
+
 /*
- * Top bar: one round green "Active" LED + the current activity (the command/verb
- * being processed) on a single line. RX/TX always move together, so a single
- * Active indicator says all the old two-LED pair did.
+ * Activity strip: a raised panel with a sunken LED well (black while data moves,
+ * dark gray when idle) and the current activity on one line.
+ */
+static Boolean gChromeForce = true;   /* DrawConsole: repaint strip and footer in full */
+static Boolean gInUpdate = false;     /* inside BeginUpdate: draw, but do not record what was
+                                       * drawn - only the invalid part reaches the screen, so the
+                                       * caches must keep describing what is on screen elsewhere */
+
+/* Text with its background in one pass (srcCopy), then the rest of the slot
+ * filled in the panel colour - no erase-then-draw, which flickers on a real
+ * screen when it happens 8x a second (Duo 230, 2026-11-22). */
+static void DrawSlot(const Rect *slot, short x, short baseline, ConstStr255Param s, short fg)
+{
+    Rect rest;
+    Point pen;
+    RGBColor bg;
+    PenShade(kShLight);
+    GetForeColor(&bg);
+    if (gMono) { bg.red = bg.green = bg.blue = 0xFFFF; }
+    RGBBackColor(&bg);
+    TextMode(srcCopy);
+    PenShade(fg);
+    MoveTo(x, baseline);
+    DrawString(s);
+    rest = *slot;
+    pen.h = (short)(x + StringWidth(s));
+    if (pen.h > rest.left) rest.left = pen.h;
+    if (rest.right > rest.left) EraseRect(&rest);   /* in the panel colour: no visible flash */
+    {
+        Rect lead = *slot;
+        lead.right = x;
+        if (lead.right > lead.left) EraseRect(&lead);
+    }
+    TextMode(srcOr);
+    PenShade(kShBlack);
+}
+
+/*
+ * Activity strip: a raised panel with a sunken LED well (black while data moves,
+ * dark gray when idle) and the current activity on one line. The panel is
+ * painted only on a full update; LED and text only when they change.
  */
 void DrawLEDs(void)
 {
-    Rect statusArea, led;
+    static Boolean lastActive = 2;
+    static char    lastAct[256];
+    Rect strip, track, frame, foot, led, slot;
     Str255 pstr;
-    short i, w;
+    short i;
     long now;
-    Boolean active;
-    RGBColor ledBright = { 0x1000, 0xE000, 0x1000 };  /* bright green: data moving */
-    RGBColor ledIdle   = { 0x0000, 0x5800, 0x0000 };  /* dim green: connected, idle */
-    RGBColor cBlack = { 0, 0, 0 };
-    RGBColor cWhite = { 0xFFFF, 0xFFFF, 0xFFFF };
+    Boolean active, full;
 
     if (gStatusWindow == NULL) return;
 
     SetPort(gStatusWindow);
     PenNormal();
-    w = gStatusWindow->portRect.right - gStatusWindow->portRect.left;
-
-    /* Clear the top bar (white background, framed) — full window width */
-    SetRect(&statusArea, 0, 0, w, 18);
-    RGBBackColor(&cWhite);
-    RGBForeColor(&cBlack);
-    EraseRect(&statusArea);
-    FrameRect(&statusArea);
-
-    /* LED brightness = traffic: bright green while a command was received or a
-     * response sent within LED_FLASH_DURATION ticks, dim green when connected
-     * but idle. ShowAlive's ~8x/sec refresh catches the flash and reverts it,
-     * so the dot now shows data actually flowing instead of being always lit. */
+    ConsoleRects(&strip, &track, &frame, &foot);
     now = TickCount();
     active = (now - gLastRX < LED_FLASH_DURATION) ||
              (now - gLastTX < LED_FLASH_DURATION);
-    SetRect(&led, 8, 3, 22, 17);
-    RGBForeColor(active ? &ledBright : &ledIdle);
-    PaintOval(&led);
-    RGBForeColor(&cBlack);
-    FrameOval(&led);
+    full = gChromeForce;
+    if (!full && active == lastActive && strcmp(lastAct, gActivity) == 0) return;
 
-    /* state label + the live activity text, same line */
+    TextFont(kChromeFont);
     TextSize(9);
-    MoveTo(28, 13);
-    DrawString(active ? "\pActive  " : "\pIdle    ");
-
-    for (i = 0; gActivity[i] && i < 250; i++) pstr[i + 1] = gActivity[i];
-    pstr[0] = (unsigned char)i;
-    DrawString(pstr);
-
+    if (full) {
+        Shade(&strip, kShLight);
+        Bevel(&strip, true);
+        SetRect(&led, 8, 5, 22, 19);
+        Shade(&led, kShWhite);
+        Bevel(&led, false);
+        DrawNightButton();
+    }
+    if (full || active != lastActive) {
+        SetRect(&led, 11, 8, 19, 16);
+        if (active && !gMono) {
+            /* green while traffic flows: black against dark gray could not be
+             * told apart at a glance (operator, 2026-11-22) */
+            RGBColor g;
+            g.red = 0x0000; g.green = 0xC000; g.blue = 0x0000;
+            RGBForeColor(&g);
+            PaintRect(&led);
+            ForeColor(blackColor);
+        } else {
+            Shade(&led, active ? kShBlack : kShDark);
+        }
+        SetRect(&slot, 28, 4, 70, (short)(strip.bottom - 3));
+        TextFace(bold);
+        DrawSlot(&slot, 30, 16, active ? "\pActive" : "\pIdle", kShBlack);
+    }
+    if (full || strcmp(lastAct, gActivity) != 0) {
+        for (i = 0; gActivity[i] && i < 250; i++) pstr[i + 1] = gActivity[i];
+        pstr[0] = (unsigned char)i;
+        SetRect(&slot, 70, 4, (short)(strip.right - 30), (short)(strip.bottom - 3));   /* the night button sits right */
+        TextFace(0);
+        DrawSlot(&slot, 72, 16, pstr, kShDark);
+    }
+    if (!gInUpdate) {
+        lastActive = active;
+        strncpy(lastAct, gActivity, sizeof(lastAct) - 1);
+        lastAct[sizeof(lastAct) - 1] = '\0';
+    }
+    TextFace(0);
+    TextFont(0);
     TextSize(12);
+    ConsoleBack();
+}
+
+/* The scroller, drawn by us: the ControlHandle only holds value and maximum
+ * (it is hidden), and clicks are hit-tested geometrically in the event loop. */
+static void ScrollerParts(Rect *track, Rect *up, Rect *down, Rect *area)
+{
+    Rect s, f, ft;
+    ConsoleRects(&s, track, &f, &ft);
+    SetRect(down, (short)(track->left + 1), (short)(track->bottom - 17),
+                  (short)(track->right - 1), (short)(track->bottom - 1));
+    SetRect(up,   down->left, (short)(down->top - 16), down->right, down->top);
+    SetRect(area, (short)(track->left + 1), (short)(track->top + 1),
+                  (short)(track->right - 1), up->top);
+}
+
+static void Arrow(const Rect *b, Boolean pointUp)
+{
+    short cx = (short)((b->left + b->right) / 2), cy = (short)((b->top + b->bottom) / 2), i;
+    PenShade(kShBlack);
+    for (i = 0; i < 4; i++) {
+        short y = pointUp ? (short)(cy - 2 + i) : (short)(cy + 2 - i);
+        MoveTo((short)(cx - i), y);
+        LineTo((short)(cx + i), y);
+    }
+}
+
+static void DrawScroller(void)
+{
+    Rect track, up, down, area, knob;
+    short mx, v, vis, kh, span;
+
+    if (gStatusWindow == NULL || gScroll == NULL) return;
+    SetPort(gStatusWindow);
+    ScrollerParts(&track, &up, &down, &area);
+    Shade(&track, kShDark);
+    Bevel(&track, false);
+    Shade(&up, kShLight);   Bevel(&up, true);   Arrow(&up, true);
+    Shade(&down, kShLight); Bevel(&down, true); Arrow(&down, false);
+
+    /* From the TE itself - what is on screen - not from the hidden control: on
+     * the Duo the knob sat at the top while the view showed the newest lines. */
+    vis = (gLogTE != NULL) ? (short)(((**gLogTE).viewRect.bottom - (**gLogTE).viewRect.top) / gLineHeight) : 1;
+    if (vis < 1) vis = 1;
+    mx = (gLogTE != NULL) ? (short)((**gLogTE).nLines - vis) : 0;
+    if (mx < 0) mx = 0;
+    v  = (gLogTE != NULL) ? (short)(((**gLogTE).viewRect.top - (**gLogTE).destRect.top) / gLineHeight) : 0;
+    if (v < 0) v = 0;
+    if (v > mx) v = mx;
+    span = (short)(area.bottom - area.top);
+    kh = (mx <= 0) ? span : (short)(((long)span * vis) / (vis + mx));
+    if (kh < 14) kh = 14;
+    if (kh > span) kh = span;
+    knob = area;
+    knob.top    = (short)(area.top + ((mx <= 0) ? 0 : ((long)(span - kh) * v) / mx));
+    knob.bottom = (short)(knob.top + kh);
+    Shade(&knob, kShLight);
+    Bevel(&knob, true);
+    PenShade(kShDark);
+    MoveTo((short)(knob.left + 3), (short)((knob.top + knob.bottom) / 2));
+    LineTo((short)(knob.right - 4), (short)((knob.top + knob.bottom) / 2));
+    PenShade(kShBlack);
+    ConsoleBack();
 }
 
 /*
@@ -298,7 +527,10 @@ void SetActivity(const char *msg)
     gActivity[i] = '\0';
     if (i == 0) { gActivity[0] = 'i'; gActivity[1] = 'd'; gActivity[2] = 'l';
                   gActivity[3] = 'e'; gActivity[4] = '\0'; }
-    DrawLEDs();
+    /* No drawing here: this runs inside command processing, where drawing does
+     * not reliably reach the screen (see SyncLogTE). The strip remembers what it
+     * drew, so a paint lost here was never repeated - it showed "CON" of
+     * "CONNECTED ..." for good (0.8d52). ShowAlive redraws within 8 ticks. */
 }
 
 /* The log body's rectangle in the window's local coords: full width, between the
@@ -306,11 +538,9 @@ void SetActivity(const char *msg)
  * window. Inset 2px so text doesn't touch the frame. */
 void MonitorBodyRect(Rect *r)
 {
-    short w = gStatusWindow->portRect.right - gStatusWindow->portRect.left;
-    short h = gStatusWindow->portRect.bottom - gStatusWindow->portRect.top;
-    /* Leave 15px on the right for the scrollbar and 15px at the bottom for the
-     * Alive line + grow box. */
-    SetRect(r, 2, 20, w - 15, h - 15);
+    Rect s, tr, ft;
+    ConsoleRects(&s, &tr, r, &ft);
+    InsetRect(r, 5, 4);          /* the TE text, inside the frame's 2 px bevel + margin */
 }
 
 /* Scroll the log so display line `topLine` sits at the top of the view. */
@@ -320,6 +550,7 @@ static void ScrollLogTo(short topLine)
     if (gLogTE == NULL) return;
     curTop = (short)(((**gLogTE).viewRect.top - (**gLogTE).destRect.top) / gLineHeight);
     delta = (short)((curTop - topLine) * gLineHeight);
+    ConsoleBack();
     if (delta != 0) TEScroll(0, delta, gLogTE);
 }
 
@@ -371,17 +602,24 @@ static void SyncLogTEFull(void)
     }
     TESetText(gTEBuf, n, gLogTE);
 
-    /* Style: everything plain, then bold each command line. */
+    /* Style: everything plain in the output colour, then each command line bold
+     * in the command colour (CONSOLE=classic|dark). */
     {
         TextStyle ts;
+        RGBColor  bg, outC, cmdC;
         short c;
+        ConsoleColors(&bg, &outC, &cmdC);
         ts.tsFace = 0;
+        ts.tsColor = outC;
+        ts.tsFont = gLogFont;
+        ts.tsSize = gLogSize;
         TESetSelect(0, n, gLogTE);
-        TESetStyle(doFace, &ts, false, gLogTE);
-        ts.tsFace = bold;
+        TESetStyle(doFont + doSize + doFace + doColor, &ts, false, gLogTE);
+        ts.tsFace = 0;          /* commands by brightness, not bold: Monaco 9 bold smears */
+        ts.tsColor = cmdC;
         for (c = 0; c < nCmd; c++) {
             TESetSelect(cmdS[c], cmdE[c], gLogTE);
-            TESetStyle(doFace, &ts, false, gLogTE);
+            TESetStyle(doFace + doColor, &ts, false, gLogTE);
         }
     }
 
@@ -404,12 +642,11 @@ static void SyncLogTEFull(void)
      * first line (drawn via OpenMonitor's InvalRect) would ever appear. */
     {
         Rect body;
-        RGBColor cWhite = { 0xFFFF, 0xFFFF, 0xFFFF };
         MonitorBodyRect(&body);
-        RGBBackColor(&cWhite);
-        EraseRect(&body);
+        ClearTextArea();
         TEUpdate(&body, gLogTE);
     }
+    DrawScroller();
 }
 
 /* Append ONE ring line to the end of the TE in its own style, in one call.
@@ -434,9 +671,13 @@ static void TEAppendLine(const char *s, Boolean isCommand)
     (**st).scrpStyleTab[0].scrpHeight    = lh;
     (**st).scrpStyleTab[0].scrpAscent    = asc;
     (**st).scrpStyleTab[0].scrpFont      = ts.tsFont;
-    (**st).scrpStyleTab[0].scrpFace      = isCommand ? bold : 0;
+    (**st).scrpStyleTab[0].scrpFace      = 0;   /* no synthetic bold: Monaco 9 smears (2026-11-22) */
     (**st).scrpStyleTab[0].scrpSize      = ts.tsSize;
-    (**st).scrpStyleTab[0].scrpColor     = ts.tsColor;
+    {
+        RGBColor bg, outC, cmdC;
+        ConsoleColors(&bg, &outC, &cmdC);
+        (**st).scrpStyleTab[0].scrpColor = isCommand ? cmdC : outC;
+    }
     TESetSelect(end, end, gLogTE);
     TEStyleInsert(buf, (long)k, st, gLogTE);
     DisposeHandle((Handle)st);
@@ -483,10 +724,7 @@ void SyncLogTE(void)
     }
     wasAtBottom = (gScroll == NULL) ||
                   (GetControlValue(gScroll) >= GetControlMaximum(gScroll));
-    {
-        RGBColor cWhite = { 0xFFFF, 0xFFFF, 0xFFFF };
-        RGBBackColor(&cWhite);                     /* TE draws on the port's background */
-    }
+    ConsoleBack();                                 /* TE draws on the port's background */
     for (j = add - 1; j >= 0; j--) {               /* oldest new line first */
         idx = (short)((gLogHead - 1 - j + 2 * LOG_LINES) % LOG_LINES);
         if (!gShowDetails && gLogKind[idx] == 1) continue;   /* collapsed detail */
@@ -507,6 +745,7 @@ void SyncLogTE(void)
             ScrollLogTo(GetControlValue(gScroll));
         }
     }
+    DrawScroller();
 }
 
 /* Redraw the log body. With the TE field present (window open) this is a
@@ -514,14 +753,53 @@ void SyncLogTE(void)
 void RedrawLog(void)
 {
     Rect body;
-    RGBColor cWhite = { 0xFFFF, 0xFFFF, 0xFFFF };
 
     if (gStatusWindow == NULL || gLogTE == NULL) return;
     SetPort(gStatusWindow);
     MonitorBodyRect(&body);
-    RGBBackColor(&cWhite);
-    EraseRect(&body);
+    ClearTextArea();
     TEUpdate(&body, gLogTE);
+}
+
+/* The whole window: gray ground, strip, sunken text frame, log, scroller, footer. */
+static void DrawConsole(void)
+{
+    Rect strip, track, frame, foot, inner;
+    if (gStatusWindow == NULL) return;
+    SetPort(gStatusWindow);
+    PenNormal();
+    Shade(&gStatusWindow->portRect, kShLight);
+    gChromeForce = true;
+    DrawLEDs();
+    ConsoleRects(&strip, &track, &frame, &foot);
+    Bevel(&frame, false);
+    inner = frame; InsetRect(&inner, 1, 1);
+    Bevel(&inner, false);
+    RedrawLog();
+    DrawScroller();
+    DrawTelemetry();
+    gChromeForce = false;
+    {
+        /* The size box, only here - on a real update, drawn as a NeXT button
+         * of our own: DrawGrowIcon erased it to a WHITE square whenever the
+         * window was inactive - a bright spot in the gray frame (C2,
+         * 2026-11-22). Same look active or not; the footer stops 15 px short,
+         * so no footer redraw touches it. */
+        short w = gStatusWindow->portRect.right - gStatusWindow->portRect.left;
+        short h = gStatusWindow->portRect.bottom - gStatusWindow->portRect.top;
+        Rect grow, big, small;
+        SetRect(&grow, (short)(w - 15), (short)(h - 15), w, h);
+        Shade(&grow, kShLight);
+        Bevel(&grow, true);
+        SetRect(&big,   (short)(w - 10), (short)(h - 10), (short)(w - 3), (short)(h - 3));
+        SetRect(&small, (short)(w - 12), (short)(h - 12), (short)(w - 6), (short)(h - 6));
+        PenShade(kShDark);
+        FrameRect(&big);
+        Shade(&small, kShLight);
+        PenShade(kShDark);
+        FrameRect(&small);
+        PenShade(kShBlack);
+    }
 }
 
 /* Copy the current selection to the clipboard so it can be pasted into any app.
@@ -634,6 +912,66 @@ void ShowAlive(void)
     /* Sync the TE field from the ring if new lines arrived (from this good
      * context — TESetText draws, which doesn't render in the OT-receive path). */
     if (gLogDirty) { SyncLogTE(); gLogDirty = false; }
+}
+
+/* Switch the console between classic (0) and night mode (1): tick the menu,
+ * repaint in the new colours, and - for a choice made in the menu - keep it as
+ * CONSOLE= in the shared prefs (SaveWinPrefs touches only WIN= and CONSOLE=). */
+static short gPrefsConsoleSeen = 0;   /* CONSOLE= in the shared prefs as last read */
+static char  gPrefsFontSeen[PREFS_NAME_LEN];  /* FONT= as last read, name ... */
+static short gPrefsFontSizeSeen = 0;          /* ... and size */
+
+/* FONT= -> gLogFont/gLogSize and the matching line height. A name the Font
+ * Manager does not know (GetFNum answers 0, the system font) keeps Monaco. */
+static void ResolveLogFont(void)
+{
+    short id = kLogFontID, k;
+    if (gPrefs.font[0]) {
+        Str255 pn;
+        for (k = 0; gPrefs.font[k] && k < 254; k++) pn[k + 1] = gPrefs.font[k];
+        pn[0] = (unsigned char)k;
+        GetFNum(pn, &id);
+        if (id == 0) id = kLogFontID;
+    }
+    gLogFont = id;
+    gLogSize = (gPrefs.fontSize > 0) ? gPrefs.fontSize : 9;
+    if (gStatusWindow != NULL) {
+        GrafPtr  save;
+        short    f, s;
+        FontInfo fi;
+        GetPort(&save);
+        SetPort(gStatusWindow);
+        f = gStatusWindow->txFont; s = gStatusWindow->txSize;
+        TextFont(gLogFont); TextSize(gLogSize);
+        GetFontInfo(&fi);
+        gLineHeight = fi.ascent + fi.descent + fi.leading;
+        if (gLineHeight < 1) gLineHeight = 11;
+        TextFont(f); TextSize(s);
+        SetPort(save);
+    }
+}
+
+/* Switch the log font live: the next full sync restyles every line. */
+static void ApplyLogFont(void)
+{
+    ResolveLogFont();
+    if (gStatusWindow != NULL) {
+        SetPort(gStatusWindow);
+        InvalRect(&gStatusWindow->portRect);
+        gLogDirty = gLogFull = true;
+    }
+}
+
+static void SetConsoleTheme(short v, Boolean save)
+{
+    gPrefs.console = v;
+    if (gEditMenu != NULL) CheckItem(gEditMenu, NIGHT_ITEM, v == 1);
+    if (gStatusWindow != NULL) {
+        SetPort(gStatusWindow);
+        InvalRect(&gStatusWindow->portRect);
+        gLogDirty = gLogFull = true;
+    }
+    if (save) (void)SaveWinPrefs(&gPrefs);
 }
 
 /* About-box logo: PICT 128 (the AppleBridge suspension-bridge icon) with data
@@ -755,6 +1093,35 @@ static Boolean ScreenIsMono(void)
 
 /* Plain monochrome About box: text + a hand-drawn 1-bit suspension bridge, all
  * basic (1-bit-safe) QuickDraw -- no RGBForeColor, no colour PICT, no animation. */
+/* This build's short version ("0.8d52"), from its OWN 'vers' 1 resource - the
+ * About box said "v0.7.0", hard-coded, for months, so it could never answer
+ * "is the new build running?" (2026-11-22). Empty if the resource is missing. */
+static void AppVersion(char *out, short max)
+{
+    short   save = CurResFile(), k, n;
+    Handle  h;
+    out[0] = '\0';
+    UseResFile(LMGetCurApRefNum());
+    h = Get1Resource('vers', 1);
+    UseResFile(save);
+    if (h == NULL || GetHandleSize(h) < 8) return;
+    n = (short)(unsigned char)(*h)[6];
+    for (k = 0; k < n && k < max - 1; k++) out[k] = (*h)[7 + k];
+    out[k] = '\0';
+}
+
+/* "AppleBridge 0.8d52" as a Pascal string for the About boxes. */
+static void AboutTitle(Str255 s)
+{
+    char v[32];
+    const char *base = "AppleBridge ";
+    short i = 0, k;
+    AppVersion(v, sizeof(v));
+    for (k = 0; base[k]; k++) s[++i] = base[k];
+    for (k = 0; v[k]; k++) s[++i] = v[k];
+    s[0] = (unsigned char)i;
+}
+
 static void ShowAboutBoxMono(void)
 {
     DialogPtr dialog;
@@ -775,7 +1142,7 @@ static void ShowAboutBoxMono(void)
     LineTo(100,46);  LineTo(124,96);
 
     MoveTo(148, 46); TextSize(14); TextFace(bold);
-    DrawString("\pAppleBridge v0.7.0");
+    { Str255 ttl; AboutTitle(ttl); DrawString(ttl); }
     MoveTo(148, 70); TextSize(10); TextFace(0);
     DrawString("\pBuilt by Pit with Love");
     MoveTo(148, 86);
@@ -817,7 +1184,7 @@ void ShowAboutBox(void)
         SetRect(&logo, 20, 45, 120, 145);       /* 100x100 logo on the left */
 
         MoveTo(130, 30); TextSize(14); TextFace(bold);
-        DrawString("\pAppleBridge v0.7.0");
+        { Str255 ttl; AboutTitle(ttl); DrawString(ttl); }
         MoveTo(130, 55); TextSize(10); TextFace(0);
         DrawString("\pBuilt by Pit with Love");
         MoveTo(130, 75);
@@ -886,6 +1253,8 @@ void HandleMenuCommand(long menuResult)
                  * directions, because a user who can only hide via the control
                  * port is as stuck as one who can only show. */
                 SetMonitorVisible(!MonitorVisible());
+            } else if (menuItem == NIGHT_ITEM) {
+                SetConsoleTheme((short)(gPrefs.console == 1 ? 0 : 1), true);
             } else if (menuItem == DETAILS_ITEM) {
                 gShowDetails = !gShowDetails;
                 CheckItem(gEditMenu, DETAILS_ITEM, gShowDetails);
@@ -1037,7 +1406,7 @@ static void SaveMonitorBounds(void)
     gPrefs.winL = tl.h;
     gPrefs.winB = (short)(tl.v + (pr.bottom - pr.top));
     gPrefs.winR = (short)(tl.h + (pr.right - pr.left));
-    SaveWinPrefs(&gPrefs);       /* its own file: the shared prefs stay untouched */
+    SaveWinPrefs(&gPrefs);       /* only WIN=/CONSOLE= in the shared file; the rest is kept as is */
 }
 
 static void DrawWelcome(void)
@@ -1150,8 +1519,9 @@ void OpenMonitor(void)
         /* Edit menu so Copy (Cmd-C) is discoverable; the system also routes the
          * standard Cut/Copy/Paste keys here. We only act on Copy. */
         gEditMenu = NewMenu(EDIT_MENU_ID, "\pEdit");
-        AppendMenu(gEditMenu, "\pCopy/C;(-;Show details/D;Console/K");
+        AppendMenu(gEditMenu, "\pCopy/C;(-;Show details/D;Console/K;Night mode/N");
         CheckItem(gEditMenu, DETAILS_ITEM, gShowDetails);
+        CheckItem(gEditMenu, NIGHT_ITEM, gPrefs.console == 1);
         InsertMenu(gEditMenu, 0);
         DrawMenuBar();
         gMenuInstalled = true;
@@ -1159,14 +1529,16 @@ void OpenMonitor(void)
 
     SelectWindow(gStatusWindow);
     SetPort(gStatusWindow);
+    gMono = ScreenIsMono();           /* 1-bit or no Color QuickDraw: panels stay white */
 
     /* The body is a TextEdit field (monospace 9pt) so the log is mouse-
      * selectable and copyable. Monaco reads well for command/response text. */
     {
         Rect body;
         MonitorBodyRect(&body);
-        TextFont(kLogFontID);
-        TextSize(9);
+        ResolveLogFont();                 /* FONT= (Monaco 9 without it) */
+        TextFont(gLogFont);
+        TextSize(gLogSize);
         TextFace(0);                      /* default run = plain; commands get bold per-line */
         {
             FontInfo fi;
@@ -1189,11 +1561,20 @@ void OpenMonitor(void)
         short w = gStatusWindow->portRect.right - gStatusWindow->portRect.left;
         short h = gStatusWindow->portRect.bottom - gStatusWindow->portRect.top;
         SetRect(&sb, w - 15, 19, w + 1, h - 14);
-        gScroll = NewControl(gStatusWindow, &sb, "\p", true, 0, 0, 0,
+        gScroll = NewControl(gStatusWindow, &sb, "\p", false, 0, 0, 0,
                              scrollBarProc, 0);
+        /* Invisible: it only holds value and maximum. The NeXT-style scroller is
+         * drawn by DrawScroller, on the LEFT, and hit-tested in the event loop. */
     }
 
-    StatusMessage("--- Verbose: live bridge traffic ---");
+    {
+        char line[64], v[32];
+        AppVersion(v, sizeof(v));
+        strcpy(line, "--- AppleBridge ");
+        strcat(line, v);
+        strcat(line, " - live bridge traffic ---");
+        StatusMessage(line);
+    }
     gLogDirty = gLogFull = true;
     gTickCounter = 0;                 /* force the next ShowAlive to redraw */
     InvalRect(&gStatusWindow->portRect);
@@ -1230,10 +1611,13 @@ static void ServiceWindowEvent(EventRecord *event)
          * harmless only while the daemon had exactly one window. The
          * welcome window made that assumption false. */
         if ((WindowPtr)event->message == gStatusWindow) {
-            DrawLEDs();    /* top bar (activity) */
-            RedrawLog();   /* console body (TEUpdate) — else updates wipe it */
-            DrawControls(gStatusWindow);   /* the scrollbar */
-            DrawGrowIcon(gStatusWindow);   /* size box / bottom frame */
+            /* Inside BeginUpdate only the invalid part can be painted. Draw it all,
+             * but leave the caches alone: the next ShowAlive then redraws exactly
+             * the fields whose value differs from what is on screen - no second
+             * full paint, no static part repainted. */
+            gInUpdate = true;
+            DrawConsole();   /* strip, text frame + log, scroller, footer, size box */
+            gInUpdate = false;
         } else if ((WindowPtr)event->message == gWelcomeWindow) {
             DrawWelcome();
         }
@@ -1391,28 +1775,33 @@ Boolean CheckUserAbort(void)
                          * text selection. */
                         if (window == gStatusWindow) {
                             Point pt = event.where;
-                            Rect sbR;
-                            short w = window->portRect.right - window->portRect.left;
-                            short h = window->portRect.bottom - window->portRect.top;
+                            Rect sbR, upR, downR, areaR;
                             SetPort(window);
                             GlobalToLocal(&pt);
-                            SetRect(&sbR, w - 15, 19, w + 1, h - 14);
-                            /* Hit-test the scrollbar GEOMETRICALLY (not FindControl/
+                            ScrollerParts(&sbR, &upR, &downR, &areaR);
+                            {
+                                Rect nb;
+                                NightButtonRect(&nb);
+                                if (PtInRect(pt, &nb)) {     /* the half moon: night mode */
+                                    SetConsoleTheme(gPrefs.console == 1 ? 0 : 1, true);
+                                    break;
+                                }
+                            }
+                            /* Hit-test the scroller GEOMETRICALLY (not FindControl/
                              * TrackControl, which don't engage for this faceless
-                             * app's window). Top/bottom 16px = arrows (±1 line); the
-                             * rest of the track = proportional jump to that spot. */
+                             * app's window). NeXT layout: both arrows together at
+                             * the bottom (±1 line), the rest of the track = a
+                             * proportional jump to that spot. */
                             if (gScroll != NULL && PtInRect(pt, &sbR)) {
-                                short v    = GetControlValue(gScroll);
-                                short mx   = GetControlMaximum(gScroll);
-                                short relY = pt.v - sbR.top;
-                                short hgt  = sbR.bottom - sbR.top;
-                                if (relY < 16) {
+                                short v  = GetControlValue(gScroll);
+                                short mx = GetControlMaximum(gScroll);
+                                if (PtInRect(pt, &upR)) {
                                     v -= 1;
-                                } else if (relY > hgt - 16) {
+                                } else if (PtInRect(pt, &downR)) {
                                     v += 1;
                                 } else {
-                                    short trackY = relY - 16;
-                                    short trackH = hgt - 32;
+                                    short trackY = pt.v - areaR.top;
+                                    short trackH = areaR.bottom - areaR.top;
                                     if (trackH > 0)
                                         v = (short)(((long)trackY * mx) / trackH);
                                 }
@@ -1420,6 +1809,7 @@ Boolean CheckUserAbort(void)
                                 if (v > mx) v = mx;
                                 SetControlValue(gScroll, v);
                                 ScrollLogTo(v);
+                                DrawScroller();
                             } else if (window != FrontWindow()) {
                                 SelectWindow(window);
                             } else if (gLogTE != NULL) {
@@ -1759,90 +2149,124 @@ static void DoFileVerb(const char *request, char *out)
  */
 static void DrawTelemetry(void)
 {
-    Rect     foot, bar;
+    static long lastRX = -1, lastTX = -1, lastErr = -1, lastMs = -1, lastW = -1;
+    static char lastTag[48], lastNet[16];
+    Rect     strip, track, frame, foot, fld, meter, slot;
     Str255   s;
-    char     buf[96];
-    char    *b = buf;
-    short    w, h, i;
+    char     buf[48], tag[48];
+    short    w, h, i, k, x;
     long     ms, barw;
-    Point    pen;
-    RGBColor cBlack = { 0, 0, 0 };
-    RGBColor cWhite = { 0xFFFF, 0xFFFF, 0xFFFF };
-    RGBColor saveF, cHealth;
+    Boolean  full;
+    /* label, widest value it has to hold - fixed widths keep the layout still */
+    static const char *labels[5]  = { "NET", "RX", "TX", "ERR", "LAST" };
+    static const char *widest[5]  = { "Serial", "999999", "999999", "9999", "99999 ms" };
 
     if (gStatusWindow == NULL) return;
     SetPort(gStatusWindow);
-    GetForeColor(&saveF);
     w = gStatusWindow->portRect.right - gStatusWindow->portRect.left;
     h = gStatusWindow->portRect.bottom - gStatusWindow->portRect.top;
-
+    ConsoleRects(&strip, &track, &frame, &foot);
     ms = gLastLat * 1000 / 60;      /* ticks -> ms (read-only; set in ProcessRequest) */
-
-    SetRect(&foot, 0, (short)(h - 15), (short)(w - 15), h);
-    RGBBackColor(&cWhite);
-    RGBForeColor(&cBlack);
-    EraseRect(&foot);
-
-    /* Rule between the log body and the footer. Without it the last log line
-     * runs straight into the telemetry strip, which reads as a clipped window
-     * rather than as two areas (noticed 2026-07-25). */
-    MoveTo(0, (short)(h - 16));
-    LineTo((short)(w - 15), (short)(h - 16));
-
-    /* The grow box shares the bottom-right corner with the footer, so redraw it
-     * here too — otherwise the corner stays blank after anything that repaints
-     * this strip without a full window update. */
-    DrawGrowIcon(gStatusWindow);
-
-    /* --- active transport + counters + latency number --- */
-    b = StatStr(b, "NET ");    b = StatStr(b, ABTransportName());  b = StatStr(b, "  ");
-    b = StatStr(b, "RX ");     b = StatDec(b, gRXCount);
-    b = StatStr(b, "  TX ");   b = StatDec(b, gTXCount);
-    b = StatStr(b, "  ERR ");  b = StatDec(b, gErrCount);
-    b = StatStr(b, "  last "); b = StatDec(b, ms);
-    b = StatStr(b, "ms ");
-    *b = '\0';
-    for (i = 0; buf[i] && i < 250; i++) s[i + 1] = buf[i];
-    s[0] = (unsigned char)i;
-    TextSize(9);
-    MoveTo(6, (short)(h - 4));
-    DrawString(s);
-    GetPen(&pen);                   /* where the text ended -> bar starts here */
-
-    /* --- analog health bar: colour by latency band, length scaled + capped --- */
-    if (ms < 200)       { cHealth.red = 0x1000; cHealth.green = 0xC000; cHealth.blue = 0x1000; } /* green: healthy */
-    else if (ms < 1000) { cHealth.red = 0xF000; cHealth.green = 0xB000; cHealth.blue = 0x0000; } /* amber: slow    */
-    else                { cHealth.red = 0xE000; cHealth.green = 0x1000; cHealth.blue = 0x1000; } /* red: unhealthy */
-    barw = ms / 25;                 /* 1200ms -> 48px full scale */
-    if (barw > 48) barw = 48;
-    if (barw < 3)  barw = 3;        /* a small stub even at ~0ms (idle = green/healthy) */
-    bar.left   = (short)(pen.h + 2);
-    bar.top    = (short)(h - 12);
-    bar.right  = (short)(pen.h + 2 + barw);
-    bar.bottom = (short)(h - 4);
-    RGBForeColor(&cHealth);
-    PaintRect(&bar);
-    RGBForeColor(&cBlack);
-    FrameRect(&bar);
-
-    /* --- last error tag (identification), only once something has failed ---
-     * and only for ten minutes after it. A footer that kept "err:launch" for the
-     * rest of the session was read on the Duo as a CURRENT fault (2026-11-21);
-     * the count stays in ERR n and in STAT's lasterr for anyone who wants history. */
+    tag[0] = '\0';
     if (gErrCount > 0 && gLastErr[0] && TickCount() - gLastErrTick < 36000L) {
-        char  eb[80];
-        char *ep = eb;
-        ep = StatStr(ep, "  err:");
-        ep = StatStr(ep, gLastErr);
-        *ep = '\0';
-        for (i = 0; eb[i] && i < 250; i++) s[i + 1] = eb[i];
-        s[0] = (unsigned char)i;
-        MoveTo((short)(bar.right + 4), (short)(h - 4));
-        DrawString(s);
+        char *b = StatStr(tag, "err:");
+        b = StatStr(b, gLastErr);
+        *b = '\0';
+    }
+    full = gChromeForce || w != lastW;
+    if (!full && gRXCount == lastRX && gTXCount == lastTX && gErrCount == lastErr &&
+        ms == lastMs && strcmp(tag, lastTag) == 0 && strcmp(ABTransportName(), lastNet) == 0)
+        return;                                       /* nothing changed: draw nothing */
+
+    TextFont(kChromeFont);
+    TextSize(9);
+    if (full) {
+        Shade(&foot, kShLight);
+        Bevel(&foot, true);
     }
 
-    RGBForeColor(&saveF);
+    x = 4;
+    for (i = 0; i < 5; i++) {
+        short lw, vw;
+        long  val;
+        Boolean changed;
+        char *b = buf;
+        for (k = 0; labels[i][k]; k++) s[k + 1] = labels[i][k];
+        s[0] = (unsigned char)k;
+        TextFace(0);
+        lw = StringWidth(s);
+        for (k = 0; widest[i][k]; k++) s[k + 1] = widest[i][k];
+        s[0] = (unsigned char)k;
+        TextFace(bold);
+        vw = StringWidth(s);
+        SetRect(&fld, x, (short)(h - kFootH + 3), (short)(x + lw + vw + 14), (short)(h - 3));
+        if (fld.right > w - 70) break;               /* narrow window: drop what does not fit */
+        if (full) {
+            Bevel(&fld, false);
+            for (k = 0; labels[i][k]; k++) s[k + 1] = labels[i][k];
+            s[0] = (unsigned char)k;
+            TextFace(0);
+            PenShade(kShDark);
+            MoveTo((short)(x + 5), (short)(h - 8));
+            DrawString(s);
+            PenShade(kShBlack);
+        }
+        val = (i == 1) ? gRXCount : (i == 2) ? gTXCount : (i == 3) ? gErrCount : ms;
+        changed = full || (i == 0 && strcmp(ABTransportName(), lastNet) != 0) ||
+                  (i == 1 && val != lastRX) || (i == 2 && val != lastTX) ||
+                  (i == 3 && val != lastErr) || (i == 4 && val != lastMs);
+        if (changed) {
+            if (i == 0) b = StatStr(b, ABTransportName());
+            else      { b = StatDec(b, val); if (i == 4) b = StatStr(b, " ms"); }
+            *b = '\0';
+            for (k = 0; buf[k] && k < 40; k++) s[k + 1] = buf[k];
+            s[0] = (unsigned char)k;
+            SetRect(&slot, (short)(x + 7 + lw), (short)(fld.top + 2), (short)(fld.right - 2), (short)(fld.bottom - 2));
+            TextFace(bold);
+            DrawSlot(&slot, (short)(x + 9 + lw), (short)(h - 8), s, kShBlack);
+        }
+        x = (short)(fld.right + 4);
+    }
+
+    /* Latency meter: dark part and light part painted side by side - no erase. */
+    SetRect(&meter, x, (short)(h - kFootH + 3), (short)(x + 54), (short)(h - 3));
+    if (meter.right < w - 18) {
+        Rect lit, unlit;
+        if (full) Bevel(&meter, false);
+        barw = ms / 25;
+        if (barw > 48) barw = 48;
+        if (barw < 2)  barw = 2;
+        SetRect(&lit,   (short)(meter.left + 3), (short)(meter.top + 4),
+                        (short)(meter.left + 3 + barw), (short)(meter.bottom - 4));
+        SetRect(&unlit, lit.right, lit.top, (short)(meter.right - 3), lit.bottom);
+        Shade(&lit, kShDark);
+        if (unlit.right > unlit.left) Shade(&unlit, gMono ? kShWhite : kShLight);
+        x = (short)(meter.right + 6);
+    }
+
+    /* Last error tag, for ten minutes after it (a footer that kept "err:launch"
+     * all session was read on the Duo as a CURRENT fault, 2026-11-21). */
+    if (full || strcmp(tag, lastTag) != 0) {
+        SetRect(&slot, x, (short)(foot.top + 3), (short)(foot.right - 3), (short)(foot.bottom - 3));
+        if (slot.right > slot.left) {
+            for (k = 0; tag[k] && k < 40; k++) s[k + 1] = tag[k];
+            s[0] = (unsigned char)k;
+            TextFace(0);
+            DrawSlot(&slot, x, (short)(h - 8), s, kShBlack);
+        }
+    }
+    TextFace(0);
+    TextFont(0);
     TextSize(12);
+
+    if (!gInUpdate) {
+        lastRX = gRXCount; lastTX = gTXCount; lastErr = gErrCount; lastMs = ms; lastW = w;
+        strcpy(lastTag, tag);
+        strncpy(lastNet, ABTransportName(), sizeof(lastNet) - 1);
+        lastNet[sizeof(lastNet) - 1] = '\0';
+    }
+    PenShade(kShBlack);
+    ConsoleBack();
 }
 
 /* Parse exactly 8 hex digits into an OSType (4 bytes), for the AESEND verb. */
@@ -2814,7 +3238,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
     gLastWasReal = (strncmp(request, "PING", 4) != 0 &&
                     strncmp(request, PROTO_STAT, strlen(PROTO_STAT)) != 0);
     if (gMenuLED) *gMenuLED = gLastRX;   /* flash the menu-bar LED (if installed) */
-    DrawLEDs();   /* light RX immediately */
+    /* The console's LED follows from ShowAlive (render-safe), not from here. */
 
     request[requestLen] = '\0';
 
@@ -3859,10 +4283,14 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
     if (strncmp(request, PROTO_SWAPSELF, strlen(PROTO_SWAPSELF)) == 0 &&
         (request[8] == '\0' || request[8] == '\r' || request[8] == '\n')) {
         OSErr se;
+        Boolean xchg;
         SetActivity("SWAPSELF");
-        se = SwapSelf();
+        se = SwapSelf(&xchg);
         if (se == noErr) {
-            strcpy(responseBuffer, "STATUS:0\rSTDOUT:7\rSwapped\rSTDERR:0\r\r");
+            /* "Swapped" = contents exchanged, every alias still valid; the
+             * rename fallback says so, because an alias then points at "old". */
+            if (xchg) strcpy(responseBuffer, "STATUS:0\rSTDOUT:7\rSwapped\rSTDERR:0\r\r");
+            else      strcpy(responseBuffer, "STATUS:0\rSTDOUT:62\rSwapped by rename - an alias to the daemon now points at 'old'\rSTDERR:0\r\r");
         } else {
             char msg[48];
             char *m = msg;
@@ -5357,6 +5785,21 @@ static Boolean MaybeHotSwapTransport(ABConn **connP, Boolean *connectedP)
      * next HELLO, so a running link is never torn down for them. */
     gPrefs.tcpPort = np.tcpPort;
     strcpy(gPrefs.name, np.name);
+    /* CONSOLE= is adopted when the shared file's value CHANGES, not whenever it
+     * differs: a choice made in the Edit menu would otherwise be undone within
+     * NET_POLL_TICKS. Whoever changed it last wins - the menu or the file. */
+    if (np.console != gPrefsConsoleSeen) {
+        gPrefsConsoleSeen = np.console;
+        if (np.console != gPrefs.console) SetConsoleTheme(np.console, true);
+    }
+    /* FONT= the same way: adopted when the file's value changes. */
+    if (strcmp(np.font, gPrefsFontSeen) != 0 || np.fontSize != gPrefsFontSizeSeen) {
+        strcpy(gPrefsFontSeen, np.font);
+        gPrefsFontSizeSeen = np.fontSize;
+        strcpy(gPrefs.font, np.font);
+        gPrefs.fontSize = np.fontSize;
+        ApplyLogFont();
+    }
     if (np.transport == gPrefs.transport) return false;   /* NET= unchanged */
 
     /* NET= changed -> hot-swap the stack. */
@@ -5485,7 +5928,14 @@ int main(void)
      * half-empty file a later save then completed without port and name. The
      * window position, its one own setting, has a file of its own. */
     (void)LoadPrefs(&gPrefs);
-    (void)LoadWinPrefs(&gPrefs);
+    /* 0.8d49-0.8d51 kept WIN= and CONSOLE= in a file of their own; merge it into
+     * the shared file once (only those two keys are touched) and delete it. */
+    if (LoadWinPrefs(&gPrefs)) {
+        if (SaveWinPrefs(&gPrefs) == noErr) DropWinFile();
+    }
+    gPrefsConsoleSeen = gPrefs.console;
+    strcpy(gPrefsFontSeen, gPrefs.font);
+    gPrefsFontSizeSeen = gPrefs.fontSize;
     /* What the last update renamed aside is not running now: remove it, so it
      * cannot be started by accident (0.8d50). */
     (void)RemoveOldBinaries();

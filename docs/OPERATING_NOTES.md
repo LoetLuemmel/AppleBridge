@@ -2843,3 +2843,13 @@ took the front and gave it back, and changed nothing. The host server now
   tried on dev2019 first only as a smoke test — its speed there says nothing about a
   real disk. Recovery when it happens anyway: wait, or `REBOOT` once the daemon answers
   again (2026-11-22, the Duo came back unaided in 1:45).
+* **"The update did not take" — check which file the Startup Items alias opens.** On
+  `odroid-c2` (2026-11-22) a daemon update was swapped in, the guest rebooted, and the
+  old binary came back: the Startup Items alias pointed at a copy outside `HOME=`, and
+  `SWAPSELF` (then still renaming) moved that running file's ID to `AppleBridge old` —
+  an alias follows the file ID, not the name. Before 0.8d52 the About box said
+  `v0.7.0` in every build, so nothing on screen told the builds apart. Now: the About
+  box and the console's first line name the running version, and `SWAPSELF` exchanges
+  contents instead of renaming. When a guest reports a version you did not install,
+  read the alias's original (Finder → Get Info) before anything else; an old build
+  also tends to drop `TCPPORT=`/`NAME=` from the prefs on its next save.

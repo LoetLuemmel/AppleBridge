@@ -598,14 +598,22 @@ static OSErr MakeSibling(const FSSpec *base, const char *suffix, FSSpec *out)
  *   1. resolve own FSSpec (GetCurrentProcess -> processAppSpec)
  *   2. require the "<selfName> new" sibling to exist
  *   3. delete any stale "<selfName> old" backup
- *   4. rename self          -> "<selfName> old"   (rename the OPEN running file)
- *   5. rename "<selfName> new" -> "<selfName>"
- *   6. on step-5 failure, roll back (rename "old" back) so the daemon still
- *      relaunches, and report the error.
- * The rollback copy ("<selfName> old") is left behind on success and removed
- * by RemoveOldBinaries at the next start (0.8d50).
+ *   4. EXCHANGE the contents of self and "<selfName> new" (FSpExchangeFiles),
+ *      then rename "<selfName> new" - now holding the old binary - to
+ *      "<selfName> old".
+ *   5. only if the exchange is refused: the 0.8d50 way, rename self -> "old"
+ *      and "new" -> "<selfName>", rolling back on failure.
+ *
+ * Why the exchange (2026-11-22): a Finder alias - the Startup Items entry -
+ * follows the FILE ID, not the name. Renaming moved the running file's ID to
+ * "<selfName> old", so the alias launched the OLD binary at the next boot and
+ * every update looked like it "did not take" (odroid-c2: an August build came
+ * back from the dead that way). FSpExchangeFiles swaps the forks in the catalog
+ * and keeps each name with its file ID; it works on open files and updates
+ * their FCBs, so the running process keeps reading its own code.
+ * The backup "<selfName> old" is removed by RemoveOldBinaries at the next start.
  */
-OSErr SwapSelf(void)
+OSErr SwapSelf(Boolean *exchanged)
 {
     ProcessSerialNumber psn;
     ProcessInfoRec      info;
@@ -613,6 +621,8 @@ OSErr SwapSelf(void)
     Str255              selfName;
     FInfo               fi;
     OSErr               err;
+
+    *exchanged = false;
 
     /* 1. this process's own file */
     err = GetCurrentProcess(&psn);
@@ -635,11 +645,16 @@ OSErr SwapSelf(void)
     /* 3. clear a stale backup (not the running file -> deletable) */
     FSpDelete(&backup);                         /* ignore error if absent */
 
-    /* 4. rename the running daemon aside */
+    /* 4. swap the contents; names and file IDs stay where they are */
+    if (FSpExchangeFiles(&staged, &self) == noErr) {
+        *exchanged = true;
+        (void)FSpRename(&staged, backup.name);  /* the old binary, as backup */
+        return noErr;
+    }
+
+    /* 5. fallback: rename (moves the file ID - an alias follows the old file) */
     err = FSpRename(&self, backup.name);
     if (err != noErr) return err;               /* OS refused to rename the open app */
-
-    /* 5. move the staged binary into the daemon's original name */
     err = FSpRename(&staged, self.name);
     if (err != noErr) {                         /* roll back so a reboot still finds a daemon */
         FSpRename(&backup, self.name);

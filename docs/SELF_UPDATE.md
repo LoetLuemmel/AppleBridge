@@ -28,11 +28,30 @@ New wire verb **`SWAPSELF`** (daemon, `SwapSelf()` in `mac/src/fileio.c`):
 2. Require a sibling **`<name> new`** in the same folder (the host stages it there
    first via `mac_put_file` — a fresh file, so no lock).
 3. Delete any stale `<name> old` backup.
-4. `FSpRename` self → `<name> old` (rename the **open, running** file).
-5. `FSpRename` `<name> new` → `<name>`.
-6. On step-5 failure, roll back (`<name> old` → `<name>`) and report the error.
+4. **`FSpExchangeFiles`** `<name> new` ⇄ `<name>` — swaps the two files' forks in the
+   catalog; each name keeps its file ID. Then `FSpRename` `<name> new` (now holding the
+   old binary) → `<name> old`. Reply: `Swapped`.
+5. Only if the exchange is refused: the 0.8d50 way — `FSpRename` self → `<name> old`,
+   `<name> new` → `<name>`, rolled back on failure. Reply:
+   `Swapped by rename - an alias to the daemon now points at 'old'`.
 
-The running process keeps executing from its now-renamed file. The caller then
+**Why the exchange (0.8d52, 2026-11-22).** A Finder alias — the Startup Items entry —
+follows the **file ID**, not the name. Renaming moved the running file's ID to
+`<name> old`, so on a guest started by an alias straight to the daemon the next boot
+launched the **old** binary and every update looked as if it had not taken; on
+`odroid-c2` a forgotten August `AppleBridge new` came back that way and dialled the
+wrong port. `FSpExchangeFiles` works on open files (it updates their FCBs, so the
+running process keeps reading its own code) and leaves `<name>` with the file ID the
+alias resolves. Measured on the Duo (real 68030, System 7.1): `Swapped`, dates swapped,
+the new binary up after the reboot. A guest started through the watchdog (which
+launches by path) was never affected.
+
+**Stage next to the RUNNING file.** `SWAPSELF` looks for `<name> new` beside the file
+the process was launched from, which need not be `HOME=` (on `odroid-c2` an alias ran a
+copy in another folder). A `-43` means it found nothing there — the binary was staged
+somewhere else; delete that stray `<name> new` before it is swapped in by accident later.
+
+The running process keeps executing its own code. The caller then
 **reboots**; the watchdog launches the current `<name>` — the new binary. The
 rollback copy (`<name> old`) is left behind until that start, when the new daemon
 removes it together with an `AppleBridgeWatchdog old` / `AppleBridgeConfig old` an
