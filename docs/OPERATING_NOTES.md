@@ -2785,3 +2785,24 @@ took the front and gave it back, and changed nothing. The host server now
   error file.** All 33 items of a backup "succeeded" with `STATUS:0` in 1.5 minutes;
   the `≥≥` file held 33 × `OS error -46` (`volLockErr`). 100 MB over 10 Mbit Ethernet in
   90 seconds is the tell. Check the error file and the target, never the status.
+
+## 2026-11-22 — rebuilding the daemon by hand on dev2019 (0.8d51)
+
+* **`≥>` is not an MPW redirect.** A `Rez vers.r … ≥> :obj:rez.err` meant as "append
+  stderr" made the whole command line do nothing past that point: no error, empty
+  output, and a daemon without a `'vers'` resource. Append is `≥≥`. A missing `'vers'`
+  is invisible in the Finder size column — read the resources of the fetched MacBinary
+  (`macresources.parse_file`) before believing a build.
+* **ILink leaves the file size unchanged across a code change.** Three different
+  builds of `main.c` all came out at 118,828 bytes: ILink is incremental and pads the
+  CODE segments for the next link. An identical size is not evidence that the old
+  object was linked — check the object's creation time and a marker in the source on
+  the guest (`Search -q <token> :src:main.c`), then the behaviour.
+* **Hold the build guest's lock while building.** `wunsch_build.py` takes
+  `/tmp/applebridge_build.lock` (9001) non-blocking and skips a busy guest, so a manual
+  build that holds it (`fcntl.flock` in a small Python holder) keeps wish jobs off the
+  guest without stopping the wish server.
+* **`start_stack.sh` restarts EVERY guest's host server**, not only the one it starts:
+  its deploy step kicks all `de.390er.applebridge-host*` agents. Bringing dev2019 back
+  dropped mbp2013, claudia and the Duo for 30 s and cost one wish job its compile
+  evidence. To start only the dev emulator, launch it and run `guest_boot.py`.
