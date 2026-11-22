@@ -7,6 +7,12 @@ Together with the Duo 230 (7.5, real hardware) that brackets 7.0–7.5; 7.1 was 
 nothing to test: the daemon is built on Apple Events, FSSpec and the Process Manager, all new in 7.0, and the
 installer refuses anything older.
 
+![AppleBridge installed on System 7.0: kit, installer preflight, restart, the bridge running](../../../docs/images/s7-70-install.gif)
+
+*The installation on System 7.0 (Basilisk II on the C2, MacTCP 2.0.6), recorded with `record.py` and paced to
+33 s: kit folder → installer preflight, every check OK on 7.0.0 → Install → Restart → the watchdog starts the
+daemon → "installed and running" → bridge traffic from `battery.py` → About This Macintosh.*
+
 ## Pieces
 
 | File | Runs on | Does |
