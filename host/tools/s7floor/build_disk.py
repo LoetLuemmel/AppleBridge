@@ -113,6 +113,7 @@ def macbinary_file(path):
     f.flags = ((b[73] << 8) | b[101]) & ~0x0100
     r0 = 128 + ((dlen + 127) // 128) * 128
     f.data, f.rsrc = bytearray(b[128:128 + dlen]), bytearray(b[r0:r0 + rlen])
+    f.crdate, f.mddate = int.from_bytes(b[91:95], "big"), int.from_bytes(b[95:99], "big")
     return f
 
 
@@ -123,7 +124,7 @@ def text_file(text, ftype=b"TEXT", creator=b"ttxt"):
     return f
 
 
-def build(spec_name, out, size_mb, host, tcpport, name, kit):
+def build(spec_name, out, size_mb, host, tcpport, name, kit, bare=False):
     spec = SPECS[spec_name]
     cd, sdk = load(JAN94), load(SDK1)
     v = machfs.Volume()
@@ -151,7 +152,9 @@ def build(spec_name, out, size_mb, host, tcpport, name, kit):
     if os.path.exists(prep):
         sf["Preferences"]["MacTCP Prep"] = macbinary_file(prep)
     prefs = f"IP={host}\nNET=MacTCP\nDEBUG=1\nTCPPORT={tcpport}\nNAME={name}\n"
-    if kit:
+    if bare:
+        pass                                          # nothing of AppleBridge: install it from a kit disk
+    elif kit:
         # Nothing installed: the kit folder as it ships, with the seed prefs the installer carries over (it adds HOME=).
         k = v["AppleBridge Kit"] = machfs.Folder()
         for leaf in KIT_LEAVES:
@@ -164,7 +167,7 @@ def build(spec_name, out, size_mb, host, tcpport, name, kit):
     img = v.write(size=size_mb * 1024 * 1024)     # machfs writes the boot blocks from the System's 'boot' 1 and blesses
     with open(out, "wb") as fh:
         fh.write(img)
-    print(f"{out}: {len(img)} bytes, volume {v.name!r}{' (kit)' if kit else ''}")
+    print(f"{out}: {len(img)} bytes, volume {v.name!r}{' (kit)' if kit else ' (bare)' if bare else ''}")
 
 
 def main():
@@ -172,12 +175,13 @@ def main():
     ap.add_argument("spec", choices=sorted(SPECS))
     ap.add_argument("out")
     ap.add_argument("--kit", action="store_true", help="the AppleBridge Kit folder instead of an installed daemon")
+    ap.add_argument("--bare", action="store_true", help="no AppleBridge at all - install it from a kit on a second disk")
     ap.add_argument("--size-mb", type=int, default=40)
     ap.add_argument("--host", default="192.168.3.232", help="IP= the daemon dials (the hub)")
     ap.add_argument("--tcpport", type=int, default=9050, help="TCPPORT= (the hub's daemon port for this guest)")
     ap.add_argument("--name", default="s7test", help="NAME= reported in HELLO")
     a = ap.parse_args()
-    build(a.spec, a.out, a.size_mb, a.host, a.tcpport, a.name, a.kit)
+    build(a.spec, a.out, a.size_mb, a.host, a.tcpport, a.name, a.kit, a.bare)
 
 
 if __name__ == "__main__":
