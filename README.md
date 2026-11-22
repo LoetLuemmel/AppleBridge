@@ -215,7 +215,7 @@ TCP/IP, or real Ethernet**. Everything else follows from that, AppleTalk include
 | Examples | the default `install_bridge.py` sets up | `etherhelper` on a Mac host; a tap device on a Linux bridge | a PowerBook Duo on Ethernet; an SE/30 on Ethernet or a serial cable |
 | What the guest sees | TCP/IP only — slirp is a router inside the emulator | real Ethernet on your LAN | real Ethernet, LocalTalk, or a serial line |
 | AppleTalk, AppleShare (`NBPLOOK`, `AFPMOUNT`) | **no** | **yes** (EtherTalk) | **yes** over Ethernet/LocalTalk; not over serial |
-| AppleTalk alert at every boot | **yes** if EtherTalk is selected — select **LocalTalk Built-in** in the Network control panel, or make AppleTalk **inactive** in the Chooser | no | no (serial only: make AppleTalk inactive) |
+| AppleTalk alert at every boot | **yes** while the Network control panel names an EtherTalk connection — click OK, it is harmless | no | no |
 | Setting up | one DHCP choice, no password | Mac host: two password prompts per launch and a second network interface ([D-015](DECISIONS.md)); Linux: a tap device and a bridge, once | the card or the cable; IP by hand or DHCP |
 | Guest reachable from the LAN | no (behind NAT) | yes, its own address | yes |
 
@@ -327,8 +327,11 @@ MacTCP, otherwise the serial port — so there is nothing to choose in AppleBrid
 
 On slirp, System 7.0 to 7.5 then reports at every boot that **no driver for the selected
 AppleTalk connection** was found and falls back to LocalTalk. That is harmless — slirp
-carries no AppleTalk, and TCP/IP is unaffected — and one setting silences it: **LocalTalk
-Built-in** in the Network control panel, or AppleTalk **Inactive** in the Chooser.
+carries no AppleTalk, and TCP/IP is unaffected — so **OK** is the whole answer. What the
+alert reads is the connection chosen in the **Network** control panel, which keeps it in
+parameter RAM; making AppleTalk *Inactive* in the Chooser does **not** silence it
+(measured on System 7.0, 2026-11-22: AppleTalk inactive, the alert at the next boot all the
+same). A minimal 7.0 or 7.1 install may not carry the Network control panel at all.
 
 Do this **before** running the installer. Nothing breaks if you don't — the
 daemon redials every 30 seconds and picks itself up — but an installer reporting
