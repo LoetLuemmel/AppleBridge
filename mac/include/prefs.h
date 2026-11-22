@@ -49,6 +49,12 @@ typedef struct {
     char    name[PREFS_NAME_LEN];  /* NAME= : this guest's name in the hub's guest table, reported
                                     * in the HELLO reply so the hub can refuse a guest that
                                     * landed on another guest's port (D-028). Empty ⇒ none. */
+    short   console;      /* CONSOLE= : the Verbose console's text area - 0 classic (white, the
+                           * default), 1 dark. The NeXT-style frame is the same for both
+                           * (2026-11-22). Re-read live with NET=, so a change shows at once. */
+    char    font[PREFS_NAME_LEN]; /* FONT=<name> <size> : the console log's font, e.g. "Geneva 9".
+                                   * Empty => Monaco 9. Re-read live like CONSOLE= (2026-11-22). */
+    short   fontSize;     /* the <size> of FONT=; 0 => 9 */
     char    extra[PREFS_EXTRA_LEN]; /* KEY=value lines no case below recognised, each ending in a
                                      * newline, written back verbatim by SavePrefs. Without this a
                                      * program built before a key existed DELETES it on its next
@@ -85,5 +91,6 @@ OSErr SavePrefs(const AppPrefs *p);
  * touches nothing but the four win fields; a missing file returns false. */
 Boolean LoadWinPrefs(AppPrefs *p);
 OSErr   SaveWinPrefs(const AppPrefs *p);
+void    DropWinFile(void);          /* delete the legacy "AppleBridge Window" file (0.8d52) */
 
 #endif /* PREFS_H */

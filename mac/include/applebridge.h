@@ -178,7 +178,8 @@ Boolean ReadFileVerb(ABConn *conn, char *request, long requestLen);
  * stream a tab-separated listing — works with NO ToolServer (unlike the MPW
  * `Files` path). One line per entry: name<TAB>type<TAB>creator<TAB>size<TAB>modSecs<CR> */
 Boolean ListDirVerb(ABConn *conn, char *request, long requestLen);
-OSErr SwapSelf(void);   /* self-update: rename '<name> new' over the running daemon */
+OSErr SwapSelf(Boolean *exchanged);   /* self-update: '<name> new' becomes the running daemon's file;
+                                        * *exchanged = contents swapped (file ID kept) vs renamed */
 short RemoveOldBinaries(void);   /* at startup: delete '<self> old', watchdog/config 'old' (0.8d50) */
 
 /* AppleTalk name lookup (nbp.c): list the entities the Chooser would show —

@@ -10,17 +10,21 @@
 #include <mystring.h>
 #include <Files.h>
 #include <Folders.h>
+#include <Memory.h>      /* BlockMoveData */
 #include <Errors.h>
 
 #define kPrefCreator    'ABrg'
 #define kPrefFileName   "\pAppleBridge Prefs"
-/* The Verbose window's position, in a file of its own (0.8d49). It used to be the
- * WIN= key of the shared prefs file, which made the DAEMON a writer of that file:
- * every move of its window rewrote the whole file from the daemon's in-memory copy,
- * and an edit made underneath it, or a key an older build did not know, was gone
- * (R14; on a PowerBook Duo 230 TCPPORT= and NAME= were lost twice, 2026-11-21).
- * Now the daemon writes only this file, and the shared one is written by the config
- * panel and the installer alone, when somebody changes something on purpose. */
+/* The daemon's own settings - the Verbose window's position (WIN=) and the
+ * console's night mode (CONSOLE=) - live in the shared prefs file again (0.8d52).
+ * From 0.8d49 to 0.8d51 they were in a file of their own ("AppleBridge Window"),
+ * because the daemon used to rewrite the WHOLE shared file from its in-memory
+ * copy on every window move, and an edit made underneath it, or a key an older
+ * build did not know, was gone (R14; on a PowerBook Duo 230 TCPPORT= and NAME=
+ * were lost twice, 2026-11-21). The daemon now writes the shared file only through
+ * UpdateOwnKeys: re-read right before the write, every line that is not WIN= or
+ * CONSOLE= kept byte for byte, those two replaced. It never creates the file. The
+ * old separate file is read once, merged, and deleted. */
 #define kWinFileName    "\pAppleBridge Window"
 #define PREFS_BUF_SIZE  4096
 /* No default host address, deliberately (R2 in docs/INSTALLER_REQUIREMENTS.md).
@@ -42,6 +46,9 @@ void PrefsDefaults(AppPrefs *p)
     p->token[0] = '\0';            /* empty ⇒ auth disabled (opt-in; see docs/PROTOCOL_v0.2.md) */
     p->tcpPort = 0;                /* 0 ⇒ BRIDGE_PORT (D-028) */
     p->name[0] = '\0';
+    p->console = 0;                /* classic: white text area */
+    p->font[0] = '\0';             /* Monaco 9 */
+    p->fontSize = 0;
     p->extra[0] = '\0';
     p->appCount = 0;
 }
@@ -117,6 +124,22 @@ static void ParseLine(AppPrefs *p, const char *line)
         p->tcpPort = (v > 0 && v < 65536L) ? v : 0;   /* out of range ⇒ the default, never a wrap */
     } else if (strncmp(line, "NAME=", 5) == 0) {
         CopyValue(p->name, line + 5, PREFS_NAME_LEN);
+    } else if (strncmp(line, "CONSOLE=", 8) == 0) {
+        /* CONSOLE=dark selects the dark text area; anything else is classic. */
+        p->console = (strncmp(line + 8, "dark", 4) == 0 || strncmp(line + 8, "Dark", 4) == 0) ? 1 : 0;
+    } else if (strncmp(line, "FONT=", 5) == 0) {
+        /* FONT=<name> <size>: the name is everything up to the LAST space (font
+         * names have spaces: "New York"), the size the digits after it. */
+        char  v[PREFS_NAME_LEN];
+        short k, sp = -1, sz = 0;
+        CopyValue(v, line + 5, PREFS_NAME_LEN);
+        for (k = 0; v[k]; k++) if (v[k] == ' ') sp = k;
+        if (sp > 0) {
+            for (k = sp + 1; v[k] >= '0' && v[k] <= '9'; k++) sz = sz * 10 + (v[k] - '0');
+            v[sp] = '\0';
+        }
+        strcpy(p->font, v);
+        p->fontSize = (sz >= 6 && sz <= 24) ? sz : 0;
     } else if (strncmp(line, "WIN=", 4) == 0) {
         /* WIN=<top>,<left>,<bottom>,<right> — saved Verbose-window bounds. */
         short vals[4]; short vi = 0, k = 4;
@@ -276,12 +299,24 @@ OSErr SavePrefs(const AppPrefs *p)
     if (p->name[0]) {
         strcat(buf, "NAME="); strcat(buf, p->name); strcat(buf, "\r");
     }
+    if (p->console == 1) {
+        strcat(buf, "CONSOLE=dark\r");
+    }
+    if (p->font[0]) {
+        strcat(buf, "FONT="); strcat(buf, p->font);
+        if (p->fontSize > 0) { strcat(buf, " "); AppendNum(buf, p->fontSize); }
+        strcat(buf, "\r");
+    }
     for (n = 0; n < p->appCount; n++) {
         strcat(buf, "APP="); strcat(buf, p->apps[n]); strcat(buf, "\r");
     }
-    /* No WIN= any more: the window position lives in "AppleBridge Window" (see
-     * kWinFileName). A WIN= still found in an older prefs file is read once, as
-     * the starting position, and then dropped from this file on its next save. */
+    if (p->winB > p->winT && p->winR > p->winL) {      /* the daemon's window, when known */
+        strcat(buf, "WIN=");
+        AppendNum(buf, p->winT); strcat(buf, ",");
+        AppendNum(buf, p->winL); strcat(buf, ",");
+        AppendNum(buf, p->winB); strcat(buf, ",");
+        AppendNum(buf, p->winR); strcat(buf, "\r");
+    }
     strcat(buf, p->extra);   /* keys this build does not know, verbatim (D-028) */
 
     count = (long)strlen(buf);
@@ -292,6 +327,10 @@ OSErr SavePrefs(const AppPrefs *p)
 
 /* The window position, in "AppleBridge Window". Only the four win fields of `p`
  * are touched, so a missing or unreadable file leaves whatever LoadPrefs found. */
+/* Legacy: the separate "AppleBridge Window" file of 0.8d49-0.8d51. Its WIN= and
+ * CONSOLE= are newer than what the shared file has, so they are adopted; the
+ * daemon then merges them into the shared file (SaveWinPrefs) and deletes this
+ * one (DropWinFile). */
 Boolean LoadWinPrefs(AppPrefs *p)
 {
     FSSpec spec;
@@ -307,35 +346,77 @@ Boolean LoadWinPrefs(AppPrefs *p)
     FSClose(refNum);
     if ((err != noErr && err != eofErr) || count <= 4) return false;
     buf[count] = '\0';
-    if (strncmp(buf, "WIN=", 4) != 0) return false;
-    ParseLine(p, buf);              /* the WIN= branch, nothing else */
-    return true;
+    {
+        char *line = buf;
+        Boolean any = false;
+        while (*line) {
+            char *end = line;
+            while (*end && *end != '\r' && *end != '\n') end++;
+            if (strncmp(line, "WIN=", 4) == 0 || strncmp(line, "CONSOLE=", 8) == 0) {
+                char save = *end;
+                *end = '\0';
+                ParseLine(p, line);
+                *end = save;
+                any = true;
+            }
+            line = *end ? end + 1 : end;
+        }
+        return any;
+    }
 }
 
-OSErr SaveWinPrefs(const AppPrefs *p)
+void DropWinFile(void)
 {
     FSSpec spec;
+    if (PrefsFolderSpec(kWinFileName, &spec) == noErr) (void)FSpDelete(&spec);
+}
+
+/* Write the daemon's own keys (WIN=, CONSOLE=) into the SHARED prefs file:
+ * read it right before the write, keep every other line byte for byte, drop the
+ * old WIN=/CONSOLE= lines, append the new ones. Never creates the file - a daemon
+ * that wrote a default file once produced the half-empty prefs of 0.8d48. */
+OSErr SaveWinPrefs(const AppPrefs *p)
+{
+    static char in[PREFS_BUF_SIZE], out[PREFS_BUF_SIZE];
+    FSSpec spec;
     short  refNum;
-    long   count;
-    char   buf[64];
+    long   count, n = 0, i = 0;
     OSErr  err;
 
-    if (!(p->winB > p->winT && p->winR > p->winL)) return paramErr;
-    err = PrefsFolderSpec(kWinFileName, &spec);
-    if (err != noErr && err != fnfErr) return err;
-    err = FSpCreate(&spec, kPrefCreator, 'TEXT', 0);
-    if (err != noErr && err != dupFNErr) return err;
-    err = FSpOpenDF(&spec, fsRdWrPerm, &refNum);
+    err = PrefsSpec(&spec);
     if (err != noErr) return err;
-    SetEOF(refNum, 0L);
-    buf[0] = '\0';
-    strcat(buf, "WIN=");
-    AppendNum(buf, p->winT); strcat(buf, ",");
-    AppendNum(buf, p->winL); strcat(buf, ",");
-    AppendNum(buf, p->winB); strcat(buf, ",");
-    AppendNum(buf, p->winR); strcat(buf, "\r");
-    count = (long)strlen(buf);
-    err = FSWrite(refNum, &count, buf);
+    err = FSpOpenDF(&spec, fsRdWrPerm, &refNum);
+    if (err != noErr) return err;                     /* missing: leave it missing */
+    count = sizeof(in) - 1;
+    err = FSRead(refNum, &count, in);
+    if (err != noErr && err != eofErr) { FSClose(refNum); return err; }
+    in[count] = '\0';
+
+    while (i < count) {                               /* keep every foreign line verbatim */
+        long s = i;
+        while (i < count && in[i] != '\r' && in[i] != '\n') i++;
+        if (i < count) i++;                           /* include its line end */
+        if (strncmp(in + s, "WIN=", 4) == 0 || strncmp(in + s, "CONSOLE=", 8) == 0) continue;
+        if (n + (i - s) >= (long)sizeof(out) - 64) break;
+        BlockMoveData(in + s, out + n, i - s);
+        n += i - s;
+    }
+    if (n > 0 && out[n - 1] != '\r' && out[n - 1] != '\n') out[n++] = '\r';
+    out[n] = '\0';
+    if (p->winB > p->winT && p->winR > p->winL) {
+        strcat(out, "WIN=");
+        AppendNum(out, p->winT); strcat(out, ",");
+        AppendNum(out, p->winL); strcat(out, ",");
+        AppendNum(out, p->winB); strcat(out, ",");
+        AppendNum(out, p->winR); strcat(out, "\r");
+    }
+    if (p->console == 1) strcat(out, "CONSOLE=dark\r");
+    else                 strcat(out, "CONSOLE=classic\r");
+
+    count = (long)strlen(out);
+    SetFPos(refNum, fsFromStart, 0L);
+    err = FSWrite(refNum, &count, out);
+    if (err == noErr) err = SetEOF(refNum, count);
     FSClose(refNum);
     return err;
 }

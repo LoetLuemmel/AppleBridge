@@ -6,7 +6,10 @@
  * the classic way to tell builds apart (replacing ad-hoc names like
  * "AppleBridge5"). One 'vers' file stamps the whole suite uniformly.
  *
- * This build: 0.8 development — d51 makes the clipboard work in both directions while another
+ * This build: 0.8 development — d52 makes the Verbose console cheap on a slow Mac: it appends the
+ * new lines in their own style instead of rebuilding and restyling the whole field after every
+ * command, which cost a 33 MHz PowerBook Duo up to 7.8 s per command (2026-11-22).
+ * d51 makes the clipboard work in both directions while another
  * application is in front: CLIPGET takes the front for an instant, as CLIPSET already did, so it
  * reads the front application's scrap instead of the daemon's own (empty) layer, and a successful
  * CLIPSET no longer counts an error (an unbraced else ran NoteErr every time). The front round trip
@@ -139,16 +142,16 @@
 
 resource 'vers' (1) {
     0x00, 0x80,          /* 0.8.0 in BCD: major=0, minor=8, bugfix=0 */
-    development, 0x51,   /* development stage, non-release revision 51 (BCD) */
+    development, 0x52,   /* development stage, non-release revision 52 (BCD) */
     verUS,
-    "0.8d51",            /* short version -> Finder "Version" column + Get Info */
-    "AppleBridge 0.8d51 - clipboard both ways"  /* long -> Get Info */
+    "0.8d52",            /* short version -> Finder "Version" column + Get Info */
+    "AppleBridge 0.8d52 - a console that keeps up"  /* long -> Get Info */
 };
 
 resource 'vers' (2) {
     0x00, 0x80,
-    development, 0x51,
+    development, 0x52,
     verUS,
-    "0.8d51",
+    "0.8d52",
     "AppleBridge"        /* the shared/suite version line */
 };

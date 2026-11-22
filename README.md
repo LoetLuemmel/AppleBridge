@@ -19,15 +19,15 @@ That makes it two things at once:
   already know MPW, THINK C and Inside Macintosh — so software can be written, compiled,
   linked, run and debugged on the Mac in natural language.
 
-![A System 7.5.3 desktop with only AppleBridge running: its Verbose console listing DISKINFO, directory listings, a file read and the Startup Items folder, with a NET OT / RX 175 / TX 175 / ERR 0 footer](docs/images/daemon-verbose-0.8d33.png)
+![The AppleBridge Verbose console on System 7.6.1, classic: a strip with the activity LED, the current command and a half-moon button, a scroller on the left, a Files listing and a greeting in the log, and a NET OT / RX / TX / ERR / LAST footer](docs/images/daemon-verbose-0.8d52.png) ![The same console in night mode: light text on a dark well, the same strip and footer](docs/images/daemon-verbose-0.8d52-night.png)
 
-*A whole System 7.5.3 screen with nothing running but AppleBridge — a session of ordinary
-system work arriving over the bridge: volumes, directory listings, the installer's own log,
-the Startup Items folder, and the footer carrying the transport, the RX/TX counters and the
-error count. The daemon itself is **faceless**; it normally has no window at all, and this
-**Verbose** console is optional, toggled with `MONITOR:1`. The image was captured by the
-daemon out of the emulated framebuffer, streamed over the bridge, and decoded to PNG on the
-host — so it is the guest's own screen, not a picture of a window on someone's Mac.*
+*The guest's side of a session, in daemon 0.8d52's console: what arrives over the bridge —
+`LISTDIR`, a ToolServer `Files` listing, `DISKINFO` — and the footer carrying the transport,
+the RX/TX counters, the error count and the last round trip. The half moon at the top right
+switches to night mode (right); the choice is kept in the prefs. The daemon itself is
+**faceless**; this **Verbose** console is optional (`MONITOR:0`/`MONITOR:1`), and its first
+line names the version that is actually running. Captured from the emulator's framebuffer,
+so it is the guest's own screen, not a picture of a window on someone's Mac.*
 
 ## What You Can Do
 
@@ -205,6 +205,23 @@ here. Fully worked example with more screenshots: [docs/SETUP.md](docs/SETUP.md)
 But I don't know, if this applies to all of you, as my chap Claude was my co developer and might have READ.ME files, you are missing.\
 Simply give it a try and tell us about your experience.
 
+### Which network setup?
+
+What decides it is not the tool that makes the network but **what the guest sees: only
+TCP/IP, or real Ethernet**. Everything else follows from that, AppleTalk included.
+
+| | **Emulator + slirp** (what ships) | **Emulator + Ethernet bridge** | **Real Apple hardware** |
+|---|---|---|---|
+| Examples | the default `install_bridge.py` sets up | `etherhelper` on a Mac host; a tap device on a Linux bridge | a PowerBook Duo on Ethernet; an SE/30 on Ethernet or a serial cable |
+| What the guest sees | TCP/IP only — slirp is a router inside the emulator | real Ethernet on your LAN | real Ethernet, LocalTalk, or a serial line |
+| AppleTalk, AppleShare (`NBPLOOK`, `AFPMOUNT`) | **no** | **yes** (EtherTalk) | **yes** over Ethernet/LocalTalk; not over serial |
+| AppleTalk alert at every boot | **yes** if EtherTalk is selected — select **LocalTalk Built-in** in the Network control panel, or make AppleTalk **inactive** in the Chooser | no | no (serial only: make AppleTalk inactive) |
+| Setting up | one DHCP choice, no password | Mac host: two password prompts per launch and a second network interface ([D-015](DECISIONS.md)); Linux: a tap device and a bridge, once | the card or the cable; IP by hand or DHCP |
+| Guest reachable from the LAN | no (behind NAT) | yes, its own address | yes |
+
+Start with slirp unless you need AppleShare: it is the branch this guide installs and the
+one that starts unattended. A real Mac is described in [docs/SERIAL_TRANSPORT.md](docs/SERIAL_TRANSPORT.md)
+(serial) and needs nothing special on Ethernet beyond the host address in AppleBridgeConfig.
 
 ### 1. Configure the host
 
@@ -275,7 +292,9 @@ not ship; the config panel on the guest needs nothing.
 ![The whole installation on System 7.0 with MacTCP 2.0.6: the kit folder, the installer's preflight with every check OK, Install, Restart, the watchdog starting the daemon, "AppleBridge is installed and running", live bridge traffic in the console, and About This Macintosh](docs/images/s7-70-install.gif)
 
 *The whole installation on **System 7.0**, the oldest System it supports — 33 seconds
-of a real run, recorded from the emulator's framebuffer.*
+of a real run on the **slirp** setup, recorded from the emulator's framebuffer. The alert
+at the restart, that no driver for the selected AppleTalk connection was found, is that
+setup speaking, not the installer: see* [Which network setup?](#which-network-setup)
 
 The network setting depends on the System — these are the *guest's own* values:
 
@@ -305,6 +324,11 @@ Measured on System 7.0 and 7.0.1 under Basilisk II's slirp: no restart was neede
 and the daemon connected with the class-A default mask MacTCP proposes. The
 installer picks the transport by itself — Open Transport if it is there, otherwise
 MacTCP, otherwise the serial port — so there is nothing to choose in AppleBridge.
+
+On slirp, System 7.0 to 7.5 then reports at every boot that **no driver for the selected
+AppleTalk connection** was found and falls back to LocalTalk. That is harmless — slirp
+carries no AppleTalk, and TCP/IP is unaffected — and one setting silences it: **LocalTalk
+Built-in** in the Network control panel, or AppleTalk **Inactive** in the Chooser.
 
 Do this **before** running the installer. Nothing breaks if you don't — the
 daemon redials every 30 seconds and picks itself up — but an installer reporting
@@ -348,7 +372,7 @@ The daemon is **faceless** — it runs as a service with no window — so everyt
 human needs to change about it lives in **AppleBridgeConfig**, installed alongside
 it. Open it from the installation folder whenever you need to look:
 
-![AppleBridgeConfig: daemon status and autostart, an editable host address with a Set button, the three networking radios with the serial options dimmed, the helper-app list, and the four buttons](docs/images/config-panel-0.8d33.png)
+![AppleBridgeConfig: daemon status and autostart, an editable host address with a Set button, the three networking radios with the serial options dimmed, the helper-app list, and the four buttons](docs/images/config-panel-0.8d52.png)
 
 | | |
 |---|---|
@@ -358,6 +382,7 @@ it. Open it from the installation folder whenever you need to look:
 | **Serial port / Baud** | dimmed unless Serial is selected. Read at startup, not hot-swapped, so they take effect on the next launch — and the host must be set to the same baud, as there is no autobaud |
 | **Add Helper App…** | appends an `APP=` line; the daemon chain-launches these at startup, ToolServer first |
 | **Install Autostart** / **Remove Autostart** | writes (or deletes) the Startup Items alias. It points at the *watchdog*, not the daemon, because the watchdog owns the daemon's lifecycle |
+| *Not on the panel* | the daemon keeps its own settings in the same prefs file: `WIN=` (the console's position), `CONSOLE=classic\|dark` (the half moon, or **Edit → Night mode**), and, by hand, `FONT=<name> <size>` for the console log (default Monaco 9). It applies `CONSOLE=` and `FONT=` live — [mac/config/README.md](mac/config/README.md) |
 | **Quit** | quits the panel — not the daemon |
 
 There are deliberately **no Launch/Stop buttons**. The daemon is meant to run
@@ -530,7 +555,7 @@ AppleBridge/
 
 ## Status
 
-**Current daemon:** 0.8d51 ("clipboard both ways") — the version the
+**Current daemon:** 0.8d52 ("a console that keeps up") — the version the
 daemon itself reports, from `mac/vers.r`.
 
 - TCP bridge, NAT-reversed (the guest dials OUT), with an asynchronous connect
