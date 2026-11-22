@@ -91,7 +91,7 @@ flowchart TB
     end
 
     subgraph BAII["Emulator (Basilisk II / SheepShaver) — or real 68k hardware"]
-        subgraph Mac["Classic Mac (System 7.5.3+ / Mac OS 9)"]
+        subgraph Mac["Classic Mac, 68020+ (System 7.0+ / Mac OS 9)"]
             AppleBridge["AppleBridge Daemon\n(C, 68k)"]
             OT["OpenTransport / MacTCP\n(or Serial)"]
             ToolServer["ToolServer\n'MPSX'"]
@@ -174,9 +174,14 @@ than a broken install. Why OT *and* MCP is not one layer twice:
 - Claude Code, if you want the MCP tools. The bridge itself works without it.
 
 **Guest (System 7):**
-- System 7.5.3 or later with **Open Transport** (verified on 7.5.3, 7.6.1 and
-  Mac OS 9) or **MacTCP** — or no network stack at all, over a **Serial** line.
-- **12 MB of RAM**, which is what the installer's preflight checks for.
+- **System 7.0 or later on a 68020 or later** — any Mac with Color QuickDraw in
+  ROM. Verified on 7.0, 7.0.1, 7.5, 7.5.3, 7.6.1 and Mac OS 9; 68000 Macs (Plus,
+  SE, Classic) are not supported ([D-029](DECISIONS.md)).
+- **Open Transport** (7.5.3 and later) or **MacTCP** (2.0.6 runs on 7.0) — or no
+  network stack at all, over a **Serial** line.
+- **RAM:** the installer sizes the daemon for the machine — 1,000 K on a Mac with
+  up to 16 MB, 2,000 K up to 32 MB — so a 12 MB PowerBook runs it with room to
+  spare; updates through `mac_update_daemon` keep that size.
 - **A real Macintosh works too.** Validated on a 68030 **SE/30**, where the link
   runs over **RS-422 serial** rather than Ethernet — the transport is a seam, not
   an assumption (`NET=Serial`; see [docs/SERIAL_TRANSPORT.md](docs/SERIAL_TRANSPORT.md)).

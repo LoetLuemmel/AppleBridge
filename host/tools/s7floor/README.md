@@ -5,7 +5,9 @@ Measured 2026-11-22: **System 7.0** — the first System 7 — with MacTCP 2.0.6
 battery; the AppleBridgeInstaller preflight passes on 7.0.0 and its install comes up by itself after the restart.
 Together with the Duo 230 (7.5, real hardware) that brackets 7.0–7.5; 7.1 was not tested. Below 7.0 there is
 nothing to test: the daemon is built on Apple Events, FSSpec and the Process Manager, all new in 7.0, and the
-installer refuses anything older.
+installer refuses anything older. The CPU floor is a **68020** (D-029): the test guest is a 68030, and
+68000 Macs (Plus, SE, Classic) are out of scope — daemon, installer and config app use Color QuickDraw, which
+their ROMs lack, and nothing here could test a black-and-white path.
 
 ![AppleBridge installed on System 7.0: kit, installer preflight, restart, the bridge running](../../../docs/images/s7-70-install.gif)
 

@@ -21,5 +21,7 @@ docker run -d --name basilisk-s7test \
 # VNC for watching (operator 2026-11-22): own server, reachable on the docker bridge, NOT on the C2 host network.
 # On the Mac:  ssh -N -L 5902:172.17.0.2:5900 pit@192.168.3.4   ->  vnc://localhost:5902
 sleep 3
+docker exec basilisk-s7test pkill -x X0tigervnc || true   # the entrypoint starts a localhost-only one when vncpasswd exists
+sleep 1
 docker exec -d basilisk-s7test sh -c "X0tigervnc -display :1 -rfbport 5900 -SecurityTypes VncAuth -PasswordFile /data/vncpasswd -localhost=0 -AlwaysShared=1 >/tmp/x0vnc.log 2>&1"
 docker inspect -f "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}" basilisk-s7test
