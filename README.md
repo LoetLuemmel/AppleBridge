@@ -272,13 +272,39 @@ not ship; the config panel on the guest needs nothing.
 
 ### 3. In the guest: network first, then the installer
 
-**TCP/IP control panel** — these are the *guest's own* values, and slirp answers
+![The whole installation on System 7.0 with MacTCP 2.0.6: the kit folder, the installer's preflight with every check OK, Install, Restart, the watchdog starting the daemon, "AppleBridge is installed and running", live bridge traffic in the console, and About This Macintosh](docs/images/s7-70-install.gif)
+
+*The whole installation on **System 7.0**, the oldest System it supports — 33 seconds
+of a real run, recorded from the emulator's framebuffer.*
+
+The network setting depends on the System — these are the *guest's own* values:
+
+**System 7.5.3 and later — Open Transport, the TCP/IP control panel.** slirp answers
 DHCP itself:
 
 ```
 Connect via   Ethernet
 Configure     Using DHCP Server
 ```
+
+**System 7.0 to 7.5.x — MacTCP, the MacTCP control panel** (MacTCP 2.0.6 runs on
+7.0; System 7.0 and 7.1 do not include it). Select **Ethernet**, click **More…**,
+choose **Obtain Address: Manually** and enter the gateway; then **OK** and the IP
+address in the main panel:
+
+```
+Ethernet
+More…  Obtain Address   Manually
+       Gateway Address  10.0.2.2
+IP Address              10.0.2.15
+```
+
+![MacTCP's More… dialog on System 7.0.1: Obtain Address Manually, gateway 10.0.2.2](docs/images/installer-guest-mactcp-more.png) ![The MacTCP panel: Ethernet selected, IP address 10.0.2.15, version 2.0.6](docs/images/installer-guest-mactcp-ip.png)
+
+Measured on System 7.0 and 7.0.1 under Basilisk II's slirp: no restart was needed,
+and the daemon connected with the class-A default mask MacTCP proposes. The
+installer picks the transport by itself — Open Transport if it is there, otherwise
+MacTCP, otherwise the serial port — so there is nothing to choose in AppleBridge.
 
 Do this **before** running the installer. Nothing breaks if you don't — the
 daemon redials every 30 seconds and picks itself up — but an installer reporting
@@ -292,7 +318,9 @@ suite, and installs the autostart so the bridge comes up on every boot.
 ![The installer's preflight screen: System 7.0 or later, Apple Events, network transport, 32-bit addressing and RAM all OK, ToolServer marked optional](docs/images/installer-preflight-0.8d33.png)
 
 It says what it found before it does anything, and it names its own version so a
-screenshot is answerable. A `?` is not a failure — `ToolServer` is optional, and
+screenshot is answerable. On a Mac with 32 MB or less it also sizes the daemon for
+it — 1,000 K up to 16 MB, 2,000 K up to 32 MB — and an update through
+`mac_update_daemon` keeps that size. A `?` is not a failure — `ToolServer` is optional, and
 says so. If a **required** check fails, the Install button stays disabled rather
 than letting you start something that cannot finish.
 
@@ -517,8 +545,9 @@ daemon itself reports, from `mac/vers.r`.
 - Screenshot capture: the emulated framebuffer, decoded to PNG on the host
 - Host server auto-start via launchd
 
-Validated on Basilisk II (System 7.5.3 and 7.6.1), SheepShaver (Mac OS 9), and real
-hardware — a Macintosh SE/30 over RS-422.
+Validated on Basilisk II (System 7.0, 7.0.1, 7.5.3 and 7.6.1), SheepShaver (Mac OS 9),
+and real hardware — a Macintosh SE/30 over RS-422 and a PowerBook Duo 230 (System 7.5,
+12 MB) over MacTCP. The floor is System 7.0 on a 68020 ([D-029](DECISIONS.md)).
 
 ## Credits
 

@@ -45,6 +45,7 @@ cd AppleBridge/host
 |---|---|---|
 | guest TCP/IP control panel | **`Configure: Using DHCP Server`** — slirp answers it and supplies all four | the **guest's own** |
 | …if your build does not | `10.0.2.15` / `255.255.255.0`, router `10.0.2.2`, name server **`10.0.2.3`** | the **guest's own** |
+| System 7.0–7.5.x, **MacTCP** control panel | Ethernet; More… → **Manually**, gateway `10.0.2.2`; IP `10.0.2.15` (measured on 7.0 and 7.0.1, 2026-11-22) | the **guest's own** |
 | `AppleBridge Prefs`, `IP=` | this machine's LAN address | the **host's** |
 
 Those two are the trap: the same word means opposite things three lines apart, and swapping them is silent.
