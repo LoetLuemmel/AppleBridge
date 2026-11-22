@@ -364,11 +364,15 @@ static void DrawContent(void)
     r.bottom -= 44;             /* leave the button strip */
     EraseRect(&r);
 
-    TextFont(0); TextFace(bold); TextSize(12);
+    /* Apple's own pairing: Chicago 12 plain for the heading (it is bold by
+     * design - bold Chicago smears), Geneva 10 for the labels. Chicago exists
+     * only as a 12-point bitmap, so the old Chicago 10 was scaled and looked
+     * fat (operator, 2026-11-22). */
+    TextFont(0); TextFace(0); TextSize(12);
     MoveTo(16, 22);
     DrawString("\pAppleBridge Config");
 
-    TextFace(0); TextSize(10);
+    TextFont(3); TextFace(0); TextSize(10);     /* 3 = Geneva */
     MoveTo(16, 44);
     if (DaemonRunning())
         DrawString("\pDaemon: RUNNING");
@@ -464,7 +468,7 @@ static void MakeButtons(void)
         Rect te = gIPBox;
         Str255 p;
         InsetRect(&te, 3, 3);
-        TextFont(0); TextSize(10);
+        TextFont(3); TextSize(10);              /* Geneva, as the labels */
         gIPField = TENew(&te, &te);
         CtoP(gPrefs.ip, p);
         if (p[0]) TESetText((Ptr)&p[1], (long)p[0], gIPField);
