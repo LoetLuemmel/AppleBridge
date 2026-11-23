@@ -70,11 +70,10 @@ def test_tree_gets_the_long_read_deadline():
     # sent; the 15 s default would abandon a reply that is still coming.
     route = HOST_SRC[HOST_SRC.index('cmd.startswith("TREE/")'):]
     route = route[:route.index("elif ")]
-    assert "TREE_UNLIMITED_TIMEOUT" in route and "TREE_TIMEOUT" in route
+    assert "timeout=TREE_TIMEOUT" in route
     assert host_server.TREE_TIMEOUT > host_server.DEFAULT_TIMEOUT
-    # the daemon stops a plain TREE after 45 s: the host must outwait that
+    # the daemon answers a TREE after at most 45 s: the host must outwait that
     assert host_server.TREE_TIMEOUT > 45
-    assert host_server.TREE_UNLIMITED_TIMEOUT > host_server.TREE_TIMEOUT
 
 
 def test_daemon_dispatches_tree_and_tree_f_before_the_command_parse():

@@ -59,6 +59,10 @@ QDGlobals qd;
  * File-scope (not on main's stack) since AppPrefs is ~2 KB. */
 static AppPrefs gPrefs;
 
+/* The install folder (HOME=, ends in ':'), for files the daemon writes itself
+ * (TREE/D). Empty on a legacy setup. */
+const char *DaemonHome(void) { return gPrefs.home; }
+
 /* The port this daemon dials: TCPPORT= from the prefs, else BRIDGE_PORT. One port per guest lets n guests
  * share the hub's one address (D-028). */
 static unsigned short BridgePort(void)
@@ -1923,6 +1927,7 @@ Boolean CheckUserAbort(void)
      * at 100% — Basilisk's idlewait then throttles host CPU and the Finder stays
      * reachable. It also delivers our window/menu events like GetNextEvent did. */
     ServiceScrollHold();   /* a held scroller arrow/track keeps scrolling */
+    TreeService();         /* a TREE/D past 45 s goes on here, a few ticks a pass */
     if (WaitNextEvent(everyEvent, &event, 2L, NULL)) {
         switch (event.what) {
             case kHighLevelEvent:

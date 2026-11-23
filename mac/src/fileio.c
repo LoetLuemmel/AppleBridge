@@ -33,6 +33,8 @@
 #include <Events.h>     /* TickCount, SystemTask */
 #include <Memory.h>     /* NewPtr */
 #include <Processes.h>  /* GetCurrentProcess / GetProcessInformation (SwapSelf) */
+#include <OSUtils.h>    /* GetDateTime, SecondsToDate (TREE/D's date) */
+#include <Script.h>     /* smSystemScript (TREE/D's file) */
 
 #define FILE_CHUNK      8192L            /* per-transfer buffer */
 #define FILE_STALL_TICKS 1800L           /* ~30 s with no progress -> give up */
@@ -569,11 +571,9 @@ Boolean ListDirVerb(ABConn *conn, char *request, long requestLen)
 
 /*
  * TREE:<path>   folders only        TREE/F:<path>   folders and files
- * TREE/U:<path>, TREE/F/U:<path>    the same without the time limit and with
- *                                   all free memory (minus a reserve) -- for a
- *                                   deliberate full walk of a big or remote volume
+ * /D (TREE/D:, TREE/F/D:) also saves it on the disk -- see below
  *
- *   MeinMac:
+ *   MeinMac:  (2026-11-23 07:30)
  *   +---AB-Tools
  *   +---MPW
  *   |   +---Examples
@@ -581,134 +581,271 @@ Boolean ListDirVerb(ABConn *conn, char *request, long requestLen)
  *   \---System Folder
  *   12 folders
  *
- * DOS `TREE /A` drawing, because MacRoman has no box-drawing characters. Each
- * folder is read twice by index (count, then print), so the last entry can get
- * its "\---". The walk state lives in one TreeCtx on TreeVerb's frame and each
- * recursion level adds only a few words, so a deep tree does not eat the stack;
- * depth is capped anyway. Output grows a Handle up to a memory budget and stops
- * with a "truncated" line rather than failing: on a 1,000 K daemon a whole
- * volume with /F would not fit. Rows end '\r' in the code = LF on the wire,
- * the same as LISTDIR (see there). Added 2026-11-23.
+ * DOS `TREE /A` drawing, because MacRoman has no box-drawing characters.
+ *
+ * With /D the tree is also SAVED, because a disk's tree is worth keeping and
+ * ages: <home>TREE:<name> <yyyy-mm-dd>[ F], a SimpleText file whose first line
+ * carries the date and time. The same tree on the same day overwrites its
+ * file. On request only: not every look at a folder needs a file (operator).
+ *
+ * The walk is a JOB with an explicit stack, done one catalog read per step, so
+ * it can stop and resume. TreeVerb runs it for up to 45 s and answers with the
+ * whole tree. Past that a plain TREE stops ("truncated (time limit)", naming
+ * /D); a TREE/D answers at once -- "continues in the background, file ..." --
+ * and TreeService, called from the main loop, carries on a few ticks per pass
+ * while every other command is served; the console says when it is done. Before this a TREE of an AppleShare volume (every read a round
+ * trip to the server) held the daemon deaf for 7 minutes (odroid-c2,
+ * 2026-11-23). One job at a time; a second TREE gets "busy".
+ *
+ * The REPLY keeps a memory budget (a quarter of what the heap may still hold,
+ * 16 K..512 K -- a 1,000 K daemon on a Duo or an SE/30 must not hand half its
+ * partition to one TREE/F); past it the reply says "truncated", the file goes
+ * on. NOT MaxBlock(): the heap grows on demand, so it sees only the part grown
+ * so far (it capped a 12 MB odroid-c2 at 513 of 1679 folders). Rows end '\r'
+ * in the code = LF on the wire (as LISTDIR); the file uses '\n' = CR, the
+ * Mac's own line end, so SimpleText shows lines. Added 2026-11-23.
  */
 #define TREE_DEPTH    24
-#define TREE_MAX      (512L * 1024L)   /* ceiling on a big Mac ... */
-#define TREE_MIN      (16L * 1024L)    /* ... floor on a small one */
-#define TREE_CONSOLE  40                  /* lines echoed to the Verbose console */
-/* Time limit. TREE blocks the daemon until it is done: 9 s for a whole local
- * volume, but on an AppleShare volume every PBGetCatInfo is a round trip to the
- * server, and TREE/F:AppleShare ran past the host's 120 s read deadline with the
- * daemon deaf to everything (odroid-c2, 2026-11-23). 45 s stays well inside it. */
-#define TREE_TICKS    (45L * 60L)
-#define TREE_RESERVE  (64L * 1024L)     /* /U leaves this much heap for the rest */
+#define TREE_MAX      (512L * 1024L)    /* reply ceiling on a big Mac ... */
+#define TREE_MIN      (16L * 1024L)     /* ... floor on a small one */
+#define TREE_CONSOLE  40                /* lines echoed to the Verbose console */
+#define TREE_TICKS    (45L * 60L)       /* foreground time before going background */
+#define TREE_SLICE    3                 /* background ticks per main-loop pass */
 
 extern void StatusMessage(const char *msg);
+extern const char *DaemonHome(void);
 
 typedef struct {
-    Handle     h;
-    long       used, cap, max;   /* max: this call's output budget (TreeVerb) */
-    Boolean    files, full, closing;   /* closing: the summary may use the reserve */
-    Boolean    late;                   /* the time limit stopped the walk */
-    long       deadline;               /* TickCount() at which to stop */
-    long       nDirs, nFiles, nLines;
+    long    dirID;
+    short   index, total, seen;
+    Boolean counting;                   /* pass 1: how many rows here */
+} TreeFrame;
+
+typedef struct {
+    TreeFrame  st[TREE_DEPTH];
+    short      sp;                      /* top frame; -1 = done */
     short      vRefNum;
-    short      preLen;
+    Boolean    files;
+    Handle     h;                       /* reply (foreground only), NULL after */
+    long       used, cap, max;
+    Boolean    full;                    /* the reply hit its budget */
+    long       nDirs, nFiles, nLines;
+    short      ref;                     /* the saved file's data fork, 0 = none */
     char       pre[TREE_DEPTH * 4 + 1];
     char       line[TREE_DEPTH * 4 + 80];
+    char       fname[64];               /* "<name> yyyy-mm-dd[ F]" */
     Str255     nm;
     CInfoPBRec pb;
-} TreeCtx;
+} TreeJob;
 
-static OSErr TreeGet(TreeCtx *c, long dirID, short index)
+static TreeJob *gTree = NULL;           /* heap, not A5: see gChunk */
+
+static OSErr TreeGet(TreeJob *j, long dirID, short index)
 {
-    if (TickCount() >= c->deadline) { c->late = c->full = true; return fnfErr; }
-    LD_zero(&c->pb, sizeof(c->pb));
-    c->pb.dirInfo.ioNamePtr   = c->nm;
-    c->pb.dirInfo.ioVRefNum   = c->vRefNum;
-    c->pb.dirInfo.ioFDirIndex = index;
-    c->pb.dirInfo.ioDrDirID   = dirID;
-    return PBGetCatInfoSync(&c->pb);
+    LD_zero(&j->pb, sizeof(j->pb));
+    j->pb.dirInfo.ioNamePtr   = j->nm;
+    j->pb.dirInfo.ioVRefNum   = j->vRefNum;
+    j->pb.dirInfo.ioFDirIndex = index;
+    j->pb.dirInfo.ioDrDirID   = dirID;
+    return PBGetCatInfoSync(&j->pb);
 }
 
-/* Append c->line[0..n) as one row; echo the first rows to the console. */
-static void TreeEmit(TreeCtx *c, short n)
+/* One row: to the file, to the reply while there is one, and the first rows
+ * to the console. toConsole forces it there (the closing lines). */
+static void TreeEmit(TreeJob *j, short n, Boolean toConsole)
 {
-    long lim = c->closing ? c->max : c->max - 128;   /* keep room for the summary */
-    if (c->full && !c->closing) return;
-    if (c->used + n + 1 > lim) { c->full = true; return; }
-    /* Grow while 128 bytes of slack remain, so a failed grow still leaves
-     * room for the "truncated" and summary lines. */
-    if (c->used + n + 1 + (c->closing ? 0 : 128) > c->cap) {
-        long want = c->cap * 2;
-        if (want > c->max) want = c->max;
-        SetHandleSize(c->h, want);
-        if (MemError() != noErr) {
-            c->full = true;
-            if (!c->closing) return;          /* the summary fits in the slack */
-        } else c->cap = want;
+    if (j->ref != 0) {
+        long cnt = n;
+        char eol = '\n';                 /* CR in MPW C: the Mac's line end */
+        FSWrite(j->ref, &cnt, j->line);
+        cnt = 1;
+        FSWrite(j->ref, &cnt, &eol);
     }
-    BlockMoveData(c->line, *c->h + c->used, n);
-    c->used += n;
-    (*c->h)[c->used++] = '\r';               /* LF on the wire */
-    if (c->nLines < TREE_CONSOLE) { c->line[n] = '\0'; StatusMessage(c->line); }
-    c->nLines++;
+    if (j->h != NULL && !j->full) {
+        if (j->used + n + 1 + 128 > j->cap) {   /* keep 128 B for the closing lines */
+            long want = j->cap * 2;
+            if (want > j->max) want = j->max;
+            if (j->used + n + 1 + 128 > want) j->full = true;
+            else {
+                SetHandleSize(j->h, want);
+                if (MemError() != noErr) j->full = true; else j->cap = want;
+            }
+        }
+        if (!j->full) {
+            BlockMoveData(j->line, *j->h + j->used, n);
+            j->used += n;
+            (*j->h)[j->used++] = '\r';  /* LF on the wire */
+        }
+    }
+    if (toConsole || j->nLines < TREE_CONSOLE) { j->line[n] = '\0'; StatusMessage(j->line); }
+    j->nLines++;
 }
 
-static void TreeWalk(TreeCtx *c, long dirID, short depth)
+/* A closing line for the reply: written into the 128 B kept free. */
+static void TreeReplyTail(TreeJob *j, const char *s)
 {
-    short   i, total = 0, seen = 0, p, k;
-    Boolean isDir, last;
-    long    childID;
+    short n = LD_len(s);
+    if (j->h == NULL || j->used + n + 1 > j->cap) return;
+    BlockMoveData(s, *j->h + j->used, n);
+    j->used += n;
+    (*j->h)[j->used++] = '\r';
+}
 
-    for (i = 1; ; i++) {                     /* pass 1: how many rows here */
-        if (TreeGet(c, dirID, i) != noErr) break;
-        isDir = (c->pb.hFileInfo.ioFlAttrib & 0x10) != 0;
-        if (isDir || c->files) total++;
+/* One catalog read. Returns false when the walk is complete. */
+static Boolean TreeStep(TreeJob *j)
+{
+    TreeFrame *f;
+    Boolean    isDir, last;
+    short      p, k;
+
+    if (j->sp < 0) return false;
+    f = &j->st[j->sp];
+    if (TreeGet(j, f->dirID, f->index) != noErr) {     /* past the last entry */
+        if (f->counting) { f->counting = false; f->index = 1; return true; }
+        j->sp--;                                        /* folder done: up */
+        if (j->sp >= 0) j->pre[j->sp * 4] = '\0';
+        return j->sp >= 0;
     }
-    for (i = 1; !c->full; i++) {             /* pass 2: draw them */
-        if (TreeGet(c, dirID, i) != noErr) break;
-        isDir = (c->pb.hFileInfo.ioFlAttrib & 0x10) != 0;
-        if (!isDir && !c->files) continue;
-        last = (Boolean)(++seen == total);
-        childID = c->pb.dirInfo.ioDrDirID;
+    f->index++;
+    isDir = (j->pb.hFileInfo.ioFlAttrib & 0x10) != 0;
+    if (!isDir && !j->files) return true;
+    if (f->counting) { f->total++; return true; }
 
-        p = 0;
-        for (k = 0; k < c->preLen; k++) c->line[p++] = c->pre[k];
-        c->line[p++] = last ? '\\' : '+';
-        c->line[p++] = '-'; c->line[p++] = '-'; c->line[p++] = '-';
-        for (k = 1; k <= c->nm[0] && p < (short)sizeof(c->line) - 2; k++)
-            c->line[p++] = (char)c->nm[k];
-        TreeEmit(c, p);
+    last = (Boolean)(++f->seen == f->total);
+    p = 0;
+    for (k = 0; k < j->sp * 4; k++) j->line[p++] = j->pre[k];
+    j->line[p++] = last ? '\\' : '+';
+    j->line[p++] = '-'; j->line[p++] = '-'; j->line[p++] = '-';
+    for (k = 1; k <= j->nm[0] && p < (short)sizeof(j->line) - 2; k++)
+        j->line[p++] = (char)j->nm[k];
+    TreeEmit(j, p, false);
 
-        if (!isDir) { c->nFiles++; continue; }
-        c->nDirs++;
-        if (depth + 1 >= TREE_DEPTH) continue;   /* too deep: listed, not entered */
-        LD_cpy(c->pre + c->preLen, last ? "    " : "|   ");
-        c->preLen += 4;
-        TreeWalk(c, childID, (short)(depth + 1));
-        c->preLen -= 4;
-        c->pre[c->preLen] = '\0';
+    if (!isDir) { j->nFiles++; return true; }
+    j->nDirs++;
+    if (j->sp + 1 >= TREE_DEPTH) return true;           /* too deep: listed, not entered */
+    LD_cpy(j->pre + j->sp * 4, last ? "    " : "|   ");
+    j->sp++;
+    f = &j->st[j->sp];
+    f->dirID = j->pb.dirInfo.ioDrDirID;
+    f->index = 1; f->total = 0; f->seen = 0; f->counting = true;
+    return true;
+}
+
+/* "12 folders, 345 files" into j->line; returns its length. */
+static short TreeCounts(TreeJob *j)
+{
+    short p = 0;
+    LD_num(j->line, &p, j->nDirs);
+    LD_cpy(j->line + p, j->nDirs == 1 ? " folder" : " folders"); p = LD_len(j->line);
+    if (j->files) {
+        j->line[p++] = ','; j->line[p++] = ' ';
+        LD_num(j->line, &p, j->nFiles);
+        LD_cpy(j->line + p, j->nFiles == 1 ? " file" : " files"); p = LD_len(j->line);
     }
+    return p;
+}
+
+/* The summary into the file, close it, free the job. */
+static void TreeFinish(TreeJob *j)
+{
+    if (j->ref != 0) {                  /* the counts, into the file only */
+        long cnt = TreeCounts(j);
+        char eol = '\n';
+        FSWrite(j->ref, &cnt, j->line);
+        cnt = 1;
+        FSWrite(j->ref, &cnt, &eol);
+        FSClose(j->ref);
+        j->ref = 0;
+    }
+}
+
+/* "TREE:" -> <home>TREE:<fname>, created as a SimpleText file. 0 = not saved. */
+static short TreeOpenFile(TreeJob *j)
+{
+    Str255 pp;
+    FSSpec spec;
+    long   dirID;
+    short  n = 0, i, ref = 0;
+    const char *home = DaemonHome();
+
+    if (home == NULL || home[0] == '\0') return 0;     /* legacy setup: no folder */
+    for (i = 0; home[i] && n < 240; i++) pp[1 + n++] = (unsigned char)home[i];
+    pp[1 + n++] = 'T'; pp[1 + n++] = 'R'; pp[1 + n++] = 'E'; pp[1 + n++] = 'E';
+    pp[0] = (unsigned char)n;
+    if (FSMakeFSSpec(0, 0L, pp, &spec) == fnfErr) (void)FSpDirCreate(&spec, smSystemScript, &dirID);
+    pp[1 + n++] = ':';
+    for (i = 0; j->fname[i] && n < 254; i++) pp[1 + n++] = (unsigned char)j->fname[i];
+    pp[0] = (unsigned char)n;
+    if (FSMakeFSSpec(0, 0L, pp, &spec) == noErr) (void)FSpDelete(&spec);  /* same day: newest wins */
+    if (FSpCreate(&spec, 'ttxt', 'TEXT', smSystemScript) != noErr) return 0;
+    if (FSpOpenDF(&spec, fsRdWrPerm, &ref) != noErr) return 0;
+    return ref;
+}
+
+/* "2026-11-23" or "2026-11-23 07:30" into s. */
+static void TreeDate(char *s, Boolean withTime)
+{
+    unsigned long secs;
+    DateTimeRec   d;
+    short         p = 0;
+    GetDateTime(&secs);
+    SecondsToDate(secs, &d);
+    LD_num(s, &p, d.year); s[p++] = '-';
+    s[p++] = (char)('0' + d.month / 10); s[p++] = (char)('0' + d.month % 10); s[p++] = '-';
+    s[p++] = (char)('0' + d.day / 10);   s[p++] = (char)('0' + d.day % 10);
+    if (withTime) {
+        s[p++] = ' ';
+        s[p++] = (char)('0' + d.hour / 10);   s[p++] = (char)('0' + d.hour % 10); s[p++] = ':';
+        s[p++] = (char)('0' + d.minute / 10); s[p++] = (char)('0' + d.minute % 10);
+    }
+    s[p] = '\0';
+}
+
+/* Main loop: carry a background TREE on, a few ticks per pass. */
+void TreeService(void)
+{
+    long until;
+    if (gTree == NULL) return;
+    until = TickCount() + TREE_SLICE;
+    while (TickCount() < until)
+        if (!TreeStep(gTree)) {
+            char msg[120];
+            short p;
+            TreeFinish(gTree);
+            LD_cpy(msg, "TREE done: TREE:");
+            p = LD_len(msg);
+            LD_cpy(msg + p, gTree->fname);
+            StatusMessage(msg);
+            p = TreeCounts(gTree);
+            gTree->line[p] = '\0';
+            StatusMessage(gTree->line);
+            DisposePtr((Ptr)gTree);
+            gTree = NULL;
+            return;
+        }
 }
 
 Boolean TreeVerb(ABConn *conn, char *request, long requestLen)
 {
-    TreeCtx       c;
+    TreeJob      *j;
     char          path[256];
-    short         n = 0, i, k, p;
-    Boolean       hasColon = false;
+    short         n = 0, i, k, p, last = 0;
+    Boolean       hasColon = false, files = false, toDisk = false, saved;
     Str255        pPath;
     FSSpec        spec;
     CommandResult res;
-    long          rootID;
+    long          deadline;
 
-    Boolean       unlimited = false;
-
-    LD_zero(&c, sizeof(c));
-    i = 4;                                     /* past "TREE"; then /F, /U, ':' */
+    res.exitCode = -1; res.outData = NULL; res.outLen = 0; res.errData[0] = '\0';
+    if (gTree != NULL) {
+        LD_cpy(res.errData, "busy: a TREE is still running in the background");
+        SendCommandResult(conn, &res);
+        return true;
+    }
+    i = 4;                                     /* past "TREE"; then /F, /D, ':' */
     while (i + 1 < requestLen && request[i] == '/') {
-        char o = request[i + 1];
-        if (o == 'F' || o == 'f') c.files = true;
-        if (o == 'U' || o == 'u') unlimited = true;
+        if (request[i + 1] == 'F' || request[i + 1] == 'f') files = true;
+        if (request[i + 1] == 'D' || request[i + 1] == 'd') toDisk = true;
         i += 2;
     }
     if (i < requestLen && request[i] == ':') i++;
@@ -719,99 +856,121 @@ Boolean TreeVerb(ABConn *conn, char *request, long requestLen)
     }
     if (n > 0 && !hasColon) path[n++] = ':';   /* "MeinMac" is a volume, not a file */
     path[n] = '\0';
-
-    res.exitCode = -1; res.outData = NULL; res.outLen = 0; res.errData[0] = '\0';
     if (n == 0) {
-        LD_cpy(res.errData, "usage: TREE[/F][/U]:<path>");
+        LD_cpy(res.errData, "usage: TREE[/F][/D]:<path>");
         SendCommandResult(conn, &res);
         return true;
     }
 
-    LD_CtoP(path, pPath);
-    if (FSMakeFSSpec(0, 0, pPath, &spec) != noErr) {
-        LD_cpy(res.errData, "no such path");
-        SendCommandResult(conn, &res);
-        return true;
-    }
-    BlockMoveData(spec.name, c.nm, spec.name[0] + 1);
-    c.pb.dirInfo.ioNamePtr = c.nm;
-    c.pb.dirInfo.ioVRefNum = spec.vRefNum;
-    c.pb.dirInfo.ioFDirIndex = 0;
-    c.pb.dirInfo.ioDrDirID = spec.parID;
-    if (PBGetCatInfoSync(&c.pb) != noErr || !(c.pb.dirInfo.ioFlAttrib & 0x10)) {
-        LD_cpy(res.errData, "not a directory");
-        SendCommandResult(conn, &res);
-        return true;
-    }
-    c.vRefNum = c.pb.dirInfo.ioVRefNum;
-    rootID    = c.pb.dirInfo.ioDrDirID;
-
-    /* The budget follows the memory there is: a quarter of what the heap may
-     * still hold, 16 K..512 K. A 1,000 K daemon on a Duo or an SE/30 would
-     * otherwise let one TREE/F take half its partition from the screenshot and
-     * transfer buffers; a big Mac still gets the whole tree (2026-11-23).
-     * NOT MaxBlock(): the heap grows on demand, so MaxBlock() sees only the
-     * part grown so far -- on a 12 MB odroid-c2 it capped TREE:MeinMac: at
-     * 513 of 1679 folders (the trap utils.c describes for FreeMem()). */
-    c.max = HeapLimit() - (HeapZoneSize() - FreeMem());
-    if (unlimited) {
-        c.max -= TREE_RESERVE;                 /* /U: what there is, minus a reserve */
-    } else {
-        c.max /= 4;
-        if (c.max > TREE_MAX) c.max = TREE_MAX;
-    }
-    if (c.max < TREE_MIN) c.max = TREE_MIN;
-    c.deadline = unlimited ? 0x7FFFFFFFL : TickCount() + TREE_TICKS;
-    c.cap = 4096;
-    c.h = NewHandle(c.cap);
-    if (c.h == NULL) {
+    j = (TreeJob *)NewPtrClear(sizeof(TreeJob));
+    if (j == NULL) {
         LD_cpy(res.errData, "out of memory");
         SendCommandResult(conn, &res);
         return true;
     }
-    p = 0;                                    /* the root line: the path as given */
-    for (k = 0; path[k] && p < (short)sizeof(c.line) - 2; k++) c.line[p++] = path[k];
-    TreeEmit(&c, p);
-    TreeWalk(&c, rootID, 0);
+    j->files = files;
+    LD_CtoP(path, pPath);
+    if (FSMakeFSSpec(0, 0, pPath, &spec) != noErr) {
+        LD_cpy(res.errData, "no such path");
+        goto fail;
+    }
+    BlockMoveData(spec.name, j->nm, spec.name[0] + 1);
+    j->pb.dirInfo.ioNamePtr = j->nm;
+    j->pb.dirInfo.ioVRefNum = spec.vRefNum;
+    j->pb.dirInfo.ioFDirIndex = 0;
+    j->pb.dirInfo.ioDrDirID = spec.parID;
+    if (PBGetCatInfoSync(&j->pb) != noErr || !(j->pb.dirInfo.ioFlAttrib & 0x10)) {
+        LD_cpy(res.errData, "not a directory");
+        goto fail;
+    }
+    j->vRefNum = j->pb.dirInfo.ioVRefNum;
+    j->st[0].dirID = j->pb.dirInfo.ioDrDirID;
+    j->st[0].index = 1;
+    j->st[0].counting = true;
+    j->sp = 0;
 
-    {   /* summary: always reaches the host and the console */
-        Boolean truncated = c.full;
-        c.closing = true;
-        if (truncated) {
-            LD_cpy(c.line, c.late ? "... truncated (time limit)"
-                                  : "... truncated (output limit)");
-            p = LD_len(c.line);
-            c.nLines = 0;                    /* force it onto the console */
-            TreeEmit(&c, p);
-        }
-        p = 0;
-        LD_num(c.line, &p, c.nDirs);
-        LD_cpy(c.line + p, c.nDirs == 1 ? " folder" : " folders"); p = LD_len(c.line);
-        if (c.files) {
-            c.line[p++] = ','; c.line[p++] = ' ';
-            LD_num(c.line, &p, c.nFiles);
-            LD_cpy(c.line + p, c.nFiles == 1 ? " file" : " files"); p = LD_len(c.line);
-        }
-        if (c.nLines > TREE_CONSOLE) {
+    j->max = HeapLimit() - (HeapZoneSize() - FreeMem());
+    j->max /= 4;
+    if (j->max > TREE_MAX) j->max = TREE_MAX;
+    if (j->max < TREE_MIN) j->max = TREE_MIN;
+    j->cap = 4096;
+    j->h = NewHandle(j->cap);
+    if (j->h == NULL) { LD_cpy(res.errData, "out of memory"); goto fail; }
+
+    /* file name: the last path element (volume or folder), the date, F */
+    for (k = 0; k < n - 1; k++) if (path[k] == ':') last = (short)(k + 1);
+    p = 0;
+    for (k = last; k < n - 1 && path[k] != ':' && p < 19; k++) j->fname[p++] = path[k];
+    j->fname[p++] = ' ';
+    TreeDate(j->fname + p, false);
+    if (files) LD_cpy(j->fname + LD_len(j->fname), " F");
+    if (toDisk) j->ref = TreeOpenFile(j);
+    saved = (Boolean)(j->ref != 0);
+
+    /* the root line: the path and when the tree was taken */
+    p = 0;
+    for (k = 0; path[k] && p < 140; k++) j->line[p++] = path[k];
+    j->line[p++] = ' '; j->line[p++] = ' '; j->line[p++] = '(';
+    TreeDate(j->line + p, true);
+    p = LD_len(j->line);
+    j->line[p++] = ')';
+    TreeEmit(j, p, false);
+
+    deadline = TickCount() + TREE_TICKS;
+    while (TickCount() < deadline && TreeStep(j)) ;
+
+    if (j->sp >= 0 && !saved) {                /* plain TREE: stop here */
+        j->sp = -1;
+        TreeReplyTail(j, "... truncated (time limit) - TREE/D saves the whole tree");
+        StatusMessage("... truncated (time limit) - TREE/D saves the whole tree");
+    }
+
+    if (j->sp < 0) {                           /* done in the foreground */
+        p = TreeCounts(j);
+        if (j->full) TreeReplyTail(j, "... truncated (output limit) - the file has it all");
+        if (j->nLines > TREE_CONSOLE) {
             char more[64];
-            short q = 0;
+            short q;
             LD_cpy(more, "... ");
             q = LD_len(more);
-            LD_num(more, &q, c.nLines - TREE_CONSOLE);
+            LD_num(more, &q, j->nLines - TREE_CONSOLE);
             LD_cpy(more + q, " more lines sent to the host");
             StatusMessage(more);
         }
-        c.nLines = 0;                        /* the summary always on the console */
-        TreeEmit(&c, p);
+        TreeReplyTail(j, j->line);             /* the counts */
+        j->line[p] = '\0';
+        StatusMessage(j->line);
+        TreeFinish(j);
+        if (saved) {
+            char msg[96];
+            LD_cpy(msg, "saved: TREE:");
+            LD_cpy(msg + LD_len(msg), j->fname);
+            TreeReplyTail(j, msg);
+            StatusMessage(msg);
+        }
+    } else {                                   /* go on in the background */
+        char msg[100];
+        LD_cpy(msg, "... continues in the background: TREE:");
+        LD_cpy(msg + LD_len(msg), j->fname);
+        TreeReplyTail(j, msg);
+        StatusMessage(msg);
     }
 
-    SetHandleSize(c.h, c.used);
+    SetHandleSize(j->h, j->used);
     res.exitCode = 0;
-    res.outData  = c.h;
-    res.outLen   = c.used;
-    res.errData[0] = '\0';
+    res.outData  = j->h;
+    res.outLen   = j->used;
     SendCommandResult(conn, &res);
-    DisposeHandle(c.h);
+    DisposeHandle(j->h);
+    j->h = NULL;
+    if (j->sp < 0) DisposePtr((Ptr)j);
+    else gTree = j;                            /* TreeService carries on */
+    return true;
+
+fail:
+    if (j->h != NULL) DisposeHandle(j->h);
+    DisposePtr((Ptr)j);
+    SendCommandResult(conn, &res);
     return true;
 }
 
