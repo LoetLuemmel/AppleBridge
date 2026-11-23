@@ -864,10 +864,13 @@ static void AB_appendNum(char *buf, short *p, unsigned long n)
 
 /* Dump the mounted volumes to the Verbose console — the same figures DISKINFO
  * reports (PBHGetVInfoSync, no ToolServer), but on screen. Called when "Show
- * details" is switched on, so the menu item actually surfaces something: each
- * line is "<name>  <free>/<total> KB  (vRefNum)". free == 0 marks a read-only
- * CD. Lines are kind-0 so they stay visible regardless of the details flag. */
-static void ShowVolumeDetails(void)
+ * details" is switched on, so the menu item actually surfaces something, and
+ * after every DISKINFO, so the console shows what the host was told (before
+ * 2026-11-23 it logged only the word "DISKINFO"). Each line is
+ * "<name>  <free>/<total> KB  (vRefNum)". free == 0 marks a read-only CD.
+ * Lines are kind-0 so they stay visible regardless of the details flag.
+ * only: a Pascal volume name (no colon) to print just that one; NULL = all. */
+static void ShowVolumeDetails(ConstStr255Param only)
 {
     HParamBlockRec pb;
     Str63          nm;
@@ -882,6 +885,7 @@ static void ShowVolumeDetails(void)
         pb.volumeParam.ioVRefNum  = 0;
         pb.volumeParam.ioVolIndex = i;        /* walk every mounted volume */
         if (PBHGetVInfoSync(&pb) != noErr) break;   /* past the last one */
+        if (only != NULL && !EqualString(nm, only, false, true)) continue;
 
         blk   = (unsigned long)pb.volumeParam.ioVAlBlkSiz;
         total = (unsigned long)((unsigned short)pb.volumeParam.ioVNmAlBlks) * blk;
@@ -900,6 +904,21 @@ static void ShowVolumeDetails(void)
         line[p]   = '\0';
         StatusMessage(line);
     }
+}
+
+/* DISKINFO[:<vol>] -> the same volumes in the console. Its own function, not
+ * inline in ProcessRequest: that frame sits at the 68K 32 KB edge, and the
+ * Str63 here would count against it (docs/OPERATING_NOTES.md, 2026-08-30). */
+static void ShowDiskInfoRequest(const char *request)
+{
+    Str63 vn;
+    short a = (short)strlen(PROTO_DISKINFO), n = 0;
+    if (request[a] == ':') a++;
+    while (request[a] && request[a] != ':' && request[a] != '\r' &&
+           request[a] != '\n' && n < 63)
+        vn[++n] = (unsigned char)request[a++];
+    vn[0] = (unsigned char)n;
+    ShowVolumeDetails(n > 0 ? vn : NULL);
 }
 
 /* Show alive indicator with LEDs */
@@ -1272,7 +1291,7 @@ void HandleMenuCommand(long menuResult)
                 gShowDetails = !gShowDetails;
                 CheckItem(gEditMenu, DETAILS_ITEM, gShowDetails);
                 gLogDirty = gLogFull = true;   /* re-sync to expand/collapse detail lines */
-                if (gShowDetails) ShowVolumeDetails();  /* surface the mounted volumes */
+                if (gShowDetails) ShowVolumeDetails(NULL);  /* surface the mounted volumes */
             } else if (menuItem == PING_ITEM) {
                 gShowPing = !gShowPing;
                 CheckItem(gEditMenu, PING_ITEM, gShowPing);
@@ -5521,6 +5540,7 @@ msinstall_reply:
         Boolean ok;
         SetActivity("DISKINFO");
         ok = DiskInfoVerb(conn, request, requestLen);
+        ShowDiskInfoRequest(request);   /* and on screen, not only to the host */
         gLastTX = TickCount();
         gTXCount++;
         return ok;
