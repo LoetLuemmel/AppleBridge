@@ -582,20 +582,21 @@ Boolean ListDirVerb(ABConn *conn, char *request, long requestLen)
  * folder is read twice by index (count, then print), so the last entry can get
  * its "\---". The walk state lives in one TreeCtx on TreeVerb's frame and each
  * recursion level adds only a few words, so a deep tree does not eat the stack;
- * depth is capped anyway. Output grows a Handle up to TREE_MAX and then stops
+ * depth is capped anyway. Output grows a Handle up to a memory budget and stops
  * with a "truncated" line rather than failing: on a 1,000 K daemon a whole
  * volume with /F would not fit. Rows end '\r' in the code = LF on the wire,
  * the same as LISTDIR (see there). Added 2026-11-23.
  */
 #define TREE_DEPTH    24
-#define TREE_MAX      (512L * 1024L)
+#define TREE_MAX      (512L * 1024L)   /* ceiling on a big Mac ... */
+#define TREE_MIN      (16L * 1024L)    /* ... floor on a small one */
 #define TREE_CONSOLE  40                  /* lines echoed to the Verbose console */
 
 extern void StatusMessage(const char *msg);
 
 typedef struct {
     Handle     h;
-    long       used, cap;
+    long       used, cap, max;   /* max: this call's output budget (TreeVerb) */
     Boolean    files, full, closing;   /* closing: the summary may use the reserve */
     long       nDirs, nFiles, nLines;
     short      vRefNum;
@@ -619,14 +620,14 @@ static OSErr TreeGet(TreeCtx *c, long dirID, short index)
 /* Append c->line[0..n) as one row; echo the first rows to the console. */
 static void TreeEmit(TreeCtx *c, short n)
 {
-    long lim = c->closing ? TREE_MAX : TREE_MAX - 128;   /* keep room for the summary */
+    long lim = c->closing ? c->max : c->max - 128;   /* keep room for the summary */
     if (c->full && !c->closing) return;
     if (c->used + n + 1 > lim) { c->full = true; return; }
     /* Grow while 128 bytes of slack remain, so a failed grow still leaves
      * room for the "truncated" and summary lines. */
     if (c->used + n + 1 + (c->closing ? 0 : 128) > c->cap) {
         long want = c->cap * 2;
-        if (want > TREE_MAX) want = TREE_MAX;
+        if (want > c->max) want = c->max;
         SetHandleSize(c->h, want);
         if (MemError() != noErr) {
             c->full = true;
@@ -725,6 +726,13 @@ Boolean TreeVerb(ABConn *conn, char *request, long requestLen)
     c.vRefNum = c.pb.dirInfo.ioVRefNum;
     rootID    = c.pb.dirInfo.ioDrDirID;
 
+    /* The budget follows the memory there is: a quarter of the largest free
+     * block, 16 K..512 K. A 1,000 K daemon on a Duo or an SE/30 would otherwise
+     * let one TREE/F take half its partition from the screenshot and transfer
+     * buffers; a big Mac still gets the whole tree (2026-11-23). */
+    c.max = MaxBlock() / 4;
+    if (c.max > TREE_MAX) c.max = TREE_MAX;
+    if (c.max < TREE_MIN) c.max = TREE_MIN;
     c.cap = 4096;
     c.h = NewHandle(c.cap);
     if (c.h == NULL) {
