@@ -631,6 +631,13 @@ typedef struct {
     Boolean    full;                    /* the reply hit its budget */
     long       nDirs, nFiles, nLines;
     short      ref;                     /* the saved file's data fork, 0 = none */
+    /* Diagnostics (2026-11-23): a background TREE of AppleShare coincided with
+     * ToolServer commands slowing from 1 s to 32 s and the link dropping. Each
+     * catalog read is timed; the end line reports the longest, where, and how
+     * many took over a second; reads over 2 s are logged as they happen. */
+    long       maxStep, slowSteps;      /* ticks; reads > 60 ticks */
+    short      maxIndex, slowLogged;
+    OSErr      lastErr;                 /* not fnfErr: the walk ended early */
     char       pre[TREE_DEPTH * 4 + 1];
     char       line[TREE_DEPTH * 4 + 80];
     char       fname[64];               /* "<name> yyyy-mm-dd[ F]" */
@@ -642,12 +649,35 @@ static TreeJob *gTree = NULL;           /* heap, not A5: see gChunk */
 
 static OSErr TreeGet(TreeJob *j, long dirID, short index)
 {
+    OSErr err;
+    long  t0, dt;
     LD_zero(&j->pb, sizeof(j->pb));
     j->pb.dirInfo.ioNamePtr   = j->nm;
     j->pb.dirInfo.ioVRefNum   = j->vRefNum;
     j->pb.dirInfo.ioFDirIndex = index;
     j->pb.dirInfo.ioDrDirID   = dirID;
-    return PBGetCatInfoSync(&j->pb);
+    t0 = TickCount();
+    err = PBGetCatInfoSync(&j->pb);
+    dt = TickCount() - t0;
+    if (dt > j->maxStep) { j->maxStep = dt; j->maxIndex = index; }
+    if (dt > 60) {
+        j->slowSteps++;
+        if (dt > 120 && j->slowLogged < 10) {      /* live, to match against a drop */
+            char m[64];
+            short q;
+            LD_cpy(m, "TREE slow read: ");
+            q = LD_len(m);
+            LD_num(m, &q, dt);
+            LD_cpy(m + q, " ticks at index ");
+            q = LD_len(m);
+            LD_num(m, &q, index);
+            m[q] = '\0';
+            StatusMessage(m);
+            j->slowLogged++;
+        }
+    }
+    if (err != noErr && err != fnfErr) j->lastErr = err;
+    return err;
 }
 
 /* One row: to the file, to the reply while there is one, and the first rows
@@ -742,7 +772,22 @@ static short TreeCounts(TreeJob *j)
         LD_num(j->line, &p, j->nFiles);
         LD_cpy(j->line + p, j->nFiles == 1 ? " file" : " files"); p = LD_len(j->line);
     }
-    return p;
+    if (j->lastErr != noErr) {          /* ended early: say so, in the file too */
+        LD_cpy(j->line + p, " - INCOMPLETE, error ");
+        p = LD_len(j->line);
+        LD_num(j->line, &p, j->lastErr);
+    }
+    LD_cpy(j->line + p, " (longest read ");
+    p = LD_len(j->line);
+    LD_num(j->line, &p, j->maxStep);
+    LD_cpy(j->line + p, " ticks at index ");
+    p = LD_len(j->line);
+    LD_num(j->line, &p, j->maxIndex);
+    LD_cpy(j->line + p, ", ");
+    p = LD_len(j->line);
+    LD_num(j->line, &p, j->slowSteps);
+    LD_cpy(j->line + p, " over 1 s)");
+    return LD_len(j->line);
 }
 
 /* The summary into the file, close it, free the job. */
