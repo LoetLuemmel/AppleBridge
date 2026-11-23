@@ -300,7 +300,9 @@ static void ConsoleRects(Rect *strip, Rect *track, Rect *frame, Rect *foot)
     SetRect(strip, 0, 0, w, kStripH);
     SetRect(foot,  0, (short)(h - kFootH), (short)(w - 15), h);   /* stops before the size box */
     SetRect(track, 4, kStripH + 4, 4 + kSbW, (short)(h - kFootH - 4));
-    SetRect(frame, 4 + kSbW + 4, kStripH + 4, (short)(w - 4), (short)(h - kFootH - 4));
+    /* the frame stops above the horizontal scroller (2026-11-23) */
+    SetRect(frame, 4 + kSbW + 4, kStripH + 4, (short)(w - 4),
+            (short)(h - kFootH - 4 - kSbW - 3));
 }
 
 /* The night-mode button at the right end of the top strip (2026-11-22). */
@@ -471,6 +473,100 @@ static void Arrow(const Rect *b, Boolean pointUp)
     }
 }
 
+/* ---- horizontal scroller (2026-11-23) -------------------------------------
+ * The log no longer wraps (TE crOnly): a long line runs on to the right and
+ * this scroller moves the view sideways. Same NeXT look as the vertical one;
+ * both arrows at its LEFT end, so all four sit together in the corner by the
+ * vertical scroller's arrows. Its range is the longest line now in the log,
+ * not LOG_W, so it never scrolls into empty space. */
+static short gColW  = 6;                 /* log font's character width */
+static short gTextW = LOG_W * 6 + 8;     /* TE destRect width: the longest possible line */
+
+static void HScrollerParts(Rect *track, Rect *left, Rect *right, Rect *area)
+{
+    Rect s, tr, f, ft;
+    ConsoleRects(&s, &tr, &f, &ft);
+    SetRect(track, f.left, (short)(f.bottom + 3), f.right, (short)(f.bottom + 3 + kSbW));
+    SetRect(left,  (short)(track->left + 1), (short)(track->top + 1),
+                   (short)(track->left + 17), (short)(track->bottom - 1));
+    SetRect(right, left->right, left->top, (short)(left->right + 16), left->bottom);
+    SetRect(area,  right->right, (short)(track->top + 1),
+                   (short)(track->right - 1), (short)(track->bottom - 1));
+}
+
+static void ArrowH(const Rect *b, Boolean pointLeft)
+{
+    short cx = (short)((b->left + b->right) / 2), cy = (short)((b->top + b->bottom) / 2), i;
+    PenShade(kShBlack);
+    for (i = 0; i < 4; i++) {
+        short x = pointLeft ? (short)(cx - 2 + i) : (short)(cx + 2 - i);
+        MoveTo(x, (short)(cy - i));
+        LineTo(x, (short)(cy + i));
+    }
+}
+
+/* Longest line now shown, in pixels of the log font. */
+static short LogContentW(void)
+{
+    short line, idx, k, mx = 0;
+    for (line = 0; line < gLogN; line++) {
+        idx = (short)((gLogHead - gLogN + line + 2 * LOG_LINES) % LOG_LINES);
+        if (LOG_HIDDEN(idx)) continue;
+        for (k = 0; gLog[idx][k]; k++) ;
+        if (k > mx) mx = k;
+    }
+    return (short)(mx * gColW + 8);
+}
+
+static short LogHPos(void)
+{
+    short v;
+    if (gLogTE == NULL) return 0;
+    v = (short)((**gLogTE).viewRect.left - (**gLogTE).destRect.left);
+    return (v < 0) ? 0 : v;
+}
+
+static short LogHMax(void)
+{
+    short m;
+    if (gLogTE == NULL) return 0;
+    m = (short)(LogContentW() - ((**gLogTE).viewRect.right - (**gLogTE).viewRect.left));
+    return (m < 0) ? 0 : m;
+}
+
+static void DrawHScroller(void)
+{
+    Rect track, lA, rA, area, knob;
+    short mx, v, vis, kw, span;
+
+    if (gStatusWindow == NULL || gLogTE == NULL) return;
+    SetPort(gStatusWindow);
+    HScrollerParts(&track, &lA, &rA, &area);
+    Shade(&track, kShDark);
+    Bevel(&track, false);
+    Shade(&lA, kShLight); Bevel(&lA, true); ArrowH(&lA, true);
+    Shade(&rA, kShLight); Bevel(&rA, true); ArrowH(&rA, false);
+
+    vis  = (short)((**gLogTE).viewRect.right - (**gLogTE).viewRect.left);
+    mx   = LogHMax();
+    v    = LogHPos();
+    if (v > mx) v = mx;
+    span = (short)(area.right - area.left);
+    kw = (mx <= 0) ? span : (short)(((long)span * vis) / (vis + mx));
+    if (kw < 14) kw = 14;
+    if (kw > span) kw = span;
+    knob = area;
+    knob.left  = (short)(area.left + ((mx <= 0) ? 0 : ((long)(span - kw) * v) / mx));
+    knob.right = (short)(knob.left + kw);
+    Shade(&knob, kShLight);
+    Bevel(&knob, true);
+    PenShade(kShDark);
+    MoveTo((short)((knob.left + knob.right) / 2), (short)(knob.top + 3));
+    LineTo((short)((knob.left + knob.right) / 2), (short)(knob.bottom - 4));
+    PenShade(kShBlack);
+    ConsoleBack();
+}
+
 static void DrawScroller(void)
 {
     Rect track, up, down, area, knob;
@@ -507,6 +603,7 @@ static void DrawScroller(void)
     LineTo((short)(knob.right - 4), (short)((knob.top + knob.bottom) / 2));
     PenShade(kShBlack);
     ConsoleBack();
+    DrawHScroller();                     /* the two always change together */
 }
 
 /*
@@ -579,7 +676,8 @@ static short LogMaxScroll(void)
  * CheckUserAbort on every main-loop pass (<= 2 ticks), does the repeat while
  * Button() stays down — so the bridge keeps being served in between.
  *   +1/-1: an arrow, one line per kScrollRepeat ticks after kScrollDelay
- *   2:     the track, the view follows the pointer (drag) */
+ *   2:     the track, the view follows the pointer (drag)
+ *   +3/-3, 4: the same on the horizontal scroller (2 characters a step) */
 #define kScrollDelay  18                 /* ~0.3 s before the repeat starts */
 #define kScrollRepeat 3                  /* then ~20 lines/s */
 static short gScrollHold = 0;
@@ -619,6 +717,55 @@ static short ScrollTrackValue(Point pt)
     return (trackH > 0) ? (short)(((long)trackY * LogMaxScroll()) / trackH) : 0;
 }
 
+static void ScrollLogHSet(short px)
+{
+    short mx = LogHMax(), cur = LogHPos();
+    if (px > mx) px = mx;
+    if (px < 0) px = 0;
+    ConsoleBack();
+    if (px != cur) TEScroll((short)(cur - px), 0, gLogTE);
+    DrawHScroller();
+}
+
+static short HScrollTrackValue(Point pt)
+{
+    Rect tr, lA, rA, area;
+    short w, x;
+    HScrollerParts(&tr, &lA, &rA, &area);
+    w = (short)(area.right - area.left);
+    x = (short)(pt.h - area.left);
+    if (x < 0) x = 0;
+    if (x > w) x = w;
+    return (w > 0) ? (short)(((long)x * LogHMax()) / w) : 0;
+}
+
+/* The TE's rectangles from the window: view = the body, dest = as wide as the
+ * longest possible line, so crOnly text never wraps. Back to the left edge. */
+static void SetLogTERects(void)
+{
+    Rect body, dest;
+    if (gLogTE == NULL) return;
+    MonitorBodyRect(&body);
+    dest = body;
+    dest.right = (short)(body.left + gTextW);
+    (**gLogTE).viewRect = body;
+    (**gLogTE).destRect = dest;
+    gLogDirty = gLogFull = true;
+}
+
+/* The log font's character width (the port's font is restored after). */
+static void MeasureLogCol(void)
+{
+    short f = qd.thePort->txFont, z = qd.thePort->txSize;
+    TextFont(gLogFont);
+    TextSize(gLogSize);
+    gColW = CharWidth('M');
+    if (gColW < 1) gColW = 6;
+    gTextW = (short)(LOG_W * gColW + 8);
+    TextFont(f);
+    TextSize(z);
+}
+
 static void ServiceScrollHold(void)
 {
     GrafPtr save;
@@ -626,12 +773,19 @@ static void ServiceScrollHold(void)
     if (gStatusWindow == NULL || gLogTE == NULL || !Button()) { gScrollHold = 0; return; }
     GetPort(&save);
     SetPort(gStatusWindow);
-    if (gScrollHold == 2) {
+    if (gScrollHold == 2 || gScrollHold == 4) {
         Point pt;
         GetMouse(&pt);                       /* local to gStatusWindow */
-        if (ScrollTrackValue(pt) != LogScrollPos()) ScrollLogSet(ScrollTrackValue(pt));
+        if (gScrollHold == 2) {
+            if (ScrollTrackValue(pt) != LogScrollPos()) ScrollLogSet(ScrollTrackValue(pt));
+        } else if (HScrollTrackValue(pt) != LogHPos()) {
+            ScrollLogHSet(HScrollTrackValue(pt));
+        }
     } else if (TickCount() >= gScrollNext) {
-        ScrollLogSet((short)(LogScrollPos() + gScrollHold));
+        if (gScrollHold == 1 || gScrollHold == -1)
+            ScrollLogSet((short)(LogScrollPos() + gScrollHold));
+        else                                 /* +-3: two characters a step */
+            ScrollLogHSet((short)(LogHPos() + (gScrollHold / 3) * 2 * gColW));
         gScrollNext = TickCount() + kScrollRepeat;
     }
     SetPort(save);
@@ -1055,6 +1209,8 @@ static void ApplyLogFont(void)
     ResolveLogFont();
     if (gStatusWindow != NULL) {
         SetPort(gStatusWindow);
+        MeasureLogCol();                 /* the H scroller's unit follows the font */
+        SetLogTERects();
         InvalRect(&gStatusWindow->portRect);
         gLogDirty = gLogFull = true;
     }
@@ -1649,8 +1805,16 @@ void OpenMonitor(void)
             gLineHeight = fi.ascent + fi.descent + fi.leading;
             if (gLineHeight < 1) gLineHeight = 11;
         }
-        gLogTE = TEStyleNew(&body, &body); /* styled record so command lines can be bold */
+        gColW = CharWidth('M');          /* the log font is set on the port here */
+        if (gColW < 1) gColW = 6;
+        gTextW = (short)(LOG_W * gColW + 8);
+        {
+            Rect dest = body;
+            dest.right = (short)(body.left + gTextW);   /* never wrap: see crOnly */
+            gLogTE = TEStyleNew(&dest, &body); /* styled record so command lines can be bold */
+        }
         if (gLogTE != NULL) {
+            (**gLogTE).crOnly = -1;       /* break at CR only; the H scroller pans */
             TEAutoView(true, gLogTE);     /* let TESelView scroll to the bottom */
             TEActivate(gLogTE);           /* show selection highlight */
         }
@@ -1835,13 +1999,7 @@ Boolean CheckUserAbort(void)
                                 }
                                 /* Reflow the TE field to the new body; the next
                                  * ShowAlive re-wraps + re-pins to the bottom. */
-                                if (gLogTE != NULL) {
-                                    Rect body;
-                                    MonitorBodyRect(&body);
-                                    (**gLogTE).viewRect = body;
-                                    (**gLogTE).destRect = body;
-                                    gLogDirty = gLogFull = true;
-                                }
+                                SetLogTERects();
                                 InvalRect(&window->portRect);
                                 SaveMonitorBounds();
                             }
@@ -1862,13 +2020,7 @@ Boolean CheckUserAbort(void)
                                 MoveControl(gScroll, w2 - 15, 19);
                                 SizeControl(gScroll, 16, (h2 - 14) - 19);
                             }
-                            if (gLogTE != NULL) {
-                                Rect body;
-                                MonitorBodyRect(&body);
-                                (**gLogTE).viewRect = body;
-                                (**gLogTE).destRect = body;
-                                gLogDirty = gLogFull = true;
-                            }
+                            SetLogTERects();
                             InvalRect(&window->portRect);
                             SaveMonitorBounds();
                         }
@@ -1896,6 +2048,25 @@ Boolean CheckUserAbort(void)
                              * app's window). NeXT layout: both arrows together at
                              * the bottom (±1 line), the rest of the track = a
                              * proportional jump to that spot. */
+                            {
+                                Rect hTr, hL, hR, hA;
+                                HScrollerParts(&hTr, &hL, &hR, &hA);
+                                if (gLogTE != NULL && PtInRect(pt, &hTr)) {
+                                    if (PtInRect(pt, &hL)) {
+                                        ScrollLogHSet((short)(LogHPos() - 2 * gColW));
+                                        gScrollHold = -3;
+                                        gScrollNext = TickCount() + kScrollDelay;
+                                    } else if (PtInRect(pt, &hR)) {
+                                        ScrollLogHSet((short)(LogHPos() + 2 * gColW));
+                                        gScrollHold = 3;
+                                        gScrollNext = TickCount() + kScrollDelay;
+                                    } else if (PtInRect(pt, &hA)) {
+                                        ScrollLogHSet(HScrollTrackValue(pt));
+                                        gScrollHold = 4;
+                                    }
+                                    break;
+                                }
+                            }
                             if (gScroll != NULL && PtInRect(pt, &sbR)) {
                                 /* One step now; holding repeats it from the
                                  * main loop (ServiceScrollHold). The position
