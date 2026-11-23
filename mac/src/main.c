@@ -88,8 +88,9 @@ static char    gDaemonNonceHex[17] = "";  /* nonce we handed the host; AUTH2 pro
 #define QUIT_ITEM       1
 #define COPY_ITEM       1
 #define DETAILS_ITEM    3      /* Edit: Copy(1), (divider 2), Show details(3) */
-#define CONSOLE_ITEM    4      /* Edit: Console(4) — show/hide the Verbose window */
-#define NIGHT_ITEM      5      /* Edit: Night mode(5) — CONSOLE=dark, saved in "AppleBridge Window" */
+#define PING_ITEM       4      /* Edit: Ping(4) — show/hide the liveness polls (PING/STAT/PROCLIST) */
+#define CONSOLE_ITEM    5      /* Edit: Console(5) — show/hide the Verbose window */
+#define NIGHT_ITEM      6      /* Edit: Night mode(6) — CONSOLE=dark, saved in "AppleBridge Window" */
 
 /* Declared here, not beside the definitions: HandleMenuCommand calls them ~900
  * lines earlier, and MPW C takes an undeclared call as `int f()` — so the real
@@ -143,9 +144,15 @@ static Boolean gMenuInstalled = false;   /* minimal Apple menu, installed lazily
 #define CONSOLE_MAX_LINES 120
 static char  gLog[LOG_LINES][LOG_W];
 /* Per-line kind: 0 = primary ("> command" + its output), 1 = detail (the AE
- * trace). Both are always stored; the monitor can collapse the detail lines. */
+ * trace), 2 = command (bold), 3 = liveness poll (PING/STAT heartbeat and the
+ * hub watchdogs' PROCLIST, every few seconds). All are always stored; the
+ * monitor collapses kind 1 unless "Show details" and kind 3 unless "Ping". */
 static unsigned char gLogKind[LOG_LINES];
 static Boolean gShowDetails = false;   /* collapsed by default (clean log) */
+static Boolean gShowPing    = false;   /* polls hidden by default (2026-11-23) */
+/* Is ring line idx hidden by the current toggles? */
+#define LOG_HIDDEN(idx) ((!gShowDetails && gLogKind[idx] == 1) || \
+                         (!gShowPing    && gLogKind[idx] == 3))
 static short gLogHead = 0;   /* next slot to write */
 static short gLogN    = 0;   /* lines currently stored */
 /* The body is a real TextEdit field so the user can mouse-select and copy log
@@ -588,7 +595,7 @@ static void SyncLogTEFull(void)
     for (line = 0; line < gLogN; line++) {
         long lineStart;
         idx = (gLogHead - gLogN + line + 2 * LOG_LINES) % LOG_LINES;
-        if (!gShowDetails && gLogKind[idx] == 1) continue;  /* collapsed: hide details only */
+        if (LOG_HIDDEN(idx)) continue;          /* collapsed detail / hidden poll */
         lineStart = n;
         for (k = 0; gLog[idx][k] && k < LOG_W - 1; k++) gTEBuf[n++] = gLog[idx][k];
         if (gLogKind[idx] == 2 && nCmd < LOG_LINES) {       /* a command line -> bold */
@@ -732,7 +739,7 @@ void SyncLogTE(void)
     ConsoleBack();                                 /* TE draws on the port's background */
     for (j = add - 1; j >= 0; j--) {               /* oldest new line first */
         idx = (short)((gLogHead - 1 - j + 2 * LOG_LINES) % LOG_LINES);
-        if (!gShowDetails && gLogKind[idx] == 1) continue;   /* collapsed detail */
+        if (LOG_HIDDEN(idx)) continue;              /* collapsed detail / hidden poll */
         TEAppendLine(gLog[idx], (Boolean)(gLogKind[idx] == 2));
     }
     while (gTELines > LOG_LINES) TEDropFirstLine();
@@ -820,7 +827,8 @@ void DoCopyLog(void)
     TEToScrap();
 }
 
-/* Append one log line of the given kind (0=primary, 1=detail) to the ring. */
+/* Append one log line of the given kind (0=primary, 1=detail, 2=command,
+ * 3=liveness poll) to the ring. */
 static void AddLogLine(const char *msg, short kind)
 {
     short k;
@@ -1265,6 +1273,10 @@ void HandleMenuCommand(long menuResult)
                 CheckItem(gEditMenu, DETAILS_ITEM, gShowDetails);
                 gLogDirty = gLogFull = true;   /* re-sync to expand/collapse detail lines */
                 if (gShowDetails) ShowVolumeDetails();  /* surface the mounted volumes */
+            } else if (menuItem == PING_ITEM) {
+                gShowPing = !gShowPing;
+                CheckItem(gEditMenu, PING_ITEM, gShowPing);
+                gLogDirty = gLogFull = true;   /* re-sync to show/hide the poll lines */
             }
             break;
     }
@@ -1524,8 +1536,9 @@ void OpenMonitor(void)
         /* Edit menu so Copy (Cmd-C) is discoverable; the system also routes the
          * standard Cut/Copy/Paste keys here. We only act on Copy. */
         gEditMenu = NewMenu(EDIT_MENU_ID, "\pEdit");
-        AppendMenu(gEditMenu, "\pCopy/C;(-;Show details/D;Console/K;Night mode/N");
+        AppendMenu(gEditMenu, "\pCopy/C;(-;Show details/D;Ping/P;Console/K;Night mode/N");
         CheckItem(gEditMenu, DETAILS_ITEM, gShowDetails);
+        CheckItem(gEditMenu, PING_ITEM, gShowPing);
         CheckItem(gEditMenu, NIGHT_ITEM, gPrefs.console == 1);
         InsertMenu(gEditMenu, 0);
         DrawMenuBar();
@@ -3254,9 +3267,11 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
      * bar, which only ever shows the LAST verb. Two carve-outs:
      *   - COMMAND (MPW/ToolServer) has its own richer "> cmd" + per-line
      *     output logging further down, so skip it here (avoid a double line).
-     *   - Heartbeats (PING / STAT) fire constantly, so log them as kind 1
-     *     (detail), which the console already hides unless gShowDetails is on
-     *     -- full coverage, no flood. Everything else is kind 2 (bold verb),
+     *   - Liveness polls fire constantly: the heartbeat (PING / STAT) and the
+     *     hub watchdogs' PROCLIST (every 30 s per hang/c2 watch). Log them as
+     *     kind 3, which the console hides unless Edit > Ping is ticked -- full
+     *     coverage, no flood (2026-11-23: they used to be kind 1, so turning
+     *     on Show details also buried the console in heartbeats). Everything else is kind 2 (bold verb),
      *     matching COMMAND's bold-input style. Logs the first request line
      *     only (the "VERB:args" header), so payloads stay out of the log. */
     if (strncmp(request, PROTO_COMMAND, strlen(PROTO_COMMAND)) != 0) {
@@ -3276,8 +3291,9 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         vt[vk] = '\0';
         if (mask >= 0 && colons > mask) strcat(vt, ":***");
         if (strncmp(request, "PING", 4) == 0 ||
-            strncmp(request, PROTO_STAT, strlen(PROTO_STAT)) == 0)
-            AddLogLine(vt, 1);   /* heartbeat -> detail (hidden when collapsed) */
+            strncmp(request, PROTO_STAT, strlen(PROTO_STAT)) == 0 ||
+            strncmp(request, PROTO_PROCLIST, strlen(PROTO_PROCLIST)) == 0)
+            AddLogLine(vt, 3);   /* liveness poll -> hidden unless Edit > Ping */
         else
             AddLogLine(vt, 2);   /* verb -> bold, like COMMAND's "> ..." */
     }
