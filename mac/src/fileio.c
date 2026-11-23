@@ -726,11 +726,14 @@ Boolean TreeVerb(ABConn *conn, char *request, long requestLen)
     c.vRefNum = c.pb.dirInfo.ioVRefNum;
     rootID    = c.pb.dirInfo.ioDrDirID;
 
-    /* The budget follows the memory there is: a quarter of the largest free
-     * block, 16 K..512 K. A 1,000 K daemon on a Duo or an SE/30 would otherwise
-     * let one TREE/F take half its partition from the screenshot and transfer
-     * buffers; a big Mac still gets the whole tree (2026-11-23). */
-    c.max = MaxBlock() / 4;
+    /* The budget follows the memory there is: a quarter of what the heap may
+     * still hold, 16 K..512 K. A 1,000 K daemon on a Duo or an SE/30 would
+     * otherwise let one TREE/F take half its partition from the screenshot and
+     * transfer buffers; a big Mac still gets the whole tree (2026-11-23).
+     * NOT MaxBlock(): the heap grows on demand, so MaxBlock() sees only the
+     * part grown so far -- on a 12 MB odroid-c2 it capped TREE:MeinMac: at
+     * 513 of 1679 folders (the trap utils.c describes for FreeMem()). */
+    c.max = (HeapLimit() - (HeapZoneSize() - FreeMem())) / 4;
     if (c.max > TREE_MAX) c.max = TREE_MAX;
     if (c.max < TREE_MIN) c.max = TREE_MIN;
     c.cap = 4096;
