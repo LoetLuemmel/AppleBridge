@@ -5590,9 +5590,10 @@ msinstall_reply:
         return ok;
     }
 
-    /* TREE:/TREE/F: verb: the folder tree, walked in the daemon (fileio.c). */
+    /* TREE:/TREE/F:/TREE/U:/TREE/F/U: verb: the folder tree, walked in the
+     * daemon (fileio.c). */
     if (strncmp(request, PROTO_TREE, strlen(PROTO_TREE)) == 0 ||
-        strncmp(request, PROTO_TREEF, strlen(PROTO_TREEF)) == 0) {
+        strncmp(request, PROTO_TREEOPT, strlen(PROTO_TREEOPT)) == 0) {
         Boolean ok;
         SetActivity("TREE");
         ok = TreeVerb(conn, request, requestLen);

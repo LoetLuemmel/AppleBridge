@@ -61,22 +61,25 @@ def test_daemon_dispatch_precedes_the_generic_command_parse():
 def test_tree_is_routed_both_ways_before_the_mpw_fall_through():
     # Unrouted, "TREE:MeinMac:" would reach ToolServer and come back STATUS:0
     # with nothing — the silent-success failure this file exists to prevent.
-    for prefix in ('cmd.startswith("TREE:")', 'cmd.startswith("TREE/F:")'):
+    for prefix in ('cmd.startswith("TREE:")', 'cmd.startswith("TREE/")'):
         assert HOST_SRC.index(prefix) < _fallthrough_at(), prefix
 
 
 def test_tree_gets_the_long_read_deadline():
     # A whole volume with /F is walked in the guest before the first byte is
     # sent; the 15 s default would abandon a reply that is still coming.
-    route = HOST_SRC[HOST_SRC.index('cmd.startswith("TREE/F:")'):]
+    route = HOST_SRC[HOST_SRC.index('cmd.startswith("TREE/")'):]
     route = route[:route.index("elif ")]
-    assert "timeout=TREE_TIMEOUT" in route
+    assert "TREE_UNLIMITED_TIMEOUT" in route and "TREE_TIMEOUT" in route
     assert host_server.TREE_TIMEOUT > host_server.DEFAULT_TIMEOUT
+    # the daemon stops a plain TREE after 45 s: the host must outwait that
+    assert host_server.TREE_TIMEOUT > 45
+    assert host_server.TREE_UNLIMITED_TIMEOUT > host_server.TREE_TIMEOUT
 
 
 def test_daemon_dispatches_tree_and_tree_f_before_the_command_parse():
     parse_at = DAEMON_SRC.index("result = ParseCommand(request")
-    for verb in ("PROTO_TREE", "PROTO_TREEF"):
+    for verb in ("PROTO_TREE", "PROTO_TREEOPT"):
         assert DAEMON_SRC.index(f"strncmp(request, {verb}") < parse_at, verb
 
 

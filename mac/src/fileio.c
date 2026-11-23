@@ -569,6 +569,9 @@ Boolean ListDirVerb(ABConn *conn, char *request, long requestLen)
 
 /*
  * TREE:<path>   folders only        TREE/F:<path>   folders and files
+ * TREE/U:<path>, TREE/F/U:<path>    the same without the time limit and with
+ *                                   all free memory (minus a reserve) -- for a
+ *                                   deliberate full walk of a big or remote volume
  *
  *   MeinMac:
  *   +---AB-Tools
@@ -591,6 +594,12 @@ Boolean ListDirVerb(ABConn *conn, char *request, long requestLen)
 #define TREE_MAX      (512L * 1024L)   /* ceiling on a big Mac ... */
 #define TREE_MIN      (16L * 1024L)    /* ... floor on a small one */
 #define TREE_CONSOLE  40                  /* lines echoed to the Verbose console */
+/* Time limit. TREE blocks the daemon until it is done: 9 s for a whole local
+ * volume, but on an AppleShare volume every PBGetCatInfo is a round trip to the
+ * server, and TREE/F:AppleShare ran past the host's 120 s read deadline with the
+ * daemon deaf to everything (odroid-c2, 2026-11-23). 45 s stays well inside it. */
+#define TREE_TICKS    (45L * 60L)
+#define TREE_RESERVE  (64L * 1024L)     /* /U leaves this much heap for the rest */
 
 extern void StatusMessage(const char *msg);
 
@@ -598,6 +607,8 @@ typedef struct {
     Handle     h;
     long       used, cap, max;   /* max: this call's output budget (TreeVerb) */
     Boolean    files, full, closing;   /* closing: the summary may use the reserve */
+    Boolean    late;                   /* the time limit stopped the walk */
+    long       deadline;               /* TickCount() at which to stop */
     long       nDirs, nFiles, nLines;
     short      vRefNum;
     short      preLen;
@@ -609,6 +620,7 @@ typedef struct {
 
 static OSErr TreeGet(TreeCtx *c, long dirID, short index)
 {
+    if (TickCount() >= c->deadline) { c->late = c->full = true; return fnfErr; }
     LD_zero(&c->pb, sizeof(c->pb));
     c->pb.dirInfo.ioNamePtr   = c->nm;
     c->pb.dirInfo.ioVRefNum   = c->vRefNum;
@@ -689,9 +701,17 @@ Boolean TreeVerb(ABConn *conn, char *request, long requestLen)
     CommandResult res;
     long          rootID;
 
+    Boolean       unlimited = false;
+
     LD_zero(&c, sizeof(c));
-    c.files = (Boolean)(requestLen > 4 && request[4] == '/');   /* "TREE/F:" */
-    i = LD_len(c.files ? PROTO_TREEF : PROTO_TREE);
+    i = 4;                                     /* past "TREE"; then /F, /U, ':' */
+    while (i + 1 < requestLen && request[i] == '/') {
+        char o = request[i + 1];
+        if (o == 'F' || o == 'f') c.files = true;
+        if (o == 'U' || o == 'u') unlimited = true;
+        i += 2;
+    }
+    if (i < requestLen && request[i] == ':') i++;
     while (i < requestLen && request[i] != '\r' && request[i] != '\n'
            && request[i] != '\0' && n < 254) {
         if (request[i] == ':') hasColon = true;
@@ -702,7 +722,7 @@ Boolean TreeVerb(ABConn *conn, char *request, long requestLen)
 
     res.exitCode = -1; res.outData = NULL; res.outLen = 0; res.errData[0] = '\0';
     if (n == 0) {
-        LD_cpy(res.errData, "usage: TREE:<path> or TREE/F:<path>");
+        LD_cpy(res.errData, "usage: TREE[/F][/U]:<path>");
         SendCommandResult(conn, &res);
         return true;
     }
@@ -733,9 +753,15 @@ Boolean TreeVerb(ABConn *conn, char *request, long requestLen)
      * NOT MaxBlock(): the heap grows on demand, so MaxBlock() sees only the
      * part grown so far -- on a 12 MB odroid-c2 it capped TREE:MeinMac: at
      * 513 of 1679 folders (the trap utils.c describes for FreeMem()). */
-    c.max = (HeapLimit() - (HeapZoneSize() - FreeMem())) / 4;
-    if (c.max > TREE_MAX) c.max = TREE_MAX;
+    c.max = HeapLimit() - (HeapZoneSize() - FreeMem());
+    if (unlimited) {
+        c.max -= TREE_RESERVE;                 /* /U: what there is, minus a reserve */
+    } else {
+        c.max /= 4;
+        if (c.max > TREE_MAX) c.max = TREE_MAX;
+    }
     if (c.max < TREE_MIN) c.max = TREE_MIN;
+    c.deadline = unlimited ? 0x7FFFFFFFL : TickCount() + TREE_TICKS;
     c.cap = 4096;
     c.h = NewHandle(c.cap);
     if (c.h == NULL) {
@@ -752,7 +778,8 @@ Boolean TreeVerb(ABConn *conn, char *request, long requestLen)
         Boolean truncated = c.full;
         c.closing = true;
         if (truncated) {
-            LD_cpy(c.line, "... truncated (output limit)");
+            LD_cpy(c.line, c.late ? "... truncated (time limit)"
+                                  : "... truncated (output limit)");
             p = LD_len(c.line);
             c.nLines = 0;                    /* force it onto the console */
             TreeEmit(&c, p);

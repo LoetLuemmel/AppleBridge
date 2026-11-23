@@ -71,7 +71,7 @@
 #define PROTO_CLIPSET "CLIPSET:"       /* host->daemon: set the guest TEXT scrap */
 #define PROTO_LISTDIR "LISTDIR:"       /* host->daemon: native directory listing (no ToolServer) */
 #define PROTO_TREE    "TREE:"          /* host->daemon: folder tree, DOS TREE /A style (no ToolServer) */
-#define PROTO_TREEF   "TREE/F:"        /* host->daemon: the same with the files (DOS TREE /F) */
+#define PROTO_TREEOPT "TREE/"          /* host->daemon: TREE with options: /F files (DOS), /U unlimited */
 #define PROTO_HELLO "HELLO:"           /* host->daemon: version negotiation + auth challenge (v0.2) */
 #define PROTO_AUTH2 "AUTH2:"           /* host->daemon: host's proof of the shared token (v0.2) */
 #define PROTO_SWAPSELF "SWAPSELF"      /* host->daemon: rename the staged '<name> new' binary over the running daemon (self-update) */
@@ -206,7 +206,7 @@ Boolean DiskInfoVerb(ABConn *conn, char *request, long requestLen);
 /* TREE (fileio.c): the folder tree under a path, drawn like DOS `TREE /A`
  * (+--- / \--- / |), walked in the daemon with PBGetCatInfo — one request
  * instead of one LISTDIR per folder. TREE:<path> = folders only, TREE/F:<path>
- * = with files. The full tree goes to the host (LF rows + a summary line);
+ * = with files; /U (TREE/U:, TREE/F/U:) lifts the 45 s and memory limits. The full tree goes to the host (LF rows + a summary line);
  * the console shows the first lines and the summary. */
 Boolean TreeVerb(ABConn *conn, char *request, long requestLen);
 
