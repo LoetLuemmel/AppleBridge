@@ -57,6 +57,29 @@ def test_daemon_dispatch_precedes_the_generic_command_parse():
         assert DAEMON_SRC.index(f"strncmp(request, {verb}") < parse_at
 
 
+# --- TREE (0.8d53): the folder tree walked in the daemon ---------------------
+def test_tree_is_routed_both_ways_before_the_mpw_fall_through():
+    # Unrouted, "TREE:MeinMac:" would reach ToolServer and come back STATUS:0
+    # with nothing — the silent-success failure this file exists to prevent.
+    for prefix in ('cmd.startswith("TREE:")', 'cmd.startswith("TREE/F:")'):
+        assert HOST_SRC.index(prefix) < _fallthrough_at(), prefix
+
+
+def test_tree_gets_the_long_read_deadline():
+    # A whole volume with /F is walked in the guest before the first byte is
+    # sent; the 15 s default would abandon a reply that is still coming.
+    route = HOST_SRC[HOST_SRC.index('cmd.startswith("TREE/F:")'):]
+    route = route[:route.index("elif ")]
+    assert "timeout=TREE_TIMEOUT" in route
+    assert host_server.TREE_TIMEOUT > host_server.DEFAULT_TIMEOUT
+
+
+def test_daemon_dispatches_tree_and_tree_f_before_the_command_parse():
+    parse_at = DAEMON_SRC.index("result = ParseCommand(request")
+    for verb in ("PROTO_TREE", "PROTO_TREEF"):
+        assert DAEMON_SRC.index(f"strncmp(request, {verb}") < parse_at, verb
+
+
 # --- the two window-manager traps this feature ran into ---------------------
 def test_show_path_does_not_move_the_window():
     """MoveWindow takes the STRUCTURE origin, the port gives the CONTENT origin.

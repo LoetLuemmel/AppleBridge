@@ -88,6 +88,7 @@ LONG_CMDS = {
     "catenate", "files", "print",
 }
 DEFAULT_TIMEOUT = 15.0
+TREE_TIMEOUT = 120.0   # TREE/F of a whole volume, walked in the guest (0.8d53)
 LONG_TIMEOUT = 240.0   # multi-MB transfers (large DumpFile/Catenate) over OT
 SCREENSHOT_TIMEOUT = 30.0   # full-screen pixmap transfer + decode
 # NBP always runs its full retry window before answering (it cannot know when
@@ -359,7 +360,7 @@ ROUTED_VERBS = ("PING", "STATUS-via-mac_status", "DISKINFO", "LISTDIR", "MONITOR
                 "PROCLIST", "SCREENSHOT", "NBPLOOK", "AFPMOUNT", "AFPUNMOUNT",
                 "CLIPGET", "CLIPSET", "LAUNCH:", "QUIT:", "KEY:", "TYPE:",
                 "CLICK:", "REBOOT", "SHUTDOWN", "SWAPSELF", "QUITDAEMON",
-                "DELETE:", "MKDIR:")
+                "DELETE:", "MKDIR:", "TREE:", "TREE/F:")
 
 
 def looks_like_verb(cmd):
@@ -2636,6 +2637,13 @@ def run_control_server(server):
                         # the guest can see (the Chooser's list, headless).
                         args = cmd[len("NBPLOOK:"):] if ":" in cmd else ""
                         resp = server.nbp_lookup(args)
+                        out = resp if resp is not None else "No response"
+                    elif cmd.startswith("TREE:") or cmd.startswith("TREE/F:"):
+                        # TREE[/F]:<path> -> folder tree walked in the daemon
+                        # (0.8d53). A whole volume with /F takes a while on a
+                        # slow Mac, hence the longer read deadline.
+                        log(f"verb: {cmd[:60]!r}")
+                        resp = server.send_raw(cmd, timeout=TREE_TIMEOUT)
                         out = resp if resp is not None else "No response"
                     elif cmd == "DISKINFO" or cmd.startswith("DISKINFO:"):
                         # DISKINFO[:<volume>] -> name/vRefNum/total/free per line

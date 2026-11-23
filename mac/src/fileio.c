@@ -565,6 +565,218 @@ Boolean ListDirVerb(ABConn *conn, char *request, long requestLen)
     return true;
 }
 
+/* ---- TREE: the folder tree, DOS style (no ToolServer) -------------------- */
+
+/*
+ * TREE:<path>   folders only        TREE/F:<path>   folders and files
+ *
+ *   MeinMac:
+ *   +---AB-Tools
+ *   +---MPW
+ *   |   +---Examples
+ *   |   \---Tools
+ *   \---System Folder
+ *   12 folders
+ *
+ * DOS `TREE /A` drawing, because MacRoman has no box-drawing characters. Each
+ * folder is read twice by index (count, then print), so the last entry can get
+ * its "\---". The walk state lives in one TreeCtx on TreeVerb's frame and each
+ * recursion level adds only a few words, so a deep tree does not eat the stack;
+ * depth is capped anyway. Output grows a Handle up to TREE_MAX and then stops
+ * with a "truncated" line rather than failing: on a 1,000 K daemon a whole
+ * volume with /F would not fit. Rows end '\r' in the code = LF on the wire,
+ * the same as LISTDIR (see there). Added 2026-11-23.
+ */
+#define TREE_DEPTH    24
+#define TREE_MAX      (512L * 1024L)
+#define TREE_CONSOLE  40                  /* lines echoed to the Verbose console */
+
+extern void StatusMessage(const char *msg);
+
+typedef struct {
+    Handle     h;
+    long       used, cap;
+    Boolean    files, full, closing;   /* closing: the summary may use the reserve */
+    long       nDirs, nFiles, nLines;
+    short      vRefNum;
+    short      preLen;
+    char       pre[TREE_DEPTH * 4 + 1];
+    char       line[TREE_DEPTH * 4 + 80];
+    Str255     nm;
+    CInfoPBRec pb;
+} TreeCtx;
+
+static OSErr TreeGet(TreeCtx *c, long dirID, short index)
+{
+    LD_zero(&c->pb, sizeof(c->pb));
+    c->pb.dirInfo.ioNamePtr   = c->nm;
+    c->pb.dirInfo.ioVRefNum   = c->vRefNum;
+    c->pb.dirInfo.ioFDirIndex = index;
+    c->pb.dirInfo.ioDrDirID   = dirID;
+    return PBGetCatInfoSync(&c->pb);
+}
+
+/* Append c->line[0..n) as one row; echo the first rows to the console. */
+static void TreeEmit(TreeCtx *c, short n)
+{
+    long lim = c->closing ? TREE_MAX : TREE_MAX - 128;   /* keep room for the summary */
+    if (c->full && !c->closing) return;
+    if (c->used + n + 1 > lim) { c->full = true; return; }
+    /* Grow while 128 bytes of slack remain, so a failed grow still leaves
+     * room for the "truncated" and summary lines. */
+    if (c->used + n + 1 + (c->closing ? 0 : 128) > c->cap) {
+        long want = c->cap * 2;
+        if (want > TREE_MAX) want = TREE_MAX;
+        SetHandleSize(c->h, want);
+        if (MemError() != noErr) {
+            c->full = true;
+            if (!c->closing) return;          /* the summary fits in the slack */
+        } else c->cap = want;
+    }
+    BlockMoveData(c->line, *c->h + c->used, n);
+    c->used += n;
+    (*c->h)[c->used++] = '\r';               /* LF on the wire */
+    if (c->nLines < TREE_CONSOLE) { c->line[n] = '\0'; StatusMessage(c->line); }
+    c->nLines++;
+}
+
+static void TreeWalk(TreeCtx *c, long dirID, short depth)
+{
+    short   i, total = 0, seen = 0, p, k;
+    Boolean isDir, last;
+    long    childID;
+
+    for (i = 1; ; i++) {                     /* pass 1: how many rows here */
+        if (TreeGet(c, dirID, i) != noErr) break;
+        isDir = (c->pb.hFileInfo.ioFlAttrib & 0x10) != 0;
+        if (isDir || c->files) total++;
+    }
+    for (i = 1; !c->full; i++) {             /* pass 2: draw them */
+        if (TreeGet(c, dirID, i) != noErr) break;
+        isDir = (c->pb.hFileInfo.ioFlAttrib & 0x10) != 0;
+        if (!isDir && !c->files) continue;
+        last = (Boolean)(++seen == total);
+        childID = c->pb.dirInfo.ioDrDirID;
+
+        p = 0;
+        for (k = 0; k < c->preLen; k++) c->line[p++] = c->pre[k];
+        c->line[p++] = last ? '\\' : '+';
+        c->line[p++] = '-'; c->line[p++] = '-'; c->line[p++] = '-';
+        for (k = 1; k <= c->nm[0] && p < (short)sizeof(c->line) - 2; k++)
+            c->line[p++] = (char)c->nm[k];
+        TreeEmit(c, p);
+
+        if (!isDir) { c->nFiles++; continue; }
+        c->nDirs++;
+        if (depth + 1 >= TREE_DEPTH) continue;   /* too deep: listed, not entered */
+        LD_cpy(c->pre + c->preLen, last ? "    " : "|   ");
+        c->preLen += 4;
+        TreeWalk(c, childID, (short)(depth + 1));
+        c->preLen -= 4;
+        c->pre[c->preLen] = '\0';
+    }
+}
+
+Boolean TreeVerb(ABConn *conn, char *request, long requestLen)
+{
+    TreeCtx       c;
+    char          path[256];
+    short         n = 0, i, k, p;
+    Boolean       hasColon = false;
+    Str255        pPath;
+    FSSpec        spec;
+    CommandResult res;
+    long          rootID;
+
+    LD_zero(&c, sizeof(c));
+    c.files = (Boolean)(requestLen > 4 && request[4] == '/');   /* "TREE/F:" */
+    i = LD_len(c.files ? PROTO_TREEF : PROTO_TREE);
+    while (i < requestLen && request[i] != '\r' && request[i] != '\n'
+           && request[i] != '\0' && n < 254) {
+        if (request[i] == ':') hasColon = true;
+        path[n++] = request[i++];
+    }
+    if (n > 0 && !hasColon) path[n++] = ':';   /* "MeinMac" is a volume, not a file */
+    path[n] = '\0';
+
+    res.exitCode = -1; res.outData = NULL; res.outLen = 0; res.errData[0] = '\0';
+    if (n == 0) {
+        LD_cpy(res.errData, "usage: TREE:<path> or TREE/F:<path>");
+        SendCommandResult(conn, &res);
+        return true;
+    }
+
+    LD_CtoP(path, pPath);
+    if (FSMakeFSSpec(0, 0, pPath, &spec) != noErr) {
+        LD_cpy(res.errData, "no such path");
+        SendCommandResult(conn, &res);
+        return true;
+    }
+    BlockMoveData(spec.name, c.nm, spec.name[0] + 1);
+    c.pb.dirInfo.ioNamePtr = c.nm;
+    c.pb.dirInfo.ioVRefNum = spec.vRefNum;
+    c.pb.dirInfo.ioFDirIndex = 0;
+    c.pb.dirInfo.ioDrDirID = spec.parID;
+    if (PBGetCatInfoSync(&c.pb) != noErr || !(c.pb.dirInfo.ioFlAttrib & 0x10)) {
+        LD_cpy(res.errData, "not a directory");
+        SendCommandResult(conn, &res);
+        return true;
+    }
+    c.vRefNum = c.pb.dirInfo.ioVRefNum;
+    rootID    = c.pb.dirInfo.ioDrDirID;
+
+    c.cap = 4096;
+    c.h = NewHandle(c.cap);
+    if (c.h == NULL) {
+        LD_cpy(res.errData, "out of memory");
+        SendCommandResult(conn, &res);
+        return true;
+    }
+    p = 0;                                    /* the root line: the path as given */
+    for (k = 0; path[k] && p < (short)sizeof(c.line) - 2; k++) c.line[p++] = path[k];
+    TreeEmit(&c, p);
+    TreeWalk(&c, rootID, 0);
+
+    {   /* summary: always reaches the host and the console */
+        Boolean truncated = c.full;
+        c.closing = true;
+        if (truncated) {
+            LD_cpy(c.line, "... truncated (output limit)");
+            p = LD_len(c.line);
+            c.nLines = 0;                    /* force it onto the console */
+            TreeEmit(&c, p);
+        }
+        p = 0;
+        LD_num(c.line, &p, c.nDirs);
+        LD_cpy(c.line + p, c.nDirs == 1 ? " folder" : " folders"); p = LD_len(c.line);
+        if (c.files) {
+            c.line[p++] = ','; c.line[p++] = ' ';
+            LD_num(c.line, &p, c.nFiles);
+            LD_cpy(c.line + p, c.nFiles == 1 ? " file" : " files"); p = LD_len(c.line);
+        }
+        if (c.nLines > TREE_CONSOLE) {
+            char more[64];
+            short q = 0;
+            LD_cpy(more, "... ");
+            q = LD_len(more);
+            LD_num(more, &q, c.nLines - TREE_CONSOLE);
+            LD_cpy(more + q, " more lines sent to the host");
+            StatusMessage(more);
+        }
+        c.nLines = 0;                        /* the summary always on the console */
+        TreeEmit(&c, p);
+    }
+
+    SetHandleSize(c.h, c.used);
+    res.exitCode = 0;
+    res.outData  = c.h;
+    res.outLen   = c.used;
+    res.errData[0] = '\0';
+    SendCommandResult(conn, &res);
+    DisposeHandle(c.h);
+    return true;
+}
+
 /* Build `out` = a file named (base's name + suffix) in base's SAME folder.
  * suffix is a C string; the combined leaf is bounded to a Str63. */
 static OSErr MakeSibling(const FSSpec *base, const char *suffix, FSSpec *out)

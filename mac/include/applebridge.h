@@ -70,6 +70,8 @@
 #define PROTO_CLIPGET "CLIPGET"        /* host->daemon: read the guest TEXT scrap */
 #define PROTO_CLIPSET "CLIPSET:"       /* host->daemon: set the guest TEXT scrap */
 #define PROTO_LISTDIR "LISTDIR:"       /* host->daemon: native directory listing (no ToolServer) */
+#define PROTO_TREE    "TREE:"          /* host->daemon: folder tree, DOS TREE /A style (no ToolServer) */
+#define PROTO_TREEF   "TREE/F:"        /* host->daemon: the same with the files (DOS TREE /F) */
 #define PROTO_HELLO "HELLO:"           /* host->daemon: version negotiation + auth challenge (v0.2) */
 #define PROTO_AUTH2 "AUTH2:"           /* host->daemon: host's proof of the shared token (v0.2) */
 #define PROTO_SWAPSELF "SWAPSELF"      /* host->daemon: rename the staged '<name> new' binary over the running daemon (self-update) */
@@ -200,6 +202,13 @@ Boolean AfpUnmountVerb(ABConn *conn, char *request, long requestLen);
  * (so it also answers on a machine that has none). One line per volume:
  * name<TAB>vRefNum<TAB>totalBytes<TAB>freeBytes<CR> */
 Boolean DiskInfoVerb(ABConn *conn, char *request, long requestLen);
+
+/* TREE (fileio.c): the folder tree under a path, drawn like DOS `TREE /A`
+ * (+--- / \--- / |), walked in the daemon with PBGetCatInfo — one request
+ * instead of one LISTDIR per folder. TREE:<path> = folders only, TREE/F:<path>
+ * = with files. The full tree goes to the host (LF rows + a summary line);
+ * the console shows the first lines and the summary. */
+Boolean TreeVerb(ABConn *conn, char *request, long requestLen);
 
 /* PROCLIST (fileio.c): the running processes from the Process Manager — no
  * ToolServer, no GUI, no actuation. The system's own "what is running" view is
