@@ -571,6 +571,72 @@ static short LogMaxScroll(void)
     return (n - vis < 0) ? 0 : (short)(n - vis);
 }
 
+/* Holding the mouse on the scroller (2026-11-23). A click used to move one line
+ * and holding did nothing more. The repeat is NOT a StillDown loop in the click
+ * handler: that would keep ProcessRequest from running for as long as the
+ * button is held, the starvation a held-open menu causes (the link drops after
+ * ~30 s). Instead the click arms gScrollHold and ServiceScrollHold, called from
+ * CheckUserAbort on every main-loop pass (<= 2 ticks), does the repeat while
+ * Button() stays down — so the bridge keeps being served in between.
+ *   +1/-1: an arrow, one line per kScrollRepeat ticks after kScrollDelay
+ *   2:     the track, the view follows the pointer (drag) */
+#define kScrollDelay  18                 /* ~0.3 s before the repeat starts */
+#define kScrollRepeat 3                  /* then ~20 lines/s */
+static short gScrollHold = 0;
+static long  gScrollNext = 0;
+
+/* Where the view really is (from the TE, as DrawScroller reads it). */
+static short LogScrollPos(void)
+{
+    short v, mx = LogMaxScroll();
+    if (gLogTE == NULL) return 0;
+    v = (short)(((**gLogTE).viewRect.top - (**gLogTE).destRect.top) / gLineHeight);
+    if (v < 0) v = 0;
+    if (v > mx) v = mx;
+    return v;
+}
+
+static void ScrollLogSet(short v)
+{
+    short mx = LogMaxScroll();
+    if (v < 0) v = 0;
+    if (v > mx) v = mx;
+    if (gScroll != NULL) { SetControlMaximum(gScroll, mx); SetControlValue(gScroll, v); }
+    ScrollLogTo(v);
+    DrawScroller();
+}
+
+/* Track hit at local point pt -> the line that belongs at the top. */
+static short ScrollTrackValue(Point pt)
+{
+    Rect sbR, upR, downR, areaR;
+    short trackH, trackY;
+    ScrollerParts(&sbR, &upR, &downR, &areaR);
+    trackH = (short)(areaR.bottom - areaR.top);
+    trackY = (short)(pt.v - areaR.top);
+    if (trackY < 0) trackY = 0;
+    if (trackY > trackH) trackY = trackH;
+    return (trackH > 0) ? (short)(((long)trackY * LogMaxScroll()) / trackH) : 0;
+}
+
+static void ServiceScrollHold(void)
+{
+    GrafPtr save;
+    if (gScrollHold == 0) return;
+    if (gStatusWindow == NULL || gLogTE == NULL || !Button()) { gScrollHold = 0; return; }
+    GetPort(&save);
+    SetPort(gStatusWindow);
+    if (gScrollHold == 2) {
+        Point pt;
+        GetMouse(&pt);                       /* local to gStatusWindow */
+        if (ScrollTrackValue(pt) != LogScrollPos()) ScrollLogSet(ScrollTrackValue(pt));
+    } else if (TickCount() >= gScrollNext) {
+        ScrollLogSet((short)(LogScrollPos() + gScrollHold));
+        gScrollNext = TickCount() + kScrollRepeat;
+    }
+    SetPort(save);
+}
+
 /* Flatten the ring into the TextEdit field so its text mirrors the log, then
  * pin the view to the bottom (newest visible). Rebuilding wholesale resets any
  * in-progress mouse selection, but only fires on NEW traffic (gLogDirty) — while
@@ -1692,6 +1758,7 @@ Boolean CheckUserAbort(void)
      * per call, so the connect poll and reconnect wait IDLE instead of spinning
      * at 100% — Basilisk's idlewait then throttles host CPU and the Finder stays
      * reachable. It also delivers our window/menu events like GetNextEvent did. */
+    ServiceScrollHold();   /* a held scroller arrow/track keeps scrolling */
     if (WaitNextEvent(everyEvent, &event, 2L, NULL)) {
         switch (event.what) {
             case kHighLevelEvent:
@@ -1830,23 +1897,22 @@ Boolean CheckUserAbort(void)
                              * the bottom (±1 line), the rest of the track = a
                              * proportional jump to that spot. */
                             if (gScroll != NULL && PtInRect(pt, &sbR)) {
-                                short v  = GetControlValue(gScroll);
-                                short mx = GetControlMaximum(gScroll);
+                                /* One step now; holding repeats it from the
+                                 * main loop (ServiceScrollHold). The position
+                                 * comes from the TE, not the hidden control,
+                                 * which can lag behind it. */
                                 if (PtInRect(pt, &upR)) {
-                                    v -= 1;
+                                    ScrollLogSet((short)(LogScrollPos() - 1));
+                                    gScrollHold = -1;
+                                    gScrollNext = TickCount() + kScrollDelay;
                                 } else if (PtInRect(pt, &downR)) {
-                                    v += 1;
+                                    ScrollLogSet((short)(LogScrollPos() + 1));
+                                    gScrollHold = 1;
+                                    gScrollNext = TickCount() + kScrollDelay;
                                 } else {
-                                    short trackY = pt.v - areaR.top;
-                                    short trackH = areaR.bottom - areaR.top;
-                                    if (trackH > 0)
-                                        v = (short)(((long)trackY * mx) / trackH);
+                                    ScrollLogSet(ScrollTrackValue(pt));
+                                    gScrollHold = 2;   /* drag: follow the pointer */
                                 }
-                                if (v < 0) v = 0;
-                                if (v > mx) v = mx;
-                                SetControlValue(gScroll, v);
-                                ScrollLogTo(v);
-                                DrawScroller();
                             } else if (window != FrontWindow()) {
                                 SelectWindow(window);
                             } else if (gLogTE != NULL) {
