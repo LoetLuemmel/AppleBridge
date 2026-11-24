@@ -878,10 +878,22 @@ void TreeService(void)
         if (!TreeStep(gTree)) {
             char msg[120];
             short p;
+            Boolean toFile = (Boolean)(gTree->ref != 0);
             TreeFinish(gTree);
-            LD_cpy(msg, "TREE done: TREE:");
-            p = LD_len(msg);
-            LD_cpy(msg + p, gTree->fname);
+            if (toFile) {
+                LD_cpy(msg, "TREE done: TREE:");
+                p = LD_len(msg);
+                LD_cpy(msg + p, gTree->fname);
+            } else {                           /* a typed TREE without /D */
+                LD_cpy(msg, "TREE done");
+                if (gTree->nLines > TREE_CONSOLE) {
+                    LD_cpy(msg + LD_len(msg), " - ");
+                    p = LD_len(msg);
+                    LD_num(msg, &p, gTree->nLines - TREE_CONSOLE);
+                    msg[p] = '\0';
+                    LD_cpy(msg + p, " more lines, TREE/D saves them all");
+                }
+            }
             StatusMessage(msg);
             p = TreeCounts(gTree);
             gTree->line[p] = '\0';
@@ -902,6 +914,7 @@ Boolean TreeVerb(ABConn *conn, char *request, long requestLen)
     FSSpec        spec;
     CommandResult res;
     long          deadline;
+    Boolean       local;
 
     res.exitCode = -1; res.outData = NULL; res.outLen = 0; res.errData[0] = '\0';
     if (gTree != NULL) {
@@ -983,10 +996,15 @@ Boolean TreeVerb(ABConn *conn, char *request, long requestLen)
     j->line[p++] = ')';
     TreeEmit(j, p, false);
 
-    deadline = TickCount() + TREE_TICKS;
+    /* Typed into the console, nobody waits for a reply - but a 45 s walk in
+     * the foreground froze the window and missed the hub's heartbeats: on the
+     * Duo (249 folders in 45 s) the hub dropped the link (2026-11-24). So a
+     * typed TREE goes to the background at once, like TREE/D past 45 s. */
+    local = LocalCommandRunning();
+    deadline = TickCount() + (local ? 0 : TREE_TICKS);
     while (TickCount() < deadline && TreeStep(j)) ;
 
-    if (j->sp >= 0 && !saved) {                /* plain TREE: stop here */
+    if (j->sp >= 0 && !saved && !local) {      /* plain TREE: stop here */
         j->sp = -1;
         TreeReplyTail(j, "... truncated (time limit) - TREE/D saves the whole tree");
         StatusMessage("... truncated (time limit) - TREE/D saves the whole tree");
@@ -1018,6 +1036,8 @@ Boolean TreeVerb(ABConn *conn, char *request, long requestLen)
             TreeReplyTail(j, msg);
             StatusMessage(msg);
         }
+    } else if (local && !saved) {              /* typed: walk on, report at the end */
+        StatusMessage("... walking in the background - the window stays usable");
     } else {                                   /* go on in the background */
         char msg[100];
         LD_cpy(msg, "... continues in the background: TREE:");

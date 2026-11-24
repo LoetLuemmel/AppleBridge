@@ -555,7 +555,7 @@ AppleBridge/
 
 ## Status
 
-**Current daemon:** 0.8d53 ("polls on a switch") — the version the
+**Current daemon:** 0.8d54 ("real-hardware screens") — the version the
 daemon itself reports, from `mac/vers.r`.
 
 - TCP bridge, NAT-reversed (the guest dials OUT), with an asynchronous connect

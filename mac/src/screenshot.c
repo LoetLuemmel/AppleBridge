@@ -7,6 +7,7 @@
 #include <QuickDraw.h>
 #include <QDOffscreen.h>
 #include <Memory.h>
+#include <OSUtils.h>     /* GetMMUMode, SwapMMUMode, StripAddress */
 
 /* External status function from main.c */
 extern void StatusMessage(const char *msg);
@@ -57,6 +58,54 @@ static void ShotFree(Ptr p)
             return;
         }
     DisposePtr(p);
+}
+
+
+/* ---- reading the framebuffer on real hardware (0.8d54) ------------------
+ * On a real Mac running in 24-bit mode a NuBus/PDS card's framebuffer -- the
+ * Duo Dock's 1152x870 screen -- lives at a full 32-bit address ($Fsxxxxxx).
+ * QuickDraw marks such a PixMap with pmVersion = baseAddr32 (4); reading it
+ * straight in 24-bit mode drops the high byte and copies ordinary RAM instead:
+ * colour noise of exactly the right size (PowerBook Duo, 2026-11-24). Inside
+ * Macintosh: Imaging, "PixMap": switch to 32-bit mode for the access. The
+ * destination is a dereferenced handle whose master pointer may carry 24-bit
+ * flag bits, so it is stripped first. Emulators run 32-bit clean, which is why
+ * no Basilisk guest ever showed this. */
+#define kBaseAddr32 4
+static void CopyScreen(PixMapHandle pm, long off, Ptr dst, long n)
+{
+    Ptr  src  = (*pm)->baseAddr + off;
+    signed char mode = true32b;   /* MPW: SignedByte */
+    Boolean swap = GetMMUMode() == false32b &&
+                   (((*pm)->pmVersion & kBaseAddr32) != 0 ||
+                    ((unsigned long)(*pm)->baseAddr & 0xFF000000UL) != 0);
+    if (swap) {
+        dst = StripAddress(dst);
+        SwapMMUMode(&mode);
+    }
+    BlockMoveData(src, dst, n);
+    if (swap) SwapMMUMode(&mode);
+}
+
+/* Console line: where the pixels came from and how they were read. Once per
+   distinct framebuffer, so a delta loop does not fill the console. */
+static void NoteScreenSource(PixMapHandle pm)
+{
+    static unsigned long lastBase = 1;
+    static const char hx[] = "0123456789ABCDEF";
+    char msg[64], *p = msg;
+    const char *t;
+    unsigned long b = (unsigned long)(*pm)->baseAddr;
+    short i;
+    if (b == lastBase) return;
+    lastBase = b;
+    for (t = "screen base $"; *t; ) *p++ = *t++;
+    for (i = 7; i >= 0; i--) *p++ = hx[(b >> (i * 4)) & 0xF];
+    for (t = " pmVersion "; *t; ) *p++ = *t++;
+    *p++ = hx[(*pm)->pmVersion & 0xF];
+    for (t = GetMMUMode() == false32b ? " MMU 24-bit" : " MMU 32-bit"; *t; ) *p++ = *t++;
+    *p = 0;
+    StatusMessage(msg);
 }
 
 
@@ -117,7 +166,8 @@ BridgeResult CaptureScreenshot(ScreenshotData *screenshot)
     }
 
     StatusMessage("Copying screen pixels...");
-    BlockMoveData((*pm)->baseAddr, screenshot->data, imageSize);
+    NoteScreenSource(pm);
+    CopyScreen(pm, 0L, screenshot->data, imageSize);
     screenshot->dataSize = imageSize;
 
     /* Colour table for indexed depths (<= 8 bpp). */
@@ -322,7 +372,8 @@ BridgeResult CaptureScreenshot2(ScreenshotData *s, short rx, short ry,
     bandSize = (long)rh * rowBytes;
     cur = ShotAlloc(full ? fullSize : bandSize);
     if (cur == NULL) { StatusMessage("FAIL: NewPtr screenshot"); return kBridgeCommandErr; }
-    BlockMoveData((*pm)->baseAddr + (full ? 0 : (long)ry * rowBytes), cur, full ? fullSize : bandSize);
+    NoteScreenSource(pm);
+    CopyScreen(pm, full ? 0L : (long)ry * rowBytes, cur, full ? fullSize : bandSize);
     base = (unsigned char *)cur + (full ? (long)ry * rowBytes : 0);
 
     wantDelta = full && (flags & SHOT2_DELTA) != 0 && gPrevFrame != NULL
