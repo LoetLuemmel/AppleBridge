@@ -147,8 +147,12 @@ OSStatus ABRecv(ABConn *c, char *buf, long bufSize, long *got)
     return ot_Recv(c, buf, bufSize, got);
 }
 
+extern void LocalSink(const char *data, long size);
+
 OSStatus ABSend(ABConn *c, const char *data, long size)
 {
+    /* NULL = a command typed into the console (main.c): the reply stays here */
+    if (c == NULL) { LocalSink(data, size); return noErr; }
     if (c->transport == kTransportMacTCP) return mt_Send(c, data, size);
     if (c->transport == kTransportSerial) return sr_Send(c, data, size);
     return ot_Send(c, data, size);

@@ -23,6 +23,7 @@
 #include <ToolUtils.h>
 #include <Aliases.h>
 #include <AppleEvents.h>
+#include <Balloons.h>      /* HMGetHelpMenuHandle: our item in the system Help menu */
 #include <Gestalt.h>
 #include <Shutdown.h>
 #include <OSUtils.h>
@@ -200,6 +201,8 @@ static MenuHandle gAppleMenu;
 static MenuHandle gFileMenu;
 static MenuHandle gEditMenu;
 static MenuHandle gViewMenu;
+static short      gHelpItem = 0;   /* "AppleBridge Help" in the system Help menu, 0 = none */
+static void ShowAppHelp(void);
 
 /* JSF: the SFGetFile dlgHook redirects the journal to a dialog item's real
  * GUEST-global center, so we never guess coordinates. gSFBlk is the journal
@@ -235,6 +238,7 @@ static char gActivity[256] = "ready";
 /* Footer telemetry line (defined after the StatDec/StatStr number helpers it
  * uses; called from ShowAlive above them). */
 static void DrawTelemetry(void);
+static void DrawInputLine(void);
 
 /*
  * HOST IP - Change this to your host's IP address!
@@ -250,6 +254,7 @@ static void DrawTelemetry(void);
  * gray pattern - text over a dithered gray is not readable at 9 pt. */
 #define kStripH  24        /* activity strip */
 #define kFootH   22        /* footer */
+#define kInH     16        /* the command line above the footer (2026-11-24) */
 #define kSbW     16        /* scroller width */
 #define kChromeFont 3      /* Geneva: present on every System 7 */
 
@@ -312,10 +317,19 @@ static void ConsoleRects(Rect *strip, Rect *track, Rect *frame, Rect *foot)
     short h = gStatusWindow->portRect.bottom - gStatusWindow->portRect.top;
     SetRect(strip, 0, 0, w, kStripH);
     SetRect(foot,  0, (short)(h - kFootH), (short)(w - 15), h);   /* stops before the size box */
-    SetRect(track, 4, kStripH + 4, 4 + kSbW, (short)(h - kFootH - 4));
-    /* the frame stops above the horizontal scroller (2026-11-23) */
+    SetRect(track, 4, kStripH + 4, 4 + kSbW, (short)(h - kFootH - kInH - 4));
+    /* the frame stops above the horizontal scroller (2026-11-23), which stops
+     * above the command line (2026-11-24) */
     SetRect(frame, 4 + kSbW + 4, kStripH + 4, (short)(w - 4),
-            (short)(h - kFootH - 4 - kSbW - 3));
+            (short)(h - kFootH - kInH - 4 - kSbW - 3));
+}
+
+/* The command line: one sunken row between the horizontal scroller and the footer. */
+static void InputRect(Rect *r)
+{
+    short w = gStatusWindow->portRect.right - gStatusWindow->portRect.left;
+    short h = gStatusWindow->portRect.bottom - gStatusWindow->portRect.top;
+    SetRect(r, 4, (short)(h - kFootH - kInH - 1), (short)(w - 4), (short)(h - kFootH - 2));
 }
 
 /* The night-mode button at the right end of the top strip (2026-11-22). */
@@ -377,9 +391,17 @@ static void DrawSlot(const Rect *slot, short x, short baseline, ConstStr255Param
     TextMode(srcCopy);
     PenShade(fg);
     MoveTo(x, baseline);
-    DrawString(s);
+    {
+        /* never past the slot: a narrow window let "err:badreq" run into the
+         * size box (operator screenshot, 2026-11-24) - cut it to fit instead */
+        Str255 t;
+        short  k;
+        for (k = 0; k <= s[0]; k++) t[k] = s[k];
+        while (t[0] > 0 && x + StringWidth(t) > slot->right) t[0]--;
+        DrawString(t);
+        pen.h = (short)(x + StringWidth(t));
+    }
     rest = *slot;
-    pen.h = (short)(x + StringWidth(s));
     if (pen.h > rest.left) rest.left = pen.h;
     if (rest.right > rest.left) EraseRect(&rest);   /* in the panel colour: no visible flash */
     {
@@ -1023,6 +1045,7 @@ static void DrawConsole(void)
     RedrawLog();
     DrawScroller();
     DrawTelemetry();
+    DrawInputLine();
     gChromeForce = false;
     {
         /* The size box, only here - on a real update, drawn as a NeXT button
@@ -1512,6 +1535,10 @@ void HandleMenuCommand(long menuResult)
     menuItem = LoWord(menuResult);
 
     switch (menuID) {
+        case kHMHelpMenuID:
+            if (gHelpItem != 0 && menuItem == gHelpItem) ShowAppHelp();
+            break;
+
         case APPLE_MENU_ID:
             if (menuItem == ABOUT_ITEM) {
                 ShowAboutBox();
@@ -1568,11 +1595,33 @@ void HandleMenuCommand(long menuResult)
  * or Quit menu, so this is how the Finder / a system shutdown stops it cleanly
  * (otherwise an invisible app could stall shutdown). Just signals the loop.
  */
+static Boolean gQuitByAE = false;   /* the system (a Shut Down) asked us to quit */
+
 static pascal OSErr HandleQuitApp(const AppleEvent *evt, AppleEvent *reply, long refcon)
 {
 #pragma unused(evt, reply, refcon)
     gRunning = false;
+    gQuitByAE = true;
     return noErr;
+}
+
+/* A Shut Down quits the applications one by one. When we go before the
+ * watchdog ('ABwd'), it sees us gone within its 3 s check, relaunches us, and
+ * the launch cancels the Shut Down: the Mac simply stays on (odroid-c2,
+ * 2026-11-24, reproduced 50 s after a start - a fresh console banner after the
+ * Shut Down click). c2watch's clean restarts therefore fell back to hard kills
+ * all day, and one left a Sad Mac. So: ask the watchdog to quit first, and do
+ * not leave before it has (at most ~2 s). */
+static void QuitWatchdogFirst(void)
+{
+    EventRecord e;
+    long until;
+    if (!IsAppRunning('ABwd')) return;
+    StatusMessage("shutting down - asking the watchdog to quit first");
+    if (QuitAppBySignature('ABwd') != noErr) return;
+    until = TickCount() + 120;
+    while (IsAppRunning('ABwd') && TickCount() < until)
+        (void)WaitNextEvent(0, &e, 3L, NULL);          /* yield: let it go */
 }
 
 /*
@@ -1815,6 +1864,16 @@ void OpenMonitor(void)
         CheckItem(gViewMenu, PING_ITEM, gShowPing);
         CheckItem(gViewMenu, NIGHT_ITEM, gPrefs.console == 1);
         InsertMenu(gViewMenu, 0);
+        /* System 7 gives an application no Help menu of its own: it appends to
+         * the system's (the "?" at the right), which carries it while we are
+         * in front (2026-11-24). */
+        {
+            MenuHandle hm = NULL;
+            if (HMGetHelpMenuHandle(&hm) == noErr && hm != NULL) {
+                AppendMenu(hm, "\pAppleBridge Help/?");
+                gHelpItem = CountMItems(hm);
+            }
+        }
         DrawMenuBar();
         gMenuInstalled = true;
     }
@@ -1937,6 +1996,256 @@ void PollMonitorRequest(void)
 /*
  * Check for user interrupt and process events
  */
+/* ---- The console's command line (2026-11-24) -------------------------------
+ *
+ * Somebody at the Mac (a Duo, an SE/30, a demo) can type the daemon's OWN verbs
+ * into the console: click into the window, type, Return. The command runs
+ * through ProcessRequest exactly as if the hub had sent it; the reply goes to
+ * a local sink instead of the network (ABSend with a NULL connection, see
+ * transport.c) and, where a verb does not already print to the console, is
+ * shown here. First step: read-only verbs plus HELP - nothing that writes,
+ * deletes, launches, mounts or restarts.
+ *
+ * Never nested: CheckUserAbort pumps events WHILE a hub command runs, and a
+ * Return then would start a second ProcessRequest inside the first. gReqBusy
+ * (set around the main loop's call and around ours) refuses it with a line. */
+#define IN_MAX    200
+#define LOCAL_CAP 8192L
+static char    gIn[IN_MAX + 1];
+static short   gInLen = 0;
+static char    gInLast[IN_MAX + 1];
+static Boolean gReqBusy = false;
+static Ptr     gLocalOut = NULL;       /* the local sink while a typed command runs */
+static long    gLocalLen = 0;
+static Boolean gLocalCut = false;
+
+Boolean ProcessRequest(ABConn *conn, char *request, long requestLen);
+
+/* fileio.c asks, to word what it says about output that did not fit the console */
+Boolean LocalCommandRunning(void) { return gLocalOut != NULL; }
+
+/* transport.c: ABSend(NULL, ...) lands here. Outside a typed command, dropped. */
+void LocalSink(const char *data, long size)
+{
+    long n;
+    if (gLocalOut == NULL) return;
+    n = LOCAL_CAP - gLocalLen;
+    if (size > n) { size = n; gLocalCut = true; }
+    if (size > 0) { BlockMoveData(data, gLocalOut + gLocalLen, size); gLocalLen += size; }
+}
+
+static void DrawInputLine(void)
+{
+    Rect    r, in;
+    RGBColor bg, out, cmd;
+    short   f, z, avail, start = 0;
+    if (gStatusWindow == NULL) return;
+    SetPort(gStatusWindow);
+    InputRect(&r);
+    Bevel(&r, false);
+    in = r; InsetRect(&in, 1, 1);
+    ConsoleColors(&bg, &out, &cmd);
+    RGBBackColor(&bg);
+    EraseRect(&in);
+    f = gStatusWindow->txFont; z = gStatusWindow->txSize;
+    TextFont(gLogFont); TextSize(gLogSize);
+    RGBForeColor(&cmd);
+    avail = (short)(in.right - in.left - 8 - CharWidth('>') * 3);
+    while (start < gInLen && TextWidth(gIn, start, (short)(gInLen - start)) > avail) start++;
+    MoveTo((short)(in.left + 3), (short)(in.bottom - 4));
+    DrawString("\p> ");
+    DrawText(gIn, start, (short)(gInLen - start));
+    DrawChar('_');                                  /* the caret */
+    TextFont(f); TextSize(z);
+    PenShade(kShBlack);
+    BackColor(whiteColor);
+}
+
+static void LocalHelp(void)
+{
+    StatusMessage("--- Commands (click here, type, Return) ---");
+    StatusMessage("TREE <path>        folders, e.g. TREE MeinMac:");
+    StatusMessage("TREE/F <path>      folders and files");
+    StatusMessage("TREE/D <path>      also saved to TREE: (date in name)");
+    StatusMessage("DISKINFO [volume]  mounted volumes, free and total");
+    StatusMessage("PROCLIST           running processes");
+    StatusMessage("LISTDIR <folder>   one folder, e.g. LISTDIR MeinMac:");
+    StatusMessage("HELP               this list");
+    StatusMessage("Up arrow: last command   Esc: clear the line");
+    StatusMessage("The guide: Help menu (?) > AppleBridge Help, or Cmd-?");
+}
+
+/* Help menu > AppleBridge Help: the guide, from 'TEXT' 128 (AppleBridge_res.r),
+ * into the console - a resource, so the words change without a compile. */
+static void ShowAppHelp(void)
+{
+    Handle h;
+    long   n, i, start;
+    char   line[LOG_W];
+    SetMonitorVisible(true);
+    h = GetResource('TEXT', 128);
+    if (h == NULL) { StatusMessage("AppleBridge Help: the help text is missing"); return; }
+    HLock(h);
+    n = GetHandleSize(h);
+    for (i = 0, start = 0; i <= n; i++) {
+        if (i == n || (*h)[i] == 0x0D || (*h)[i] == 0x0A) {
+            long len = i - start, k;
+            if (len > LOG_W - 1) len = LOG_W - 1;
+            for (k = 0; k < len; k++) line[k] = (*h)[start + k];
+            line[len] = '\0';
+            if (i < n || len > 0) StatusMessage(line);
+            start = i + 1;
+        }
+    }
+    HUnlock(h);
+    ReleaseResource(h);
+}
+
+/* The reply frame STATUS:n\rSTDOUT:len\r<out>\rSTDERR:len\r<err>\r\r, shown for
+ * the verbs that do not print themselves (LISTDIR), and for every failure. */
+static void LocalShow(Boolean printOut)
+{
+    char  line[LOG_W];
+    long  i = 0, olen = 0, st = 0;
+    short k, shown = 0;
+    Boolean neg = false;
+    char *b = gLocalOut;
+    if (gLocalLen < 8 || strncmp(b, "STATUS:", 7) != 0) return;
+    i = 7;
+    if (b[i] == '-') { neg = true; i++; }
+    while (i < gLocalLen && b[i] >= '0' && b[i] <= '9') st = st * 10 + (b[i++] - '0');
+    if (neg) st = -st;
+    while (i < gLocalLen && b[i] != ':') i++;          /* ...STDOUT: */
+    i++;
+    while (i < gLocalLen && b[i] >= '0' && b[i] <= '9') olen = olen * 10 + (b[i++] - '0');
+    i++;                                               /* the \r after the length */
+    if (st != 0) {                                     /* the error is in STDERR */
+        long e = i + olen, elen = 0;
+        while (e < gLocalLen && b[e] != ':') e++;
+        e++;
+        while (e < gLocalLen && b[e] >= '0' && b[e] <= '9') elen = elen * 10 + (b[e++] - '0');
+        e++;
+        strcpy(line, "error: ");
+        for (k = 7; k < LOG_W - 1 && elen > 0 && e < gLocalLen; k++, e++, elen--)
+            line[k] = (b[e] == '\r' || b[e] == '\n') ? ' ' : b[e];
+        line[k] = '\0';
+        StatusMessage(line);
+        return;
+    }
+    if (!printOut) return;
+    while (olen > 0 && i < gLocalLen) {
+        k = 0;
+        while (olen > 0 && i < gLocalLen && b[i] != '\r' && b[i] != '\n') {
+            if (k < LOG_W - 3) {
+                if (b[i] == '\t') { line[k++] = ' '; line[k++] = ' '; } else line[k++] = b[i];
+            }
+            i++; olen--;
+        }
+        if (olen > 0) { i++; olen--; }                 /* the line end */
+        line[k] = '\0';
+        if (shown < 60) StatusMessage(line);
+        shown++;
+    }
+    if (shown > 60) {
+        strcpy(line, "... ");
+        k = 4; ColNum(line, &k, (unsigned long)(shown - 60), 1, 0);
+        strcpy(line + k, " more lines");
+        StatusMessage(line);
+    }
+    if (gLocalCut) StatusMessage("... (reply longer than 8 KB, cut)");
+}
+
+static void RunLocalCommand(void)
+{
+    char    req[IN_MAX + 8];
+    short   i, n = 0, verbEnd;
+    Boolean ok, printOut, savedAuth;
+
+    while (gInLen > 0 && gIn[gInLen - 1] == ' ') gInLen--;
+    for (i = 0; i < gInLen && gIn[i] == ' '; i++) ;
+    if (i >= gInLen) return;
+    BlockMoveData(gIn, gInLast, gInLen); gInLast[gInLen] = '\0';
+    for (; i < gInLen; i++) req[n++] = gIn[i];
+    req[n] = '\0';
+    /* the verb: upper case; "TREE MeinMac:" means "TREE:MeinMac:" */
+    for (verbEnd = 0; verbEnd < n && req[verbEnd] != ':' && req[verbEnd] != ' '; verbEnd++)
+        if (req[verbEnd] >= 'a' && req[verbEnd] <= 'z') req[verbEnd] -= 32;
+    if (verbEnd < n && req[verbEnd] == ' ') {
+        short j = verbEnd + 1;
+        while (j < n && req[j] == ' ') j++;
+        req[verbEnd] = ':';
+        BlockMoveData(req + j, req + verbEnd + 1, n - j + 1);
+        n = (short)(n - (j - verbEnd - 1));
+    }
+    /* a bare volume name ("MeinMac") means the volume: without the colon the
+     * File Manager looks for a FILE of that name (CLAUDE.md, DISKINFO notes) */
+    if (verbEnd < n && req[verbEnd] == ':' && verbEnd + 1 < n) {
+        short c;
+        for (c = (short)(verbEnd + 1); c < n && req[c] != ':'; c++) ;
+        if (c == n && n < IN_MAX + 6) { req[n++] = ':'; req[n] = '\0'; }
+    }
+    gInLen = 0;
+    DrawInputLine();
+
+    /* TREE and LISTDIR need a place to look: say so instead of the daemon's
+     * bare "Invalid command format" (operator screenshot, 2026-11-24) */
+    if (((strncmp(req, "TREE", 4) == 0 && (verbEnd == 4 || req[4] == '/')) ||
+         (strncmp(req, "LISTDIR", 7) == 0 && verbEnd == 7)) &&
+        (verbEnd >= n - 1)) {
+        AddLogLine(req, 2);
+        StatusMessage(req[0] == 'T' ? "TREE needs a path - e.g. TREE MeinMac"
+                                    : "LISTDIR needs a folder - e.g. LISTDIR MeinMac");
+        return;
+    }
+
+    if (strncmp(req, "HELP", 4) == 0 && (verbEnd == 4)) {
+        AddLogLine("HELP", 2);
+        LocalHelp();
+        return;
+    }
+    printOut = (strncmp(req, "LISTDIR", 7) == 0 && verbEnd == 7);
+    if (!(strncmp(req, "TREE", 4) == 0 && (verbEnd == 4 || req[4] == '/')) &&
+        !(strncmp(req, "DISKINFO", 8) == 0 && verbEnd == 8) &&
+        !(strncmp(req, "PROCLIST", 8) == 0 && verbEnd == 8) && !printOut) {
+        char m[LOG_W];
+        AddLogLine(req, 2);
+        strcpy(m, "not available here - HELP lists what is");
+        StatusMessage(m);
+        return;
+    }
+    if (gReqBusy) {                                     /* a hub command is running */
+        StatusMessage("busy - a bridge command is running; Return again in a moment");
+        return;
+    }
+    gLocalOut = NewPtr(LOCAL_CAP);
+    if (gLocalOut == NULL) { StatusMessage("out of memory"); return; }
+    gLocalLen = 0; gLocalCut = false;
+    gReqBusy = true;
+    savedAuth = gAuthed; gAuthed = true;                /* the person at the Mac needs no token */
+    ok = ProcessRequest(NULL, req, (long)n);
+    gAuthed = savedAuth;
+    gReqBusy = false;
+    LocalShow(printOut);
+    DisposePtr(gLocalOut); gLocalOut = NULL;
+    (void)ok;
+}
+
+/* A key for the console (the daemon is front: somebody clicked its window). */
+static void ConsoleKey(char ch, short code)
+{
+    /* 0x0D, not '\r': MPW C swaps them ('\r' is 0x0A) - the first build ignored Return */
+    if (ch == 0x0D || ch == 0x03) { RunLocalCommand(); return; }
+    if (ch == 0x08) { if (gInLen > 0) gInLen--; }
+    else if (ch == 0x1B) gInLen = 0;
+    else if (ch == 0x1E || code == 0x7E) {             /* up arrow: the last command */
+        gInLen = (short)strlen(gInLast);
+        BlockMoveData(gInLast, gIn, gInLen);
+    }
+    else if ((unsigned char)ch >= 0x20 && ch != 0x7F && gInLen < IN_MAX) gIn[gInLen++] = ch;
+    else return;
+    DrawInputLine();
+}
+
 Boolean CheckUserAbort(void)
 {
     EventRecord event;
@@ -2143,6 +2452,9 @@ Boolean CheckUserAbort(void)
                         return true;
                     }
                     HandleMenuCommand(MenuKey(key));
+                } else if (gStatusWindow != NULL && FrontWindow() == gStatusWindow) {
+                    ConsoleKey((char)(event.message & charCodeMask),
+                               (short)((event.message & keyCodeMask) >> 8));
                 }
                 break;
 
@@ -3351,7 +3663,7 @@ static Boolean ScreenshotVerb(ABConn *conn)
     ScreenshotData screenshot;
     Boolean ok = true;
     BridgeResult result;
-    static const char kFail[] = "STATUS:-1\nSTDOUT:0\n\nSTDERR:18\nScreenshot failed\n\n";
+    static const char kFail[] = "STATUS:-1\nSTDOUT:0\n\nSTDERR:17\nScreenshot failed\n\n";
 
     SetActivity("SCREENSHOT");          /* daemon activity -> top bar */
     result = CaptureScreenshot(&screenshot);
@@ -3378,7 +3690,7 @@ static Boolean Screenshot2Verb(ABConn *conn, const char *request)
     long  v[6];
     short k;
     BridgeResult result;
-    static const char kFail[] = "STATUS:-1\nSTDOUT:0\n\nSTDERR:18\nScreenshot failed\n\n";
+    static const char kFail[] = "STATUS:-1\nSTDOUT:0\n\nSTDERR:17\nScreenshot failed\n\n";
 
     for (k = 0; k < 6; k++) {
         v[k] = 0;
@@ -5871,7 +6183,7 @@ msinstall_reply:
     /* Parse command */
     result = ParseCommand(request, command, &commandLength);
     if (result != kBridgeNoErr) {
-        strcpy(responseBuffer, "STATUS:-1\nSTDOUT:0\n\nSTDERR:21\nInvalid command format\n\n"); NoteErr("badreq");
+        strcpy(responseBuffer, "STATUS:-1\nSTDOUT:0\n\nSTDERR:22\nInvalid command format\n\n"); NoteErr("badreq");
         ABSend(conn, responseBuffer, strlen(responseBuffer));
         StatusMessage("Invalid command format");
 
@@ -6218,6 +6530,7 @@ int main(void)
     long bytesReceived;
     unsigned long hostIP;
     Boolean connected = false;
+    Boolean reqOk;
     long connectFails = 0;      /* consecutive failed dials -> drives the console hint */
 
     /* Initialize Mac Toolbox */
@@ -6484,7 +6797,10 @@ int main(void)
          * QUIT / the command) and the console body itself. */
         requestBuffer[bytesReceived] = '\0';
         NoteHeap();
-        if (!ProcessRequest(conn, requestBuffer, bytesReceived)) {
+        gReqBusy = true;                     /* no typed command inside this one */
+        reqOk = ProcessRequest(conn, requestBuffer, bytesReceived);
+        gReqBusy = false;
+        if (!reqOk) {
             /* A streamed response failed mid-send: the wire is desynced. Drop
              * the link and reconnect rather than misframe every later command. */
             ABClose(conn); conn = NULL;
@@ -6496,6 +6812,7 @@ int main(void)
     }
 
     /* Cleanup */
+    if (gQuitByAE) QuitWatchdogFirst();     /* or it relaunches us mid-Shut-Down */
     if (connected) {
         ABClose(conn); conn = NULL;
     }

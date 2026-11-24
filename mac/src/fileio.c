@@ -634,6 +634,7 @@ Boolean ListDirVerb(ABConn *conn, char *request, long requestLen)
 #define TREE_SLICE    3                 /* background ticks per main-loop pass */
 
 extern void StatusMessage(const char *msg);
+extern Boolean LocalCommandRunning(void);   /* main.c: a command typed into the console */
 extern const char *DaemonHome(void);
 
 typedef struct {
@@ -1000,7 +1001,10 @@ Boolean TreeVerb(ABConn *conn, char *request, long requestLen)
             LD_cpy(more, "... ");
             q = LD_len(more);
             LD_num(more, &q, j->nLines - TREE_CONSOLE);
-            LD_cpy(more + q, " more lines sent to the host");
+            /* typed into the console, the rest went nowhere: say where it is */
+            LD_cpy(more + q, !LocalCommandRunning() ? " more lines sent to the host"
+                             : (j->ref ? " more lines in the TREE file"
+                                       : " more lines - TREE/D saves them all"));
             StatusMessage(more);
         }
         TreeReplyTail(j, j->line);             /* the counts */
