@@ -59,6 +59,10 @@ QDGlobals qd;
  * File-scope (not on main's stack) since AppPrefs is ~2 KB. */
 static AppPrefs gPrefs;
 
+/* The install folder (HOME=, ends in ':'), for files the daemon writes itself
+ * (TREE/D). Empty on a legacy setup. */
+const char *DaemonHome(void) { return gPrefs.home; }
+
 /* The port this daemon dials: TCPPORT= from the prefs, else BRIDGE_PORT. One port per guest lets n guests
  * share the hub's one address (D-028). */
 static unsigned short BridgePort(void)
@@ -78,6 +82,7 @@ static char    gDaemonNonceHex[17] = "";  /* nonce we handed the host; AUTH2 pro
 #define APPLE_MENU_ID   128
 #define FILE_MENU_ID    129
 #define EDIT_MENU_ID    130
+#define VIEW_MENU_ID    131    /* the console's switches (2026-11-24; were under Edit) */
 
 /* Monaco's well-known fixed font ID (not in this older Fonts.h). Monospace, so
  * command/response columns line up in the monitor log. */
@@ -85,11 +90,19 @@ static char    gDaemonNonceHex[17] = "";  /* nonce we handed the host; AUTH2 pro
 
 /* Menu items */
 #define ABOUT_ITEM      1
-#define QUIT_ITEM       1
-#define COPY_ITEM       1
-#define DETAILS_ITEM    3      /* Edit: Copy(1), (divider 2), Show details(3) */
-#define CONSOLE_ITEM    4      /* Edit: Console(4) — show/hide the Verbose window */
-#define NIGHT_ITEM      5      /* Edit: Night mode(5) — CONSOLE=dark, saved in "AppleBridge Window" */
+#define CLOSE_ITEM      1      /* File: Close (Cmd-W) hides the console. There is NO Quit:
+                                * quitting tears down Open Transport and can take the host's
+                                * emulator with it, and the daemon is meant to run on. */
+/* Edit is the standard System 7 menu - Undo(1), -(2), Cut(3), Copy(4),
+ * Paste(5), Clear(6) - in that order because a desk accessory is handed its
+ * edit commands by POSITION (SystemEdit takes item-1). Only Copy acts on the
+ * console; the rest stay dimmed for it and serve a DA in front. */
+#define COPY_ITEM       4
+/* View: the console's switches, a menu of their own as System 7 has it. */
+#define DETAILS_ITEM    1      /* Show details - the Apple Event trace */
+#define PING_ITEM       2      /* Ping - the liveness polls (PING/STAT/PROCLIST/Q) */
+#define CONSOLE_ITEM    3      /* Console - show/hide the Verbose window */
+#define NIGHT_ITEM      4      /* Night mode - CONSOLE=dark, saved in "AppleBridge Window" */
 
 /* Declared here, not beside the definitions: HandleMenuCommand calls them ~900
  * lines earlier, and MPW C takes an undeclared call as `int f()` — so the real
@@ -143,9 +156,15 @@ static Boolean gMenuInstalled = false;   /* minimal Apple menu, installed lazily
 #define CONSOLE_MAX_LINES 120
 static char  gLog[LOG_LINES][LOG_W];
 /* Per-line kind: 0 = primary ("> command" + its output), 1 = detail (the AE
- * trace). Both are always stored; the monitor can collapse the detail lines. */
+ * trace), 2 = command (bold), 3 = liveness poll (PING/STAT heartbeat and the
+ * hub watchdogs' PROCLIST, every few seconds). All are always stored; the
+ * monitor collapses kind 1 unless View > Show details and kind 3 unless View > Ping. */
 static unsigned char gLogKind[LOG_LINES];
 static Boolean gShowDetails = false;   /* collapsed by default (clean log) */
+static Boolean gShowPing    = false;   /* polls hidden by default (2026-11-23) */
+/* Is ring line idx hidden by the current toggles? */
+#define LOG_HIDDEN(idx) ((!gShowDetails && gLogKind[idx] == 1) || \
+                         (!gShowPing    && gLogKind[idx] == 3))
 static short gLogHead = 0;   /* next slot to write */
 static short gLogN    = 0;   /* lines currently stored */
 /* The body is a real TextEdit field so the user can mouse-select and copy log
@@ -180,6 +199,7 @@ static long gStartTick = 0;   /* daemon launch tick (for Alive uptime) */
 static MenuHandle gAppleMenu;
 static MenuHandle gFileMenu;
 static MenuHandle gEditMenu;
+static MenuHandle gViewMenu;
 
 /* JSF: the SFGetFile dlgHook redirects the journal to a dialog item's real
  * GUEST-global center, so we never guess coordinates. gSFBlk is the journal
@@ -293,7 +313,9 @@ static void ConsoleRects(Rect *strip, Rect *track, Rect *frame, Rect *foot)
     SetRect(strip, 0, 0, w, kStripH);
     SetRect(foot,  0, (short)(h - kFootH), (short)(w - 15), h);   /* stops before the size box */
     SetRect(track, 4, kStripH + 4, 4 + kSbW, (short)(h - kFootH - 4));
-    SetRect(frame, 4 + kSbW + 4, kStripH + 4, (short)(w - 4), (short)(h - kFootH - 4));
+    /* the frame stops above the horizontal scroller (2026-11-23) */
+    SetRect(frame, 4 + kSbW + 4, kStripH + 4, (short)(w - 4),
+            (short)(h - kFootH - 4 - kSbW - 3));
 }
 
 /* The night-mode button at the right end of the top strip (2026-11-22). */
@@ -464,6 +486,100 @@ static void Arrow(const Rect *b, Boolean pointUp)
     }
 }
 
+/* ---- horizontal scroller (2026-11-23) -------------------------------------
+ * The log no longer wraps (TE crOnly): a long line runs on to the right and
+ * this scroller moves the view sideways. Same NeXT look as the vertical one;
+ * both arrows at its LEFT end, so all four sit together in the corner by the
+ * vertical scroller's arrows. Its range is the longest line now in the log,
+ * not LOG_W, so it never scrolls into empty space. */
+static short gColW  = 6;                 /* log font's character width */
+static short gTextW = LOG_W * 6 + 8;     /* TE destRect width: the longest possible line */
+
+static void HScrollerParts(Rect *track, Rect *left, Rect *right, Rect *area)
+{
+    Rect s, tr, f, ft;
+    ConsoleRects(&s, &tr, &f, &ft);
+    SetRect(track, f.left, (short)(f.bottom + 3), f.right, (short)(f.bottom + 3 + kSbW));
+    SetRect(left,  (short)(track->left + 1), (short)(track->top + 1),
+                   (short)(track->left + 17), (short)(track->bottom - 1));
+    SetRect(right, left->right, left->top, (short)(left->right + 16), left->bottom);
+    SetRect(area,  right->right, (short)(track->top + 1),
+                   (short)(track->right - 1), (short)(track->bottom - 1));
+}
+
+static void ArrowH(const Rect *b, Boolean pointLeft)
+{
+    short cx = (short)((b->left + b->right) / 2), cy = (short)((b->top + b->bottom) / 2), i;
+    PenShade(kShBlack);
+    for (i = 0; i < 4; i++) {
+        short x = pointLeft ? (short)(cx - 2 + i) : (short)(cx + 2 - i);
+        MoveTo(x, (short)(cy - i));
+        LineTo(x, (short)(cy + i));
+    }
+}
+
+/* Longest line now shown, in pixels of the log font. */
+static short LogContentW(void)
+{
+    short line, idx, k, mx = 0;
+    for (line = 0; line < gLogN; line++) {
+        idx = (short)((gLogHead - gLogN + line + 2 * LOG_LINES) % LOG_LINES);
+        if (LOG_HIDDEN(idx)) continue;
+        for (k = 0; gLog[idx][k]; k++) ;
+        if (k > mx) mx = k;
+    }
+    return (short)(mx * gColW + 8);
+}
+
+static short LogHPos(void)
+{
+    short v;
+    if (gLogTE == NULL) return 0;
+    v = (short)((**gLogTE).viewRect.left - (**gLogTE).destRect.left);
+    return (v < 0) ? 0 : v;
+}
+
+static short LogHMax(void)
+{
+    short m;
+    if (gLogTE == NULL) return 0;
+    m = (short)(LogContentW() - ((**gLogTE).viewRect.right - (**gLogTE).viewRect.left));
+    return (m < 0) ? 0 : m;
+}
+
+static void DrawHScroller(void)
+{
+    Rect track, lA, rA, area, knob;
+    short mx, v, vis, kw, span;
+
+    if (gStatusWindow == NULL || gLogTE == NULL) return;
+    SetPort(gStatusWindow);
+    HScrollerParts(&track, &lA, &rA, &area);
+    Shade(&track, kShDark);
+    Bevel(&track, false);
+    Shade(&lA, kShLight); Bevel(&lA, true); ArrowH(&lA, true);
+    Shade(&rA, kShLight); Bevel(&rA, true); ArrowH(&rA, false);
+
+    vis  = (short)((**gLogTE).viewRect.right - (**gLogTE).viewRect.left);
+    mx   = LogHMax();
+    v    = LogHPos();
+    if (v > mx) v = mx;
+    span = (short)(area.right - area.left);
+    kw = (mx <= 0) ? span : (short)(((long)span * vis) / (vis + mx));
+    if (kw < 14) kw = 14;
+    if (kw > span) kw = span;
+    knob = area;
+    knob.left  = (short)(area.left + ((mx <= 0) ? 0 : ((long)(span - kw) * v) / mx));
+    knob.right = (short)(knob.left + kw);
+    Shade(&knob, kShLight);
+    Bevel(&knob, true);
+    PenShade(kShDark);
+    MoveTo((short)((knob.left + knob.right) / 2), (short)(knob.top + 3));
+    LineTo((short)((knob.left + knob.right) / 2), (short)(knob.bottom - 4));
+    PenShade(kShBlack);
+    ConsoleBack();
+}
+
 static void DrawScroller(void)
 {
     Rect track, up, down, area, knob;
@@ -500,6 +616,7 @@ static void DrawScroller(void)
     LineTo((short)(knob.right - 4), (short)((knob.top + knob.bottom) / 2));
     PenShade(kShBlack);
     ConsoleBack();
+    DrawHScroller();                     /* the two always change together */
 }
 
 /*
@@ -564,6 +681,129 @@ static short LogMaxScroll(void)
     return (n - vis < 0) ? 0 : (short)(n - vis);
 }
 
+/* Holding the mouse on the scroller (2026-11-23). A click used to move one line
+ * and holding did nothing more. The repeat is NOT a StillDown loop in the click
+ * handler: that would keep ProcessRequest from running for as long as the
+ * button is held, the starvation a held-open menu causes (the link drops after
+ * ~30 s). Instead the click arms gScrollHold and ServiceScrollHold, called from
+ * CheckUserAbort on every main-loop pass (<= 2 ticks), does the repeat while
+ * Button() stays down — so the bridge keeps being served in between.
+ *   +1/-1: an arrow, one line per kScrollRepeat ticks after kScrollDelay
+ *   2:     the track, the view follows the pointer (drag)
+ *   +3/-3, 4: the same on the horizontal scroller (2 characters a step) */
+#define kScrollDelay  18                 /* ~0.3 s before the repeat starts */
+#define kScrollRepeat 3                  /* then ~20 lines/s */
+static short gScrollHold = 0;
+static long  gScrollNext = 0;
+
+/* Where the view really is (from the TE, as DrawScroller reads it). */
+static short LogScrollPos(void)
+{
+    short v, mx = LogMaxScroll();
+    if (gLogTE == NULL) return 0;
+    v = (short)(((**gLogTE).viewRect.top - (**gLogTE).destRect.top) / gLineHeight);
+    if (v < 0) v = 0;
+    if (v > mx) v = mx;
+    return v;
+}
+
+static void ScrollLogSet(short v)
+{
+    short mx = LogMaxScroll();
+    if (v < 0) v = 0;
+    if (v > mx) v = mx;
+    if (gScroll != NULL) { SetControlMaximum(gScroll, mx); SetControlValue(gScroll, v); }
+    ScrollLogTo(v);
+    DrawScroller();
+}
+
+/* Track hit at local point pt -> the line that belongs at the top. */
+static short ScrollTrackValue(Point pt)
+{
+    Rect sbR, upR, downR, areaR;
+    short trackH, trackY;
+    ScrollerParts(&sbR, &upR, &downR, &areaR);
+    trackH = (short)(areaR.bottom - areaR.top);
+    trackY = (short)(pt.v - areaR.top);
+    if (trackY < 0) trackY = 0;
+    if (trackY > trackH) trackY = trackH;
+    return (trackH > 0) ? (short)(((long)trackY * LogMaxScroll()) / trackH) : 0;
+}
+
+static void ScrollLogHSet(short px)
+{
+    short mx = LogHMax(), cur = LogHPos();
+    if (px > mx) px = mx;
+    if (px < 0) px = 0;
+    ConsoleBack();
+    if (px != cur) TEScroll((short)(cur - px), 0, gLogTE);
+    DrawHScroller();
+}
+
+static short HScrollTrackValue(Point pt)
+{
+    Rect tr, lA, rA, area;
+    short w, x;
+    HScrollerParts(&tr, &lA, &rA, &area);
+    w = (short)(area.right - area.left);
+    x = (short)(pt.h - area.left);
+    if (x < 0) x = 0;
+    if (x > w) x = w;
+    return (w > 0) ? (short)(((long)x * LogHMax()) / w) : 0;
+}
+
+/* The TE's rectangles from the window: view = the body, dest = as wide as the
+ * longest possible line, so crOnly text never wraps. Back to the left edge. */
+static void SetLogTERects(void)
+{
+    Rect body, dest;
+    if (gLogTE == NULL) return;
+    MonitorBodyRect(&body);
+    dest = body;
+    dest.right = (short)(body.left + gTextW);
+    (**gLogTE).viewRect = body;
+    (**gLogTE).destRect = dest;
+    gLogDirty = gLogFull = true;
+}
+
+/* The log font's character width (the port's font is restored after). */
+static void MeasureLogCol(void)
+{
+    short f = qd.thePort->txFont, z = qd.thePort->txSize;
+    TextFont(gLogFont);
+    TextSize(gLogSize);
+    gColW = CharWidth('M');
+    if (gColW < 1) gColW = 6;
+    gTextW = (short)(LOG_W * gColW + 8);
+    TextFont(f);
+    TextSize(z);
+}
+
+static void ServiceScrollHold(void)
+{
+    GrafPtr save;
+    if (gScrollHold == 0) return;
+    if (gStatusWindow == NULL || gLogTE == NULL || !Button()) { gScrollHold = 0; return; }
+    GetPort(&save);
+    SetPort(gStatusWindow);
+    if (gScrollHold == 2 || gScrollHold == 4) {
+        Point pt;
+        GetMouse(&pt);                       /* local to gStatusWindow */
+        if (gScrollHold == 2) {
+            if (ScrollTrackValue(pt) != LogScrollPos()) ScrollLogSet(ScrollTrackValue(pt));
+        } else if (HScrollTrackValue(pt) != LogHPos()) {
+            ScrollLogHSet(HScrollTrackValue(pt));
+        }
+    } else if (TickCount() >= gScrollNext) {
+        if (gScrollHold == 1 || gScrollHold == -1)
+            ScrollLogSet((short)(LogScrollPos() + gScrollHold));
+        else                                 /* +-3: two characters a step */
+            ScrollLogHSet((short)(LogHPos() + (gScrollHold / 3) * 2 * gColW));
+        gScrollNext = TickCount() + kScrollRepeat;
+    }
+    SetPort(save);
+}
+
 /* Flatten the ring into the TextEdit field so its text mirrors the log, then
  * pin the view to the bottom (newest visible). Rebuilding wholesale resets any
  * in-progress mouse selection, but only fires on NEW traffic (gLogDirty) — while
@@ -588,7 +828,7 @@ static void SyncLogTEFull(void)
     for (line = 0; line < gLogN; line++) {
         long lineStart;
         idx = (gLogHead - gLogN + line + 2 * LOG_LINES) % LOG_LINES;
-        if (!gShowDetails && gLogKind[idx] == 1) continue;  /* collapsed: hide details only */
+        if (LOG_HIDDEN(idx)) continue;          /* collapsed detail / hidden poll */
         lineStart = n;
         for (k = 0; gLog[idx][k] && k < LOG_W - 1; k++) gTEBuf[n++] = gLog[idx][k];
         if (gLogKind[idx] == 2 && nCmd < LOG_LINES) {       /* a command line -> bold */
@@ -732,7 +972,7 @@ void SyncLogTE(void)
     ConsoleBack();                                 /* TE draws on the port's background */
     for (j = add - 1; j >= 0; j--) {               /* oldest new line first */
         idx = (short)((gLogHead - 1 - j + 2 * LOG_LINES) % LOG_LINES);
-        if (!gShowDetails && gLogKind[idx] == 1) continue;   /* collapsed detail */
+        if (LOG_HIDDEN(idx)) continue;              /* collapsed detail / hidden poll */
         TEAppendLine(gLog[idx], (Boolean)(gLogKind[idx] == 2));
     }
     while (gTELines > LOG_LINES) TEDropFirstLine();
@@ -820,11 +1060,48 @@ void DoCopyLog(void)
     TEToScrap();
 }
 
-/* Append one log line of the given kind (0=primary, 1=detail) to the ring. */
+/* A poll line (kind 3) that repeats one of the trailing poll lines counts up
+ * in place - "PING (x50)" - instead of taking a new slot. The ring holds only
+ * LOG_LINES, and hidden polls took slots like visible lines, so an idle
+ * console slowly lost a printed table to heartbeats nobody could see
+ * (2026-11-24). Looks back over the run of poll lines at the end of the ring
+ * (at most 4: PING, STAT and PROCLIST/Q interleave). True = counted. */
+static Boolean LogRepeat(const char *msg)
+{
+    short j, idx, n, d;
+    char *line;
+    unsigned long cnt;
+
+    for (j = 0; j < 4 && j < gLogN; j++) {
+        idx  = (short)((gLogHead - 1 - j + LOG_LINES) % LOG_LINES);
+        if (gLogKind[idx] != 3) return false;      /* the run of polls ended */
+        line = gLog[idx];
+        for (n = 0; msg[n] && msg[n] == line[n]; n++) ;
+        if (msg[n] != '\0' || n > LOG_W - 16) continue;
+        cnt = 1;
+        if (line[n] == ' ' && line[n + 1] == '(' && line[n + 2] == 'x') {
+            cnt = 0;
+            for (d = n + 3; line[d] >= '0' && line[d] <= '9'; d++)
+                cnt = cnt * 10 + (unsigned long)(line[d] - '0');
+        } else if (line[n] != '\0') continue;    /* a longer, different line */
+        if (cnt < 999999UL) cnt++;
+        d = n;
+        line[d++] = ' '; line[d++] = '('; line[d++] = 'x';
+        ColNum(line, &d, cnt, 1, ')');
+        line[d] = '\0';
+        if (gShowPing) gLogDirty = gLogFull = true;   /* visible: redraw it */
+        return true;
+    }
+    return false;
+}
+
+/* Append one log line of the given kind (0=primary, 1=detail, 2=command,
+ * 3=liveness poll) to the ring. */
 static void AddLogLine(const char *msg, short kind)
 {
     short k;
     if (gStatusWindow == NULL) return;
+    if (kind == 3 && LogRepeat(msg)) return;
 
     for (k = 0; msg[k] && k < LOG_W - 1; k++) gLog[gLogHead][k] = msg[k];
     gLog[gLogHead][k] = '\0';
@@ -843,23 +1120,15 @@ void StatusMessage(const char *msg) { AddLogLine(msg, 0); }
  * Called from command.c's Trace(). */
 void StatusDetail(const char *msg) { AddLogLine(msg, 1); }
 
-/* Append a small unsigned decimal to a C string at *p — no StdCLib/NumToString
- * dependency (the daemon's minimal link has bitten NumToString before). */
-static void AB_appendNum(char *buf, short *p, unsigned long n)
-{
-    char  tmp[12];
-    short t = 0;
-    if (n == 0) { buf[(*p)++] = '0'; return; }
-    while (n > 0) { tmp[t++] = (char)('0' + (short)(n % 10)); n /= 10; }
-    while (t > 0) buf[(*p)++] = tmp[--t];
-}
-
 /* Dump the mounted volumes to the Verbose console — the same figures DISKINFO
  * reports (PBHGetVInfoSync, no ToolServer), but on screen. Called when "Show
- * details" is switched on, so the menu item actually surfaces something: each
- * line is "<name>  <free>/<total> KB  (vRefNum)". free == 0 marks a read-only
- * CD. Lines are kind-0 so they stay visible regardless of the details flag. */
-static void ShowVolumeDetails(void)
+ * details" is switched on, so the menu item actually surfaces something, and
+ * after every DISKINFO, so the console shows what the host was told (before
+ * 2026-11-23 it logged only the word "DISKINFO"). Each line is
+ * a padded table: name, free K, total K, vRefNum. free == 0 marks a read-only CD.
+ * Lines are kind-0 so they stay visible regardless of the details flag.
+ * only: a Pascal volume name (no colon) to print just that one; NULL = all. */
+static void ShowVolumeDetails(ConstStr255Param only)
 {
     HParamBlockRec pb;
     Str63          nm;
@@ -867,31 +1136,46 @@ static void ShowVolumeDetails(void)
     unsigned long  blk, total, freeb;
     char           line[LOG_W];
 
-    StatusMessage("--- Mounted volumes (name  free/total KB) ---");
+    StatusMessage("--- Mounted volumes ---");
+    StatusMessage("Volume                      Free     Total   Ref");
     for (i = 1; ; i++) {
         for (k = 0; k < (short)sizeof(pb); k++) ((char *)&pb)[k] = 0;
         pb.volumeParam.ioNamePtr  = nm;
         pb.volumeParam.ioVRefNum  = 0;
         pb.volumeParam.ioVolIndex = i;        /* walk every mounted volume */
         if (PBHGetVInfoSync(&pb) != noErr) break;   /* past the last one */
+        if (only != NULL && !EqualString(nm, only, false, true)) continue;
 
         blk   = (unsigned long)pb.volumeParam.ioVAlBlkSiz;
         total = (unsigned long)((unsigned short)pb.volumeParam.ioVNmAlBlks) * blk;
         freeb = (unsigned long)((unsigned short)pb.volumeParam.ioVFrBlk) * blk;
 
+        /* a table in the fixed-width log font (2026-11-24): name cut at 23 */
         p = 0;
         len = nm[0];
-        for (k = 0; k < len && p < LOG_W - 40; k++) line[p++] = (char)nm[k + 1];
-        line[p++] = ' '; line[p++] = ' ';
-        AB_appendNum(line, &p, freeb / 1024UL);
-        line[p++] = '/';
-        AB_appendNum(line, &p, total / 1024UL);
-        line[p++] = ' '; line[p++] = 'K'; line[p++] = ' '; line[p++] = '(';
-        AB_appendNum(line, &p, (unsigned long)(-pb.volumeParam.ioVRefNum));
-        line[p++] = ')';
+        for (k = 0; k < len && k < 23; k++) line[p++] = (char)nm[k + 1];
+        ColPad(line, &p, 24);
+        ColNum(line, &p, freeb / 1024UL, 7, 'K');
+        ColNum(line, &p, total / 1024UL, 9, 'K');
+        ColNum(line, &p, (unsigned long)(-pb.volumeParam.ioVRefNum), 6, 0);
         line[p]   = '\0';
         StatusMessage(line);
     }
+}
+
+/* DISKINFO[:<vol>] -> the same volumes in the console. Its own function, not
+ * inline in ProcessRequest: that frame sits at the 68K 32 KB edge, and the
+ * Str63 here would count against it (docs/OPERATING_NOTES.md, 2026-08-30). */
+static void ShowDiskInfoRequest(const char *request)
+{
+    Str63 vn;
+    short a = (short)strlen(PROTO_DISKINFO), n = 0;
+    if (request[a] == ':') a++;
+    while (request[a] && request[a] != ':' && request[a] != '\r' &&
+           request[a] != '\n' && n < 63)
+        vn[++n] = (unsigned char)request[a++];
+    vn[0] = (unsigned char)n;
+    ShowVolumeDetails(n > 0 ? vn : NULL);
 }
 
 /* Show alive indicator with LEDs */
@@ -962,6 +1246,8 @@ static void ApplyLogFont(void)
     ResolveLogFont();
     if (gStatusWindow != NULL) {
         SetPort(gStatusWindow);
+        MeasureLogCol();                 /* the H scroller's unit follows the font */
+        SetLogTERects();
         InvalRect(&gStatusWindow->portRect);
         gLogDirty = gLogFull = true;
     }
@@ -970,7 +1256,7 @@ static void ApplyLogFont(void)
 static void SetConsoleTheme(short v, Boolean save)
 {
     gPrefs.console = v;
-    if (gEditMenu != NULL) CheckItem(gEditMenu, NIGHT_ITEM, v == 1);
+    if (gViewMenu != NULL) CheckItem(gViewMenu, NIGHT_ITEM, v == 1);
     if (gStatusWindow != NULL) {
         SetPort(gStatusWindow);
         InvalRect(&gStatusWindow->portRect);
@@ -1244,15 +1530,16 @@ void HandleMenuCommand(long menuResult)
             break;
 
         case FILE_MENU_ID:
-            if (menuItem == QUIT_ITEM) {
-                gRunning = false;
-            }
+            if (menuItem == CLOSE_ITEM) SetMonitorVisible(false);   /* back: View > Console */
             break;
 
         case EDIT_MENU_ID:
-            if (menuItem == COPY_ITEM) {
-                DoCopyLog();
-            } else if (menuItem == CONSOLE_ITEM) {
+            if (SystemEdit((short)(menuItem - 1))) break;   /* a DA in front */
+            if (menuItem == COPY_ITEM) DoCopyLog();
+            break;
+
+        case VIEW_MENU_ID:
+            if (menuItem == CONSOLE_ITEM) {
                 /* The way back from MONITOR:0 without a socket — and the way to
                  * get the console OUT OF THE WAY without one either. Both
                  * directions, because a user who can only hide via the control
@@ -1262,31 +1549,18 @@ void HandleMenuCommand(long menuResult)
                 SetConsoleTheme((short)(gPrefs.console == 1 ? 0 : 1), true);
             } else if (menuItem == DETAILS_ITEM) {
                 gShowDetails = !gShowDetails;
-                CheckItem(gEditMenu, DETAILS_ITEM, gShowDetails);
+                CheckItem(gViewMenu, DETAILS_ITEM, gShowDetails);
                 gLogDirty = gLogFull = true;   /* re-sync to expand/collapse detail lines */
-                if (gShowDetails) ShowVolumeDetails();  /* surface the mounted volumes */
+                if (gShowDetails) ShowVolumeDetails(NULL);  /* surface the mounted volumes */
+            } else if (menuItem == PING_ITEM) {
+                gShowPing = !gShowPing;
+                CheckItem(gViewMenu, PING_ITEM, gShowPing);
+                gLogDirty = gLogFull = true;   /* re-sync to show/hide the poll lines */
             }
             break;
     }
 
     HiliteMenu(0);
-}
-
-/*
- * Initialize menus
- */
-void InitMenuBar(void)
-{
-    gAppleMenu = NewMenu(APPLE_MENU_ID, "\p\024");
-    AppendMenu(gAppleMenu, "\pAbout AppleBridge...;(-");
-    AppendResMenu(gAppleMenu, 'DRVR');
-    InsertMenu(gAppleMenu, 0);
-
-    gFileMenu = NewMenu(FILE_MENU_ID, "\pFile");
-    AppendMenu(gFileMenu, "\pQuit/Q");
-    InsertMenu(gFileMenu, 0);
-
-    DrawMenuBar();
 }
 
 /*
@@ -1521,13 +1795,26 @@ void OpenMonitor(void)
         AppendMenu(gAppleMenu, "\pAbout AppleBridge...;(-");
         AppendResMenu(gAppleMenu, 'DRVR');
         InsertMenu(gAppleMenu, 0);
-        /* Edit menu so Copy (Cmd-C) is discoverable; the system also routes the
-         * standard Cut/Copy/Paste keys here. We only act on Copy. */
+        /* The standard Edit menu (Copy is the console's one edit command), and
+         * View for the console's switches - their place in System 7, not Edit
+         * (2026-11-24). The Command keys are unchanged. */
+        gFileMenu = NewMenu(FILE_MENU_ID, "\pFile");   /* System 7 order: File, Edit, View */
+        AppendMenu(gFileMenu, "\pClose/W");
+        InsertMenu(gFileMenu, 0);
         gEditMenu = NewMenu(EDIT_MENU_ID, "\pEdit");
-        AppendMenu(gEditMenu, "\pCopy/C;(-;Show details/D;Console/K;Night mode/N");
-        CheckItem(gEditMenu, DETAILS_ITEM, gShowDetails);
-        CheckItem(gEditMenu, NIGHT_ITEM, gPrefs.console == 1);
+        /* Dim with DisableItem, NOT the '(' metacharacter: built as
+         * "(Undo/Z;(-;(Cut/X;..." the menu opened EMPTY on C2 - right size,
+         * separator drawn, no item text at all (2026-11-24, framebuffer). */
+        AppendMenu(gEditMenu, "\pUndo/Z;(-;Cut/X;Copy/C;Paste/V;Clear");
+        DisableItem(gEditMenu, 1); DisableItem(gEditMenu, 3);   /* dimmed for */
+        DisableItem(gEditMenu, 5); DisableItem(gEditMenu, 6);   /* the console */
         InsertMenu(gEditMenu, 0);
+        gViewMenu = NewMenu(VIEW_MENU_ID, "\pView");
+        AppendMenu(gViewMenu, "\pShow details/D;Ping/P;Console/K;Night mode/N");
+        CheckItem(gViewMenu, DETAILS_ITEM, gShowDetails);
+        CheckItem(gViewMenu, PING_ITEM, gShowPing);
+        CheckItem(gViewMenu, NIGHT_ITEM, gPrefs.console == 1);
+        InsertMenu(gViewMenu, 0);
         DrawMenuBar();
         gMenuInstalled = true;
     }
@@ -1551,8 +1838,16 @@ void OpenMonitor(void)
             gLineHeight = fi.ascent + fi.descent + fi.leading;
             if (gLineHeight < 1) gLineHeight = 11;
         }
-        gLogTE = TEStyleNew(&body, &body); /* styled record so command lines can be bold */
+        gColW = CharWidth('M');          /* the log font is set on the port here */
+        if (gColW < 1) gColW = 6;
+        gTextW = (short)(LOG_W * gColW + 8);
+        {
+            Rect dest = body;
+            dest.right = (short)(body.left + gTextW);   /* never wrap: see crOnly */
+            gLogTE = TEStyleNew(&dest, &body); /* styled record so command lines can be bold */
+        }
         if (gLogTE != NULL) {
+            (**gLogTE).crOnly = -1;       /* break at CR only; the H scroller pans */
             TEAutoView(true, gLogTE);     /* let TESelView scroll to the bottom */
             TEActivate(gLogTE);           /* show selection highlight */
         }
@@ -1660,6 +1955,8 @@ Boolean CheckUserAbort(void)
      * per call, so the connect poll and reconnect wait IDLE instead of spinning
      * at 100% — Basilisk's idlewait then throttles host CPU and the Finder stays
      * reachable. It also delivers our window/menu events like GetNextEvent did. */
+    ServiceScrollHold();   /* a held scroller arrow/track keeps scrolling */
+    TreeService();         /* a TREE/D past 45 s goes on here, a few ticks a pass */
     if (WaitNextEvent(everyEvent, &event, 2L, NULL)) {
         switch (event.what) {
             case kHighLevelEvent:
@@ -1736,13 +2033,7 @@ Boolean CheckUserAbort(void)
                                 }
                                 /* Reflow the TE field to the new body; the next
                                  * ShowAlive re-wraps + re-pins to the bottom. */
-                                if (gLogTE != NULL) {
-                                    Rect body;
-                                    MonitorBodyRect(&body);
-                                    (**gLogTE).viewRect = body;
-                                    (**gLogTE).destRect = body;
-                                    gLogDirty = gLogFull = true;
-                                }
+                                SetLogTERects();
                                 InvalRect(&window->portRect);
                                 SaveMonitorBounds();
                             }
@@ -1763,13 +2054,7 @@ Boolean CheckUserAbort(void)
                                 MoveControl(gScroll, w2 - 15, 19);
                                 SizeControl(gScroll, 16, (h2 - 14) - 19);
                             }
-                            if (gLogTE != NULL) {
-                                Rect body;
-                                MonitorBodyRect(&body);
-                                (**gLogTE).viewRect = body;
-                                (**gLogTE).destRect = body;
-                                gLogDirty = gLogFull = true;
-                            }
+                            SetLogTERects();
                             InvalRect(&window->portRect);
                             SaveMonitorBounds();
                         }
@@ -1797,24 +2082,42 @@ Boolean CheckUserAbort(void)
                              * app's window). NeXT layout: both arrows together at
                              * the bottom (±1 line), the rest of the track = a
                              * proportional jump to that spot. */
-                            if (gScroll != NULL && PtInRect(pt, &sbR)) {
-                                short v  = GetControlValue(gScroll);
-                                short mx = GetControlMaximum(gScroll);
-                                if (PtInRect(pt, &upR)) {
-                                    v -= 1;
-                                } else if (PtInRect(pt, &downR)) {
-                                    v += 1;
-                                } else {
-                                    short trackY = pt.v - areaR.top;
-                                    short trackH = areaR.bottom - areaR.top;
-                                    if (trackH > 0)
-                                        v = (short)(((long)trackY * mx) / trackH);
+                            {
+                                Rect hTr, hL, hR, hA;
+                                HScrollerParts(&hTr, &hL, &hR, &hA);
+                                if (gLogTE != NULL && PtInRect(pt, &hTr)) {
+                                    if (PtInRect(pt, &hL)) {
+                                        ScrollLogHSet((short)(LogHPos() - 2 * gColW));
+                                        gScrollHold = -3;
+                                        gScrollNext = TickCount() + kScrollDelay;
+                                    } else if (PtInRect(pt, &hR)) {
+                                        ScrollLogHSet((short)(LogHPos() + 2 * gColW));
+                                        gScrollHold = 3;
+                                        gScrollNext = TickCount() + kScrollDelay;
+                                    } else if (PtInRect(pt, &hA)) {
+                                        ScrollLogHSet(HScrollTrackValue(pt));
+                                        gScrollHold = 4;
+                                    }
+                                    break;
                                 }
-                                if (v < 0) v = 0;
-                                if (v > mx) v = mx;
-                                SetControlValue(gScroll, v);
-                                ScrollLogTo(v);
-                                DrawScroller();
+                            }
+                            if (gScroll != NULL && PtInRect(pt, &sbR)) {
+                                /* One step now; holding repeats it from the
+                                 * main loop (ServiceScrollHold). The position
+                                 * comes from the TE, not the hidden control,
+                                 * which can lag behind it. */
+                                if (PtInRect(pt, &upR)) {
+                                    ScrollLogSet((short)(LogScrollPos() - 1));
+                                    gScrollHold = -1;
+                                    gScrollNext = TickCount() + kScrollDelay;
+                                } else if (PtInRect(pt, &downR)) {
+                                    ScrollLogSet((short)(LogScrollPos() + 1));
+                                    gScrollHold = 1;
+                                    gScrollNext = TickCount() + kScrollDelay;
+                                } else {
+                                    ScrollLogSet(ScrollTrackValue(pt));
+                                    gScrollHold = 2;   /* drag: follow the pointer */
+                                }
                             } else if (window != FrontWindow()) {
                                 SelectWindow(window);
                             } else if (gLogTE != NULL) {
@@ -2344,7 +2647,7 @@ static void SetMonitorVisible(Boolean show)
     } else {
         if (gStatusWindow != NULL) HideWindow(gStatusWindow);
     }
-    if (gEditMenu != NULL) CheckItem(gEditMenu, CONSOLE_ITEM, MonitorVisible());
+    if (gViewMenu != NULL) CheckItem(gViewMenu, CONSOLE_ITEM, MonitorVisible());
 }
 
 
@@ -3254,9 +3557,12 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
      * bar, which only ever shows the LAST verb. Two carve-outs:
      *   - COMMAND (MPW/ToolServer) has its own richer "> cmd" + per-line
      *     output logging further down, so skip it here (avoid a double line).
-     *   - Heartbeats (PING / STAT) fire constantly, so log them as kind 1
-     *     (detail), which the console already hides unless gShowDetails is on
-     *     -- full coverage, no flood. Everything else is kind 2 (bold verb),
+     *   - Liveness polls fire constantly: the heartbeat (PING / STAT) and the
+     *     hub watchdogs' PROCLIST/Q (every 30 s per hang/c2 watch; a plain
+     *     PROCLIST is somebody asking and is shown, 2026-11-24). Log them as
+     *     kind 3, which the console hides unless View > Ping is ticked -- full
+     *     coverage, no flood (2026-11-23: they used to be kind 1, so turning
+     *     on Show details also buried the console in heartbeats). Everything else is kind 2 (bold verb),
      *     matching COMMAND's bold-input style. Logs the first request line
      *     only (the "VERB:args" header), so payloads stay out of the log. */
     if (strncmp(request, PROTO_COMMAND, strlen(PROTO_COMMAND)) != 0) {
@@ -3276,8 +3582,9 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         vt[vk] = '\0';
         if (mask >= 0 && colons > mask) strcat(vt, ":***");
         if (strncmp(request, "PING", 4) == 0 ||
-            strncmp(request, PROTO_STAT, strlen(PROTO_STAT)) == 0)
-            AddLogLine(vt, 1);   /* heartbeat -> detail (hidden when collapsed) */
+            strncmp(request, PROTO_STAT, strlen(PROTO_STAT)) == 0 ||
+            strncmp(request, PROTO_PROCLIST "/Q", strlen(PROTO_PROCLIST) + 2) == 0)
+            AddLogLine(vt, 3);   /* liveness poll -> hidden unless View > Ping */
         else
             AddLogLine(vt, 2);   /* verb -> bold, like COMMAND's "> ..." */
     }
@@ -5489,6 +5796,18 @@ msinstall_reply:
         return ok;
     }
 
+    /* TREE:/TREE/F:/TREE/U:/TREE/F/U: verb: the folder tree, walked in the
+     * daemon (fileio.c). */
+    if (strncmp(request, PROTO_TREE, strlen(PROTO_TREE)) == 0 ||
+        strncmp(request, PROTO_TREEOPT, strlen(PROTO_TREEOPT)) == 0) {
+        Boolean ok;
+        SetActivity("TREE");
+        ok = TreeVerb(conn, request, requestLen);
+        gLastTX = TickCount();
+        gTXCount++;
+        return ok;
+    }
+
     /* PROCLIST: verb: the running processes via GetNextProcess (no ToolServer,
      * no GUI). Checked BEFORE DISKINFO only for tidiness — the prefixes differ. */
     if (strncmp(request, PROTO_PROCLIST, strlen(PROTO_PROCLIST)) == 0) {
@@ -5505,6 +5824,7 @@ msinstall_reply:
         Boolean ok;
         SetActivity("DISKINFO");
         ok = DiskInfoVerb(conn, request, requestLen);
+        ShowDiskInfoRequest(request);   /* and on screen, not only to the host */
         gLastTX = TickCount();
         gTXCount++;
         return ok;

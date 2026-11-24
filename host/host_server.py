@@ -88,6 +88,8 @@ LONG_CMDS = {
     "catenate", "files", "print",
 }
 DEFAULT_TIMEOUT = 15.0
+TREE_TIMEOUT = 120.0   # TREE, walked in the guest (0.8d53): the daemon answers
+                       # within ~45 s (plain: stops; /D: goes on in the background)
 LONG_TIMEOUT = 240.0   # multi-MB transfers (large DumpFile/Catenate) over OT
 SCREENSHOT_TIMEOUT = 30.0   # full-screen pixmap transfer + decode
 # NBP always runs its full retry window before answering (it cannot know when
@@ -267,7 +269,7 @@ def guest_front_app(server, ask=None):
     # Same shape as the two AESEND dialects the parallel session hit the same
     # day: one string, two senders, two meanings — and the wrong one fails
     # QUIETLY, because an unrouted verb is a perfectly good MPW no-op.
-    reply = (ask or server.send_raw)("PROCLIST")
+    reply = (ask or server.send_raw)("PROCLIST/Q")   # /Q: a probe, not shown on the console
     if not reply:
         log("guest_front_app: PROCLIST returned nothing")
         return None
@@ -359,7 +361,7 @@ ROUTED_VERBS = ("PING", "STATUS-via-mac_status", "DISKINFO", "LISTDIR", "MONITOR
                 "PROCLIST", "SCREENSHOT", "NBPLOOK", "AFPMOUNT", "AFPUNMOUNT",
                 "CLIPGET", "CLIPSET", "LAUNCH:", "QUIT:", "KEY:", "TYPE:",
                 "CLICK:", "REBOOT", "SHUTDOWN", "SWAPSELF", "QUITDAEMON",
-                "DELETE:", "MKDIR:")
+                "DELETE:", "MKDIR:", "TREE:", "TREE/")
 
 
 def looks_like_verb(cmd):
@@ -2637,6 +2639,13 @@ def run_control_server(server):
                         args = cmd[len("NBPLOOK:"):] if ":" in cmd else ""
                         resp = server.nbp_lookup(args)
                         out = resp if resp is not None else "No response"
+                    elif cmd.startswith("TREE:") or cmd.startswith("TREE/"):
+                        # TREE[/F][/D]:<path> -> folder tree walked in the daemon
+                        # (0.8d53). The daemon answers within ~45 s: a plain TREE
+                        # stops there, a TREE/D finishes its file in the background.
+                        log(f"verb: {cmd[:60]!r}")
+                        resp = server.send_raw(cmd, timeout=TREE_TIMEOUT)
+                        out = resp if resp is not None else "No response"
                     elif cmd == "DISKINFO" or cmd.startswith("DISKINFO:"):
                         # DISKINFO[:<volume>] -> name/vRefNum/total/free per line
                         resp = server.send_raw(cmd)
@@ -2699,7 +2708,7 @@ def run_control_server(server):
                           or cmd == "CPINSTALL" or cmd == "CPARM" or cmd == "CPDISARM"
                           or cmd == "CPREAD" or cmd == "CPUNINSTALL"
                           or cmd == "CPJINSTALL" or cmd == "CPJUNINSTALL"
-                          or cmd == "PROCLIST" or cmd == "KEYSTAT"
+                          or cmd == "PROCLIST" or cmd == "PROCLIST/Q" or cmd == "KEYSTAT"
                           or cmd.startswith("LAUNCH:") or cmd.startswith("QUIT:")
                           or cmd.startswith("KEY:") or cmd.startswith("TYPE:")
                           or cmd.startswith("CLICK:")

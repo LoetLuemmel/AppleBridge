@@ -54,9 +54,10 @@ def test_no_reply_is_not_a_name():
 
 
 def test_it_asks_PROCLIST_and_nothing_else():
+    """/Q: the guard is a probe, so the daemon keeps it off the console."""
     seen = []
     host_server.guest_front_app(None, ask=lambda c: seen.append(c) or REPLY)
-    assert seen == ["PROCLIST"], seen
+    assert seen == ["PROCLIST/Q"], seen
 
 
 def test_it_uses_the_RAW_sender():

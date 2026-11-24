@@ -468,13 +468,14 @@ e.g. ["command"]. For a menu command it's usually clearer to call mac_menu.""",
    Items with NO Command-key equivalent can't be reached this way.
 
 2) BY NAME (`title` + `item`): journal-drives a menu on the DAEMON's OWN menu
-   bar (Apple / Edit) — matching the menu title and the item by name (or item
+   bar (Apple / Edit / View) — matching the menu title and the item by name (or item
    by 1-based index), then dispatching it. This is the ONLY way to reach a
    shortcut-LESS item, but it works only on the daemon's own menus: a background
    daemon's MenuSelect uses its own menu list and can't reach a front app
    (proven by the JPROBE spike). Use it for the daemon's own commands, e.g.
    title="Edit", item="Copy" (copies the Verbose log to the clipboard) or
-   item="Show details". Reports the resolved menu id + selected item.
+   title="View", item="Show details" (View holds Show details / Ping /
+   Console / Night mode since 0.8d53; before, they were under Edit). Reports the resolved menu id + selected item.
 
 Give EITHER `key` OR (`title` and `item`).""",
         "inputSchema": {
