@@ -100,7 +100,7 @@ def answer_bomb(f):
         return
     time.sleep(25)                                            # System 7 restarts inside the same emulator process
     try:
-        GB.main(420); back = GB.ctrl("PROCLIST", 12).startswith("STATUS:0")
+        GB.main(420); back = GB.ctrl("PROCLIST/Q", 12).startswith("STATUS:0")
     except SystemExit as e:
         back = not e.code
     except Exception as e:
@@ -142,7 +142,7 @@ def main():
                 GB.say(f"Auf dem Gast {WHERE} wartet ein Dialog: {'AppleShare-Anmeldung' if d == 'appleshare_login' else 'IP-Adresskonflikt'}. Bitte prüfen.")
             time.sleep(CHECK_S); continue
         waiting_d = None
-        answered = GB.ctrl("PROCLIST", 12).startswith("STATUS:0")
+        answered = GB.ctrl("PROCLIST/Q", 12).startswith("STATUS:0")
         silent = 0 if answered else silent + 1
         if answered: alerted = None
         if silent >= 3 and f is not None and alerted != "unknown":

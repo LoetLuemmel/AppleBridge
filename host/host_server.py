@@ -269,7 +269,7 @@ def guest_front_app(server, ask=None):
     # Same shape as the two AESEND dialects the parallel session hit the same
     # day: one string, two senders, two meanings — and the wrong one fails
     # QUIETLY, because an unrouted verb is a perfectly good MPW no-op.
-    reply = (ask or server.send_raw)("PROCLIST")
+    reply = (ask or server.send_raw)("PROCLIST/Q")   # /Q: a probe, not shown on the console
     if not reply:
         log("guest_front_app: PROCLIST returned nothing")
         return None
@@ -2708,7 +2708,7 @@ def run_control_server(server):
                           or cmd == "CPINSTALL" or cmd == "CPARM" or cmd == "CPDISARM"
                           or cmd == "CPREAD" or cmd == "CPUNINSTALL"
                           or cmd == "CPJINSTALL" or cmd == "CPJUNINSTALL"
-                          or cmd == "PROCLIST" or cmd == "KEYSTAT"
+                          or cmd == "PROCLIST" or cmd == "PROCLIST/Q" or cmd == "KEYSTAT"
                           or cmd.startswith("LAUNCH:") or cmd.startswith("QUIT:")
                           or cmd.startswith("KEY:") or cmd.startswith("TYPE:")
                           or cmd.startswith("CLICK:")

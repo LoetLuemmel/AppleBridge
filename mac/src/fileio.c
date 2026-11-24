@@ -1288,7 +1288,14 @@ Boolean ProcListVerb(ABConn *conn, char *request, long requestLen)
     short               count = 0;
     Boolean             more  = false;
 
-    (void)request; (void)requestLen;          /* the verb takes no argument */
+    /* PROCLIST/Q = a liveness probe (hub watchdogs, the host's front-app
+     * guard): reply only. Plain PROCLIST is somebody asking, so the table also
+     * goes to the console, like DISKINFO (2026-11-24). An older daemon ignores
+     * the suffix, so the watchers may send /Q to every guest. */
+    Boolean quiet = (requestLen > 9 && request[8] == '/' &&
+                     (request[9] == 'Q' || request[9] == 'q'));
+
+    if (!quiet) StatusMessage("--- Processes (name  type/creator  free/size K) ---");
 
     res.exitCode   = -1;
     res.outData    = NULL;
@@ -1343,6 +1350,24 @@ Boolean ProcListVerb(ABConn *conn, char *request, long requestLen)
         line[p++] = (char)((psn.highLongOfPSN == front.highLongOfPSN &&
                             psn.lowLongOfPSN  == front.lowLongOfPSN) ? '1' : '0');
         line[p++] = '\r';
+
+        if (!quiet) {                         /* the same row, readable */
+            char  cl[80];
+            short q = 0;
+            for (k = 0; k < len; k++) cl[q++] = (char)nm[k + 1];
+            cl[q++] = ' '; cl[q++] = ' ';
+            for (k = 0; k < 4; k++) cl[q++] = ((char *)&info.processType)[k];
+            cl[q++] = '/';
+            for (k = 0; k < 4; k++) cl[q++] = ((char *)&info.processSignature)[k];
+            cl[q++] = ' '; cl[q++] = ' ';
+            LD_unum(cl, &q, (unsigned long)info.processFreeMem / 1024UL);
+            cl[q++] = '/';
+            LD_unum(cl, &q, (unsigned long)info.processSize / 1024UL);
+            cl[q++] = ' '; cl[q++] = 'K';
+            if (line[p - 2] == '1') { cl[q++] = ' '; cl[q++] = ' '; cl[q++] = '*'; cl[q++] = 'f'; cl[q++] = 'r'; cl[q++] = 'o'; cl[q++] = 'n'; cl[q++] = 't'; }
+            cl[q] = '\0';
+            StatusMessage(cl);
+        }
 
         {
             long oldSize = GetHandleSize(h);

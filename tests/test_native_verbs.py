@@ -188,6 +188,30 @@ def test_proclist_is_routed_before_the_mpw_fall_through():
     assert HOST_SRC.index('cmd == "PROCLIST"') < _fallthrough_at()
 
 
+def test_quiet_proclist_is_routed_too():
+    """PROCLIST/Q is the watchers' probe (2026-11-24). Unrouted, it would reach
+    ToolServer and come back STATUS:0 with no Finder in it — hang_watch would
+    count a healthy guest as silent."""
+    assert HOST_SRC.index('cmd == "PROCLIST/Q"') < _fallthrough_at()
+
+
+def test_only_the_quiet_proclist_is_hidden_on_the_console():
+    """A plain PROCLIST is somebody asking: bold line + table. Only /Q is a
+    liveness poll (kind 3, shown with Edit > Ping)."""
+    assert 'PROTO_PROCLIST "/Q", strlen(PROTO_PROCLIST) + 2' in DAEMON_SRC
+    fio = open(os.path.join(os.path.dirname(__file__), "..", "mac", "src",
+                            "fileio.c")).read()
+    body = fio.split("Boolean ProcListVerb(")[1].split("\n}\n")[0]
+    assert "if (!quiet) StatusMessage(" in body
+
+
+def test_watchers_probe_with_the_quiet_proclist():
+    here = os.path.join(os.path.dirname(__file__), "..", "host")
+    for f in ("hang_watch.py", "dialog_watch.py"):
+        src = open(os.path.join(here, f)).read()
+        assert "PROCLIST/Q" in src, f
+
+
 def test_daemon_dispatches_proclist_before_the_generic_parse():
     parse_at = DAEMON_SRC.index("result = ParseCommand(request")
     assert DAEMON_SRC.index("strncmp(request, PROTO_PROCLIST") < parse_at

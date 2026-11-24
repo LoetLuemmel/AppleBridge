@@ -3529,7 +3529,8 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
      *   - COMMAND (MPW/ToolServer) has its own richer "> cmd" + per-line
      *     output logging further down, so skip it here (avoid a double line).
      *   - Liveness polls fire constantly: the heartbeat (PING / STAT) and the
-     *     hub watchdogs' PROCLIST (every 30 s per hang/c2 watch). Log them as
+     *     hub watchdogs' PROCLIST/Q (every 30 s per hang/c2 watch; a plain
+     *     PROCLIST is somebody asking and is shown, 2026-11-24). Log them as
      *     kind 3, which the console hides unless Edit > Ping is ticked -- full
      *     coverage, no flood (2026-11-23: they used to be kind 1, so turning
      *     on Show details also buried the console in heartbeats). Everything else is kind 2 (bold verb),
@@ -3553,7 +3554,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         if (mask >= 0 && colons > mask) strcat(vt, ":***");
         if (strncmp(request, "PING", 4) == 0 ||
             strncmp(request, PROTO_STAT, strlen(PROTO_STAT)) == 0 ||
-            strncmp(request, PROTO_PROCLIST, strlen(PROTO_PROCLIST)) == 0)
+            strncmp(request, PROTO_PROCLIST "/Q", strlen(PROTO_PROCLIST) + 2) == 0)
             AddLogLine(vt, 3);   /* liveness poll -> hidden unless Edit > Ping */
         else
             AddLogLine(vt, 2);   /* verb -> bold, like COMMAND's "> ..." */

@@ -170,11 +170,21 @@ def frame_hash():
 
 
 def bridge_answers():
-    """True / False / None (control port refused = host server down)"""
+    """True / False / None (control port refused = host server down)
+
+    Probes with PROCLIST/Q, which the daemon keeps off its console (0.8d53+; an
+    older daemon ignores the suffix). A host server that predates the /Q route
+    hands it to ToolServer and gets no Finder back, so a miss is asked again
+    plainly before it counts as silence (2026-11-24)."""
+    r = _ask_proclist(b"PROCLIST/Q\n\n")
+    return r if r is not False else _ask_proclist(b"PROCLIST\n\n")
+
+
+def _ask_proclist(req):
     try:
         with socket.create_connection(("127.0.0.1", PORT), timeout=5) as s:
             s.settimeout(20)
-            s.sendall(b"PROCLIST\n\n")
+            s.sendall(req)
             b = b""
             while True:
                 d = s.recv(65536)
