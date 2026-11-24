@@ -222,6 +222,8 @@ void    TreeService(void);   /* main loop: carry a background TREE/D on */
  * `location`+`size` bound the process partition, so an A5 observed elsewhere
  * (the counter probe's LastA5) can be attributed to a NAME by containment. */
 Boolean ProcListVerb(ABConn *conn, char *request, long requestLen);
+void ColPad(char *buf, short *pos, short col);              /* console tables */
+void ColNum(char *buf, short *pos, unsigned long n, short w, char suffix);
 
 /* Monitor window visibility (main.c): the Verbose console covers the desktop,
  * which is in the way when the guest's GUI is being driven. MONITOR:0 hides it

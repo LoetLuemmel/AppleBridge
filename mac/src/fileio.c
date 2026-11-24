@@ -434,6 +434,27 @@ static void LD_unum(char *buf, short *pos, unsigned long n)
     for (j = i - 1; j >= 0; j--) buf[(*pos)++] = tmp[j];
 }
 
+/* Console tables (PROCLIST, DISKINFO): the log font is Monaco, fixed width,
+ * so columns line up once every field is padded (2026-11-24 — the first
+ * version separated fields by two spaces and came out ragged).
+ * ColPad: spaces up to column col (at least one, so fields never touch).
+ * ColNum: n right-aligned in a field of width w, then the suffix char (or 0). */
+void ColPad(char *buf, short *pos, short col)
+{
+    do buf[(*pos)++] = ' '; while (*pos < col);
+}
+
+void ColNum(char *buf, short *pos, unsigned long n, short w, char suffix)
+{
+    char  tmp[12];
+    short d = 0;
+    tmp[d++] = (char)('0' + n % 10);
+    while ((n /= 10) > 0 && d < 11) tmp[d++] = (char)('0' + n % 10);
+    while (w-- > d) buf[(*pos)++] = ' ';
+    while (d > 0) buf[(*pos)++] = tmp[--d];
+    if (suffix) buf[(*pos)++] = suffix;
+}
+
 /*
  * LISTDIR:<path> — enumerate a folder with PBGetCatInfo (File Manager only, no
  * ToolServer) and stream a tab-separated listing back. One line per entry:
@@ -1295,7 +1316,10 @@ Boolean ProcListVerb(ABConn *conn, char *request, long requestLen)
     Boolean quiet = (requestLen > 9 && request[8] == '/' &&
                      (request[9] == 'Q' || request[9] == 'q'));
 
-    if (!quiet) StatusMessage("--- Processes (name  type/creator  free/size K) ---");
+    if (!quiet) {
+        StatusMessage("--- Processes ---");
+        StatusMessage("Name                 Type Crtr    Free   Size");
+    }
 
     res.exitCode   = -1;
     res.outData    = NULL;
@@ -1351,20 +1375,20 @@ Boolean ProcListVerb(ABConn *conn, char *request, long requestLen)
                             psn.lowLongOfPSN  == front.lowLongOfPSN) ? '1' : '0');
         line[p++] = '\r';
 
-        if (!quiet) {                         /* the same row, readable */
-            char  cl[80];
+        if (!quiet) {                         /* the same row, as a table */
+            char  cl[64];
             short q = 0;
-            for (k = 0; k < len; k++) cl[q++] = (char)nm[k + 1];
-            cl[q++] = ' '; cl[q++] = ' ';
+            for (k = 0; k < len && k < 20; k++) cl[q++] = (char)nm[k + 1];
+            ColPad(cl, &q, 21);
             for (k = 0; k < 4; k++) cl[q++] = ((char *)&info.processType)[k];
-            cl[q++] = '/';
+            cl[q++] = ' ';
             for (k = 0; k < 4; k++) cl[q++] = ((char *)&info.processSignature)[k];
-            cl[q++] = ' '; cl[q++] = ' ';
-            LD_unum(cl, &q, (unsigned long)info.processFreeMem / 1024UL);
-            cl[q++] = '/';
-            LD_unum(cl, &q, (unsigned long)info.processSize / 1024UL);
-            cl[q++] = ' '; cl[q++] = 'K';
-            if (line[p - 2] == '1') { cl[q++] = ' '; cl[q++] = ' '; cl[q++] = '*'; cl[q++] = 'f'; cl[q++] = 'r'; cl[q++] = 'o'; cl[q++] = 'n'; cl[q++] = 't'; }
+            ColNum(cl, &q, (unsigned long)info.processFreeMem / 1024UL, 7, 'K');
+            ColNum(cl, &q, (unsigned long)info.processSize / 1024UL, 6, 'K');
+            if (line[p - 2] == '1') {
+                const char *f = "  front";
+                while (*f) cl[q++] = *f++;
+            }
             cl[q] = '\0';
             StatusMessage(cl);
         }

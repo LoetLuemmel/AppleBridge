@@ -202,7 +202,18 @@ def test_only_the_quiet_proclist_is_hidden_on_the_console():
     fio = open(os.path.join(os.path.dirname(__file__), "..", "mac", "src",
                             "fileio.c")).read()
     body = fio.split("Boolean ProcListVerb(")[1].split("\n}\n")[0]
-    assert "if (!quiet) StatusMessage(" in body
+    assert "if (!quiet) {" in body and 'StatusMessage("--- Processes ---")' in body
+
+
+def test_console_tables_are_padded_columns():
+    """Monaco is fixed width, so a table lines up only if every field is
+    padded (2026-11-24: two-space separators came out ragged)."""
+    fio = open(os.path.join(os.path.dirname(__file__), "..", "mac", "src",
+                            "fileio.c")).read()
+    body = fio.split("Boolean ProcListVerb(")[1].split("\n}\n")[0]
+    assert "ColPad(cl, &q, 21)" in body and "ColNum(cl, &q," in body
+    vol = DAEMON_SRC.split("static void ShowVolumeDetails(")[1].split("\n}\n")[0]
+    assert "ColPad(line, &p, 24)" in vol and "ColNum(line, &p," in vol
 
 
 def test_watchers_probe_with_the_quiet_proclist():

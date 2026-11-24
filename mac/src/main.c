@@ -1075,23 +1075,12 @@ void StatusMessage(const char *msg) { AddLogLine(msg, 0); }
  * Called from command.c's Trace(). */
 void StatusDetail(const char *msg) { AddLogLine(msg, 1); }
 
-/* Append a small unsigned decimal to a C string at *p — no StdCLib/NumToString
- * dependency (the daemon's minimal link has bitten NumToString before). */
-static void AB_appendNum(char *buf, short *p, unsigned long n)
-{
-    char  tmp[12];
-    short t = 0;
-    if (n == 0) { buf[(*p)++] = '0'; return; }
-    while (n > 0) { tmp[t++] = (char)('0' + (short)(n % 10)); n /= 10; }
-    while (t > 0) buf[(*p)++] = tmp[--t];
-}
-
 /* Dump the mounted volumes to the Verbose console — the same figures DISKINFO
  * reports (PBHGetVInfoSync, no ToolServer), but on screen. Called when "Show
  * details" is switched on, so the menu item actually surfaces something, and
  * after every DISKINFO, so the console shows what the host was told (before
  * 2026-11-23 it logged only the word "DISKINFO"). Each line is
- * "<name>  <free>/<total> KB  (vRefNum)". free == 0 marks a read-only CD.
+ * a padded table: name, free K, total K, vRefNum. free == 0 marks a read-only CD.
  * Lines are kind-0 so they stay visible regardless of the details flag.
  * only: a Pascal volume name (no colon) to print just that one; NULL = all. */
 static void ShowVolumeDetails(ConstStr255Param only)
@@ -1102,7 +1091,8 @@ static void ShowVolumeDetails(ConstStr255Param only)
     unsigned long  blk, total, freeb;
     char           line[LOG_W];
 
-    StatusMessage("--- Mounted volumes (name  free/total KB) ---");
+    StatusMessage("--- Mounted volumes ---");
+    StatusMessage("Volume                      Free     Total   Ref");
     for (i = 1; ; i++) {
         for (k = 0; k < (short)sizeof(pb); k++) ((char *)&pb)[k] = 0;
         pb.volumeParam.ioNamePtr  = nm;
@@ -1115,16 +1105,14 @@ static void ShowVolumeDetails(ConstStr255Param only)
         total = (unsigned long)((unsigned short)pb.volumeParam.ioVNmAlBlks) * blk;
         freeb = (unsigned long)((unsigned short)pb.volumeParam.ioVFrBlk) * blk;
 
+        /* a table in the fixed-width log font (2026-11-24): name cut at 23 */
         p = 0;
         len = nm[0];
-        for (k = 0; k < len && p < LOG_W - 40; k++) line[p++] = (char)nm[k + 1];
-        line[p++] = ' '; line[p++] = ' ';
-        AB_appendNum(line, &p, freeb / 1024UL);
-        line[p++] = '/';
-        AB_appendNum(line, &p, total / 1024UL);
-        line[p++] = ' '; line[p++] = 'K'; line[p++] = ' '; line[p++] = '(';
-        AB_appendNum(line, &p, (unsigned long)(-pb.volumeParam.ioVRefNum));
-        line[p++] = ')';
+        for (k = 0; k < len && k < 23; k++) line[p++] = (char)nm[k + 1];
+        ColPad(line, &p, 24);
+        ColNum(line, &p, freeb / 1024UL, 7, 'K');
+        ColNum(line, &p, total / 1024UL, 9, 'K');
+        ColNum(line, &p, (unsigned long)(-pb.volumeParam.ioVRefNum), 6, 0);
         line[p]   = '\0';
         StatusMessage(line);
     }
