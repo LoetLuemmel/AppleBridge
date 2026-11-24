@@ -14,6 +14,7 @@ Rule, judged every INTERVAL seconds on the hub:
   * at most one restart per COOLDOWN_S, at most MAX_RESTARTS per 6 h - then it only reports.
   * a DEAF tun0 (the guest sends, the bridge delivers nothing - STOERUNGEN.md "Stoerung 2" on the C2) is acted on
     after 60 s, cooldown or not: first tun0 is taken off br0 and put back (no restart), then a restart (2026-11-24).
+  * before every restart the guest's screen is saved on the C2 (~/basilisk/data/fb/before_*.bin, last 20).
   * every restart is CLEAN: SIGTERM makes System 7 ask "shut down?", Return answers it, the guest powers off and
     the container is started again. Only a guest that cannot answer gets the old hard `docker restart`.
 Run:  /usr/bin/python3 c2_watch.py          (LaunchAgent de.390er.c2watch)
@@ -98,6 +99,18 @@ def reattach_tun():
     return ok
 
 
+def snapshot(why):
+    """Keep the guest's screen before a restart (2026-11-24: at 10:42 a fresh boot hung where nobody could see it,
+    and the restart wiped the evidence). The fb-export Basilisk dumps its framebuffer on SIGUSR1; the copy stays on
+    the C2 as ~/basilisk/data/fb/before_<stamp>_<why>.bin (last 20 kept). host/fb_export.py turns it into a PNG."""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    r = ssh(f"F=~/basilisk/data/fb/basilisk_fb.bin; rm -f $F; docker exec {CONTAINER} pkill -USR1 -x BasiliskII || exit 1; "
+            f"for i in 1 2 3 4 5 6 7 8 9 10; do [ -s $F ] && break; sleep 0.3; done; sleep 0.3; "
+            f"cp $F ~/basilisk/data/fb/before_{stamp}_{why}.bin && "
+            f"ls -1t ~/basilisk/data/fb/before_*.bin | tail -n +21 | xargs -r rm -f; echo ok", 40)
+    log(f"screen saved: before_{stamp}_{why}.bin" if "ok" in r.stdout else f"screen NOT saved ({r.stderr.strip()[:80]})")
+
+
 def clean_restart():
     """Restart the container WITHOUT pulling the guest's plug. -> how it went (for the log).
 
@@ -106,6 +119,8 @@ def clean_restart():
     2026-11-24 10:10 and 10:17: kill, kill, die). So: SIGTERM, Return on the dialog (Shut Down is the default
     button), wait for the guest to power off and Basilisk to exit, then `docker start`. A guest that cannot
     answer (bomb, hang) still gets the old hard restart after 90 s."""
+    try: snapshot("restart")
+    except Exception as e: log(f"screen NOT saved ({e})")
     ssh(f"docker kill --signal=TERM {CONTAINER}", 30)
     t0 = time.time()
     while time.time() - t0 < 90:

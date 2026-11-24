@@ -15,4 +15,7 @@ What it does, and why each rule exists, is in the module docstring. In short (20
   "Are you sure you want to shut down?". The watch answers the dialog with Return and waits for the guest to
   power off.
 
+- **Evidence first**: before every restart the guest's screen is saved on the C2 as
+  `~/basilisk/data/fb/before_<stamp>_restart.bin` (last 20; `host/fb_export.py` reads them).
+
 Log: `/tmp/c2_watch.log`. One probe by hand: `/usr/bin/python3 c2_watch.py --once`.
