@@ -23,6 +23,7 @@
 #include <ToolUtils.h>
 #include <Aliases.h>
 #include <AppleEvents.h>
+#include <Balloons.h>      /* HMGetHelpMenuHandle: our item in the system Help menu */
 #include <Gestalt.h>
 #include <Shutdown.h>
 #include <OSUtils.h>
@@ -200,6 +201,8 @@ static MenuHandle gAppleMenu;
 static MenuHandle gFileMenu;
 static MenuHandle gEditMenu;
 static MenuHandle gViewMenu;
+static short      gHelpItem = 0;   /* "AppleBridge Help" in the system Help menu, 0 = none */
+static void ShowAppHelp(void);
 
 /* JSF: the SFGetFile dlgHook redirects the journal to a dialog item's real
  * GUEST-global center, so we never guess coordinates. gSFBlk is the journal
@@ -388,9 +391,17 @@ static void DrawSlot(const Rect *slot, short x, short baseline, ConstStr255Param
     TextMode(srcCopy);
     PenShade(fg);
     MoveTo(x, baseline);
-    DrawString(s);
+    {
+        /* never past the slot: a narrow window let "err:badreq" run into the
+         * size box (operator screenshot, 2026-11-24) - cut it to fit instead */
+        Str255 t;
+        short  k;
+        for (k = 0; k <= s[0]; k++) t[k] = s[k];
+        while (t[0] > 0 && x + StringWidth(t) > slot->right) t[0]--;
+        DrawString(t);
+        pen.h = (short)(x + StringWidth(t));
+    }
     rest = *slot;
-    pen.h = (short)(x + StringWidth(s));
     if (pen.h > rest.left) rest.left = pen.h;
     if (rest.right > rest.left) EraseRect(&rest);   /* in the panel colour: no visible flash */
     {
@@ -1524,6 +1535,10 @@ void HandleMenuCommand(long menuResult)
     menuItem = LoWord(menuResult);
 
     switch (menuID) {
+        case kHMHelpMenuID:
+            if (gHelpItem != 0 && menuItem == gHelpItem) ShowAppHelp();
+            break;
+
         case APPLE_MENU_ID:
             if (menuItem == ABOUT_ITEM) {
                 ShowAboutBox();
@@ -1827,6 +1842,16 @@ void OpenMonitor(void)
         CheckItem(gViewMenu, PING_ITEM, gShowPing);
         CheckItem(gViewMenu, NIGHT_ITEM, gPrefs.console == 1);
         InsertMenu(gViewMenu, 0);
+        /* System 7 gives an application no Help menu of its own: it appends to
+         * the system's (the "?" at the right), which carries it while we are
+         * in front (2026-11-24). */
+        {
+            MenuHandle hm = NULL;
+            if (HMGetHelpMenuHandle(&hm) == noErr && hm != NULL) {
+                AppendMenu(hm, "\pAppleBridge Help/?");
+                gHelpItem = CountMItems(hm);
+            }
+        }
         DrawMenuBar();
         gMenuInstalled = true;
     }
@@ -2025,6 +2050,33 @@ static void LocalHelp(void)
     StatusMessage("LISTDIR <folder>   one folder, e.g. LISTDIR MeinMac:");
     StatusMessage("HELP               this list");
     StatusMessage("Up arrow: last command   Esc: clear the line");
+    StatusMessage("The guide: Help menu (?) > AppleBridge Help, or Cmd-?");
+}
+
+/* Help menu > AppleBridge Help: the guide, from 'TEXT' 128 (AppleBridge_res.r),
+ * into the console - a resource, so the words change without a compile. */
+static void ShowAppHelp(void)
+{
+    Handle h;
+    long   n, i, start;
+    char   line[LOG_W];
+    SetMonitorVisible(true);
+    h = GetResource('TEXT', 128);
+    if (h == NULL) { StatusMessage("AppleBridge Help: the help text is missing"); return; }
+    HLock(h);
+    n = GetHandleSize(h);
+    for (i = 0, start = 0; i <= n; i++) {
+        if (i == n || (*h)[i] == 0x0D || (*h)[i] == 0x0A) {
+            long len = i - start, k;
+            if (len > LOG_W - 1) len = LOG_W - 1;
+            for (k = 0; k < len; k++) line[k] = (*h)[start + k];
+            line[len] = '\0';
+            if (i < n || len > 0) StatusMessage(line);
+            start = i + 1;
+        }
+    }
+    HUnlock(h);
+    ReleaseResource(h);
 }
 
 /* The reply frame STATUS:n\rSTDOUT:len\r<out>\rSTDERR:len\r<err>\r\r, shown for
@@ -2112,6 +2164,17 @@ static void RunLocalCommand(void)
     }
     gInLen = 0;
     DrawInputLine();
+
+    /* TREE and LISTDIR need a place to look: say so instead of the daemon's
+     * bare "Invalid command format" (operator screenshot, 2026-11-24) */
+    if (((strncmp(req, "TREE", 4) == 0 && (verbEnd == 4 || req[4] == '/')) ||
+         (strncmp(req, "LISTDIR", 7) == 0 && verbEnd == 7)) &&
+        (verbEnd >= n - 1)) {
+        AddLogLine(req, 2);
+        StatusMessage(req[0] == 'T' ? "TREE needs a path - e.g. TREE MeinMac"
+                                    : "LISTDIR needs a folder - e.g. LISTDIR MeinMac");
+        return;
+    }
 
     if (strncmp(req, "HELP", 4) == 0 && (verbEnd == 4)) {
         AddLogLine("HELP", 2);
@@ -3578,7 +3641,7 @@ static Boolean ScreenshotVerb(ABConn *conn)
     ScreenshotData screenshot;
     Boolean ok = true;
     BridgeResult result;
-    static const char kFail[] = "STATUS:-1\nSTDOUT:0\n\nSTDERR:18\nScreenshot failed\n\n";
+    static const char kFail[] = "STATUS:-1\nSTDOUT:0\n\nSTDERR:17\nScreenshot failed\n\n";
 
     SetActivity("SCREENSHOT");          /* daemon activity -> top bar */
     result = CaptureScreenshot(&screenshot);
@@ -3605,7 +3668,7 @@ static Boolean Screenshot2Verb(ABConn *conn, const char *request)
     long  v[6];
     short k;
     BridgeResult result;
-    static const char kFail[] = "STATUS:-1\nSTDOUT:0\n\nSTDERR:18\nScreenshot failed\n\n";
+    static const char kFail[] = "STATUS:-1\nSTDOUT:0\n\nSTDERR:17\nScreenshot failed\n\n";
 
     for (k = 0; k < 6; k++) {
         v[k] = 0;
@@ -6098,7 +6161,7 @@ msinstall_reply:
     /* Parse command */
     result = ParseCommand(request, command, &commandLength);
     if (result != kBridgeNoErr) {
-        strcpy(responseBuffer, "STATUS:-1\nSTDOUT:0\n\nSTDERR:21\nInvalid command format\n\n"); NoteErr("badreq");
+        strcpy(responseBuffer, "STATUS:-1\nSTDOUT:0\n\nSTDERR:22\nInvalid command format\n\n"); NoteErr("badreq");
         ABSend(conn, responseBuffer, strlen(responseBuffer));
         StatusMessage("Invalid command format");
 

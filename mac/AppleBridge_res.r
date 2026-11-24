@@ -259,3 +259,45 @@ resource 'DLOG' (5000) {
  * the daemon's own fork so DLGINSTALL can Get1Resource('DPAT',128). Absolute
  * path: Rez runs from ToolServer's default dir, not the AppleBridge folder. */
 include "MeinMac:MPW:AppleBridge:bin:dlgpatch.rsrc" 'DPAT' (128);
+
+/* AppleBridge Help (Help menu "?" > AppleBridge Help, Cmd-?): the guide shown in
+ * the console. A resource so the words change without a compile (2026-11-24). */
+data 'TEXT' (128, "AppleBridge Help", purgeable) {   /* data, not resource: this Types.r declares no 'TEXT' */
+	"--- AppleBridge Help ---\n"
+	"AppleBridge links this Mac to a host computer on the network (the\n"
+	"hub). The hub sends commands; AppleBridge carries them out here -\n"
+	"builds with MPW through ToolServer, files, the screen, the keyboard -\n"
+	"and sends the results back. It works in the background: this window\n"
+	"only shows what it does, and can be hidden.\n"
+	"\n"
+	"THE WINDOW\n"
+	"  Top strip   the LED is black while data moves; next to it, what\n"
+	"              AppleBridge is doing right now.\n"
+	"  Log         every command from the hub (bold) and its result.\n"
+	"  Command     the line at the bottom: type a command, press Return.\n"
+	"  Footer      NET network type, RX/TX commands received and\n"
+	"              answered, ERR errors, LAST how long the last one took.\n"
+	"\n"
+	"MENUS\n"
+	"  File  Close (Cmd-W)          hide this window\n"
+	"  Edit  Copy (Cmd-C)           copy the selected log text, or all\n"
+	"  View  Show details (Cmd-D)   the Apple Event trace of commands\n"
+	"        Ping (Cmd-P)           the hub's are-you-alive checks\n"
+	"        Console (Cmd-K)        show or hide this window\n"
+	"        Night mode (Cmd-N)     light text on a dark background\n"
+	"\n"
+	"TYPED COMMANDS  (click this window, type, Return)\n"
+	"  TREE <path>   DISKINFO   PROCLIST   LISTDIR <folder>   HELP\n"
+	"  HELP explains each one. They only look - nothing is changed.\n"
+	"\n"
+	"IF THE BRIDGE IS DOWN\n"
+	"  \"HOST SERVER NOT REACHABLE\" means the hub did not answer. Check\n"
+	"  that the hub runs its host server, that the hub address (IP= in\n"
+	"  AppleBridge Prefs) is right, and that this Mac is on the network.\n"
+	"  AppleBridge keeps trying every 30 seconds by itself.\n"
+	"\n"
+	"SETTINGS\n"
+	"  AppleBridgeConfig sets the hub address, port, helper programs and\n"
+	"  autostart (file: AppleBridge Prefs). There is no Quit on purpose:\n"
+	"  AppleBridge is meant to run all the time.\n"
+};

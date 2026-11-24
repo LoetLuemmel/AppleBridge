@@ -262,6 +262,29 @@ def test_a_typed_command_answers_into_the_local_sink():
     assert "ok = ProcessRequest(NULL, req, (long)n);" in _local_cmd_src()
 
 
+def test_help_menu_shows_the_guide_from_a_resource():
+    """System 7: an app appends to the system Help menu; the guide is TEXT 128
+    so its words change without a compile (2026-11-24)."""
+    assert 'AppendMenu(hm, "\\pAppleBridge Help/?");' in DAEMON_SRC
+    assert "case kHMHelpMenuID:" in DAEMON_SRC and "GetResource('TEXT', 128)" in DAEMON_SRC
+    res = open(os.path.join(os.path.dirname(__file__), "..", "mac", "AppleBridge_res.r")).read()
+    assert "data 'TEXT' (128, \"AppleBridge Help\"" in res
+
+
+def test_fixed_reply_texts_declare_their_true_length():
+    """The host reads STDOUT/STDERR by DECLARED length. 'STDERR:21' on the
+    22-character 'Invalid command format' cut a character and left one behind
+    in the stream; 'Screenshot failed' (17) was declared 18 (2026-11-24)."""
+    import glob, re
+    bad = []
+    for f in glob.glob(os.path.join(os.path.dirname(__file__), "..", "mac", "src", "*.c")):
+        for i, line in enumerate(open(f, encoding="mac_roman"), 1):
+            for m in re.finditer(r'(STDOUT|STDERR):(\d+)\\n([^"\\]*)\\n', line):
+                if int(m.group(2)) != len(m.group(3)):
+                    bad.append(f"{os.path.basename(f)}:{i} {m.group(0)}")
+    assert not bad, bad
+
+
 def test_daemon_dispatches_proclist_before_the_generic_parse():
     parse_at = DAEMON_SRC.index("result = ParseCommand(request")
     assert DAEMON_SRC.index("strncmp(request, PROTO_PROCLIST") < parse_at
