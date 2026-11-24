@@ -1816,7 +1816,12 @@ void OpenMonitor(void)
          * View for the console's switches - their place in System 7, not Edit
          * (2026-11-24). The Command keys are unchanged. */
         gEditMenu = NewMenu(EDIT_MENU_ID, "\pEdit");
-        AppendMenu(gEditMenu, "\p(Undo/Z;(-;(Cut/X;Copy/C;(Paste/V;(Clear");
+        /* Dim with DisableItem, NOT the '(' metacharacter: built as
+         * "(Undo/Z;(-;(Cut/X;..." the menu opened EMPTY on C2 - right size,
+         * separator drawn, no item text at all (2026-11-24, framebuffer). */
+        AppendMenu(gEditMenu, "\pUndo/Z;(-;Cut/X;Copy/C;Paste/V;Clear");
+        DisableItem(gEditMenu, 1); DisableItem(gEditMenu, 3);   /* dimmed for */
+        DisableItem(gEditMenu, 5); DisableItem(gEditMenu, 6);   /* the console */
         InsertMenu(gEditMenu, 0);
         gViewMenu = NewMenu(VIEW_MENU_ID, "\pView");
         AppendMenu(gViewMenu, "\pShow details/D;Ping/P;Console/K;Night mode/N");
