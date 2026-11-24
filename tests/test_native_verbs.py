@@ -230,6 +230,38 @@ def test_repeated_polls_count_up_instead_of_taking_slots():
     assert "if (kind == 3 && LogRepeat(msg)) return;" in add
 
 
+def _local_cmd_src():
+    return DAEMON_SRC.split("static void RunLocalCommand(void)")[1].split("\n}\n")[0]
+
+
+def test_console_command_line_runs_only_read_only_verbs():
+    """Typing into the console (2026-11-24) is limited to verbs that change
+    nothing: TREE, DISKINFO, PROCLIST, LISTDIR (+ HELP). A verb that writes,
+    deletes, launches, mounts or restarts must not appear in the allow list."""
+    body = _local_cmd_src()
+    for v in ('"TREE"', '"DISKINFO"', '"PROCLIST"', '"LISTDIR"', '"HELP"'):
+        assert v in body, v
+    for v in ("DELETE", "MKDIR", "WRITEFILE", "LAUNCH", "QUIT", "REBOOT", "SHUTDOWN",
+              "SWAPSELF", "AFPMOUNT", "AFPUNMOUNT", "KEY:", "TYPE:", "CLICK", "COMMAND"):
+        assert v not in body, v
+
+
+def test_console_command_never_runs_inside_a_hub_command():
+    """CheckUserAbort pumps events while a hub command runs; a Return there must
+    not start a nested ProcessRequest."""
+    assert "if (gReqBusy) {" in _local_cmd_src()
+    loop = DAEMON_SRC.split("int main(void)")[1]
+    i = loop.index("reqOk = ProcessRequest(conn, requestBuffer, bytesReceived);")
+    assert "gReqBusy = true;" in loop[i - 160:i] and "gReqBusy = false;" in loop[i:i + 140]
+
+
+def test_a_typed_command_answers_into_the_local_sink():
+    """ABSend(NULL, ...) is the console's sink; nothing else may pass NULL."""
+    tr = open(os.path.join(os.path.dirname(__file__), "..", "mac", "src", "transport.c")).read()
+    assert "if (c == NULL) { LocalSink(data, size); return noErr; }" in tr
+    assert "ok = ProcessRequest(NULL, req, (long)n);" in _local_cmd_src()
+
+
 def test_daemon_dispatches_proclist_before_the_generic_parse():
     parse_at = DAEMON_SRC.index("result = ParseCommand(request")
     assert DAEMON_SRC.index("strncmp(request, PROTO_PROCLIST") < parse_at

@@ -11,6 +11,8 @@ What it does, and why each rule exists, is in the module docstring. In short (20
 - **Deaf tun0** (guest sends, bridge delivers nothing — `ip -s link show tun0`: RX grows, TX stays at ~1 or
   `dropped` climbs) → after 60 s re-attach tun0 to `br0` as root in the container; restart only if that fails.
   Random on about every second container start that day; independent of how the container was stopped.
+  **Measured 12:34 the same day: the re-attach did NOT cure it** (`tx 1 -> 1`), the restart is what helps; the
+  attempt costs 15 s and stays only until a second observation says the same.
 - **Clean restarts**: `docker restart` alone hard-kills Basilisk 10 s after SIGTERM, while System 7 is still asking
   "Are you sure you want to shut down?". The watch answers the dialog with Return and waits for the guest to
   power off.
