@@ -82,6 +82,7 @@ static char    gDaemonNonceHex[17] = "";  /* nonce we handed the host; AUTH2 pro
 #define APPLE_MENU_ID   128
 #define FILE_MENU_ID    129
 #define EDIT_MENU_ID    130
+#define VIEW_MENU_ID    131    /* the console's switches (2026-11-24; were under Edit) */
 
 /* Monaco's well-known fixed font ID (not in this older Fonts.h). Monospace, so
  * command/response columns line up in the monitor log. */
@@ -90,11 +91,16 @@ static char    gDaemonNonceHex[17] = "";  /* nonce we handed the host; AUTH2 pro
 /* Menu items */
 #define ABOUT_ITEM      1
 #define QUIT_ITEM       1
-#define COPY_ITEM       1
-#define DETAILS_ITEM    3      /* Edit: Copy(1), (divider 2), Show details(3) */
-#define PING_ITEM       4      /* Edit: Ping(4) — show/hide the liveness polls (PING/STAT/PROCLIST) */
-#define CONSOLE_ITEM    5      /* Edit: Console(5) — show/hide the Verbose window */
-#define NIGHT_ITEM      6      /* Edit: Night mode(6) — CONSOLE=dark, saved in "AppleBridge Window" */
+/* Edit is the standard System 7 menu - Undo(1), -(2), Cut(3), Copy(4),
+ * Paste(5), Clear(6) - in that order because a desk accessory is handed its
+ * edit commands by POSITION (SystemEdit takes item-1). Only Copy acts on the
+ * console; the rest stay dimmed for it and serve a DA in front. */
+#define COPY_ITEM       4
+/* View: the console's switches, a menu of their own as System 7 has it. */
+#define DETAILS_ITEM    1      /* Show details - the Apple Event trace */
+#define PING_ITEM       2      /* Ping - the liveness polls (PING/STAT/PROCLIST/Q) */
+#define CONSOLE_ITEM    3      /* Console - show/hide the Verbose window */
+#define NIGHT_ITEM      4      /* Night mode - CONSOLE=dark, saved in "AppleBridge Window" */
 
 /* Declared here, not beside the definitions: HandleMenuCommand calls them ~900
  * lines earlier, and MPW C takes an undeclared call as `int f()` — so the real
@@ -150,7 +156,7 @@ static char  gLog[LOG_LINES][LOG_W];
 /* Per-line kind: 0 = primary ("> command" + its output), 1 = detail (the AE
  * trace), 2 = command (bold), 3 = liveness poll (PING/STAT heartbeat and the
  * hub watchdogs' PROCLIST, every few seconds). All are always stored; the
- * monitor collapses kind 1 unless "Show details" and kind 3 unless "Ping". */
+ * monitor collapses kind 1 unless View > Show details and kind 3 unless View > Ping. */
 static unsigned char gLogKind[LOG_LINES];
 static Boolean gShowDetails = false;   /* collapsed by default (clean log) */
 static Boolean gShowPing    = false;   /* polls hidden by default (2026-11-23) */
@@ -191,6 +197,7 @@ static long gStartTick = 0;   /* daemon launch tick (for Alive uptime) */
 static MenuHandle gAppleMenu;
 static MenuHandle gFileMenu;
 static MenuHandle gEditMenu;
+static MenuHandle gViewMenu;
 
 /* JSF: the SFGetFile dlgHook redirects the journal to a dialog item's real
  * GUEST-global center, so we never guess coordinates. gSFBlk is the journal
@@ -1247,7 +1254,7 @@ static void ApplyLogFont(void)
 static void SetConsoleTheme(short v, Boolean save)
 {
     gPrefs.console = v;
-    if (gEditMenu != NULL) CheckItem(gEditMenu, NIGHT_ITEM, v == 1);
+    if (gViewMenu != NULL) CheckItem(gViewMenu, NIGHT_ITEM, v == 1);
     if (gStatusWindow != NULL) {
         SetPort(gStatusWindow);
         InvalRect(&gStatusWindow->portRect);
@@ -1527,9 +1534,12 @@ void HandleMenuCommand(long menuResult)
             break;
 
         case EDIT_MENU_ID:
-            if (menuItem == COPY_ITEM) {
-                DoCopyLog();
-            } else if (menuItem == CONSOLE_ITEM) {
+            if (SystemEdit((short)(menuItem - 1))) break;   /* a DA in front */
+            if (menuItem == COPY_ITEM) DoCopyLog();
+            break;
+
+        case VIEW_MENU_ID:
+            if (menuItem == CONSOLE_ITEM) {
                 /* The way back from MONITOR:0 without a socket — and the way to
                  * get the console OUT OF THE WAY without one either. Both
                  * directions, because a user who can only hide via the control
@@ -1539,12 +1549,12 @@ void HandleMenuCommand(long menuResult)
                 SetConsoleTheme((short)(gPrefs.console == 1 ? 0 : 1), true);
             } else if (menuItem == DETAILS_ITEM) {
                 gShowDetails = !gShowDetails;
-                CheckItem(gEditMenu, DETAILS_ITEM, gShowDetails);
+                CheckItem(gViewMenu, DETAILS_ITEM, gShowDetails);
                 gLogDirty = gLogFull = true;   /* re-sync to expand/collapse detail lines */
                 if (gShowDetails) ShowVolumeDetails(NULL);  /* surface the mounted volumes */
             } else if (menuItem == PING_ITEM) {
                 gShowPing = !gShowPing;
-                CheckItem(gEditMenu, PING_ITEM, gShowPing);
+                CheckItem(gViewMenu, PING_ITEM, gShowPing);
                 gLogDirty = gLogFull = true;   /* re-sync to show/hide the poll lines */
             }
             break;
@@ -1802,14 +1812,18 @@ void OpenMonitor(void)
         AppendMenu(gAppleMenu, "\pAbout AppleBridge...;(-");
         AppendResMenu(gAppleMenu, 'DRVR');
         InsertMenu(gAppleMenu, 0);
-        /* Edit menu so Copy (Cmd-C) is discoverable; the system also routes the
-         * standard Cut/Copy/Paste keys here. We only act on Copy. */
+        /* The standard Edit menu (Copy is the console's one edit command), and
+         * View for the console's switches - their place in System 7, not Edit
+         * (2026-11-24). The Command keys are unchanged. */
         gEditMenu = NewMenu(EDIT_MENU_ID, "\pEdit");
-        AppendMenu(gEditMenu, "\pCopy/C;(-;Show details/D;Ping/P;Console/K;Night mode/N");
-        CheckItem(gEditMenu, DETAILS_ITEM, gShowDetails);
-        CheckItem(gEditMenu, PING_ITEM, gShowPing);
-        CheckItem(gEditMenu, NIGHT_ITEM, gPrefs.console == 1);
+        AppendMenu(gEditMenu, "\p(Undo/Z;(-;(Cut/X;Copy/C;(Paste/V;(Clear");
         InsertMenu(gEditMenu, 0);
+        gViewMenu = NewMenu(VIEW_MENU_ID, "\pView");
+        AppendMenu(gViewMenu, "\pShow details/D;Ping/P;Console/K;Night mode/N");
+        CheckItem(gViewMenu, DETAILS_ITEM, gShowDetails);
+        CheckItem(gViewMenu, PING_ITEM, gShowPing);
+        CheckItem(gViewMenu, NIGHT_ITEM, gPrefs.console == 1);
+        InsertMenu(gViewMenu, 0);
         DrawMenuBar();
         gMenuInstalled = true;
     }
@@ -2642,7 +2656,7 @@ static void SetMonitorVisible(Boolean show)
     } else {
         if (gStatusWindow != NULL) HideWindow(gStatusWindow);
     }
-    if (gEditMenu != NULL) CheckItem(gEditMenu, CONSOLE_ITEM, MonitorVisible());
+    if (gViewMenu != NULL) CheckItem(gViewMenu, CONSOLE_ITEM, MonitorVisible());
 }
 
 
@@ -3555,7 +3569,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
      *   - Liveness polls fire constantly: the heartbeat (PING / STAT) and the
      *     hub watchdogs' PROCLIST/Q (every 30 s per hang/c2 watch; a plain
      *     PROCLIST is somebody asking and is shown, 2026-11-24). Log them as
-     *     kind 3, which the console hides unless Edit > Ping is ticked -- full
+     *     kind 3, which the console hides unless View > Ping is ticked -- full
      *     coverage, no flood (2026-11-23: they used to be kind 1, so turning
      *     on Show details also buried the console in heartbeats). Everything else is kind 2 (bold verb),
      *     matching COMMAND's bold-input style. Logs the first request line
@@ -3579,7 +3593,7 @@ Boolean ProcessRequest(ABConn *conn, char *request, long requestLen)
         if (strncmp(request, "PING", 4) == 0 ||
             strncmp(request, PROTO_STAT, strlen(PROTO_STAT)) == 0 ||
             strncmp(request, PROTO_PROCLIST "/Q", strlen(PROTO_PROCLIST) + 2) == 0)
-            AddLogLine(vt, 3);   /* liveness poll -> hidden unless Edit > Ping */
+            AddLogLine(vt, 3);   /* liveness poll -> hidden unless View > Ping */
         else
             AddLogLine(vt, 2);   /* verb -> bold, like COMMAND's "> ..." */
     }
