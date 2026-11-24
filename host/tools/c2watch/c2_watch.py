@@ -85,11 +85,21 @@ def tun_deaf():
 def reattach_tun():
     """Try to cure a deaf tun0 WITHOUT restarting the guest: take it off br0 and put it back (root in the container,
     which has NET_ADMIN and host networking). -> True when frames reach the guest again within 15 s.
-    Untested against a real deaf tun0 when written (2026-11-24: the fault did not recur on demand) - the log says."""
+    Only tried when tun0 is NOT on br0 in forwarding state (checked first): when it is, a re-attach did nothing
+    (2026-11-24 12:34, tx 1 -> 1), so the caller restarts right away."""
     def tx():
         r = ssh("cat /sys/class/net/tun0/statistics/tx_packets", 20)
         try: return int(r.stdout.strip())
         except ValueError: return None
+    # Only worth it when tun0 is NOT properly on the bridge. In every deaf case measured on 2026-11-24 it was
+    # (master br0, port state 3 = forwarding) and the re-attach changed nothing (12:34: tx 1 -> 1) - then go
+    # straight to the restart instead of spending 15 s.
+    r = ssh("basename $(readlink /sys/class/net/tun0/master 2>/dev/null) 2>/dev/null; "
+            "cat /sys/class/net/tun0/brport/state 2>/dev/null", 20)
+    port = r.stdout.split()
+    if port == ["br0", "3"]:
+        log("tun0 is on br0 and forwarding - a re-attach would not help, restarting instead")
+        return False
     before = tx()
     r = ssh(f"docker exec -u 0 {CONTAINER} sh -c 'ip link set tun0 nomaster && sleep 1 && ip link set tun0 master br0'", 30)
     time.sleep(15)
