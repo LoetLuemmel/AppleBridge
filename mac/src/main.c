@@ -90,7 +90,9 @@ static char    gDaemonNonceHex[17] = "";  /* nonce we handed the host; AUTH2 pro
 
 /* Menu items */
 #define ABOUT_ITEM      1
-#define QUIT_ITEM       1
+#define CLOSE_ITEM      1      /* File: Close (Cmd-W) hides the console. There is NO Quit:
+                                * quitting tears down Open Transport and can take the host's
+                                * emulator with it, and the daemon is meant to run on. */
 /* Edit is the standard System 7 menu - Undo(1), -(2), Cut(3), Copy(4),
  * Paste(5), Clear(6) - in that order because a desk accessory is handed its
  * edit commands by POSITION (SystemEdit takes item-1). Only Copy acts on the
@@ -1528,9 +1530,7 @@ void HandleMenuCommand(long menuResult)
             break;
 
         case FILE_MENU_ID:
-            if (menuItem == QUIT_ITEM) {
-                gRunning = false;
-            }
+            if (menuItem == CLOSE_ITEM) SetMonitorVisible(false);   /* back: View > Console */
             break;
 
         case EDIT_MENU_ID:
@@ -1561,23 +1561,6 @@ void HandleMenuCommand(long menuResult)
     }
 
     HiliteMenu(0);
-}
-
-/*
- * Initialize menus
- */
-void InitMenuBar(void)
-{
-    gAppleMenu = NewMenu(APPLE_MENU_ID, "\p\024");
-    AppendMenu(gAppleMenu, "\pAbout AppleBridge...;(-");
-    AppendResMenu(gAppleMenu, 'DRVR');
-    InsertMenu(gAppleMenu, 0);
-
-    gFileMenu = NewMenu(FILE_MENU_ID, "\pFile");
-    AppendMenu(gFileMenu, "\pQuit/Q");
-    InsertMenu(gFileMenu, 0);
-
-    DrawMenuBar();
 }
 
 /*
@@ -1815,6 +1798,9 @@ void OpenMonitor(void)
         /* The standard Edit menu (Copy is the console's one edit command), and
          * View for the console's switches - their place in System 7, not Edit
          * (2026-11-24). The Command keys are unchanged. */
+        gFileMenu = NewMenu(FILE_MENU_ID, "\pFile");   /* System 7 order: File, Edit, View */
+        AppendMenu(gFileMenu, "\pClose/W");
+        InsertMenu(gFileMenu, 0);
         gEditMenu = NewMenu(EDIT_MENU_ID, "\pEdit");
         /* Dim with DisableItem, NOT the '(' metacharacter: built as
          * "(Undo/Z;(-;(Cut/X;..." the menu opened EMPTY on C2 - right size,
