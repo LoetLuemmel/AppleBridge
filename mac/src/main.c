@@ -1051,12 +1051,48 @@ void DoCopyLog(void)
     TEToScrap();
 }
 
+/* A poll line (kind 3) that repeats one of the trailing poll lines counts up
+ * in place - "PING (x50)" - instead of taking a new slot. The ring holds only
+ * LOG_LINES, and hidden polls took slots like visible lines, so an idle
+ * console slowly lost a printed table to heartbeats nobody could see
+ * (2026-11-24). Looks back over the run of poll lines at the end of the ring
+ * (at most 4: PING, STAT and PROCLIST/Q interleave). True = counted. */
+static Boolean LogRepeat(const char *msg)
+{
+    short j, idx, n, d;
+    char *line;
+    unsigned long cnt;
+
+    for (j = 0; j < 4 && j < gLogN; j++) {
+        idx  = (short)((gLogHead - 1 - j + LOG_LINES) % LOG_LINES);
+        if (gLogKind[idx] != 3) return false;      /* the run of polls ended */
+        line = gLog[idx];
+        for (n = 0; msg[n] && msg[n] == line[n]; n++) ;
+        if (msg[n] != '\0' || n > LOG_W - 16) continue;
+        cnt = 1;
+        if (line[n] == ' ' && line[n + 1] == '(' && line[n + 2] == 'x') {
+            cnt = 0;
+            for (d = n + 3; line[d] >= '0' && line[d] <= '9'; d++)
+                cnt = cnt * 10 + (unsigned long)(line[d] - '0');
+        } else if (line[n] != '\0') continue;    /* a longer, different line */
+        if (cnt < 999999UL) cnt++;
+        d = n;
+        line[d++] = ' '; line[d++] = '('; line[d++] = 'x';
+        ColNum(line, &d, cnt, 1, ')');
+        line[d] = '\0';
+        if (gShowPing) gLogDirty = gLogFull = true;   /* visible: redraw it */
+        return true;
+    }
+    return false;
+}
+
 /* Append one log line of the given kind (0=primary, 1=detail, 2=command,
  * 3=liveness poll) to the ring. */
 static void AddLogLine(const char *msg, short kind)
 {
     short k;
     if (gStatusWindow == NULL) return;
+    if (kind == 3 && LogRepeat(msg)) return;
 
     for (k = 0; msg[k] && k < LOG_W - 1; k++) gLog[gLogHead][k] = msg[k];
     gLog[gLogHead][k] = '\0';

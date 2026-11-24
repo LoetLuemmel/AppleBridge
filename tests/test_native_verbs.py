@@ -223,6 +223,13 @@ def test_watchers_probe_with_the_quiet_proclist():
         assert "PROCLIST/Q" in src, f
 
 
+def test_repeated_polls_count_up_instead_of_taking_slots():
+    """The console ring holds LOG_LINES; hidden polls used to fill it and push
+    visible output out (2026-11-24). A repeated kind-3 line counts up."""
+    add = DAEMON_SRC.split("static void AddLogLine(")[1].split("\n}\n")[0]
+    assert "if (kind == 3 && LogRepeat(msg)) return;" in add
+
+
 def test_daemon_dispatches_proclist_before_the_generic_parse():
     parse_at = DAEMON_SRC.index("result = ParseCommand(request")
     assert DAEMON_SRC.index("strncmp(request, PROTO_PROCLIST") < parse_at
