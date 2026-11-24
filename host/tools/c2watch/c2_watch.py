@@ -126,8 +126,8 @@ def clean_restart():
 
     `docker restart` sends SIGTERM, which Basilisk hands the Mac as the power key: System 7 asks "Are you sure you
     want to shut down your computer now?" - and Docker hard-kills the emulator 10 s later, mid-question (seen
-    2026-11-24 10:10 and 10:17: kill, kill, die). So: SIGTERM, Return on the dialog (Shut Down is the default
-    button), wait for the guest to power off and Basilisk to exit, then `docker start`. A guest that cannot
+    2026-11-24 10:10 and 10:17: kill, kill, die). So: SIGTERM, a click on the dialog's Shut Down button, wait for
+    the guest to power off and Basilisk to exit, then `docker start`. A guest that cannot
     answer (bomb, hang) still gets the old hard restart after 90 s."""
     try: snapshot("restart")
     except Exception as e: log(f"screen NOT saved ({e})")
@@ -135,8 +135,11 @@ def clean_restart():
     t0 = time.time()
     while time.time() - t0 < 90:
         time.sleep(3)
-        if int(time.time() - t0) % 10 < 3:   # every ~10 s: one Return can come too early (10:19, 2026-11-24)
-            ssh(f"docker exec -e DISPLAY=:1 {CONTAINER} xdotool key Return", 30)
+        if int(time.time() - t0) % 10 < 3:   # every ~10 s: one answer can come too early (10:19, 2026-11-24)
+            # CLICK "Shut Down" - not Return: with the AppleBridge console in front, Return went into the
+            # daemon's command line (it held "TREE MeinMac:") and the dialog stayed (14:51, 2026-11-24).
+            # The alert is centred on the 1024x768 screen; a click where there is no dialog hits empty desktop.
+            ssh(f"docker exec -e DISPLAY=:1 {CONTAINER} xdotool mousemove 653 223 sleep 0.3 click 1", 30)
         r = ssh(f"docker inspect {CONTAINER} --format '{{{{.State.Running}}}}'", 30)
         if r.stdout.strip() == "false":
             ssh(f"docker start {CONTAINER}", 60)

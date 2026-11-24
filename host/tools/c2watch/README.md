@@ -15,8 +15,8 @@ What it does, and why each rule exists, is in the module docstring. In short (20
   as in every deaf case so far. So the re-attach is tried only when tun0 is NOT on `br0` in forwarding state
   (checked first); otherwise the watch goes straight to the restart.
 - **Clean restarts**: `docker restart` alone hard-kills Basilisk 10 s after SIGTERM, while System 7 is still asking
-  "Are you sure you want to shut down?". The watch answers the dialog with Return and waits for the guest to
-  power off.
+  "Are you sure you want to shut down?". The watch CLICKS the dialog's Shut Down button (not Return: with the
+  AppleBridge console in front, Return went into its command line) and waits for the guest to power off.
 
 - **Evidence first**: before every restart the guest's screen is saved on the C2 as
   `~/basilisk/data/fb/before_<stamp>_restart.bin` (last 20; `host/fb_export.py` reads them).
