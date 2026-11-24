@@ -294,6 +294,28 @@ def test_a_system_quit_takes_the_watchdog_along():
     assert "QuitAppBySignature('ABwd')" in DAEMON_SRC
 
 
+def test_screenshot_reads_a_32bit_framebuffer_in_32bit_mode():
+    """The Duo Dock's 1152x870 framebuffer lives at a 32-bit address; read in
+    24-bit mode it came back as colour noise (2026-11-24). Every framebuffer
+    copy goes through CopyScreen, which swaps the MMU mode when needed."""
+    src = open(os.path.join(os.path.dirname(__file__), "..", "mac", "src", "screenshot.c")).read()
+    helper = src.split("static void CopyScreen(")[1].split("\n}\n")[0]
+    assert "SwapMMUMode(&mode)" in helper and "StripAddress(dst)" in helper
+    assert "GetMMUMode() == false32b" in helper
+    body = src.split("static void CopyScreen(")[1].split("\n}\n", 1)[1]
+    assert "BlockMoveData((*pm)->baseAddr" not in body
+    assert body.count("CopyScreen(pm,") == 2
+
+
+def test_a_typed_tree_never_blocks_the_daemon():
+    """A typed TREE walked 45 s in the foreground; on the Duo that froze the
+    window and the hub dropped the link (2026-11-24). It goes to the background."""
+    fio = open(os.path.join(os.path.dirname(__file__), "..", "mac", "src", "fileio.c")).read()
+    verb = fio.split("Boolean TreeVerb(")[1].split("\nfail:")[0]
+    assert "deadline = TickCount() + (local ? 0 : TREE_TICKS);" in verb
+    assert "if (j->sp >= 0 && !saved && !local)" in verb
+
+
 def test_daemon_dispatches_proclist_before_the_generic_parse():
     parse_at = DAEMON_SRC.index("result = ParseCommand(request")
     assert DAEMON_SRC.index("strncmp(request, PROTO_PROCLIST") < parse_at
