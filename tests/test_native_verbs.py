@@ -285,6 +285,15 @@ def test_fixed_reply_texts_declare_their_true_length():
     assert not bad, bad
 
 
+def test_a_system_quit_takes_the_watchdog_along():
+    """A Shut Down that quit the daemon before the watchdog got the daemon
+    relaunched, which cancels the Shut Down (odroid-c2, 2026-11-24)."""
+    assert "gQuitByAE = true;" in DAEMON_SRC.split("HandleQuitApp(")[1].split("}")[0]
+    cleanup = DAEMON_SRC.split("/* Cleanup */")[1][:200]
+    assert "if (gQuitByAE) QuitWatchdogFirst();" in cleanup
+    assert "QuitAppBySignature('ABwd')" in DAEMON_SRC
+
+
 def test_daemon_dispatches_proclist_before_the_generic_parse():
     parse_at = DAEMON_SRC.index("result = ParseCommand(request")
     assert DAEMON_SRC.index("strncmp(request, PROTO_PROCLIST") < parse_at

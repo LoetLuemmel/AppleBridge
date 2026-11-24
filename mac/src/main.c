@@ -1595,11 +1595,33 @@ void HandleMenuCommand(long menuResult)
  * or Quit menu, so this is how the Finder / a system shutdown stops it cleanly
  * (otherwise an invisible app could stall shutdown). Just signals the loop.
  */
+static Boolean gQuitByAE = false;   /* the system (a Shut Down) asked us to quit */
+
 static pascal OSErr HandleQuitApp(const AppleEvent *evt, AppleEvent *reply, long refcon)
 {
 #pragma unused(evt, reply, refcon)
     gRunning = false;
+    gQuitByAE = true;
     return noErr;
+}
+
+/* A Shut Down quits the applications one by one. When we go before the
+ * watchdog ('ABwd'), it sees us gone within its 3 s check, relaunches us, and
+ * the launch cancels the Shut Down: the Mac simply stays on (odroid-c2,
+ * 2026-11-24, reproduced 50 s after a start - a fresh console banner after the
+ * Shut Down click). c2watch's clean restarts therefore fell back to hard kills
+ * all day, and one left a Sad Mac. So: ask the watchdog to quit first, and do
+ * not leave before it has (at most ~2 s). */
+static void QuitWatchdogFirst(void)
+{
+    EventRecord e;
+    long until;
+    if (!IsAppRunning('ABwd')) return;
+    StatusMessage("shutting down - asking the watchdog to quit first");
+    if (QuitAppBySignature('ABwd') != noErr) return;
+    until = TickCount() + 120;
+    while (IsAppRunning('ABwd') && TickCount() < until)
+        (void)WaitNextEvent(0, &e, 3L, NULL);          /* yield: let it go */
 }
 
 /*
@@ -6790,6 +6812,7 @@ int main(void)
     }
 
     /* Cleanup */
+    if (gQuitByAE) QuitWatchdogFirst();     /* or it relaunches us mid-Shut-Down */
     if (connected) {
         ABClose(conn); conn = NULL;
     }
