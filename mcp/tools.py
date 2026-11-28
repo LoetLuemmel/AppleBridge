@@ -1071,6 +1071,7 @@ no break-point hooks).""",
                 "trap": {"type": "string", "description": "for break_trap: trap name or A-line word"},
                 "disk": {"type": "string", "description": "for start: host path of the disk image to clone"},
                 "app": {"type": "string", "description": "for start: host path of a MacBinary application to put into the clone's Startup Items, so it launches at boot"},
+                "bridge": {"type": "boolean", "description": "for start: keep the guest's own network so its daemon connects and the bridge tools work in the session (default: slirp, no bridge)"},
                 "keep_items": {"type": "boolean", "description": "for start with app: keep the clone's other Startup Items (default: moved aside, so only the app under test launches)"},
                 "timeout": {"type": "number", "description": "for wait (default 30 s) and cmd (default 10 s)"},
                 "keep_clone": {"type": "boolean", "description": "for stop: keep the cloned disk"}
@@ -1595,7 +1596,7 @@ def mac_fb_screenshot(region: Optional[list] = None,
 def mac_debug(action: str, command: Optional[str] = None, trap: Optional[str] = None,
               disk: Optional[str] = None, timeout: Optional[float] = None,
               keep_clone: bool = False, app: Optional[str] = None,
-              keep_items: bool = False) -> Dict[str, Any]:
+              keep_items: bool = False, bridge: bool = False) -> Dict[str, Any]:
     """Machine-level debugging through cxmon in a local debug Basilisk II.
 
     Every action re-reads the session from ~/.applebridge/mon, so a session
@@ -1605,7 +1606,7 @@ def mac_debug(action: str, command: Optional[str] = None, trap: Optional[str] = 
     s = mon_session.Session()
     try:
         if action == "start":
-            r = s.start(disk, install=[app] if app else None, isolate=not keep_items)
+            r = s.start(disk, install=[app] if app else None, isolate=not keep_items, bridge=bridge)
             r = {"mode": "running", "pid": r["emu_pid"], "disk": r["disk"], "clone": r["clone"],
                  "installed": r.get("installed", []),
                  "paused_watchers": [os.path.basename(p) for p in r["paused_watchers"]],

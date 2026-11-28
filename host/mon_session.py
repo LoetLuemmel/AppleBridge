@@ -301,7 +301,7 @@ class Session:
             os.close(fd)
 
     # ---- lifecycle ---------------------------------------------------------
-    def start(self, disk=None, install=None, isolate=True):
+    def start(self, disk=None, install=None, isolate=True, bridge=False):
         st = self.state()
         if st and _pid_alive(st.get("emu_pid")):
             raise MonError(f"a debug session is already running (pid {st['emu_pid']})")
@@ -334,7 +334,7 @@ class Session:
             installed.append((self._installer or self._install_startup)(clone, app, isolate))
 
         prefs = os.path.join(self.root, "prefs")
-        self._write_prefs(prefs, clone)
+        self._write_prefs(prefs, clone, bridge=bridge)
         ram_size = 0
         for line in open(prefs):
             if line.startswith("ramsize "):
@@ -367,7 +367,7 @@ class Session:
         st = {"emu_pid": emu.pid, "holder_pid": holder.pid, "disk": disk, "clone": clone,
               "prefs": prefs, "app": self.app, "paused_watchers": paused,
               "mode": "running", "started": time.strftime("%Y-%m-%d %H:%M:%S"),
-              "installed": installed, "ram_size": ram_size}
+              "installed": installed, "ram_size": ram_size, "bridge": bridge}
         self._save(st)
         return st
 
@@ -435,11 +435,20 @@ class Session:
                 "moved_aside": moved}
 
     @staticmethod
-    def _write_prefs(path, clone, base=os.path.expanduser("~/.basilisk_ii_prefs")):
+    def _write_prefs(path, clone, base=os.path.expanduser("~/.basilisk_ii_prefs"), bridge=False):
+        """bridge=True keeps the guest's own `ether` line, so its daemon reaches the
+        host server and the ordinary bridge tools work in the debug session. With
+        etherhelper that needs the debug bundle's helper to be the setuid one (a
+        symlink to the production bundle's helper; the fork's runtool patch then
+        starts it without the auth dialog)."""
         keep = []
+        ether = None
         try:
             for line in open(base):
-                if line.split(" ", 1)[0] in ("disk", "ether", "jit", "cdrom", "ignoresegv"):
+                key = line.split(" ", 1)[0]
+                if key == "ether":
+                    ether = line.rstrip("\n")
+                if key in ("disk", "ether", "jit", "cdrom", "ignoresegv"):
                     continue
                 keep.append(line.rstrip("\n"))
         except OSError:
@@ -450,7 +459,7 @@ class Session:
         # skip fails it gives up without calling the dumper and the process dies (measured
         # 2026-11-28 on SlotKeeper: "No handler for exception_type = 1"). False sends a wild
         # write into cxmon instead.
-        keep += [f"disk {clone}", "ether slirp", "jit false", "ignoresegv false"]
+        keep += [f"disk {clone}", (ether if bridge and ether else "ether slirp"), "jit false", "ignoresegv false"]
         with open(path, "w") as f:
             f.write("\n".join(keep) + "\n")
 
@@ -736,7 +745,7 @@ class Session:
                 break
             a6 = saved
         app = self.read_mem(0x910, 32)
-        cur = app[1:1 + app[0]].decode("latin-1") if app and app[0] < 32 else "?"
+        cur = app[1:1 + app[0]].decode("mac_roman") if app and app[0] < 32 else "?"   # "Test Classic.π"
         return {"mode": st["mode"], "crash": st.get("crash"), "pc": f"${regs.get('PC', 0):X}", "a6": f"${regs.get('A6', 0):X}",
                 "a7": f"${regs.get('A7', 0):X}", "rom_base": f"${rom:X}", "cur_ap_name": cur,
                 "frames": frames,
@@ -773,7 +782,9 @@ def main(argv):
                 del rest[i:i + 2]
             keep = "--keep-items" in rest
             rest = [x for x in rest if x != "--keep-items"]
-            r = s.start(rest[0] if rest else None, install=[app] if app else None, isolate=not keep)
+            bridge = "--bridge" in rest
+            rest = [x for x in rest if x != "--bridge"]
+            r = s.start(rest[0] if rest else None, install=[app] if app else None, isolate=not keep, bridge=bridge)
         elif a == "break":
             r = s.break_in()
         elif a == "cmd":

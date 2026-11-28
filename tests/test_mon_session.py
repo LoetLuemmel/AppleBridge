@@ -94,6 +94,9 @@ def test_prefs_drop_disk_ether_jit():
         assert [l for l in lines if l.startswith("disk")] == ["disk /clone.dmg"]
         assert "ether slirp" in lines and "jit false" in lines and "jit true" not in lines
         assert "ignoresegv false" in lines and "ignoresegv true" not in lines
+        ms.Session._write_prefs(out, "/clone.dmg", base=base, bridge=True)
+        lines = open(out).read().splitlines()
+        assert "ether etherhelper/en8" in lines and "ether slirp" not in lines
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
