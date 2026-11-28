@@ -33,6 +33,7 @@ import pump_probe  # noqa: E402  (is the target reading, before a no-reply send)
 import c89_lint  # noqa: E402  (name the C99 habits MPW's 1994 compiler rejects)
 import fb_export  # noqa: E402  (host-side framebuffer capture from a local Basilisk)
 import guest_remote  # noqa: E402  (the same tools on a guest's own machine, over SSH)
+import mon_session  # noqa: E402  (cxmon in a debug Basilisk: break points from the host)
 
 
 def _ostype(value, default="????") -> bytes:
@@ -1019,6 +1020,67 @@ guest for the duration (k compiles), so it is heavier than a single mac_compile.
             },
             "required": ["source_prefix", "dialect"]
         }
+    },
+    {
+        "name": "mac_debug",
+        "description": """EXPERIMENTAL - Debug the guest at machine level: break in, break points, registers, memory, 68K disassembly.
+
+Experimental until it has diagnosed one real hang or crash faster than the
+usual routine (screenshots, logs, rebuilds); expect rough edges.
+
+Drives cxmon inside a debug build of Basilisk II (macemu branch `cxmon`, x86_64)
+on THIS Mac. The monitor runs in the emulator, not in the guest, so a stopped
+guest stays inspectable — but while it is stopped the AppleBridge daemon is
+stopped too, and bridge tools do not answer. Use mac_fb_screenshot to see the
+screen; it works in a debug session.
+
+The session boots an APFS CLONE of the local guest's disk (never the image
+itself) with slirp and the JIT off. `start` therefore refuses while any
+emulator runs: shut the guest down with mac_shutdown first. It pauses this
+Mac's hang/dialog watchdogs for the session; `stop` restores them and deletes
+the clone.
+
+Actions:
+- start [disk] [app]: boot the clone (default: the boot disk in ~/.basilisk_ii_prefs); ~60 s to
+  the Finder. `app` (a MacBinary file on the host) is put into the clone's Startup Items first,
+  and the clone's other Startup Items are moved aside (keep_items: true keeps them) - otherwise
+  the AppleBridge watchdog starts too and pushes the app under test into the background.
+- where: the routine at the PC and a backtrace along the A6 frame chain. Each address is named
+  from the MacsBug names compiled into the code (Retro68 keeps them by default; MPW and THINK C
+  only with the option). Without names: the routine's start (the LINK A6 below the address) and
+  the offset into it, plus - where the program calls it through the jump table, as THINK C does -
+  its slot, `JSR $0C3A(A5)`, the number every call site in the disassembly carries. ROM addresses
+  are marked ROM; first frames may be a trap patch.
+- break: stop the 68K now (SIGINT) and return the registers.
+- cmd <command>: one cxmon command while stopped, e.g. `regs`, `m $16a $16e`
+  (hex dump), `i $910 $91b` (ASCII; $910 = CurApName), `d68 $2e890 $2e8a0`
+  (disassemble), `ba $2e890` / `bi` / `br 0` (break points). Numbers are hex
+  with a `$`. Commands that reach the host (shell, files, `o`) are refused.
+- break_trap <trap>: break point where the dispatcher jumps for a trap
+  (`WaitNextEvent`, `_SysBeep`, `0xA9C8`): reads the dispatch table ($400 OS,
+  $E00 Toolbox) — so a patched trap breaks at its first patch, which is what a
+  call reaches.
+- continue: resume the guest.  wait [timeout]: block until a break point hits.
+- status / stop.
+
+Limits: names only where the binary carries MacsBug names; x86_64 hosts only (the arm64 CPU core has
+no break-point hooks).""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string",
+                           "enum": ["start", "break", "cmd", "where", "break_trap", "continue", "wait", "status", "stop"]},
+                "command": {"type": "string", "description": "for cmd: one cxmon command"},
+                "trap": {"type": "string", "description": "for break_trap: trap name or A-line word"},
+                "disk": {"type": "string", "description": "for start: host path of the disk image to clone"},
+                "app": {"type": "string", "description": "for start: host path of a MacBinary application to put into the clone's Startup Items, so it launches at boot"},
+                "bridge": {"type": "boolean", "description": "for start: keep the guest's own network so its daemon connects and the bridge tools work in the session (default: slirp, no bridge)"},
+                "keep_items": {"type": "boolean", "description": "for start with app: keep the clone's other Startup Items (default: moved aside, so only the app under test launches)"},
+                "timeout": {"type": "number", "description": "for wait (default 30 s) and cmd (default 10 s)"},
+                "keep_clone": {"type": "boolean", "description": "for stop: keep the cloned disk"}
+            },
+            "required": ["action"]
+        }
     }
 ]
 
@@ -1532,6 +1594,55 @@ def mac_fb_screenshot(region: Optional[list] = None,
         return result
     except Exception as e:
         return {"success": False, "source": "fb-export", "error": str(e)}
+
+
+def mac_debug(action: str, command: Optional[str] = None, trap: Optional[str] = None,
+              disk: Optional[str] = None, timeout: Optional[float] = None,
+              keep_clone: bool = False, app: Optional[str] = None,
+              keep_items: bool = False, bridge: bool = False) -> Dict[str, Any]:
+    """Machine-level debugging through cxmon in a local debug Basilisk II.
+
+    Every action re-reads the session from ~/.applebridge/mon, so a session
+    survives a restart of this server; mon_session.py holds the safety rules
+    (never two emulators, a clone not the image, no host-reaching commands, no
+    blocking write to a dead emulator)."""
+    s = mon_session.Session()
+    try:
+        if action == "start":
+            r = s.start(disk, install=[app] if app else None, isolate=not keep_items, bridge=bridge)
+            r = {"mode": "running", "pid": r["emu_pid"], "disk": r["disk"], "clone": r["clone"],
+                 "installed": r.get("installed", []),
+                 "paused_watchers": [os.path.basename(p) for p in r["paused_watchers"]],
+                 "next": "wait ~60 s for the Finder (mac_fb_screenshot), then action 'break'"}
+        elif action == "break":
+            r = s.break_in(timeout or 10)
+        elif action == "cmd":
+            if not command:
+                return {"success": False, "error": "cmd needs `command`"}
+            r = s.command(command, timeout or 10)
+        elif action == "where":
+            r = s.where()
+        elif action == "break_trap":
+            if not trap:
+                return {"success": False, "error": "break_trap needs `trap`"}
+            r = s.break_on_trap(trap)
+        elif action == "continue":
+            r = s.resume()
+        elif action == "wait":
+            r = s.wait(timeout or 30)
+        elif action == "status":
+            r = s.status()
+        elif action == "stop":
+            r = s.stop(keep_clone=keep_clone)
+        else:
+            return {"success": False, "error": f"unknown action {action!r}"}
+    except mon_session.MonError as e:
+        return {"success": False, "action": action, "error": str(e)}
+    except Exception as e:                             # noqa: BLE001
+        return {"success": False, "action": action, "error": f"{type(e).__name__}: {e}"}
+    r["success"] = True
+    r["action"] = action
+    return r
 
 
 def launch_app(path: str, document: Optional[str] = None) -> Dict[str, Any]:
@@ -2997,6 +3108,7 @@ TOOL_HANDLERS = {
     "mac_compile": mac_compile,
     "mac_screenshot": mac_screenshot,
     "mac_fb_screenshot": mac_fb_screenshot,
+    "mac_debug": mac_debug,
     "launch_app": launch_app,
     "mac_https_get": mac_https_get,
     "mac_toolbox_lookup": mac_toolbox_lookup,
@@ -3054,6 +3166,7 @@ _UNCOMPILED_BY_GUEST: Dict[str, Any] = {}
 REMOTE_GUEST = os.environ.get("APPLEBRIDGE_REMOTE_GUEST", "") == "1"
 HOST_LOCAL_TOOLS = {
     "mac_fb_screenshot": "use mac_screenshot (the daemon captures the guest itself)",
+    "mac_debug": "the debug emulator runs on this Mac; there is no remote debug session",
     "mac_host_click": "use mac_click (synthetic, through the daemon)",
     "mac_host_menu": "use mac_menu / mac_key with a Command shortcut",
     "mac_host_screenshot": "use mac_screenshot",
