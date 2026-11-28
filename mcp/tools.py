@@ -1045,9 +1045,12 @@ Actions:
   the Finder. `app` (a MacBinary file on the host) is put into the clone's Startup Items first,
   and the clone's other Startup Items are moved aside (keep_items: true keeps them) - otherwise
   the AppleBridge watchdog starts too and pushes the app under test into the background.
-- where: the routine at the PC and a backtrace along the A6 frame chain, each address named
+- where: the routine at the PC and a backtrace along the A6 frame chain. Each address is named
   from the MacsBug names compiled into the code (Retro68 keeps them by default; MPW and THINK C
-  with the option). ROM addresses are marked ROM; first frames may be a trap patch.
+  only with the option). Without names: the routine's start (the LINK A6 below the address) and
+  the offset into it, plus - where the program calls it through the jump table, as THINK C does -
+  its slot, `JSR $0C3A(A5)`, the number every call site in the disassembly carries. ROM addresses
+  are marked ROM; first frames may be a trap patch.
 - break: stop the 68K now (SIGINT) and return the registers.
 - cmd <command>: one cxmon command while stopped, e.g. `regs`, `m $16a $16e`
   (hex dump), `i $910 $91b` (ASCII; $910 = CurApName), `d68 $2e890 $2e8a0`

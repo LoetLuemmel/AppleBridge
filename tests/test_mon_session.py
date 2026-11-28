@@ -358,6 +358,58 @@ def test_reads_outside_ram_and_rom_are_refused():
         shutil.rmtree(root, ignore_errors=True)
 
 
+
+def test_jump_table_parsing_stops_at_the_first_non_entry():
+    mem = bytes.fromhex("0001" "4ef9" "07a41248"            # loaded, seg 1
+                        "0001" "4ef9" "07a413a0"            # loaded, seg 1
+                        "0010" "3f3c" "0002" "a9f0"         # unloaded, seg 2
+                        "ffff" "0000" "deadbeef")           # not an entry
+    t = ms.parse_jump_table(mem, 0x20)
+    assert t == [(0x22, 1, 0x7A41248), (0x2A, 1, 0x7A413A0), (0x32, 2, None)]
+    assert ms.jt_for(0x7A412FA, t) == (0x22, 1, 0x7A41248)      # inside the first routine
+    assert ms.jt_for(0x7A413C4, t)[0] == 0x2A
+    assert ms.jt_for(0x7A41000, t) is None                      # below every target
+    assert ms.jt_for(0x7A41248 + 0x9000, t) is None             # beyond one segment
+
+
+def test_where_falls_back_to_the_jump_table_without_names():
+    a5, jt_off = 0x362B3B0, 0x20
+    table = ("0001" "4ef9" "035cac00"                          # $0022(A5) -> the caller
+             "0001" "4ef9" "035cfd62")                          # $002A(A5) -> the faulting routine
+    code = {"35cac00": "4e56fff4" + "4e71" * 70,                # caller: LINK A6 ... (return address at +$88)
+            "35cfd62": "4e56fff4" + "4e71" * 40}                # faulting routine: LINK A6 ... (PC at +$46)
+    image = {"regs": {"PC": "35cfda8", "A6": "362a4a8"},
+             "mem": {"2ae": "07c00000", "904": f"{a5:08x}", "934": f"{jt_off:04x}",
+                     f"{a5 + jt_off:x}": table, **code,
+                     "362a4a8": "0362a5d4" "035cac88",          # frame: saved A6, return into the caller
+                     "362a5d4": "00000000" "00000000",
+                     "910": "0e" + b"Test Classic.".hex() + "b9"}}
+    s, disk, root = _session(image=image)
+    try:
+        st = s.start(disk)
+        st = s.state(); st["ram_size"] = 0x7C00000; s._save(st)
+        time.sleep(0.3)
+        s.break_in()
+        w = s.where()
+        assert w["cur_ap_name"] == "Test Classic.\u03c0"                 # MacRoman pi
+        assert w["jump_table_entries"] == 2 and w["jump_table_loaded"] == 2
+        pc, ret = w["frames"][0], w["frames"][1]
+        assert pc["jump_table"] == "$002A(A5)" and pc["offset"] == "+$46" and pc["segment"] == 1
+        assert ret["jump_table"] == "$0022(A5)" and ret["offset"] == "+$88"
+    finally:
+        s.stop()
+        shutil.rmtree(root, ignore_errors=True)
+
+
+
+def test_link_start_finds_the_routine_without_any_table():
+    mem = bytes.fromhex("4e5e4e75" "4e56fffc" "70014e71" "4e714e71")
+    base = 0x1000
+    assert ms.link_start(base + 12, mem, base) == base + 4
+    assert ms.link_start(base + 2, mem, base) is None
+    assert ms.link_start(base + 4, mem, base) == base + 4         # at the LINK itself
+
+
 def main():
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

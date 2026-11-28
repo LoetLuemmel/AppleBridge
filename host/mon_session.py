@@ -176,6 +176,56 @@ _REG = re.compile(r"\b([DA][0-7]): ([0-9a-f]{8})")
 _PC_LINE = re.compile(r"^([0-9a-f]{8}): [0-9a-f]{4}", re.M)
 
 
+# ---- the jump table ----------------------------------------------------------
+# An application's jump table lives in its A5 world: CurrentA5 ($904) + CurJTOffset
+# ($934). Each entry is 8 bytes. Loaded:   [segment no.][$4EF9 JMP abs.L][address]
+# Unloaded: [offset in segment][$3F3C MOVE.W #seg,-(SP)][segment no.][$A9F0 _LoadSeg].
+# Code calls a routine as JSR off(A5), off = CurJTOffset + 8*i + 2 (the JMP). Without
+# MacsBug names that offset is the routine's stable handle - the same number every
+# call site in the disassembly uses.
+CURRENT_A5, CUR_JT_OFFSET = 0x904, 0x934
+
+
+def parse_jump_table(mem, jt_offset):
+    """[(a5_offset, segment, target or None)] for the entries in `mem` (read at the
+    table's start), stopping at the first 8 bytes that are not an entry."""
+    out = []
+    for i in range(0, len(mem) - 7, 8):
+        e = mem[i:i + 8]
+        w0, w1 = int.from_bytes(e[0:2], "big"), int.from_bytes(e[2:4], "big")
+        off = jt_offset + i + 2
+        if w1 == 0x4EF9:
+            out.append((off, w0, int.from_bytes(e[4:8], "big")))
+        elif w1 == 0x3F3C and int.from_bytes(e[6:8], "big") == 0xA9F0:
+            out.append((off, int.from_bytes(e[4:6], "big"), None))
+        else:
+            break
+    return out
+
+
+def link_start(addr, mem, base):
+    """Address of the nearest LINK A6,#n ($4E56) at or below `addr` in `mem` (read at
+    `base`) - the start of the routine that built the frame - or None. Every routine that
+    appears in an A6 backtrace begins with one, whatever the compiler."""
+    i = (addr - base) & ~1
+    while i >= 0:
+        if mem[i] == 0x4E and i + 1 < len(mem) and mem[i + 1] == 0x56:
+            return base + i
+        i -= 2
+    return None
+
+
+def jt_for(addr, table, span=0x8000):
+    """The loaded entry with the highest target at or below `addr` within one 32 KB
+    segment -> (a5_offset, segment, target), or None. An approximation where a routine
+    has no entry of its own (a static function called only from its own segment)."""
+    best = None
+    for off, seg, target in table:
+        if target is not None and target <= addr < target + span and (best is None or target > best[2]):
+            best = (off, seg, target)
+    return best
+
+
 def _pid_alive(pid):
     if not pid:
         return False
@@ -696,7 +746,24 @@ class Session:
             self._save(st)
         return st["rom_base"]
 
-    def _describe(self, addr, rom_base, window=4096):
+    def _jump_table(self, max_entries=1024):
+        """The current application's jump table, or [] if it cannot be read."""
+        try:
+            a5 = int.from_bytes(self.read_mem(CURRENT_A5, 4), "big")
+            jt_off = int.from_bytes(self.read_mem(CUR_JT_OFFSET, 2), "big")
+            if not a5 or a5 & 1:
+                return []
+            table, start, chunk = [], a5 + jt_off, 0x400
+            while len(table) < max_entries:
+                got = parse_jump_table(self.read_mem(start + len(table) * 8, chunk), jt_off + len(table) * 8)
+                table += got
+                if len(got) < chunk // 8:
+                    break
+            return table
+        except MonError:
+            return []
+
+    def _describe(self, addr, rom_base, window=4096, jt=None):
         if rom_base and rom_base <= addr < rom_base + ROM_SPAN:
             return {"address": f"${addr:X}", "where": "ROM"}
         ram = self.state().get("ram_size") or 0
@@ -704,9 +771,27 @@ class Session:
             return {"address": f"${addr:X}", "where": "outside RAM and ROM (a wild address)"}
         lo = max(0, addr - window)
         hi = min(addr + window, ram) if ram else addr + window
-        hit = name_for(addr, self.read_mem(lo, hi - lo), lo)
+        mem = self.read_mem(lo, hi - lo)
+        hit = name_for(addr, mem, lo)
         if not hit:
-            return {"address": f"${addr:X}", "where": "RAM, no MacsBug name within 4 KB (system code or a stripped binary)"}
+            # No name compiled in. The routine starts at the LINK A6 below the address; a
+            # jump-table entry aimed exactly there gives the handle every call site uses.
+            d = {"address": f"${addr:X}"}
+            start = link_start(addr, mem, lo)
+            exact = [e for e in (jt or []) if start is not None and e[2] == start]
+            if start is not None:
+                d.update({"routine_start": f"${start:X}", "offset": f"+${addr - start:X}"})
+            if exact:
+                off, seg, _ = exact[0]
+                d.update({"jump_table": f"${off:04X}(A5)", "segment": seg,
+                          "where": f"no MacsBug name; routine reached via its jump-table entry - call sites read "
+                                   f"JSR ${off:04X}(A5)"})
+            elif start is not None:
+                d["where"] = ("no MacsBug name and no jump-table entry for this routine (called PC-relative from its own "
+                              "segment); start = the LINK A6 below")
+            else:
+                d["where"] = "RAM, no MacsBug name and no LINK A6 within 4 KB below (system code, or another heap)"
+            return d
         name, start, off = hit
         d = {"address": f"${addr:X}", "routine": name}
         if start is not None:
@@ -723,7 +808,8 @@ class Session:
             raise MonError("the guest is running - break in first")
         regs = self.registers()
         rom = self._rom_base()
-        frames = [dict(self._describe(regs["PC"], rom), frame="PC")] if "PC" in regs else []
+        jt = self._jump_table()
+        frames = [dict(self._describe(regs["PC"], rom, jt=jt), frame="PC")] if "PC" in regs else []
         a6 = regs.get("A6", 0)
         seen = set()
         for _ in range(depth):
@@ -740,7 +826,7 @@ class Session:
             saved, ret = int.from_bytes(raw[:4], "big"), int.from_bytes(raw[4:], "big")
             if not ret:
                 break
-            frames.append(dict(self._describe(ret, rom), frame=f"A6=${a6:X}", kind="return address"))
+            frames.append(dict(self._describe(ret, rom, jt=jt), frame=f"A6=${a6:X}", kind="return address"))
             if saved <= a6:                            # frames grow towards higher addresses
                 break
             a6 = saved
@@ -748,6 +834,7 @@ class Session:
         cur = app[1:1 + app[0]].decode("mac_roman") if app and app[0] < 32 else "?"   # "Test Classic.π"
         return {"mode": st["mode"], "crash": st.get("crash"), "pc": f"${regs.get('PC', 0):X}", "a6": f"${regs.get('A6', 0):X}",
                 "a7": f"${regs.get('A7', 0):X}", "rom_base": f"${rom:X}", "cur_ap_name": cur,
+                "jump_table_entries": len(jt), "jump_table_loaded": sum(1 for e in jt if e[2] is not None),
                 "frames": frames,
                 "note": "frames follow A6; a routine built without LINK A6 does not appear. "
                         "cur_ap_name is the last process switched in, not necessarily the code at PC."}
