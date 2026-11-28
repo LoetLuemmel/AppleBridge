@@ -32,7 +32,7 @@ State lives in a session directory (default ~/.applebridge/mon), so a session
 outlives the MCP server that started it.
 
 CLI (for a human, or a quick check):
-    mon_session.py start [disk]  |  break  |  cmd "<mon command>"  |  continue
+    mon_session.py start [disk] [--app App.bin [--keep-items]]  |  break  |  where  |  cmd "<mon command>"  |  continue
     mon_session.py wait [secs]   |  trap <name> |  status  |  stop
 """
 
@@ -74,6 +74,9 @@ HOST_COMMANDS = {"\\", "ls", "rm", "cp", "mv", "cd", "[", "]", "o", "bs", "bl"}
 # entries, index = word & $FF), Toolbox traps at $E00 (1024 entries, index =
 # word & $3FF). Bit 11 of the trap word selects the Toolbox table.
 OS_TABLE, TB_TABLE = 0x400, 0xE00
+# Basilisk maps the ROM right after RAM ($07C00000 on a 124 MB guest); 68K Mac ROMs are at most 1 MB,
+# so 2 MB is a safe bound for "this address is ROM code".
+ROM_SPAN = 0x200000
 
 
 class MonError(Exception):
@@ -110,6 +113,63 @@ def resolve_trap(name, traps=None):
         return k, traps[k]
     close = sorted(k for k in traps if key.lower() in k.lower())[:8]
     raise MonError(f"unknown trap {name!r}" + (f"; similar: {', '.join(close)}" if close else ""))
+
+
+# ---- MacsBug names ----------------------------------------------------------
+# A compiler that keeps MacsBug symbols (MPW, THINK C with the option, Retro68
+# by default) ends each routine with its name: the final RTS ($4E75), RTD
+# ($4E74 nnnn) or JMP (A0) ($4ED0), then a length byte $80|n, n name bytes,
+# a pad byte to an even address, and a word giving the length of constant
+# data that follows. The next routine starts after that.
+_NAME_CHARS = set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_%.$<>:~")
+
+
+def macsbug_names(mem, base):
+    """[(routine_end, block_end, name)] for every MacsBug name in `mem`
+    (bytes read at guest address `base`). routine_end = address of the name's
+    length byte; block_end = where the next routine starts."""
+    found = []
+    i = 0
+    while i + 4 <= len(mem):
+        w = (mem[i] << 8) | mem[i + 1]
+        if w in (0x4E75, 0x4ED0):
+            j = i + 2
+        elif w == 0x4E74:
+            j = i + 4
+        else:
+            i += 2
+            continue
+        if j < len(mem) and 0x81 <= mem[j] <= 0x9F:
+            n = mem[j] & 0x1F
+            name = mem[j + 1:j + 1 + n]
+            if len(name) == n and all(c in _NAME_CHARS for c in name):
+                k = j + 1 + n
+                k += k & 1                             # pad to even
+                const = (mem[k] << 8 | mem[k + 1]) if k + 1 < len(mem) else 0
+                found.append((base + j, base + k + 2 + const, name.decode("latin-1")))
+                i = k + 2
+                continue
+        i += 2
+    return found
+
+
+def name_for(addr, mem, base):
+    """The routine containing `addr`, as (name, start, offset), from a memory
+    window that spans the address. start is None when the window does not
+    reach back to the previous routine's name."""
+    names = macsbug_names(mem, base)
+    after = [n for n in names if n[0] > addr]
+    if not after:
+        return None
+    end, _, name = after[0]
+    before = [n for n in names if n[1] <= addr]
+    start = before[-1][1] if before else None
+    return name, start, (addr - start) if start is not None else None
+
+
+_DUMP_LINE = re.compile(r"^([0-9a-f]+):((?:\s+[0-9a-f]{8}){1,4})", re.M)
+_REG = re.compile(r"\b([DA][0-7]): ([0-9a-f]{8})")
+_PC_LINE = re.compile(r"^([0-9a-f]{8}): [0-9a-f]{4}", re.M)
 
 
 def _pid_alive(pid):
@@ -149,7 +209,7 @@ class Session:
     processes (an MCP server restart, the CLI) see the same session."""
 
     def __init__(self, root=None, app=None, launcher=None, watchers=None,
-                 cloner=None, emulators=None, check_binary=True):
+                 cloner=None, emulators=None, check_binary=True, installer=None):
         self.root = root or local_env("APPLEBRIDGE_MON_DIR", os.path.expanduser("~/.applebridge/mon"))
         self.app = app or local_env("APPLEBRIDGE_MON_APP", DEFAULT_APP)
         self.fifo = os.path.join(self.root, "mon.in")
@@ -160,6 +220,7 @@ class Session:
         self._watchers = watchers
         self._cloner = cloner
         self._emulators = emulators or _running_emulators
+        self._installer = installer
         self._check_binary = check_binary
 
     # ---- state -----------------------------------------------------------
@@ -236,7 +297,7 @@ class Session:
             os.close(fd)
 
     # ---- lifecycle ---------------------------------------------------------
-    def start(self, disk=None):
+    def start(self, disk=None, install=None, isolate=True):
         st = self.state()
         if st and _pid_alive(st.get("emu_pid")):
             raise MonError(f"a debug session is already running (pid {st['emu_pid']})")
@@ -262,6 +323,11 @@ class Session:
         if os.path.exists(clone):
             os.remove(clone)
         (self._cloner or self._clone)(disk, clone)
+        installed = []
+        for app in install or []:
+            # Into the CLONE's Startup Items, so the program under test launches
+            # by itself at boot - no bridge, no host mouse needed.
+            installed.append((self._installer or self._install_startup)(clone, app, isolate))
 
         prefs = os.path.join(self.root, "prefs")
         self._write_prefs(prefs, clone)
@@ -292,7 +358,8 @@ class Session:
                 os.close(fd)
         st = {"emu_pid": emu.pid, "holder_pid": holder.pid, "disk": disk, "clone": clone,
               "prefs": prefs, "app": self.app, "paused_watchers": paused,
-              "mode": "running", "started": time.strftime("%Y-%m-%d %H:%M:%S")}
+              "mode": "running", "started": time.strftime("%Y-%m-%d %H:%M:%S"),
+              "installed": installed}
         self._save(st)
         return st
 
@@ -302,6 +369,62 @@ class Session:
         r = subprocess.run(["cp", "-c", src, dst], capture_output=True, text=True)
         if r.returncode != 0:
             raise MonError(f"could not clone {src}: {r.stderr.strip()}")
+
+    @staticmethod
+    def _install_startup(clone, macbinary, isolate=True):
+        """Copy a MacBinary application into the clone's Startup Items (hfsutils).
+
+        With `isolate` (the default) every other Startup Item is moved into a
+        sibling folder first: otherwise the clone's own items (the AppleBridge
+        watchdog, which starts the daemon and ToolServer) launch too, push the
+        program under test into the background and change what it does - the
+        blind test of 2026-11-28 took a backgrounded app for a hang. The clone
+        is not mounted anywhere else yet, so this is safe."""
+        if not os.path.exists(macbinary):
+            raise MonError(f"no such file: {macbinary}")
+
+        def hfs(*args):
+            return subprocess.run(list(args), capture_output=True, text=True)
+
+        def listing(path):                             # one entry per line: names contain spaces
+            r = hfs("hls", "-1", path)
+            return [ln for ln in r.stdout.splitlines() if ln.strip()] if r.returncode == 0 else None
+
+        r = hfs("hmount", clone)
+        if r.returncode != 0:
+            raise MonError(f"hmount failed on the clone: {r.stderr.strip()} (is hfsutils installed?)")
+        moved = []
+        try:
+            dest = ":System Folder:Startup Items:"
+            items = listing(dest)
+            if items is None:
+                raise MonError("the clone has no ':System Folder:Startup Items:'")
+            if isolate and items:
+                # A folder of our own: the guest may already have "Startup Items (Disabled)"
+                # holding an older item of the same name (measured on the dev guest), and
+                # HFS names are case-insensitive.
+                aside = ":System Folder:Startup Items (mac_debug):"
+                if listing(aside) is None:
+                    hfs("hmkdir", aside)
+                taken = {n.lower() for n in (listing(aside) or [])}
+                for name in items:
+                    target, k = name, 2
+                    while target.lower() in taken:
+                        target = f"{name[:27]} {k}"
+                        k += 1
+                    r = hfs("hrename", dest + name, aside + (target if target != name else ""))
+                    if r.returncode != 0:
+                        raise MonError(f"could not move {name!r} aside: {r.stderr.strip()}")
+                    taken.add(target.lower())
+                    moved.append(name)
+            r = hfs("hcopy", "-m", macbinary, dest)
+            if r.returncode != 0:
+                raise MonError(f"hcopy failed: {r.stderr.strip()}")
+            now = listing(dest)
+        finally:
+            hfs("humount", clone)
+        return {"file": os.path.basename(macbinary), "into": dest, "startup_items": now,
+                "moved_aside": moved}
 
     @staticmethod
     def _write_prefs(path, clone, base=os.path.expanduser("~/.basilisk_ii_prefs")):
@@ -460,6 +583,81 @@ class Session:
                 "output": r2["output"],
                 "next": "action 'continue', then 'wait' for the hit"}
 
+    # ---- reading the guest ---------------------------------------------------
+    def read_mem(self, start, length):
+        """Guest memory as bytes, via the monitor's hex dump (16 bytes a line)."""
+        start &= ~1
+        out = self.command(f"m ${start:x} ${start + length:x}", timeout=20)["output"]
+        data = bytearray()
+        expect = start
+        for m in _DUMP_LINE.finditer(out):
+            a = int(m.group(1), 16)
+            if a != expect:
+                break
+            for word in m.group(2).split():
+                data += int(word, 16).to_bytes(4, "big")
+            expect += 16
+        return bytes(data[:length])
+
+    def registers(self):
+        out = self.command("regs")["output"]
+        regs = {k: int(v, 16) for k, v in _REG.findall(out)}
+        pcs = _PC_LINE.findall(out)
+        if pcs:
+            regs["PC"] = int(pcs[-1], 16)
+        return regs
+
+    def _rom_base(self):
+        return int.from_bytes(self.read_mem(0x2AE, 4), "big")
+
+    def _describe(self, addr, rom_base, window=4096):
+        if rom_base and rom_base <= addr < rom_base + ROM_SPAN:
+            return {"address": f"${addr:X}", "where": "ROM"}
+        lo = max(0, addr - window)
+        hit = name_for(addr, self.read_mem(lo, 2 * window), lo)
+        if not hit:
+            return {"address": f"${addr:X}", "where": "RAM, no MacsBug name within 4 KB (system code or a stripped binary)"}
+        name, start, off = hit
+        d = {"address": f"${addr:X}", "routine": name}
+        if start is not None:
+            d["routine_start"] = f"${start:X}"
+            d["offset"] = f"+${off:X}"
+        return d
+
+    def where(self, depth=12):
+        """Current routine and a backtrace along the A6 frame chain, each
+        address named from the MacsBug names compiled into the code. The first
+        frames may belong to a trap patch or ROM code the program called."""
+        self._require_session()
+        if self.state().get("mode") != "stopped":
+            raise MonError("the guest is running - break in first")
+        regs = self.registers()
+        rom = self._rom_base()
+        frames = [dict(self._describe(regs["PC"], rom), frame="PC")] if "PC" in regs else []
+        a6 = regs.get("A6", 0)
+        seen = set()
+        for _ in range(depth):
+            if not a6 or a6 & 1 or a6 in seen or (rom and a6 >= rom):
+                break
+            seen.add(a6)
+            raw = self.read_mem(a6, 8)
+            if len(raw) < 8:
+                break
+            saved, ret = int.from_bytes(raw[:4], "big"), int.from_bytes(raw[4:], "big")
+            if not ret:
+                break
+            frames.append(dict(self._describe(ret, rom), frame=f"A6=${a6:X}", kind="return address"))
+            if saved <= a6:                            # frames grow towards higher addresses
+                break
+            a6 = saved
+        app = self.read_mem(0x910, 32)
+        cur = app[1:1 + app[0]].decode("latin-1") if app and app[0] < 32 else "?"
+        return {"mode": "stopped", "pc": f"${regs.get('PC', 0):X}", "a6": f"${regs.get('A6', 0):X}",
+                "a7": f"${regs.get('A7', 0):X}", "rom_base": f"${rom:X}", "cur_ap_name": cur,
+                "frames": frames,
+                "note": "frames follow A6; a routine built without LINK A6 does not appear. "
+                        "cur_ap_name is the last process switched in, not necessarily the code at PC."}
+
     def status(self):
         st = self.state()
         if not st:
@@ -479,7 +677,15 @@ def main(argv):
     s, a = Session(), argv[1]
     try:
         if a == "start":
-            r = s.start(argv[2] if len(argv) > 2 else None)
+            rest = argv[2:]
+            app = None
+            if "--app" in rest:
+                i = rest.index("--app")
+                app = rest[i + 1]
+                del rest[i:i + 2]
+            keep = "--keep-items" in rest
+            rest = [x for x in rest if x != "--keep-items"]
+            r = s.start(rest[0] if rest else None, install=[app] if app else None, isolate=not keep)
         elif a == "break":
             r = s.break_in()
         elif a == "cmd":
@@ -490,6 +696,8 @@ def main(argv):
             r = s.wait(float(argv[2]) if len(argv) > 2 else 30)
         elif a == "trap":
             r = s.break_on_trap(argv[2])
+        elif a == "where":
+            r = s.where()
         elif a == "status":
             r = s.status()
         elif a == "stop":
@@ -502,6 +710,7 @@ def main(argv):
     out = r.pop("output", None) if isinstance(r, dict) else None
     print(json.dumps(r, indent=1))
     if out:
+        print("--- monitor output ---")
         print(out)
     return 0
 

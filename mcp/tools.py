@@ -1041,7 +1041,13 @@ Mac's hang/dialog watchdogs for the session; `stop` restores them and deletes
 the clone.
 
 Actions:
-- start [disk]: boot the clone (default: the boot disk in ~/.basilisk_ii_prefs); ~60 s to the Finder.
+- start [disk] [app]: boot the clone (default: the boot disk in ~/.basilisk_ii_prefs); ~60 s to
+  the Finder. `app` (a MacBinary file on the host) is put into the clone's Startup Items first,
+  and the clone's other Startup Items are moved aside (keep_items: true keeps them) - otherwise
+  the AppleBridge watchdog starts too and pushes the app under test into the background.
+- where: the routine at the PC and a backtrace along the A6 frame chain, each address named
+  from the MacsBug names compiled into the code (Retro68 keeps them by default; MPW and THINK C
+  with the option). ROM addresses are marked ROM; first frames may be a trap patch.
 - break: stop the 68K now (SIGINT) and return the registers.
 - cmd <command>: one cxmon command while stopped, e.g. `regs`, `m $16a $16e`
   (hex dump), `i $910 $91b` (ASCII; $910 = CurApName), `d68 $2e890 $2e8a0`
@@ -1054,16 +1060,18 @@ Actions:
 - continue: resume the guest.  wait [timeout]: block until a break point hits.
 - status / stop.
 
-Limits: addresses only (no symbols); x86_64 hosts only (the arm64 CPU core has
+Limits: names only where the binary carries MacsBug names; x86_64 hosts only (the arm64 CPU core has
 no break-point hooks).""",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "action": {"type": "string",
-                           "enum": ["start", "break", "cmd", "break_trap", "continue", "wait", "status", "stop"]},
+                           "enum": ["start", "break", "cmd", "where", "break_trap", "continue", "wait", "status", "stop"]},
                 "command": {"type": "string", "description": "for cmd: one cxmon command"},
                 "trap": {"type": "string", "description": "for break_trap: trap name or A-line word"},
                 "disk": {"type": "string", "description": "for start: host path of the disk image to clone"},
+                "app": {"type": "string", "description": "for start: host path of a MacBinary application to put into the clone's Startup Items, so it launches at boot"},
+                "keep_items": {"type": "boolean", "description": "for start with app: keep the clone's other Startup Items (default: moved aside, so only the app under test launches)"},
                 "timeout": {"type": "number", "description": "for wait (default 30 s) and cmd (default 10 s)"},
                 "keep_clone": {"type": "boolean", "description": "for stop: keep the cloned disk"}
             },
@@ -1586,7 +1594,8 @@ def mac_fb_screenshot(region: Optional[list] = None,
 
 def mac_debug(action: str, command: Optional[str] = None, trap: Optional[str] = None,
               disk: Optional[str] = None, timeout: Optional[float] = None,
-              keep_clone: bool = False) -> Dict[str, Any]:
+              keep_clone: bool = False, app: Optional[str] = None,
+              keep_items: bool = False) -> Dict[str, Any]:
     """Machine-level debugging through cxmon in a local debug Basilisk II.
 
     Every action re-reads the session from ~/.applebridge/mon, so a session
@@ -1596,8 +1605,9 @@ def mac_debug(action: str, command: Optional[str] = None, trap: Optional[str] = 
     s = mon_session.Session()
     try:
         if action == "start":
-            r = s.start(disk)
+            r = s.start(disk, install=[app] if app else None, isolate=not keep_items)
             r = {"mode": "running", "pid": r["emu_pid"], "disk": r["disk"], "clone": r["clone"],
+                 "installed": r.get("installed", []),
                  "paused_watchers": [os.path.basename(p) for p in r["paused_watchers"]],
                  "next": "wait ~60 s for the Finder (mac_fb_screenshot), then action 'break'"}
         elif action == "break":
@@ -1606,6 +1616,8 @@ def mac_debug(action: str, command: Optional[str] = None, trap: Optional[str] = 
             if not command:
                 return {"success": False, "error": "cmd needs `command`"}
             r = s.command(command, timeout or 10)
+        elif action == "where":
+            r = s.where()
         elif action == "break_trap":
             if not trap:
                 return {"success": False, "error": "break_trap needs `trap`"}

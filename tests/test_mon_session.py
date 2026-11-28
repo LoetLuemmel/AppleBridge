@@ -8,6 +8,7 @@ started, and a break point hit is reported with its address.
 
 Run: python3 tests/test_mon_session.py   (or via pytest)
 """
+import json
 import os
 import shutil
 import signal
@@ -23,10 +24,16 @@ import mon_session as ms  # noqa: E402
 FAKE = os.path.join(HERE, "fixtures", "fake_mon.py")
 
 
-def _session(emulators=lambda: []):
+def _session(emulators=lambda: [], image=None):
     root = tempfile.mkdtemp(prefix="monsess")
     disk = os.path.join(root, "src.dmg")
     open(disk, "wb").write(b"\0" * 1024)
+    if image is not None:
+        path = os.path.join(root, "image.json")
+        json.dump(image, open(path, "w"))
+        os.environ["FAKE_MON_IMAGE"] = path
+    else:
+        os.environ.pop("FAKE_MON_IMAGE", None)
     s = ms.Session(root=os.path.join(root, "s"), app=root, check_binary=False,
                    launcher=lambda: [sys.executable, "-u", FAKE],
                    watchers=lambda: [], cloner=shutil.copyfile, emulators=emulators)
@@ -149,6 +156,147 @@ def test_dead_emulator_never_blocks_a_write():
     finally:
         s.stop()
         shutil.rmtree(root, ignore_errors=True)
+
+
+# Two routines as Retro68 emits them (bytes from a real build): ...RTS, $87 "IsPrime",
+# constant-length word; then LINK A6 ... RTS, $88 "DrawBars", pad, word.
+ISPRIME_DRAWBARS = bytes.fromhex(
+    "4e5e4e75" "87" + b"IsPrime".hex() + "0000"
+    "4e56fffc" "7001" "6000fffc" "4e5e4e75" "88" + b"DrawBars".hex() + "00" "0000"
+    "4e56fffc")
+
+
+def test_macsbug_names_and_routine_bounds():
+    base = 0x7A41000
+    names = ms.macsbug_names(ISPRIME_DRAWBARS, base)
+    assert [n[2] for n in names] == ["IsPrime", "DrawBars"]
+    draw_start = names[0][1]
+    assert ISPRIME_DRAWBARS[draw_start - base:draw_start - base + 2] == b"\x4e\x56"   # LINK A6
+    name, start, off = ms.name_for(draw_start + 6, ISPRIME_DRAWBARS, base)
+    assert (name, start, off) == ("DrawBars", draw_start, 6)
+    assert ms.name_for(base + 2, ISPRIME_DRAWBARS, base)[0] == "IsPrime"
+    assert ms.name_for(names[1][1] + 2, ISPRIME_DRAWBARS, base) is None   # past the last name
+
+
+def test_macsbug_names_ignore_lookalikes():
+    junk = bytes.fromhex("4e75" "85" "41422d4344" "0000" "4e75" "20" "414243")   # '-' and no high bit
+    assert ms.macsbug_names(junk, 0) == []
+
+
+def test_where_names_pc_and_walks_the_a6_chain():
+    code = 0x7A41000
+    names = ms.macsbug_names(ISPRIME_DRAWBARS, code)
+    pc = names[0][1] + 6                                  # inside DrawBars
+    ret_in_isprime = code + 2                             # a return address inside IsPrime
+    image = {"regs": {"PC": f"{pc:x}", "A6": "7b43a60"},
+             "mem": {f"{code:x}": ISPRIME_DRAWBARS.hex(),
+                     "7b43a60": "07b43a80" + f"{ret_in_isprime:08x}",   # frame 1 -> frame 2
+                     "7b43a80": "00000000" + "00000000",                # end of chain
+                     "2ae": "07c00000",                                  # ROMBase, right after RAM
+                     "910": "09" + b"PrimeBars".hex()}}
+    s, disk, root = _session(image=image)
+    try:
+        s.start(disk)
+        time.sleep(0.3)
+        s.break_in()
+        w = s.where()
+        assert w["cur_ap_name"] == "PrimeBars" and w["rom_base"] == "$7C00000"
+        assert w["frames"][0]["frame"] == "PC" and w["frames"][0]["routine"] == "DrawBars"
+        assert w["frames"][0]["offset"] == "+$6"
+        assert w["frames"][1]["routine"] == "IsPrime" and w["frames"][1]["kind"] == "return address"
+        assert len(w["frames"]) == 2                     # stopped at the zero frame
+    finally:
+        s.stop()
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_where_refuses_while_running():
+    s, disk, root = _session()
+    try:
+        s.start(disk)
+        _expect_error(s.where, "break in first")
+    finally:
+        s.stop()
+        shutil.rmtree(root, ignore_errors=True)
+
+
+class _FakeHFS:
+    """hfsutils on a dict: enough for _install_startup (hmount/hls -1/hmkdir/hrename/hcopy/humount)."""
+
+    def __init__(self, items):
+        self.dirs = {":System Folder:Startup Items:": list(items)}
+        self.calls = []
+
+    def __call__(self, args, capture_output=True, text=True):
+        self.calls.append(args)
+        cmd, ok, out = args[0], 0, ""
+        if cmd == "hls":
+            path = args[-1]
+            if path in self.dirs:
+                out = "".join(n + "\n" for n in self.dirs[path])
+            else:
+                ok = 1
+        elif cmd == "hmkdir":
+            self.dirs[args[1]] = []
+        elif cmd == "hrename":
+            src, dst = args[1], args[2]
+            folder, name = src.rsplit(":", 1)[0] + ":", src.rsplit(":", 1)[1]
+            dfolder, dname = dst.rsplit(":", 1)[0] + ":", dst.rsplit(":", 1)[1] or name
+            if dname.lower() in (n.lower() for n in self.dirs[dfolder]):
+                return type("R", (), {"returncode": 1, "stdout": "", "stderr": "File exists"})()
+            self.dirs[folder].remove(name)
+            self.dirs[dfolder].append(dname)
+        elif cmd == "hcopy":
+            self.dirs[args[-1]].append(os.path.basename(args[2]).rsplit(".", 1)[0])
+        return type("R", (), {"returncode": ok, "stdout": out, "stderr": ""})()
+
+
+def test_install_isolates_other_startup_items_with_spaces_in_names():
+    fake = _FakeHFS(["AppleBridge Watchdog", "ToolServer alias"])
+    real = ms.subprocess.run
+    app = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)
+    app.close()
+    try:
+        ms.subprocess.run = fake
+        r = ms.Session._install_startup("/clone.dmg", app.name)
+    finally:
+        ms.subprocess.run = real
+        os.remove(app.name)
+    assert r["moved_aside"] == ["AppleBridge Watchdog", "ToolServer alias"]
+    assert r["startup_items"] == [os.path.basename(app.name)[:-4]]
+    assert fake.dirs[":System Folder:Startup Items (mac_debug):"] == ["AppleBridge Watchdog", "ToolServer alias"]
+    assert ["hls", "-1", ":System Folder:Startup Items:"] in fake.calls
+    assert fake.calls[-1][0] == "humount"
+
+
+def test_install_does_not_collide_with_an_existing_item_aside():
+    fake = _FakeHFS(["AppleBridge Watchdog"])
+    fake.dirs[":System Folder:Startup Items (mac_debug):"] = ["appleBridge watchdog"]   # case-insensitive clash
+    real = ms.subprocess.run
+    app = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)
+    app.close()
+    try:
+        ms.subprocess.run = fake
+        r = ms.Session._install_startup("/clone.dmg", app.name)
+    finally:
+        ms.subprocess.run = real
+        os.remove(app.name)
+    assert r["moved_aside"] == ["AppleBridge Watchdog"]
+    assert "AppleBridge Watchdog 2" in fake.dirs[":System Folder:Startup Items (mac_debug):"]
+
+
+def test_install_can_keep_the_other_items():
+    fake = _FakeHFS(["AppleBridge Watchdog"])
+    real = ms.subprocess.run
+    app = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)
+    app.close()
+    try:
+        ms.subprocess.run = fake
+        r = ms.Session._install_startup("/clone.dmg", app.name, isolate=False)
+    finally:
+        ms.subprocess.run = real
+        os.remove(app.name)
+    assert r["moved_aside"] == [] and "AppleBridge Watchdog" in r["startup_items"]
 
 
 def main():
