@@ -177,6 +177,8 @@ than a broken install. Why OT *and* MCP is not one layer twice:
 - **System 7.0 or later on a 68020 or later** — any Mac with Color QuickDraw in
   ROM. Verified on 7.0, 7.0.1, 7.5, 7.5.3, 7.6.1 and Mac OS 9; 68000 Macs (Plus,
   SE, Classic) are not supported ([D-029](DECISIONS.md)).
+  Per release — what was measured, what Mac OS 8 is expected to need — in
+  [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
 - **Open Transport** (7.5.3 and later) or **MacTCP** (2.0.6 runs on 7.0) — or no
   network stack at all, over a **Serial** line.
 - **RAM:** the installer sizes the daemon for the machine — 1,000 K on a Mac with
