@@ -489,7 +489,7 @@ with no compiler is still fully driveable.
 | **Drive the guest** | `mac_type`, `mac_key`, `mac_click`, `mac_menu`, `mac_menu_front`, `mac_host_click`, `mac_host_menu`, `mac_host_screenshot` |
 | **Network discovery** | `mac_appletalk_browse` |
 | **Toolbox reference** (no guest needed) | `mac_toolbox_lookup`, `mac_toolbox_search` — THINK C 7 headers, THINK Reference and Inside Macintosh through the Mac68k Reference API |
-| **Debug** (experimental; local x86_64 host, debug emulator build) | `mac_debug` — break in, break points (by address or trap name), registers, memory and 68K disassembly through cxmon inside Basilisk II, on a clone of the guest's disk |
+| **Debug** (experimental; local x86_64 host, debug emulator build) | `mac_debug` — break in, break points (by address or trap name), registers, memory and 68K disassembly through cxmon inside Basilisk II, on a clone of the guest's disk — setup in [docs/MAC_DEBUG.md](docs/MAC_DEBUG.md) |
 | **Lifecycle & liveness** | `mac_status`, `bridge_doctor`, `mac_verbose_log`, `mac_reboot`, `mac_shutdown`, `mac_restart_toolserver`, `mac_update_daemon`, `run_applescript` |
 
 `mac_screenshot` reads the **emulated framebuffer** through the daemon, not the

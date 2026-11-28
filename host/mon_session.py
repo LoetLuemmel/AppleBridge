@@ -371,6 +371,8 @@ class Session:
             except OSError as e:
                 raise MonError(f"debug emulator not found: {e} (set APPLEBRIDGE_MON_APP)") from None
 
+        if bridge and self._check_binary:
+            self._check_bridge_helper()
         os.makedirs(self.root, exist_ok=True)
         disk = disk or boot_disk_from_prefs()
         clone = os.path.join(self.root, "guest_clone.dmg")
@@ -420,6 +422,28 @@ class Session:
               "installed": installed, "ram_size": ram_size, "bridge": bridge}
         self._save(st)
         return st
+
+    def _check_bridge_helper(self, base=os.path.expanduser("~/.basilisk_ii_prefs")):
+        """With an etherhelper guest, bridge mode needs the debug bundle's helper to be a
+        setuid-root one; otherwise Basilisk asks for an admin password (or, unattended,
+        never gets a network). A fresh Xcode build replaces the symlink with an
+        unprivileged copy - docs/MAC_DEBUG.md."""
+        ether = ""
+        try:
+            ether = next((l.split(" ", 1)[1].strip() for l in open(base) if l.startswith("ether ")), "")
+        except OSError:
+            pass
+        if not ether.startswith("etherhelper"):
+            return
+        helper = os.path.join(self.app, "Contents", "Resources", "etherhelpertool")
+        try:
+            st = os.stat(helper)                       # follows the symlink, as Basilisk's check does
+        except OSError:
+            raise MonError(f"bridge mode: no network helper at {helper}") from None
+        if not (st.st_uid == 0 and st.st_mode & 0o4000):
+            raise MonError(f"bridge mode: {helper} is not setuid root, so the guest would get no network "
+                           "without a password dialog. Link it to the production bundle's helper "
+                           "(docs/MAC_DEBUG.md, 'Bridge mode')")
 
     @staticmethod
     def _clone(src, dst):
