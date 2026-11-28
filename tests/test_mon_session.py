@@ -86,13 +86,14 @@ def test_prefs_drop_disk_ether_jit():
     root = tempfile.mkdtemp()
     try:
         base = os.path.join(root, "base")
-        open(base, "w").write("disk /a.dmg\nether etherhelper/en8\njit true\nrom /r\nscreen win/1024/768\n")
+        open(base, "w").write("disk /a.dmg\nether etherhelper/en8\njit true\nignoresegv true\nrom /r\nscreen win/1024/768\n")
         out = os.path.join(root, "p")
         ms.Session._write_prefs(out, "/clone.dmg", base=base)
         lines = open(out).read().splitlines()
         assert "rom /r" in lines and "screen win/1024/768" in lines
         assert [l for l in lines if l.startswith("disk")] == ["disk /clone.dmg"]
         assert "ether slirp" in lines and "jit false" in lines and "jit true" not in lines
+        assert "ignoresegv false" in lines and "ignoresegv true" not in lines
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -297,6 +298,61 @@ def test_install_can_keep_the_other_items():
         ms.subprocess.run = real
         os.remove(app.name)
     assert r["moved_aside"] == [] and "AppleBridge Watchdog" in r["startup_items"]
+
+
+
+def test_a_wild_write_is_a_crash_inspectable_but_not_resumable():
+    image = {"crash_after": 0.4, "regs": {"PC": "7a41020", "A6": "0"},
+             "mem": {"2ae": "07c00000", "910": "09" + b"PrimeBars".hex()}}
+    s, disk, root = _session(image=image)
+    try:
+        s.start(disk)
+        r = s.wait(timeout=5)
+        assert r["mode"] == "crashed" and r["crash"]["host_fault_address"] == "0x441d2004", r
+        assert r["output"].startswith("D0: ")
+        assert s.status()["mode"] == "crashed"
+        _expect_error(s.resume, "quit the emulator")
+        assert "PC" in s.registers()                       # monitor still answers
+        w = s.where()
+        assert w["mode"] == "crashed" and w["crash"]["host_ip"] == "0x10a3c2f"
+        assert s.break_in()["mode"] == "crashed"
+    finally:
+        s.stop()
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_a_crash_nobody_waited_for_is_noticed():
+    image = {"crash_after": 0.3, "regs": {"PC": "7a41020"}, "mem": {"2ae": "07c00000"}}
+    s, disk, root = _session(image=image)
+    try:
+        s.start(disk)
+        time.sleep(1.0)
+        assert s.status()["mode"] == "crashed"
+        _expect_error(s.resume, "quit the emulator")
+    finally:
+        s.stop()
+        shutil.rmtree(root, ignore_errors=True)
+
+
+
+def test_reads_outside_ram_and_rom_are_refused():
+    s, disk, root = _session(image={"mem": {"2ae": "07c00000"}})
+    try:
+        st = s.start(disk)
+        st = s.state()
+        st["ram_size"] = 0x7C00000
+        s._save(st)
+        time.sleep(0.3)
+        s.break_in()
+        s._rom_base()
+        _expect_error(lambda: s.command("m $4e88c000 $4e88c010"), "outside guest RAM")
+        _expect_error(lambda: s.command("d68 $4050f004"), "kill the emulator")
+        assert "0000000000000100" in s.command("m $100 $110")["output"]        # RAM
+        s.command("m $7c00000 $7c00010")                                         # ROM
+        assert s.command("bi")["mode"] == "stopped"                              # not a read
+    finally:
+        s.stop()
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def main():

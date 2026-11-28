@@ -65,6 +65,10 @@ DEFAULT_APP = os.path.expanduser("~/Documents/Dev/macemu-mon/build-mon/Release/B
 MON_MARKER = b"Removed all break points!"         # a cxmon string: present only in a mon build
 PROMPT = re.compile(r"\[[0-9a-f]+\]-> $")
 BREAK_HIT = re.compile(r"Stopped at break point address: ([0-9a-f]+)\. Last PC: ([0-9a-f]+)")
+# Basilisk's sigsegv_dump_state(): a 68K write the host cannot map (a wild pointer)
+# prints this and the 68K registers, then enters cxmon - and QUITS when cxmon is
+# left. Without mon compiled in, the process simply dies (WurzelRegler, 2026-10-04).
+SEGV = re.compile(r"Caught SIGSEGV at address (0x[0-9a-f]+)(?: \[IP=(0x[0-9a-f]+)\])?")
 WATCH_LABELS = ("de.390er.applebridge-hangwatch", "de.390er.applebridge-dialogwatch")
 
 # cxmon commands that reach the HOST (shell, file system, output redirection).
@@ -244,7 +248,7 @@ class Session:
         if not _pid_alive(st.get("emu_pid")):
             raise MonError("the debug emulator is no longer running (it quit or crashed); "
                            "'stop' cleans up, then 'start' again")
-        return st
+        return self._check_crash(st)
 
     # ---- output ----------------------------------------------------------
     def _size(self):
@@ -331,6 +335,10 @@ class Session:
 
         prefs = os.path.join(self.root, "prefs")
         self._write_prefs(prefs, clone)
+        ram_size = 0
+        for line in open(prefs):
+            if line.startswith("ramsize "):
+                ram_size = int(line.split()[1])
 
         if os.path.exists(self.fifo):
             os.remove(self.fifo)
@@ -359,7 +367,7 @@ class Session:
         st = {"emu_pid": emu.pid, "holder_pid": holder.pid, "disk": disk, "clone": clone,
               "prefs": prefs, "app": self.app, "paused_watchers": paused,
               "mode": "running", "started": time.strftime("%Y-%m-%d %H:%M:%S"),
-              "installed": installed}
+              "installed": installed, "ram_size": ram_size}
         self._save(st)
         return st
 
@@ -431,14 +439,18 @@ class Session:
         keep = []
         try:
             for line in open(base):
-                if line.split(" ", 1)[0] in ("disk", "ether", "jit", "cdrom"):
+                if line.split(" ", 1)[0] in ("disk", "ether", "jit", "cdrom", "ignoresegv"):
                     continue
                 keep.append(line.rstrip("\n"))
         except OSError:
             pass
         # jit false: break points are tested on the interpreter's path only.
         # ether slirp: no helper, no password; the bridge is not the channel here.
-        keep += [f"disk {clone}", "ether slirp", "jit false"]
+        # ignoresegv false: with it true, Basilisk tries to SKIP a faulting write; when the
+        # skip fails it gives up without calling the dumper and the process dies (measured
+        # 2026-11-28 on SlotKeeper: "No handler for exception_type = 1"). False sends a wild
+        # write into cxmon instead.
+        keep += [f"disk {clone}", "ether slirp", "jit false", "ignoresegv false"]
         with open(path, "w") as f:
             f.write("\n".join(keep) + "\n")
 
@@ -497,8 +509,9 @@ class Session:
     # ---- debugging -----------------------------------------------------------
     def break_in(self, timeout=10):
         st = self._require_session()
-        if st["mode"] == "stopped":
-            return {"mode": "stopped", "output": "(already stopped in the monitor)"}
+        if st["mode"] in ("stopped", "crashed"):
+            return {"mode": st["mode"], "crash": st.get("crash"),
+                    "output": "(already stopped in the monitor)"}
         # A break point may have stopped the guest since 'continue': the monitor
         # is then at its prompt, and a SIGINT would only set its abort flag.
         if BREAK_HIT.search(self._read_from(st.get("resume_offset", self._size()))):
@@ -517,6 +530,34 @@ class Session:
         i = text.find("D0: ")
         return {"mode": "stopped", "output": self._clean(text[i:] if i > 0 else text)}
 
+    # Commands whose first operands are guest addresses the monitor will READ.
+    _READS = {"m", "i", "b", "d68", "d", "d65", "d80", "d86", "d8086", "d8664", "h", "c", "t", "y", "yb", "yh", "yw", "f", ":"}
+
+    def _check_addresses(self, cmd, st):
+        """Refuse a monitor read outside guest RAM and ROM. cxmon reads guest
+        memory straight through to the host, so an unmapped address (a wild
+        pointer is exactly what one inspects after a crash) faults inside the
+        monitor and takes the emulator down - measured 2026-11-28."""
+        parts = cmd.split()
+        if parts[0] not in self._READS:
+            return
+        ram = st.get("ram_size") or 0
+        rom = st.get("rom_base")
+        for tok in parts[1:3]:
+            if not tok.startswith("$"):
+                continue
+            try:
+                a = int(tok[1:], 16)
+            except ValueError:
+                continue
+            in_ram = ram and 0 <= a <= ram
+            in_rom = rom is not None and rom <= a <= rom + ROM_SPAN
+            if not (in_ram or in_rom or not ram):
+                raise MonError(f"${a:X} is outside guest RAM ($0-${ram:X})"
+                               + (f" and ROM (${rom:X}+)" if rom is not None else "")
+                               + "; the monitor would fault reading it and kill the emulator")
+
+
     def command(self, cmd, timeout=10):
         st = self._require_session()
         word = cmd.strip().split(" ", 1)[0] if cmd.strip() else ""
@@ -526,17 +567,21 @@ class Session:
             raise MonError("use action 'continue' to resume the guest")
         if word in HOST_COMMANDS or word.startswith("\\"):
             raise MonError(f"monitor command {word!r} acts on the HOST (shell/files/output) and is refused")
-        if st["mode"] != "stopped":
+        if st["mode"] not in ("stopped", "crashed"):
             raise MonError("the guest is running - break in first (action 'break'), or wait for a break point")
+        self._check_addresses(cmd.strip(), st)
         off = self._size()
         self._send(cmd)
         text, ok = self._wait_prompt(off, timeout)
         if not ok:
             raise MonError(f"no prompt within {timeout}s; partial output: {text[-500:]!r}")
-        return {"mode": "stopped", "output": self._clean(text)}
+        return {"mode": st["mode"], "output": self._clean(text)}
 
     def resume(self):
         st = self._require_session()
+        if st["mode"] == "crashed":
+            raise MonError("the guest crashed (wild write); leaving the monitor would quit the emulator. "
+                           "Inspect with 'where'/'cmd', then 'stop'")
         if st["mode"] != "stopped":
             return {"mode": st["mode"], "output": "(guest already running)"}
         st["resume_offset"] = self._size()
@@ -545,15 +590,43 @@ class Session:
         self._save(st)
         return {"mode": "running"}
 
+    def _crashed(self, st, off, m, deadline=None):
+        """The guest made a write the host could not map; cxmon has the machine."""
+        text, _ = self._wait_prompt(off, max(1.0, (deadline or time.monotonic() + 5) - time.monotonic()))
+        st["mode"] = "crashed"
+        st["crash"] = {"host_fault_address": m.group(1), "host_ip": m.group(2)}
+        self._save(st)
+        i = text.find("D0: ")
+        return {"mode": "crashed", "hit": False, "crash": st["crash"],
+                "output": self._clean(text[i:] if i >= 0 else text),
+                "next": "inspect with 'where' and 'cmd' - the emulator QUITS when the monitor is left, "
+                        "so 'continue' is refused; 'stop' ends the session"}
+
+    def _check_crash(self, st):
+        """A crash may have happened while nobody was waiting."""
+        if st.get("mode") == "running":
+            off = st.get("resume_offset", 0)
+            m = SEGV.search(self._read_from(off))
+            if m:
+                self._crashed(st, off, m)
+                return self.state()
+        return st
+
     def wait(self, timeout=30):
         """Block until a break point stops the guest, or the timeout passes."""
         st = self._require_session()
+        if st["mode"] == "crashed":
+            return {"mode": "crashed", "hit": False, "crash": st.get("crash"),
+                    "output": "(the guest crashed earlier; see 'where')"}
         if st["mode"] == "stopped":
             return {"mode": "stopped", "hit": False, "output": "(already stopped)"}
         off = st.get("resume_offset", self._size())
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             text = self._read_from(off)
+            c = SEGV.search(text)
+            if c:
+                return self._crashed(st, off, c, deadline)
             m = BREAK_HIT.search(text)
             if m:
                 text, _ = self._wait_prompt(off, max(1.0, deadline - time.monotonic()))
@@ -608,13 +681,21 @@ class Session:
         return regs
 
     def _rom_base(self):
-        return int.from_bytes(self.read_mem(0x2AE, 4), "big")
+        st = self.state()
+        if st.get("rom_base") is None:
+            st["rom_base"] = int.from_bytes(self.read_mem(0x2AE, 4), "big")
+            self._save(st)
+        return st["rom_base"]
 
     def _describe(self, addr, rom_base, window=4096):
         if rom_base and rom_base <= addr < rom_base + ROM_SPAN:
             return {"address": f"${addr:X}", "where": "ROM"}
+        ram = self.state().get("ram_size") or 0
+        if ram and not (0 <= addr < ram):
+            return {"address": f"${addr:X}", "where": "outside RAM and ROM (a wild address)"}
         lo = max(0, addr - window)
-        hit = name_for(addr, self.read_mem(lo, 2 * window), lo)
+        hi = min(addr + window, ram) if ram else addr + window
+        hit = name_for(addr, self.read_mem(lo, hi - lo), lo)
         if not hit:
             return {"address": f"${addr:X}", "where": "RAM, no MacsBug name within 4 KB (system code or a stripped binary)"}
         name, start, off = hit
@@ -628,8 +709,8 @@ class Session:
         """Current routine and a backtrace along the A6 frame chain, each
         address named from the MacsBug names compiled into the code. The first
         frames may belong to a trap patch or ROM code the program called."""
-        self._require_session()
-        if self.state().get("mode") != "stopped":
+        st = self._require_session()
+        if st.get("mode") not in ("stopped", "crashed"):
             raise MonError("the guest is running - break in first")
         regs = self.registers()
         rom = self._rom_base()
@@ -640,7 +721,11 @@ class Session:
             if not a6 or a6 & 1 or a6 in seen or (rom and a6 >= rom):
                 break
             seen.add(a6)
-            raw = self.read_mem(a6, 8)
+            try:
+                raw = self.read_mem(a6, 8)
+            except MonError:
+                frames.append({"frame": f"A6=${a6:X}", "where": "A6 points outside RAM - chain ends here"})
+                break
             if len(raw) < 8:
                 break
             saved, ret = int.from_bytes(raw[:4], "big"), int.from_bytes(raw[4:], "big")
@@ -652,7 +737,7 @@ class Session:
             a6 = saved
         app = self.read_mem(0x910, 32)
         cur = app[1:1 + app[0]].decode("latin-1") if app and app[0] < 32 else "?"
-        return {"mode": "stopped", "pc": f"${regs.get('PC', 0):X}", "a6": f"${regs.get('A6', 0):X}",
+        return {"mode": st["mode"], "crash": st.get("crash"), "pc": f"${regs.get('PC', 0):X}", "a6": f"${regs.get('A6', 0):X}",
                 "a7": f"${regs.get('A7', 0):X}", "rom_base": f"${rom:X}", "cur_ap_name": cur,
                 "frames": frames,
                 "note": "frames follow A6; a routine built without LINK A6 does not appear. "
@@ -663,8 +748,11 @@ class Session:
         if not st:
             return {"session": False}
         alive = _pid_alive(st.get("emu_pid"))
+        if alive:
+            st = self._check_crash(st)
         tail = self._clean(self._read_from(max(0, self._size() - 800)))
         return {"session": True, "alive": alive, "mode": st.get("mode") if alive else "dead",
+                "crash": st.get("crash"),
                 "pid": st.get("emu_pid"), "disk": st.get("disk"), "clone": st.get("clone"),
                 "started": st.get("started"),
                 "paused_watchers": [os.path.basename(p) for p in st.get("paused_watchers", [])],

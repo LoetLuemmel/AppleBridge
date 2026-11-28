@@ -43,6 +43,7 @@ def on_int(*_):
     state["interrupt"] = True
 
 
+START = time.monotonic()
 signal.signal(signal.SIGINT, on_int)
 signal.signal(signal.SIGTERM, signal.SIG_IGN)          # Basilisk ignores SIGTERM too
 print("Basilisk II V1.1 by Christian Bauer et al.\nioctl(DKIOCCDREADTOC) failed: Bad file descriptor", flush=True)
@@ -81,6 +82,11 @@ while True:
         state["interrupt"] = False
         sys.stdout.write(REGS)
         monitor()
+    elif IMAGE.get("crash_after") and not state.get("crashed") and time.monotonic() - START > IMAGE["crash_after"]:
+        state["crashed"] = True
+        sys.stdout.write("Caught SIGSEGV at address 0x441d2004 [IP=0x10a3c2f]\n" + regs_text())
+        monitor()
+        sys.exit(0)                                    # leaving the monitor quits, like Basilisk
     elif state["bps"] and state["resumed"] and time.monotonic() - state["resumed"] > 0.3:
         a = min(state["bps"])
         state["resumed"] = 0.0
